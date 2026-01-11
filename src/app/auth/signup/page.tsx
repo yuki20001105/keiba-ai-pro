@@ -38,7 +38,7 @@ export default function SignUpPage() {
     } else {
       setSuccess(true)
       setTimeout(() => {
-        window.location.href = '/'
+        window.location.href = '/home'
       }, 2000)
     }
   }
