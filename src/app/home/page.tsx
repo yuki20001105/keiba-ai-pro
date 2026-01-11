@@ -113,6 +113,15 @@ export default function HomePage() {
       {/* Hero Section */}
       <section className="container mx-auto px-6 py-16">
         <div className="max-w-4xl mx-auto text-center mb-16">
+          {/* 管理者表示 */}
+          {isAdmin && (
+            <div className="mb-6">
+              <span className="inline-block px-4 py-2 bg-gradient-to-r from-blue-500 to-purple-600 text-white text-sm font-semibold rounded-full shadow-lg">
+                👑 管理者でログインしました
+              </span>
+            </div>
+          )}
+          
           <h2 className="text-5xl font-bold mb-6 text-white">
             AI競馬予測システム
           </h2>
