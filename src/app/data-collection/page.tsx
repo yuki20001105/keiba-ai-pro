@@ -12,6 +12,9 @@ export default function DataCollectionPage() {
   const [authLoading, setAuthLoading] = useState(true)
   const [userId, setUserId] = useState<string | null>(null)
   const { ultimateMode, setUltimateMode, includeDetails, setIncludeDetails } = useUltimateMode()
+  
+  // 環境チェック
+  const isProduction = process.env.NODE_ENV === 'production' && typeof window !== 'undefined' && window.location.hostname !== 'localhost'
 
   // 単一レースID取得
   const [raceId, setRaceId] = useState('')
@@ -317,6 +320,31 @@ export default function DataCollectionPage() {
         </header>
 
       <main className="container mx-auto px-4 py-8">
+        {/* 本番環境警告 */}
+        {isProduction && (
+          <div className="mb-6 bg-red-50 border-2 border-red-300 rounded-xl p-6">
+            <div className="flex items-start gap-3">
+              <span className="text-3xl">⚠️</span>
+              <div>
+                <h3 className="text-xl font-bold text-red-800 mb-2">本番環境では動作しません</h3>
+                <p className="text-red-700 mb-3">
+                  データ収集機能は<strong>ローカル環境専用</strong>です。Vercelのサーバーレス環境では、スクレイピングサービス（localhost:8001）にアクセスできません。
+                </p>
+                <div className="bg-white/70 p-4 rounded-lg">
+                  <p className="font-semibold text-gray-800 mb-2">✅ 正しい使い方：</p>
+                  <ol className="list-decimal list-inside text-gray-700 space-y-1 ml-2">
+                    <li>開発環境（localhost:3000）でこのページにアクセス</li>
+                    <li>スクレイピングサービス（localhost:8001）を起動</li>
+                    <li>データ収集を実行</li>
+                    <li>収集したデータはSupabaseに自動保存</li>
+                    <li>本番環境では保存されたデータを閲覧・予測に使用</li>
+                  </ol>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+        
         {/* 期間指定一括取得 */}
         <div className="bg-gradient-to-r from-green-50 to-emerald-50 p-8 rounded-2xl shadow-xl mb-6 border-2 border-green-200">
           <h2 className="text-2xl font-bold mb-6 text-gray-800 flex items-center">
