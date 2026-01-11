@@ -1,0 +1,41 @@
+{
+  "name": "競馬AI Pro",
+  "short_name": "競馬AI",
+  "description": "機械学習による競馬予測・資金管理・統計分析",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#3b82f6",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icon-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["sports", "finance", "utilities"],
+  "shortcuts": [
+    {
+      "name": "予測",
+      "short_name": "予測",
+      "description": "レース予測を表示",
+      "url": "/dashboard",
+      "icons": [{ "src": "/icon-192x192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "学習",
+      "short_name": "学習",
+      "description": "モデル学習",
+      "url": "/train",
+      "icons": [{ "src": "/icon-192x192.png", "sizes": "192x192" }]
+    }
+  ]
+}

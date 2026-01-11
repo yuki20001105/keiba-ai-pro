@@ -1,0 +1,58 @@
+# Node modules
+node_modules/
+.next/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Keiba data
+keiba/data/
+keiba/*.db
+
+# Test files
+test*.py
+*_test.py
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Large datasets
+*.csv
+*.parquet
+*.h5
+
+# Models (except saved models)
+models/
+
+# Chromium/Chrome driver
+chromedriver*
+chrome-*

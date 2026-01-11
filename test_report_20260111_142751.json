@@ -1,0 +1,49 @@
+{
+  "timestamp": "2026-01-11T14:27:51.545047",
+  "summary": {
+    "total": 9,
+    "passed": 3,
+    "failed": 1,
+    "warnings": 5,
+    "success_rate": 33.33333333333333
+  },
+  "details": [
+    {
+      "test": "VPN接続",
+      "status": "PASSED",
+      "ip": "193.148.16.4"
+    },
+    {
+      "test": "netkeiba直接アクセス",
+      "status": "WARNING",
+      "size": 50
+    },
+    {
+      "test": "スクレイピングサービス",
+      "status": "PASSED",
+      "uptime": 200.163227,
+      "requests": 0
+    },
+    {
+      "test": "サービス統計",
+      "status": "PASSED"
+    },
+    {
+      "test": "レースデータ取得",
+      "status": "FAILED",
+      "error": "IPアドレスがブロックされています。ProtonVPN等のVPNに接続してから再度お試しください。"
+    },
+    {
+      "test": "データベース接続",
+      "status": "NOT_CONFIGURED"
+    },
+    {
+      "test": "Next.js Frontend",
+      "status": "NOT_RUNNING"
+    },
+    {
+      "test": "データ収集ページ",
+      "status": "FRONTEND_DOWN"
+    }
+  ]
+}

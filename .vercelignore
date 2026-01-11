@@ -1,0 +1,35 @@
+# Python関連
+python-api/
+keiba/
+*.db
+*.sqlite
+*.pyc
+__pycache__/
+.pyenv/
+
+# データファイル
+*.csv
+data/
+results/
+models/
+*.pkl
+*.joblib
+
+# テストファイル
+test_*.py
+*_test.py
+*.log
+
+# 開発ファイル
+.git/
+.vscode/
+*.backup
+
+# Node modules (already in .gitignore but explicit here)
+node_modules/
+.next/
+
+# その他
+*.zip
+*.tar.gz
+.env.local

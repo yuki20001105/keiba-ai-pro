@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>競馬AI Pro - システム動作確認</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #fff;
+            padding: 20px;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        h1 { text-align: center; margin-bottom: 30px; font-size: 2.5em; }
+        .test-section {
+            background: rgba(255,255,255,0.05);
+            border: 2px solid rgba(79,195,247,0.3);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .test-section h2 {
+            color: #4fc3f7;
+            margin-bottom: 15px;
+            font-size: 1.5em;
+        }
+        .test-result {
+            background: rgba(0,0,0,0.3);
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 10px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        button:hover { transform: scale(1.05); }
+        button:disabled {
+            background: #666;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .status {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-weight: bold;
+            margin-right: 10px;
+        }
+        .status.success { background: #4caf50; }
+        .status.error { background: #f44336; }
+        .status.pending { background: #ff9800; }
+        .loading { display: none; }
+        .loading.active {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #4fc3f7;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-left: 10px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🏇 競馬AI Pro - システム動作確認</h1>
+
+        <!-- Test 1: Ultimate Service -->
+        <div class="test-section">
+            <h2>1. Ultimate版スクレイピングサービス</h2>
+            <button onclick="testUltimateService()">テスト実行</button>
+            <span class="loading" id="loading1"></span>
+            <div class="test-result" id="result1">実行待ち...</div>
+        </div>
+
+        <!-- Test 2: Next.js -->
+        <div class="test-section">
+            <h2>2. Next.js起動確認</h2>
+            <button onclick="testNextjs()">テスト実行</button>
+            <span class="loading" id="loading2"></span>
+            <div class="test-result" id="result2">実行待ち...</div>
+        </div>
+
+        <!-- Test 3: Race Data Scraping -->
+        <div class="test-section">
+            <h2>3. レースデータ取得</h2>
+            <p style="color: #aaa; margin-bottom: 10px;">テスト用レースID: 202401041001 (2024年1月4日中山1R)</p>
+            <button onclick="testRaceScraping()">テスト実行 (約30秒)</button>
+            <span class="loading" id="loading3"></span>
+            <div class="test-result" id="result3">実行待ち...</div>
+        </div>
+
+        <!-- Test 4: Race List API -->
+        <div class="test-section">
+            <h2>4. レースリストAPI (Next.js)</h2>
+            <p style="color: #aaa; margin-bottom: 10px;">2024年1月4日のレース一覧を取得</p>
+            <button onclick="testRaceListAPI()">テスト実行</button>
+            <span class="loading" id="loading4"></span>
+            <div class="test-result" id="result4">実行待ち...</div>
+        </div>
+
+        <!-- Test 5: All Tests -->
+        <div class="test-section">
+            <h2>5. 全テスト実行</h2>
+            <button onclick="runAllTests()" style="font-size: 18px; padding: 15px 40px;">
+                🚀 全てのテストを実行
+            </button>
+            <span class="loading" id="loading5"></span>
+        </div>
+    </div>
+
+    <script>
+        async function testUltimateService() {
+            const resultDiv = document.getElementById('result1');
+            const loading = document.getElementById('loading1');
+            loading.classList.add('active');
+            resultDiv.innerHTML = '<span class="status pending">実行中</span>テスト実行中...';
+
+            try {
+                const response = await fetch('http://localhost:8001/health', {
+                    method: 'GET',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    resultDiv.innerHTML = `<span class="status success">✅ 成功</span>\n` +
+                        `Status: ${data.status}\n` +
+                        `Cache Size: ${data.cache_size}\n` +
+                        `\nUltimate版スクレイピングサービスは正常に稼働しています。`;
+                } else {
+                    resultDiv.innerHTML = `<span class="status error">❌ エラー</span>\n` +
+                        `HTTPステータス: ${response.status}`;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `<span class="status error">❌ エラー</span>\n` +
+                    `接続失敗: ${error.message}\n` +
+                    `\nUltimate版サービスが起動していない可能性があります。\n` +
+                    `scraping_service_ultimate_fast.py を起動してください。`;
+            } finally {
+                loading.classList.remove('active');
+            }
+        }
+
+        async function testNextjs() {
+            const resultDiv = document.getElementById('result2');
+            const loading = document.getElementById('loading2');
+            loading.classList.add('active');
+            resultDiv.innerHTML = '<span class="status pending">実行中</span>テスト実行中...';
+
+            try {
+                const response = await fetch('http://localhost:3000', {
+                    method: 'GET'
+                });
+
+                if (response.ok) {
+                    resultDiv.innerHTML = `<span class="status success">✅ 成功</span>\n` +
+                        `HTTPステータス: ${response.status}\n` +
+                        `\nNext.jsは正常に起動しています。`;
+                } else {
+                    resultDiv.innerHTML = `<span class="status error">❌ エラー</span>\n` +
+                        `HTTPステータス: ${response.status}`;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `<span class="status error">❌ エラー</span>\n` +
+                    `接続失敗: ${error.message}\n` +
+                    `\nNext.jsが起動していない可能性があります。\n` +
+                    `npm run dev を実行してください。`;
+            } finally {
+                loading.classList.remove('active');
+            }
+        }
+
+        async function testRaceScraping() {
+            const resultDiv = document.getElementById('result3');
+            const loading = document.getElementById('loading3');
+            loading.classList.add('active');
+            resultDiv.innerHTML = '<span class="status pending">実行中</span>データ取得中... (約30秒かかります)';
+
+            try {
+                const response = await fetch('http://localhost:8001/scrape/ultimate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        race_id: '202401041001',
+                        include_details: false
+                    })
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.success) {
+                        const raceInfo = data.race_info || {};
+                        const results = data.results || [];
+                        const winner = results[0] || {};
+
+                        resultDiv.innerHTML = `<span class="status success">✅ 成功</span>\n` +
+                            `\nレース情報:\n` +
+                            `  レース名: ${raceInfo.race_name}\n` +
+                            `  距離: ${raceInfo.distance}m\n` +
+                            `  トラック: ${raceInfo.track_type}\n` +
+                            `  天候: ${raceInfo.weather}\n` +
+                            `  馬場: ${raceInfo.field_condition}\n` +
+                            `\n出走頭数: ${results.length}頭\n` +
+                            `\n1着: ${winner.horse_name} (${winner.finish_time})`;
+                    } else {
+                        resultDiv.innerHTML = `<span class="status error">❌ エラー</span>\n` +
+                            `スクレイピング失敗: ${data.error || '不明なエラー'}`;
+                    }
+                } else {
+                    resultDiv.innerHTML = `<span class="status error">❌ エラー</span>\n` +
+                        `HTTPステータス: ${response.status}`;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `<span class="status error">❌ エラー</span>\n` +
+                    `エラー: ${error.message}`;
+            } finally {
+                loading.classList.remove('active');
+            }
+        }
+
+        async function testRaceListAPI() {
+            const resultDiv = document.getElementById('result4');
+            const loading = document.getElementById('loading4');
+            loading.classList.add('active');
+            resultDiv.innerHTML = '<span class="status pending">実行中</span>テスト実行中...';
+
+            try {
+                const response = await fetch('http://localhost:3000/api/netkeiba/race-list', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ date: '2024-01-04' })
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    const raceIds = data.raceIds || [];
+
+                    resultDiv.innerHTML = `<span class="status success">✅ 成功</span>\n` +
+                        `\n2024年1月4日のレース数: ${raceIds.length}件\n` +
+                        `\nレースID例:\n` +
+                        raceIds.slice(0, 5).map(id => `  - ${id}`).join('\n');
+                } else {
+                    resultDiv.innerHTML = `<span class="status error">❌ エラー</span>\n` +
+                        `HTTPステータス: ${response.status}`;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `<span class="status error">❌ エラー</span>\n` +
+                    `エラー: ${error.message}`;
+            } finally {
+                loading.classList.remove('active');
+            }
+        }
+
+        async function runAllTests() {
+            const loading = document.getElementById('loading5');
+            loading.classList.add('active');
+
+            await testUltimateService();
+            await new Promise(resolve => setTimeout(resolve, 1000));
+
+            await testNextjs();
+            await new Promise(resolve => setTimeout(resolve, 1000));
+
+            await testRaceListAPI();
+            await new Promise(resolve => setTimeout(resolve, 1000));
+
+            await testRaceScraping();
+
+            loading.classList.remove('active');
+            alert('全てのテストが完了しました！');
+        }
+    </script>
+</body>
+</html>

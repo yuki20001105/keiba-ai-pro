@@ -1,0 +1,33 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- 背景 -->
+  <rect width="512" height="512" rx="128" fill="url(#gradient)"/>
+  
+  <!-- グラデーション定義 -->
+  <defs>
+    <linearGradient id="gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1e40af;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#06b6d4;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- 競馬アイコン（馬＋グラフ） -->
+  <g transform="translate(256, 256)">
+    <!-- 馬のシルエット -->
+    <path d="M -80 -40 Q -70 -60 -50 -70 L -30 -80 Q -20 -85 -10 -80 L 0 -75 Q 10 -70 20 -60 L 40 -40 Q 50 -30 50 -10 L 50 20 Q 50 40 40 50 L 20 60 Q 0 65 -20 60 L -40 50 Q -50 40 -60 30 L -70 10 Q -80 -10 -80 -30 Z" 
+          fill="white" opacity="0.9"/>
+    
+    <!-- AIグラフ -->
+    <path d="M -60 80 L -40 60 L -20 70 L 0 40 L 20 50 L 40 20 L 60 30" 
+          stroke="white" stroke-width="8" fill="none" stroke-linecap="round" opacity="0.9"/>
+    
+    <!-- データポイント -->
+    <circle cx="-60" cy="80" r="6" fill="white"/>
+    <circle cx="-20" cy="70" r="6" fill="white"/>
+    <circle cx="20" cy="50" r="6" fill="white"/>
+    <circle cx="60" cy="30" r="6" fill="white"/>
+  </g>
+  
+  <!-- テキスト -->
+  <text x="256" y="420" font-family="Arial, sans-serif" font-size="60" font-weight="bold" fill="white" text-anchor="middle">競馬AI</text>
+  <text x="256" y="460" font-family="Arial, sans-serif" font-size="32" fill="white" opacity="0.8" text-anchor="middle">Pro</text>
+</svg>
