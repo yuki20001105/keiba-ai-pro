@@ -258,10 +258,10 @@ export default function TrainPage() {
 
           <button
             onClick={handleTrain}
-            disabled={loading}
+            disabled={authLoading || loading}
             className="mt-6 w-full px-8 py-4 bg-gradient-to-r from-green-600 to-teal-600 text-white font-bold rounded-lg hover:from-green-500 hover:to-teal-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg shadow-green-500/20"
           >
-            {loading ? '学習中...' : '🚀 学習開始'}
+            {authLoading ? '認証確認中...' : loading ? '学習中...' : '🚀 学習開始'}
           </button>
         </div>
 

@@ -163,10 +163,10 @@ export default function PredictBatchPage() {
 
           <button
             onClick={handlePredict}
-            disabled={loading}
+            disabled={authLoading || loading}
             className="w-full px-8 py-4 bg-gradient-to-r from-purple-600 to-pink-600 text-white font-bold rounded-lg hover:from-purple-500 hover:to-pink-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg shadow-purple-500/20"
           >
-            {loading ? '予測中...' : '🚀 予測実行'}
+            {authLoading ? '認証確認中...' : loading ? '予測中...' : '🚀 予測実行'}
           </button>
         </div>
 

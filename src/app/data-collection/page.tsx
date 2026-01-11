@@ -435,10 +435,10 @@ export default function DataCollectionPage() {
 
           <button
             onClick={bulkScrapeByPeriod}
-            disabled={loading}
+            disabled={authLoading || loading}
             className="w-full bg-gradient-to-r from-green-600 to-emerald-600 text-white px-8 py-5 rounded-2xl text-xl font-bold hover:shadow-2xl hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300"
           >
-            {loading ? '🔄 一括取得中... しばらくお待ちください' : '🚀 期間指定で一括取得開始'}
+            {authLoading ? '認証確認中...' : loading ? '🔄 一括取得中... しばらくお待ちください' : '🚀 期間指定で一括取得開始'}
           </button>
         </div>
 
