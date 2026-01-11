@@ -13,6 +13,9 @@ export default function TrainPage() {
   const [userId, setUserId] = useState<string | null>(null)
   const { ultimateMode, setUltimateMode } = useUltimateMode()
 
+  // 環境チェック
+  const isProduction = process.env.NODE_ENV === 'production' && typeof window !== 'undefined' && window.location.hostname !== 'localhost'
+
   // 学習設定
   const [target, setTarget] = useState<'win' | 'place3'>('win')
   const [modelType, setModelType] = useState<'logistic_regression' | 'lightgbm'>('lightgbm')
@@ -109,6 +112,26 @@ export default function TrainPage() {
             </h1>
             <p className="text-gray-400">機械学習モデルのトレーニング</p>
           </div>
+
+          {/* 本番環境警告 */}
+          {isProduction && (
+            <div className="mb-6 bg-red-50 border-2 border-red-300 rounded-xl p-6">
+              <h3 className="text-xl font-bold text-red-700 mb-3">⚠️ 本番環境では動作しません</h3>
+              <p className="text-red-600 mb-4">
+                モデル学習機能はローカル環境専用です。Vercelのサーバーレス環境では、学習API（localhost:8000）にアクセスできません。
+              </p>
+              <div className="bg-white rounded-lg p-4 border border-red-200">
+                <h4 className="font-bold text-gray-800 mb-2">✅ 正しい使用方法：</h4>
+                <ol className="list-decimal list-inside space-y-2 text-gray-700">
+                  <li>開発環境（localhost:3000）でこのページにアクセス</li>
+                  <li>FastAPI学習サービス（localhost:8000）を起動</li>
+                  <li>モデル学習を実行</li>
+                  <li>学習済みモデルはローカルに保存</li>
+                  <li>予測機能で学習済みモデルを使用</li>
+                </ol>
+              </div>
+            </div>
+          )}
 
         {/* Ultimate版切り替え */}
         <div className="mb-6 p-6 bg-slate-800/50 backdrop-blur-sm rounded-xl border border-blue-500/30">
