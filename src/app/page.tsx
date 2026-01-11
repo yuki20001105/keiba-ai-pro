@@ -1,150 +1,236 @@
 'use client'
 
+import { useEffect, useState } from 'react'
+import { supabase } from '@/lib/supabase'
+import { User } from '@supabase/supabase-js'
 import Link from 'next/link'
-import InstallPWA from '@/components/InstallPWA'
 
 export default function Home() {
+  const [user, setUser] = useState<User | null>(null)
+  const [loading, setLoading] = useState(true)
 
-export default function Home() {
+  useEffect(() => {
+    const getUser = async () => {
+      const { data: { user } } = await supabase.auth.getUser()
+      setUser(user)
+      setLoading(false)
+    }
+    getUser()
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event: any, session: any) => {
+      setUser(session?.user ?? null)
+    })
+
+    return () => subscription.unsubscribe()
+  }, [])
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50">
+        <div className="text-xl text-gray-700">読み込み中...</div>
+      </div>
+    )
+  }
+
   return (
-    <main className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900">
+    <main className="min-h-screen bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50">
       {/* Header */}
-      <header className="bg-slate-800/50 backdrop-blur-md border-b border-blue-500/20">
-        <div className="container mx-auto px-6 py-4 flex justify-between items-center">
-          <h1 className="text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-cyan-400">
+      <header className="bg-white/80 backdrop-blur-md shadow-sm sticky top-0 z-50">
+        <div className="container mx-auto px-4 py-4 flex justify-between items-center">
+          <h1 className="text-2xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
             🏇 競馬AI Pro
           </h1>
-          <div className="flex items-center gap-4">
-            <Link
-              href="/auth/login"
-              className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors font-medium"
-            >
-              ログイン
-            </Link>
-            <Link
-              href="/auth/signup"
-              className="px-6 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-colors font-medium"
-            >
-              新規登録
-            </Link>
-          </div>
+          {user ? (
+            <div className="flex gap-4 items-center">
+              <span className="text-sm text-gray-700 font-medium">{user.email}</span>
+              <Link
+                href="/dashboard"
+                className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white px-6 py-2 rounded-lg hover:shadow-lg transition-all duration-300"
+              >
+                ダッシュボード
+              </Link>
+            </div>
+          ) : (
+            <div className="flex gap-4">
+              <Link
+                href="/auth/login"
+                className="text-primary-600 hover:text-primary-700 px-4 py-2"
+              >
+                ログイン
+              </Link>
+              <Link
+                href="/auth/signup"
+                className="bg-primary-500 text-white px-4 py-2 rounded-lg hover:bg-primary-600"
+              >
+                新規登録
+              </Link>
+            </div>
+          )}
         </div>
       </header>
 
       {/* Hero Section */}
-      <section className="container mx-auto px-6 py-20">
-        <div className="max-w-4xl mx-auto text-center mb-16">
-          <h2 className="text-6xl font-bold mb-6 text-white">
-            AI競馬予測システム
-          </h2>
-          <p className="text-2xl text-blue-200 mb-12">
-            機械学習による高精度な競馬予測・資金管理システム
-          </p>
-          <div className="flex gap-6 justify-center">
-            <Link
-              href="/auth/signup"
-              className="px-8 py-4 bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-500 hover:to-cyan-500 text-white text-lg rounded-lg transition-all transform hover:scale-105 font-bold shadow-lg shadow-blue-500/50"
-            >
-              今すぐ始める →
-            </Link>
-            <Link
-              href="/auth/login"
-              className="px-8 py-4 bg-slate-700 hover:bg-slate-600 text-white text-lg rounded-lg transition-all font-medium"
-            >
-              ログイン
-            </Link>
-          </div>
+      <section className="container mx-auto px-4 py-20 text-center">
+        <h2 className="text-5xl font-bold mb-6 text-gray-900">
+          AI予測 × OCR馬券スキャン<br />
+          競馬の収支管理を次のレベルへ
+        </h2>
+        <p className="text-xl text-gray-700 mb-10 max-w-3xl mx-auto">
+          機械学習による予測、Google Vision APIでの馬券自動認識、<br />
+          GPT/Geminiによる補正、Stripeによるプレミアムプラン対応
+        </p>
+        <div className="flex gap-4 justify-center">
+          <Link
+            href="/auth/signup"
+            className="bg-primary-600 text-white px-8 py-4 rounded-lg text-lg font-semibold hover:bg-primary-700 transition"
+          >
+            無料で始める
+          </Link>
+          <Link
+            href="#features"
+            className="bg-white text-primary-600 px-8 py-4 rounded-lg text-lg font-semibold border-2 border-primary-600 hover:bg-primary-50 transition"
+          >
+            機能を見る
+          </Link>
         </div>
-        
-        {/* Features Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 max-w-6xl mx-auto mb-20">
-          {/* データ取得 */}
-          <div className="bg-slate-800/50 backdrop-blur-sm border border-blue-500/30 rounded-xl p-8">
-            <div className="text-5xl mb-4">📊</div>
-            <h3 className="text-2xl font-bold text-white mb-2">データ取得</h3>
-            <p className="text-blue-200">レース情報を自動取得</p>
-          </div>
-
-          {/* 学習 */}
-          <div className="bg-slate-800/50 backdrop-blur-sm border border-blue-500/30 rounded-xl p-8">
-            <div className="text-5xl mb-4">🧠</div>
-            <h3 className="text-2xl font-bold text-white mb-2">モデル学習</h3>
-            <p className="text-blue-200">AIモデルをトレーニング</p>
-          </div>
-
-          {/* 予測 */}
-          <div className="bg-slate-800/50 backdrop-blur-sm border border-blue-500/30 rounded-xl p-8">
-            <div className="text-5xl mb-4">🎯</div>
-            <h3 className="text-2xl font-bold text-white mb-2">予測実行</h3>
-            <p className="text-blue-200">レース結果を予測</p>
-          </div>
-
-          {/* 購入推奨 */}
-          <div className="bg-slate-800/50 backdrop-blur-sm border border-blue-500/30 rounded-xl p-8">
-            <div className="text-5xl mb-4">💰</div>
-            <h3 className="text-2xl font-bold text-white mb-2">購入推奨</h3>
-            <p className="text-blue-200">最適な馬券を提案</p>
-          </div>
-
-          {/* 履歴・統計 */}
-          <div className="bg-slate-800/50 backdrop-blur-sm border border-blue-500/30 rounded-xl p-8">
-            <div className="text-5xl mb-4">📈</div>
-            <h3 className="text-2xl font-bold text-white mb-2">履歴・統計</h3>
-            <p className="text-blue-200">購入履歴と成績</p>
-          </div>
-
-          {/* Ultimate Mode */}
-          <div className="bg-slate-800/50 backdrop-blur-sm border border-purple-500/30 rounded-xl p-8">
-            <div className="text-5xl mb-4">✨</div>
-            <h3 className="text-2xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-400 mb-2">Ultimate Mode</h3>
-            <p className="text-blue-200">高度な予測機能</p>
-          </div>
-        </div>
+      </section>
 
       {/* Features Section */}
-      <section className="container mx-auto px-6 py-16">
-        <h2 className="text-3xl font-bold text-center mb-12 text-white">
-          システムの特徴
-        </h2>
-        
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl mx-auto">
-          <div className="bg-slate-800/30 border border-blue-500/20 rounded-xl p-6">
-            <div className="text-4xl mb-3">🎯</div>
-            <h3 className="text-xl font-bold text-white mb-2">高精度AI予測</h3>
-            <p className="text-blue-200 text-sm">RandomForest・LightGBMによる機械学習モデル</p>
-          </div>
+      <section id="features" className="bg-white py-20">
+        <div className="container mx-auto px-4">
+          <h3 className="text-4xl font-bold text-center mb-12 text-gray-900">主な機能</h3>
+          <div className="grid md:grid-cols-3 gap-8">
+            {/* Feature 1 */}
+            <div className="p-6 border border-gray-200 rounded-xl hover:shadow-lg transition">
+              <div className="text-4xl mb-4">🤖</div>
+              <h4 className="text-xl font-bold mb-3">AI競馬予測</h4>
+              <p className="text-gray-600">
+                ケリー基準・レースレベル判定・動的単価調整を備えたプロ仕様の資金管理システム。
+              </p>
+            </div>
 
-          <div className="bg-slate-800/30 border border-blue-500/20 rounded-xl p-6">
-            <div className="text-4xl mb-3">💰</div>
-            <h3 className="text-xl font-bold text-white mb-2">資金管理システム</h3>
-            <p className="text-blue-200 text-sm">ケリー基準による最適賭け金計算</p>
-          </div>
+            {/* Feature 2 */}
+            <div className="p-6 border border-gray-200 rounded-xl hover:shadow-lg transition">
+              <div className="text-4xl mb-4">�</div>
+              <h4 className="text-xl font-bold mb-3">データ取得</h4>
+              <p className="text-gray-600">
+                netkeibaから開催日・レース結果・オッズ・払戻を自動スクレイピング。レート制限対応。
+              </p>
+            </div>
 
-          <div className="bg-slate-800/30 border border-blue-500/20 rounded-xl p-6">
-            <div className="text-4xl mb-3">📊</div>
-            <h3 className="text-xl font-bold text-white mb-2">自動データ収集</h3>
-            <p className="text-blue-200 text-sm">netkeiba.comから最新レース情報を取得</p>
-          </div>
+            {/* Feature 3 */}
+            <div className="p-6 border border-gray-200 rounded-xl hover:shadow-lg transition">
+              <div className="text-4xl mb-4">�</div>
+              <h4 className="text-xl font-bold mb-3">OCR馬券スキャン</h4>
+              <p className="text-gray-600">
+                Google Vision APIで馬券を撮影するだけで自動認識。GPT/Geminiで補正・確認。
+              </p>
+            </div>
 
-          <div className="bg-slate-800/30 border border-blue-500/20 rounded-xl p-6">
-            <div className="text-4xl mb-3">📈</div>
-            <h3 className="text-xl font-bold text-white mb-2">詳細統計分析</h3>
-            <p className="text-blue-200 text-sm">回収率・的中率の自動追跡</p>
+            {/* Feature 4 */}
+            <div className="p-6 border border-gray-200 rounded-xl hover:shadow-lg transition">
+              <div className="text-4xl mb-4">📊</div>
+              <h4 className="text-xl font-bold mb-3">分析ダッシュボード</h4>
+              <p className="text-gray-600">
+                日次・月次の回収率、ROI、勝率をグラフで確認。データドリブンな意思決定を支援。
+              </p>
+            </div>
+
+            {/* Feature 5 */}
+            <div className="p-6 border border-gray-200 rounded-xl hover:shadow-lg transition">
+              <div className="text-4xl mb-4">💎</div>
+              <h4 className="text-xl font-bold mb-3">プレミアムプラン</h4>
+              <p className="text-gray-600">
+                月額1,980円でOCR月間1,000回。Stripe決済で簡単アップグレード。
+              </p>
+            </div>
+
+            {/* Feature 6 */}
+            <div className="p-6 border border-gray-200 rounded-xl hover:shadow-lg transition">
+              <div className="text-4xl mb-4">🔒</div>
+              <h4 className="text-xl font-bold mb-3">セキュア</h4>
+              <p className="text-gray-600">
+                Supabase認証とRow Level Security（RLS）で完全なマルチユーザー対応。
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Pricing Section */}
+      <section className="py-20 bg-gray-50">
+        <div className="container mx-auto px-4">
+          <h3 className="text-4xl font-bold text-center mb-12 text-gray-900">料金プラン</h3>
+          <div className="grid md:grid-cols-2 gap-8 max-w-4xl mx-auto">
+            {/* Free Plan */}
+            <div className="bg-white p-8 rounded-xl shadow-lg border-2 border-gray-200">
+              <h4 className="text-2xl font-bold mb-2">Free</h4>
+              <p className="text-4xl font-bold mb-6">¥0<span className="text-lg text-gray-500">/月</span></p>
+              <ul className="space-y-3 mb-8">
+                <li className="flex items-center">
+                  <span className="text-green-500 mr-2">✓</span>
+                  AI競馬予測（無制限）
+                </li>
+                <li className="flex items-center">
+                  <span className="text-green-500 mr-2">✓</span>
+                  資金管理機能
+                </li>
+                <li className="flex items-center">
+                  <span className="text-green-500 mr-2">✓</span>
+                  OCRスキャン 月10回
+                </li>
+                <li className="flex items-center">
+                  <span className="text-green-500 mr-2">✓</span>
+                  基本ダッシュボード
+                </li>
+              </ul>
+              <Link
+                href="/auth/signup"
+                className="block w-full bg-gray-200 text-center text-gray-800 px-6 py-3 rounded-lg font-semibold hover:bg-gray-300 transition"
+              >
+                無料で始める
+              </Link>
+            </div>
+
+            {/* Premium Plan */}
+            <div className="bg-gradient-to-br from-primary-500 to-primary-700 p-8 rounded-xl shadow-2xl border-2 border-primary-600 text-white transform scale-105">
+              <h4 className="text-2xl font-bold mb-2">Premium</h4>
+              <p className="text-4xl font-bold mb-6">¥1,980<span className="text-lg opacity-80">/月</span></p>
+              <ul className="space-y-3 mb-8">
+                <li className="flex items-center">
+                  <span className="mr-2">✓</span>
+                  すべてのFree機能
+                </li>
+                <li className="flex items-center">
+                  <span className="mr-2">✓</span>
+                  OCRスキャン 月1,000回
+                </li>
+                <li className="flex items-center">
+                  <span className="mr-2">✓</span>
+                  詳細分析ダッシュボード
+                </li>
+                <li className="flex items-center">
+                  <span className="mr-2">✓</span>
+                  優先サポート
+                </li>
+              </ul>
+              <Link
+                href="/auth/signup"
+                className="block w-full bg-white text-primary-600 text-center px-6 py-3 rounded-lg font-semibold hover:bg-gray-100 transition"
+              >
+                Premiumを始める
+              </Link>
+            </div>
           </div>
         </div>
       </section>
 
       {/* Footer */}
-      <footer className="bg-slate-950 border-t border-blue-500/20 py-8 mt-16">
-        <div className="container mx-auto px-6 text-center">
-          <p className="text-blue-300 text-sm">
-            © 2026 競馬AI Pro. All rights reserved.
-          </p>
+      <footer className="bg-gray-900 text-white py-8">
+        <div className="container mx-auto px-4 text-center">
+          <p className="text-gray-400">© 2026 競馬AI Pro. All rights reserved.</p>
         </div>
       </footer>
-
-      {/* PWAインストールプロンプト */}
-      <InstallPWA />
     </main>
   )
 }
