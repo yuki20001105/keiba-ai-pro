@@ -57,11 +57,21 @@ coverage.xml
 .pytest_cache
 .hypothesis
 
-# Virtual environments (keiba directory)
-keiba/
+# Virtual environments
 venv/
 env/
 ENV/
+.venv/
+
+# Keiba directory: exclude Python virtual env files but keep source code
+keiba/Scripts/
+keiba/Lib/
+keiba/Include/
+keiba/share/
+keiba/pyvenv.cfg
+keiba/data/
+keiba/models/
+keiba/.vscode/
 
 # Database files
 *.db

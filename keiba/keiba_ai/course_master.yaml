@@ -1,0 +1,333 @@
+# 競馬場コース特性マスターデータ
+# race_idの8-9桁目がコードに対応（例: 202401010506 → 05が東京）
+
+courses:
+  "05":  # 東京
+    name: "東京"
+    turf:
+      "1400":
+        track_type: "outer"  # 外回り
+        straight_length: 525.9  # 直線距離(m)
+        corner_radius: "large"
+        inner_bias: 0  # 内外フラット
+      "1600":
+        track_type: "outer"
+        straight_length: 525.9
+        corner_radius: "large"
+        inner_bias: 0
+      "1800":
+        track_type: "outer"
+        straight_length: 525.9
+        corner_radius: "large"
+        inner_bias: 0
+      "2000":
+        track_type: "outer"
+        straight_length: 525.9
+        corner_radius: "large"
+        inner_bias: 0
+      "2400":
+        track_type: "outer"
+        straight_length: 525.9
+        corner_radius: "large"
+        inner_bias: 0
+      "3400":
+        track_type: "outer"
+        straight_length: 525.9
+        corner_radius: "large"
+        inner_bias: 0
+    dirt:
+      "1300":
+        straight_length: 501.6
+        inner_bias: 0
+      "1400":
+        straight_length: 501.6
+        inner_bias: 0
+      "1600":
+        straight_length: 501.6
+        inner_bias: 0
+      "2100":
+        straight_length: 501.6
+        inner_bias: 0
+
+  "06":  # 中山
+    name: "中山"
+    turf:
+      "1200":
+        track_type: "inner"  # 内回り
+        straight_length: 310.0
+        corner_radius: "tight"  # きついコーナー
+        inner_bias: 1  # 内枠有利
+      "1600":
+        track_type: "inner"
+        straight_length: 310.0
+        corner_radius: "tight"
+        inner_bias: 1
+      "1800":
+        track_type: "inner"
+        straight_length: 310.0
+        corner_radius: "tight"
+        inner_bias: 1
+      "2000":
+        track_type: "inner"
+        straight_length: 310.0
+        corner_radius: "tight"
+        inner_bias: 1
+      "2200":
+        track_type: "outer"  # 外回り
+        straight_length: 310.0
+        corner_radius: "medium"
+        inner_bias: 0
+      "2500":
+        track_type: "outer"
+        straight_length: 310.0
+        corner_radius: "medium"
+        inner_bias: 0
+      "3600":
+        track_type: "outer"
+        straight_length: 310.0
+        corner_radius: "medium"
+        inner_bias: 0
+    dirt:
+      "1200":
+        straight_length: 308.0
+        inner_bias: 0
+      "1800":
+        straight_length: 308.0
+        inner_bias: 0
+
+  "08":  # 京都（2024年以降休止中、参考データ）
+    name: "京都"
+    turf:
+      "1400":
+        track_type: "outer"
+        straight_length: 404.0
+        corner_radius: "large"
+        inner_bias: 0
+      "1600":
+        track_type: "inner"
+        straight_length: 328.0
+        corner_radius: "medium"
+        inner_bias: 0
+      "1800":
+        track_type: "outer"
+        straight_length: 404.0
+        corner_radius: "large"
+        inner_bias: 0
+      "2000":
+        track_type: "inner"
+        straight_length: 328.0
+        corner_radius: "medium"
+        inner_bias: 1
+      "2200":
+        track_type: "outer"
+        straight_length: 404.0
+        corner_radius: "large"
+        inner_bias: 0
+      "2400":
+        track_type: "outer"
+        straight_length: 404.0
+        corner_radius: "large"
+        inner_bias: 0
+      "3000":
+        track_type: "outer"
+        straight_length: 404.0
+        corner_radius: "large"
+        inner_bias: 0
+      "3200":
+        track_type: "outer"
+        straight_length: 404.0
+        corner_radius: "large"
+        inner_bias: 0
+    dirt:
+      "1200":
+        straight_length: 329.0
+        inner_bias: 0
+      "1400":
+        straight_length: 329.0
+        inner_bias: 0
+      "1800":
+        straight_length: 329.0
+        inner_bias: 0
+      "1900":
+        straight_length: 329.0
+        inner_bias: 0
+
+  "09":  # 阪神
+    name: "阪神"
+    turf:
+      "1200":
+        track_type: "inner"
+        straight_length: 356.5
+        corner_radius: "medium"
+        inner_bias: 0
+      "1400":
+        track_type: "outer"
+        straight_length: 473.6
+        corner_radius: "large"
+        inner_bias: 0
+      "1600":
+        track_type: "inner"
+        straight_length: 356.5
+        corner_radius: "medium"
+        inner_bias: 0
+      "1800":
+        track_type: "outer"
+        straight_length: 473.6
+        corner_radius: "large"
+        inner_bias: 0
+      "2000":
+        track_type: "inner"
+        straight_length: 356.5
+        corner_radius: "medium"
+        inner_bias: 0
+      "2200":
+        track_type: "outer"
+        straight_length: 473.6
+        corner_radius: "large"
+        inner_bias: 0
+      "2400":
+        track_type: "inner"
+        straight_length: 356.5
+        corner_radius: "medium"
+        inner_bias: 0
+      "2600":
+        track_type: "outer"
+        straight_length: 473.6
+        corner_radius: "large"
+        inner_bias: 0
+      "3000":
+        track_type: "outer"
+        straight_length: 473.6
+        corner_radius: "large"
+        inner_bias: 0
+    dirt:
+      "1200":
+        straight_length: 352.5
+        inner_bias: 0
+      "1400":
+        straight_length: 352.5
+        inner_bias: 0
+      "1800":
+        straight_length: 352.5
+        inner_bias: 0
+      "2000":
+        straight_length: 352.5
+        inner_bias: 0
+
+  "10":  # 新潟
+    name: "新潟"
+    turf:
+      "1000":
+        track_type: "straight"  # 直線
+        straight_length: 1000.0
+        corner_radius: "none"
+        inner_bias: 0
+      "1200":
+        track_type: "outer"
+        straight_length: 659.0
+        corner_radius: "large"
+        inner_bias: 0
+      "1400":
+        track_type: "inner"
+        straight_length: 359.0
+        corner_radius: "medium"
+        inner_bias: 0
+      "1600":
+        track_type: "outer"
+        straight_length: 659.0
+        corner_radius: "large"
+        inner_bias: 0
+      "1800":
+        track_type: "outer"
+        straight_length: 659.0
+        corner_radius: "large"
+        inner_bias: 0
+      "2000":
+        track_type: "outer"
+        straight_length: 659.0
+        corner_radius: "large"
+        inner_bias: 0
+      "2200":
+        track_type: "inner"
+        straight_length: 359.0
+        corner_radius: "medium"
+        inner_bias: 0
+      "2400":
+        track_type: "outer"
+        straight_length: 659.0
+        corner_radius: "large"
+        inner_bias: 0
+    dirt:
+      "1200":
+        straight_length: 354.0
+        inner_bias: 0
+      "1800":
+        straight_length: 354.0
+        inner_bias: 0
+
+# その他の競馬場（簡易版）
+  "01":  # 札幌
+    name: "札幌"
+    turf:
+      default:
+        straight_length: 266.1
+        inner_bias: 0
+    dirt:
+      default:
+        straight_length: 264.0
+        inner_bias: 0
+
+  "02":  # 函館
+    name: "函館"
+    turf:
+      default:
+        straight_length: 262.1
+        inner_bias: 0
+    dirt:
+      default:
+        straight_length: 260.9
+        inner_bias: 0
+
+  "03":  # 福島
+    name: "福島"
+    turf:
+      default:
+        straight_length: 292.0
+        inner_bias: 0
+    dirt:
+      default:
+        straight_length: 295.7
+        inner_bias: 0
+
+  "04":  # 新潟（旧コード、現在は10）
+    name: "新潟"
+    turf:
+      default:
+        straight_length: 359.0
+        inner_bias: 0
+    dirt:
+      default:
+        straight_length: 354.0
+        inner_bias: 0
+
+  "07":  # 中京
+    name: "中京"
+    turf:
+      default:
+        straight_length: 412.5
+        inner_bias: 0
+    dirt:
+      default:
+        straight_length: 410.7
+        inner_bias: 0
+
+  "11":  # 小倉
+    name: "小倉"
+    turf:
+      default:
+        straight_length: 293.0
+        inner_bias: 0
+    dirt:
+      default:
+        straight_length: 291.0
+        inner_bias: 0
