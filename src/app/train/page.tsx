@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
 import { useUltimateMode } from '@/contexts/UltimateModeContext'
+import { AdminOnly } from '@/components/AdminOnly'
 
 export default function TrainPage() {
   const router = useRouter()
@@ -98,15 +99,16 @@ export default function TrainPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 py-8 px-4">
-      <div className="max-w-6xl mx-auto">
-        {/* ヘッダー */}
-        <div className="mb-8 text-center">
-          <h1 className="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-cyan-400 mb-2">
-            🧠 モデル学習
-          </h1>
-          <p className="text-gray-400">機械学習モデルのトレーニング</p>
-        </div>
+    <AdminOnly>
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 py-8 px-4">
+        <div className="max-w-6xl mx-auto">
+          {/* ヘッダー */}
+          <div className="mb-8 text-center">
+            <h1 className="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-cyan-400 mb-2">
+              🧠 モデル学習 (管理者専用)
+            </h1>
+            <p className="text-gray-400">機械学習モデルのトレーニング</p>
+          </div>
 
         {/* Ultimate版切り替え */}
         <div className="mb-6 p-6 bg-slate-800/50 backdrop-blur-sm rounded-xl border border-blue-500/30">
@@ -316,5 +318,6 @@ export default function TrainPage() {
         </div>
       </div>
     </div>
+    </AdminOnly>
   )
 }

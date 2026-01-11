@@ -11,6 +11,7 @@ export type Profile = {
   id: string
   email: string
   full_name?: string
+  role: 'admin' | 'user' // admin: 開発者（データ収集・モデル作成可）, user: 一般ユーザー（閲覧・予測のみ）
   subscription_tier: 'free' | 'premium'
   stripe_customer_id?: string
   stripe_subscription_id?: string

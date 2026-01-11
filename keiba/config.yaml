@@ -1,0 +1,33 @@
+# ---- netkeiba scraping settings ----
+# IMPORTANT: Use responsibly. Keep request volume LOW and respect netkeiba Terms/ToS.
+# Default values are intentionally conservative.
+netkeiba:
+  base: "https://race.netkeiba.com"
+  race_list_url: "/top/race_list.html?kaisai_date={date}"   # date: YYYYMMDD
+  race_list_sub_url: "/top/race_list_sub.html?kaisai_date={date}&kaisai_place={place}"  # optional
+  shutuba_url: "/race/shutuba.html?race_id={race_id}"
+  result_url: "/race/result.html?race_id={race_id}"
+
+  # polite scraping
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  timeout_sec: 30
+  min_sleep_sec: 2.5  # スクレイピング間隔（秒）
+  max_sleep_sec: 3.5  # スクレイピング間隔（秒）
+  max_pages_per_run: 100
+
+  # caching
+  cache_html: true
+
+# ---- storage ----
+storage:
+  data_dir: "./data"
+  sqlite_path: "./data/keiba.db"
+  html_dir: "./data/html"
+  logs_dir: "./data/logs"
+  models_dir: "./data/models"
+
+# ---- training ----
+training:
+  target: "win"         # win: fin=1, place3: fin<=3
+  test_split_days: 120  # time-split: last N days for validation (simple baseline)
+  random_seed: 42

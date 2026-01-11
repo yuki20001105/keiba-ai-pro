@@ -7,12 +7,14 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useUltimateMode } from '@/contexts/UltimateModeContext'
 import InstallPWA from '@/components/InstallPWA'
+import { useUserRole } from '@/hooks/useUserRole'
 
 export default function HomePage() {
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
   const router = useRouter()
   const { ultimateMode, setUltimateMode } = useUltimateMode()
+  const { isAdmin } = useUserRole()
 
   useEffect(() => {
     if (!supabase) {
@@ -121,23 +123,27 @@ export default function HomePage() {
         
         {/* Main Navigation */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 max-w-6xl mx-auto">
-          {/* データ取得 */}
-          <Link href="/data-collection" className="group">
-            <div className="bg-slate-800/50 backdrop-blur-sm border border-blue-500/30 rounded-xl p-8 hover:border-blue-400 transition-all hover:shadow-lg hover:shadow-blue-500/20">
-              <div className="text-5xl mb-4">📊</div>
-              <h3 className="text-2xl font-bold text-white mb-2">データ取得</h3>
-              <p className="text-blue-200">レース情報を自動取得</p>
-            </div>
-          </Link>
+          {/* データ取得 (管理者のみ) */}
+          {isAdmin && (
+            <Link href="/data-collection" className="group">
+              <div className="bg-slate-800/50 backdrop-blur-sm border border-blue-500/30 rounded-xl p-8 hover:border-blue-400 transition-all hover:shadow-lg hover:shadow-blue-500/20">
+                <div className="text-5xl mb-4">📊</div>
+                <h3 className="text-2xl font-bold text-white mb-2">データ取得</h3>
+                <p className="text-blue-200">レース情報を自動取得</p>
+              </div>
+            </Link>
+          )}
 
-          {/* 学習 */}
-          <Link href="/train" className="group">
-            <div className="bg-slate-800/50 backdrop-blur-sm border border-blue-500/30 rounded-xl p-8 hover:border-blue-400 transition-all hover:shadow-lg hover:shadow-blue-500/20">
-              <div className="text-5xl mb-4">🧠</div>
-              <h3 className="text-2xl font-bold text-white mb-2">モデル学習</h3>
-              <p className="text-blue-200">AIモデルをトレーニング</p>
-            </div>
-          </Link>
+          {/* 学習 (管理者のみ) */}
+          {isAdmin && (
+            <Link href="/train" className="group">
+              <div className="bg-slate-800/50 backdrop-blur-sm border border-blue-500/30 rounded-xl p-8 hover:border-blue-400 transition-all hover:shadow-lg hover:shadow-blue-500/20">
+                <div className="text-5xl mb-4">🧠</div>
+                <h3 className="text-2xl font-bold text-white mb-2">モデル学習</h3>
+                <p className="text-blue-200">AIモデルをトレーニング</p>
+              </div>
+            </Link>
+          )}
 
           {/* 予測 */}
           <Link href="/predict-batch" className="group">

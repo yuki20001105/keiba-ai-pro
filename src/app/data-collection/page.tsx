@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
 import { useUltimateMode } from '@/contexts/UltimateModeContext'
+import { AdminOnly } from '@/components/AdminOnly'
 
 export default function DataCollectionPage() {
   const router = useRouter()
@@ -302,17 +303,18 @@ export default function DataCollectionPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50">
-      <header className="bg-white/80 backdrop-blur-md shadow-sm sticky top-0 z-50">
-        <div className="container mx-auto px-4 py-4 flex justify-between items-center">
-          <h1 className="text-2xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
-            📥 データ取得
-          </h1>
-          <a href="/dashboard" className="text-indigo-600 hover:text-indigo-700 font-medium transition flex items-center">
-            ← ダッシュボード
-          </a>
-        </div>
-      </header>
+    <AdminOnly>
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50">
+        <header className="bg-white/80 backdrop-blur-md shadow-sm sticky top-0 z-50">
+          <div className="container mx-auto px-4 py-4 flex justify-between items-center">
+            <h1 className="text-2xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
+              📥 データ取得 (管理者専用)
+            </h1>
+            <a href="/dashboard" className="text-indigo-600 hover:text-indigo-700 font-medium transition flex items-center">
+              ← ダッシュボード
+            </a>
+          </div>
+        </header>
 
       <main className="container mx-auto px-4 py-8">
         {/* 期間指定一括取得 */}
@@ -611,5 +613,6 @@ export default function DataCollectionPage() {
         )}
       </main>
     </div>
+    </AdminOnly>
   )
 }
