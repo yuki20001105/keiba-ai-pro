@@ -8,6 +8,7 @@ import { useUltimateMode } from '@/contexts/UltimateModeContext'
 export default function DataCollectionPage() {
   const router = useRouter()
   const [loading, setLoading] = useState(false)
+  const [authLoading, setAuthLoading] = useState(true)
   const [userId, setUserId] = useState<string | null>(null)
   const { ultimateMode, setUltimateMode, includeDetails, setIncludeDetails } = useUltimateMode()
 
@@ -37,8 +38,10 @@ export default function DataCollectionPage() {
 
   useEffect(() => {
     const getUser = async () => {
+      setAuthLoading(true)
       if (!supabase) {
         console.error('Supabase client not initialized')
+        setAuthLoading(false)
         return
       }
       const { data: { user } } = await supabase.auth.getUser()
@@ -47,7 +50,8 @@ export default function DataCollectionPage() {
         return
       }
       setUserId(user.id)
-      loadStats()
+      await loadStats()
+      setAuthLoading(false)
     }
     getUser()
   }, [router, ultimateMode])

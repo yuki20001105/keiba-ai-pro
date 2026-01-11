@@ -8,6 +8,7 @@ import { useUltimateMode } from '@/contexts/UltimateModeContext'
 export default function TrainPage() {
   const router = useRouter()
   const [loading, setLoading] = useState(false)
+  const [authLoading, setAuthLoading] = useState(true)
   const [userId, setUserId] = useState<string | null>(null)
   const { ultimateMode, setUltimateMode } = useUltimateMode()
 
@@ -28,8 +29,10 @@ export default function TrainPage() {
 
   useEffect(() => {
     const getUser = async () => {
+      setAuthLoading(true)
       if (!supabase) {
         console.error('Supabase client not initialized')
+        setAuthLoading(false)
         return
       }
       const { data: { user } } = await supabase.auth.getUser()
@@ -38,7 +41,8 @@ export default function TrainPage() {
         return
       }
       setUserId(user.id)
-      loadModels()
+      await loadModels()
+      setAuthLoading(false)
     }
     getUser()
   }, [router, ultimateMode])
