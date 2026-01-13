@@ -6,7 +6,7 @@
 3. 並列取得可能な構造（ThreadPoolExecutor使用）
 4. レート制限の最適化
 """
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import undetected_chromedriver as uc
@@ -37,7 +37,7 @@ _trainer_cache = {}
 _cache_lock = threading.Lock()
 
 class RateLimiter:
-    def __init__(self, min_interval=2.0, max_interval=4.0):  # 高速化: 3-7秒 → 2-4秒
+    def __init__(self, min_interval=1.5, max_interval=2.5):  # 高速化v2: バランス型 1.5-2.5秒
         self.min_interval = min_interval
         self.max_interval = max_interval
         self.last_request_time: Optional[datetime] = None
@@ -64,7 +64,7 @@ class RateLimiter:
             self.request_count += 1
             return wait_time
 
-rate_limiter = RateLimiter(min_interval=2.0, max_interval=4.0)
+rate_limiter = RateLimiter(min_interval=1.5, max_interval=2.5)
 
 _driver: Optional[uc.Chrome] = None
 _driver_lock = threading.Lock()
@@ -79,6 +79,20 @@ def get_driver():
             options.add_argument('--disable-dev-shm-usage')
             _driver = uc.Chrome(options=options, use_subprocess=False, version_main=None)
         return _driver
+
+
+def get_optimized_driver():
+    """最適化されたChromeDriverを取得（使い捨て用）"""
+    options = uc.ChromeOptions()
+    options.add_argument('--disable-blink-features=AutomationControlled')
+    options.add_argument('--headless')
+    options.add_argument('--disable-gpu')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--blink-settings=imagesEnabled=false')
+    options.page_load_timeout = 10
+    driver = uc.Chrome(options=options, use_subprocess=False, version_main=None)
+    return driver
 
 
 def extract_id_from_url(url: str, id_type: str) -> str:
@@ -480,6 +494,12 @@ class EnhancedScrapeRequest(BaseModel):
     include_shutuba: bool = False  # 出馬表情報も取得するか
     save_to_db: bool = False
 
+class BatchPeriodRequest(BaseModel):
+    start_date: str  # YYYYMMDD形式
+    end_date: str    # YYYYMMDD形式
+    include_details: bool = False
+    max_workers: int = 7  # 最適値
+
 class EnhancedScrapeResponse(BaseModel):
     success: bool
     race_info: dict = {}
@@ -620,56 +640,56 @@ def scrape_race_ultimate(request: EnhancedScrapeRequest):
                         horse_data['horse_url'] = ''
                         horse_data['horse_id'] = ''
                     
-                # 性齢をパース
-                sex_age_raw = cols[4].text.strip()
-                horse_data['sex_age'] = sex_age_raw  # 元の文字列も保持
-                sex_age_parsed = parse_sex_age(sex_age_raw)
-                horse_data['sex'] = sex_age_parsed['sex']
-                horse_data['age'] = sex_age_parsed['age']
-                
-                horse_data['jockey_weight'] = cols[5].text.strip()
-                
-                # 騎手とID
-                jockey_link = cols[6].find('a')
-                if jockey_link:
-                    horse_data['jockey_name'] = jockey_link.text.strip()
-                    horse_data['jockey_url'] = jockey_link.get('href', '')
-                    horse_data['jockey_id'] = extract_id_from_url(horse_data['jockey_url'], 'jockey')
-                else:
-                    horse_data['jockey_name'] = cols[6].text.strip()
-                    horse_data['jockey_url'] = ''
-                    horse_data['jockey_id'] = ''
-                
-                horse_data['finish_time'] = cols[7].text.strip()
-                horse_data['margin'] = cols[8].text.strip()
-                horse_data['popularity'] = cols[9].text.strip()
-                horse_data['odds'] = cols[10].text.strip()
-                horse_data['last_3f'] = cols[11].text.strip()
-                
-                # コーナー通過順をパース
-                corner_pos_raw = cols[12].text.strip()
-                horse_data['corner_positions'] = corner_pos_raw  # 元の文字列も保持
-                horse_data['corner_positions_list'] = parse_corner_positions(corner_pos_raw)
-                
-                # 調教師とID
-                trainer_link = cols[13].find('a')
-                if trainer_link:
-                    horse_data['trainer_name'] = trainer_link.text.strip()
-                    horse_data['trainer_url'] = trainer_link.get('href', '')
-                    horse_data['trainer_id'] = extract_id_from_url(horse_data['trainer_url'], 'trainer')
-                else:
-                    horse_data['trainer_name'] = cols[13].text.strip()
-                    horse_data['trainer_url'] = ''
-                    horse_data['trainer_id'] = ''
-                
-                # 馬体重を分解
-                weight_str = cols[14].text.strip()
-                horse_data['weight'] = weight_str
-                weight_parsed = parse_weight_change(weight_str)
-                horse_data['weight_kg'] = weight_parsed['weight_kg']
-                horse_data['weight_change'] = weight_parsed['weight_change']
-                
-                results.append(horse_data)
+                    # 性齢をパース
+                    sex_age_raw = cols[4].text.strip()
+                    horse_data['sex_age'] = sex_age_raw  # 元の文字列も保持
+                    sex_age_parsed = parse_sex_age(sex_age_raw)
+                    horse_data['sex'] = sex_age_parsed['sex']
+                    horse_data['age'] = sex_age_parsed['age']
+                    
+                    horse_data['jockey_weight'] = cols[5].text.strip()
+                    
+                    # 騎手とID
+                    jockey_link = cols[6].find('a')
+                    if jockey_link:
+                        horse_data['jockey_name'] = jockey_link.text.strip()
+                        horse_data['jockey_url'] = jockey_link.get('href', '')
+                        horse_data['jockey_id'] = extract_id_from_url(horse_data['jockey_url'], 'jockey')
+                    else:
+                        horse_data['jockey_name'] = cols[6].text.strip()
+                        horse_data['jockey_url'] = ''
+                        horse_data['jockey_id'] = ''
+                    
+                    horse_data['finish_time'] = cols[7].text.strip()
+                    horse_data['margin'] = cols[8].text.strip()
+                    horse_data['popularity'] = cols[9].text.strip()
+                    horse_data['odds'] = cols[10].text.strip()
+                    horse_data['last_3f'] = cols[11].text.strip()
+                    
+                    # コーナー通過順をパース
+                    corner_pos_raw = cols[12].text.strip()
+                    horse_data['corner_positions'] = corner_pos_raw  # 元の文字列も保持
+                    horse_data['corner_positions_list'] = parse_corner_positions(corner_pos_raw)
+                    
+                    # 調教師とID
+                    trainer_link = cols[13].find('a')
+                    if trainer_link:
+                        horse_data['trainer_name'] = trainer_link.text.strip()
+                        horse_data['trainer_url'] = trainer_link.get('href', '')
+                        horse_data['trainer_id'] = extract_id_from_url(horse_data['trainer_url'], 'trainer')
+                    else:
+                        horse_data['trainer_name'] = cols[13].text.strip()
+                        horse_data['trainer_url'] = ''
+                        horse_data['trainer_id'] = ''
+                    
+                    # 馬体重を分解
+                    weight_str = cols[14].text.strip()
+                    horse_data['weight'] = weight_str
+                    weight_parsed = parse_weight_change(weight_str)
+                    horse_data['weight_kg'] = weight_parsed['weight_kg']
+                    horse_data['weight_change'] = weight_parsed['weight_change']
+                    
+                    results.append(horse_data)
             
             print(f"✓ 結果テーブル: {len(results)}頭")
         
@@ -887,6 +907,148 @@ def clear_cache():
         _trainer_cache.clear()
     return {"message": "Cache cleared"}
 
+
+@app.post("/scrape/ultimate/batch_by_period")
+async def scrape_ultimate_batch_by_period(request: BatchPeriodRequest):
+    """
+    期間指定で複数レースを並列スクレイピング（Ultimate版）
+    Phase 1: レースID収集
+    Phase 2: 並列スクレイピング
+    """
+    from datetime import datetime, timedelta
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    
+    try:
+        # 日付パース
+        start = datetime.strptime(request.start_date, "%Y%m%d")
+        end = datetime.strptime(request.end_date, "%Y%m%d")
+        include_details = request.include_details
+        max_workers = request.max_workers
+        
+        print(f"\n{'='*60}")
+        print(f"【期間バッチスクレイピング開始】")
+        print(f"期間: {start.strftime('%Y/%m/%d')} → {end.strftime('%Y/%m/%d')}")
+        print(f"詳細取得: {'ON' if include_details else 'OFF'}")
+        print(f"並列数: {max_workers}")
+        print(f"{'='*60}\n")
+        
+        # Phase 1: レースID収集（シンプル版）
+        print("\n【Phase 1: レースID収集】")
+        all_race_ids = []
+        
+        # 日付リストを作成
+        date_list = []
+        current = start
+        while current <= end:
+            date_list.append(current)
+            current += timedelta(days=1)
+        
+        print(f"対象日数: {len(date_list)}日\n")
+        
+        # 順次処理（並列化しない）
+        for date_obj in date_list:
+            date_str = date_obj.strftime("%Y%m%d")
+            try:
+                race_list_url = f"https://race.netkeiba.com/top/race_list.html?kaisai_date={date_str}"
+                driver = get_optimized_driver()
+                driver.get(race_list_url)
+                time.sleep(1)  # 1秒待機
+                
+                html = driver.page_source
+                soup = BeautifulSoup(html, 'html.parser')
+                driver.quit()
+                
+                all_links = soup.find_all('a', href=True)
+                found_count = 0
+                for link in all_links:
+                    href = link.get('href', '')
+                    if 'race_id=' in href:
+                        match = re.search(r'race_id=(\d{12})', href)
+                        if match:
+                            race_id = match.group(1)
+                            if race_id not in all_race_ids:
+                                all_race_ids.append(race_id)
+                                found_count += 1
+                
+                if found_count > 0:
+                    print(f"📅 {date_obj.strftime('%Y/%m/%d')}: ✓ {found_count}レース発見")
+                else:
+                    print(f"📅 {date_obj.strftime('%Y/%m/%d')}: - レース開催なし")
+                    
+            except Exception as e:
+                print(f"📅 {date_obj.strftime('%Y/%m/%d')}: ✗ エラー - {e}")
+        
+        print(f"\n✓ Phase 1完了: 合計 {len(all_race_ids)} レース発見")
+        
+        if not all_race_ids:
+            return {
+                "status": "success",
+                "message": "指定期間にレースが見つかりませんでした",
+                "results": {},
+                "stats": {"total": 0, "success": 0, "failed": 0}
+            }
+        
+        # Phase 2: 並列スクレイピング
+        print(f"\n{'='*60}")
+        print(f"【Phase 2: 並列スクレイピング】")
+        print(f"並列数: {max_workers}")
+        print(f"{'='*60}\n")
+        
+        results = {}
+        failed = []
+        
+        def scrape_one(race_id: str, index: int, total: int):
+            try:
+                print(f"\n[{index}/{total}] レースID: {race_id}")
+                result = scrape_race_ultimate(
+                    EnhancedScrapeRequest(
+                        race_id=race_id,
+                        include_details=include_details
+                    )
+                )
+                # Pydanticモデルを辞書に変換
+                result_dict = result.model_dump() if hasattr(result, 'model_dump') else result.dict()
+                print(f"  ✓ 完了: {len(result_dict.get('results', []))}頭")
+                return race_id, result_dict, None
+            except Exception as e:
+                print(f"  ✗ エラー: {e}")
+                return race_id, None, str(e)
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [
+                executor.submit(scrape_one, race_id, i+1, len(all_race_ids))
+                for i, race_id in enumerate(all_race_ids)
+            ]
+            
+            for future in as_completed(futures):
+                race_id, result, error = future.result()
+                if error:
+                    failed.append({"race_id": race_id, "error": error})
+                else:
+                    results[race_id] = result
+        
+        print(f"\n{'='*60}")
+        print(f"【完了】")
+        print(f"成功: {len(results)}/{len(all_race_ids)}")
+        print(f"失敗: {len(failed)}")
+        print(f"{'='*60}\n")
+        
+        return {
+            "status": "success",
+            "results": results,
+            "stats": {
+                "total": len(all_race_ids),
+                "success": len(results),
+                "failed": len(failed)
+            },
+            "failed": failed
+        }
+        
+    except Exception as e:
+        print(f"\n✗ 致命的エラー: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
