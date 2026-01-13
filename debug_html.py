@@ -1,43 +1,69 @@
+#!/usr/bin/env python3
 """
-netkeiba.comのHTML構造を確認
+HTMLパーサーデバッグ - 実際のHTML構造を確認
 """
 import requests
+from bs4 import BeautifulSoup
 
-USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-BASE_URL = 'https://race.netkeiba.com'
 
-# テスト用の日付（2024年12月1日）
-test_date = '20241201'
-url = f'{BASE_URL}/top/race_list.html?kaisai_date={test_date}'
-
-print(f"URL: {url}")
-print(f"\nHTML取得中...")
-
-response = requests.get(url, headers={'User-Agent': USER_AGENT}, timeout=30)
-print(f"ステータス: {response.status_code}")
-
-if response.status_code == 200:
-    html = response.text
+def debug_html_structure(race_id: str):
+    """HTMLの構造を詳細に調査"""
+    url = f'https://race.netkeiba.com/race/result.html?race_id={race_id}'
     
-    # 保存して確認
-    with open('netkeiba_html_debug.html', 'w', encoding='utf-8') as f:
-        f.write(html)
+    print(f"URL: {url}\n")
     
-    print(f"✅ HTMLを netkeiba_html_debug.html に保存しました")
-    print(f"HTML長さ: {len(html)} 文字")
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
     
-    # キーワード検索
-    print(f"\n【キーワード検索】")
-    keywords = ['RaceList', 'race_id', 'RaceData', 'RaceTitle', 'RaceNum']
-    for keyword in keywords:
-        count = html.count(keyword)
-        print(f"  '{keyword}': {count}回出現")
+    response = requests.get(url, headers=headers, timeout=10)
+    soup = BeautifulSoup(response.text, 'html.parser')
     
-    # race_id を含む行を抽出
-    print(f"\n【race_id を含む行（最初の5行）】")
-    lines_with_race_id = [line.strip() for line in html.split('\n') if 'race_id=' in line]
-    for i, line in enumerate(lines_with_race_id[:5], 1):
-        print(f"{i}. {line[:150]}...")
-        
-else:
-    print(f"❌ エラー: HTTP {response.status_code}")
+    print("="*80)
+    print("【HTML構造調査】")
+    print("="*80)
+    
+    # レース名のクラスをすべて探す
+    print("\n1. レース名候補:")
+    for tag in ['h1', 'h2', 'div']:
+        candidates = soup.find_all(tag, class_=True)
+        for c in candidates[:5]:  # 最初の5つだけ
+            if c.get('class'):
+                class_str = ' '.join(c.get('class', []))
+                text = c.text.strip()[:50]
+                if text:
+                    print(f"   <{tag} class='{class_str}'>{text}...")
+    
+    # テーブルのクラスをすべて探す
+    print("\n2. テーブルクラス:")
+    tables = soup.find_all('table')
+    for i, table in enumerate(tables[:5], 1):
+        table_class = ' '.join(table.get('class', ['no-class']))
+        rows = len(table.find_all('tr'))
+        print(f"   テーブル{i}: class='{table_class}', rows={rows}")
+    
+    # divでRaceを含むクラスを探す
+    print("\n3. 'Race'を含むdiv:")
+    race_divs = soup.find_all('div', class_=lambda x: x and 'race' in str(x).lower())
+    for div in race_divs[:10]:
+        class_str = ' '.join(div.get('class', []))
+        text = div.text.strip()[:50]
+        print(f"   class='{class_str}': {text}")
+    
+    # メタデータ
+    print("\n4. ページタイトル:")
+    title = soup.find('title')
+    if title:
+        print(f"   {title.text.strip()}")
+    
+    # 実際のHTMLの一部を保存
+    print("\n5. HTMLサンプル（最初の500文字）:")
+    print(response.text[:500])
+    
+    return soup
+
+
+if __name__ == "__main__":
+    import sys
+    race_id = sys.argv[1] if len(sys.argv) > 1 else "202406010101"
+    debug_html_structure(race_id)

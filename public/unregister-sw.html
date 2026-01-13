@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Service Worker削除ツール</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      max-width: 600px;
+      margin: 50px auto;
+      padding: 20px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+    }
+    .container {
+      background: white;
+      border-radius: 12px;
+      padding: 30px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+    }
+    h1 {
+      color: #333;
+      margin-bottom: 20px;
+    }
+    .status {
+      padding: 15px;
+      border-radius: 8px;
+      margin: 15px 0;
+      font-weight: 500;
+    }
+    .success {
+      background: #d4edda;
+      color: #155724;
+      border: 1px solid #c3e6cb;
+    }
+    .info {
+      background: #d1ecf1;
+      color: #0c5460;
+      border: 1px solid #bee5eb;
+    }
+    .warning {
+      background: #fff3cd;
+      color: #856404;
+      border: 1px solid #ffeaa7;
+    }
+    button {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 6px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      width: 100%;
+      margin-top: 20px;
+    }
+    button:hover {
+      opacity: 0.9;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .list {
+      background: #f8f9fa;
+      padding: 15px;
+      border-radius: 6px;
+      margin: 15px 0;
+    }
+    .list-item {
+      padding: 8px 0;
+      border-bottom: 1px solid #dee2e6;
+    }
+    .list-item:last-child {
+      border-bottom: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🔧 Service Worker削除ツール</h1>
+    <p>開発環境でのエラーを解消するため、登録済みのService Workerを削除します。</p>
+    
+    <div id="status" class="status info">
+      確認中...
+    </div>
+    
+    <div id="workers"></div>
+    
+    <button id="unregisterBtn" disabled>Service Workerを削除</button>
+    <button id="clearCacheBtn" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">キャッシュを削除</button>
+    <button id="reloadBtn" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);">ページをリロード</button>
+  </div>
+
+  <script>
+    const statusDiv = document.getElementById('status');
+    const workersDiv = document.getElementById('workers');
+    const unregisterBtn = document.getElementById('unregisterBtn');
+    const clearCacheBtn = document.getElementById('clearCacheBtn');
+    const reloadBtn = document.getElementById('reloadBtn');
+
+    async function checkServiceWorkers() {
+      if (!('serviceWorker' in navigator)) {
+        statusDiv.className = 'status warning';
+        statusDiv.textContent = '❌ このブラウザはService Workerに対応していません';
+        return;
+      }
+
+      try {
+        const registrations = await navigator.serviceWorker.getRegistrations();
+        
+        if (registrations.length === 0) {
+          statusDiv.className = 'status success';
+          statusDiv.textContent = '✅ Service Workerは登録されていません（正常）';
+          workersDiv.innerHTML = '';
+          unregisterBtn.disabled = true;
+        } else {
+          statusDiv.className = 'status warning';
+          statusDiv.textContent = `⚠️ ${registrations.length}個のService Workerが登録されています`;
+          
+          workersDiv.innerHTML = '<div class="list"><h3>登録済みService Worker:</h3>';
+          registrations.forEach((reg, index) => {
+            workersDiv.innerHTML += `<div class="list-item">${index + 1}. ${reg.scope}</div>`;
+          });
+          workersDiv.innerHTML += '</div>';
+          
+          unregisterBtn.disabled = false;
+        }
+      } catch (error) {
+        statusDiv.className = 'status warning';
+        statusDiv.textContent = '❌ エラー: ' + error.message;
+      }
+    }
+
+    unregisterBtn.addEventListener('click', async () => {
+      unregisterBtn.disabled = true;
+      unregisterBtn.textContent = '削除中...';
+      
+      try {
+        const registrations = await navigator.serviceWorker.getRegistrations();
+        
+        for (const registration of registrations) {
+          await registration.unregister();
+        }
+        
+        statusDiv.className = 'status success';
+        statusDiv.textContent = '✅ すべてのService Workerを削除しました！';
+        workersDiv.innerHTML = '';
+        unregisterBtn.textContent = 'Service Workerを削除';
+        
+      } catch (error) {
+        statusDiv.className = 'status warning';
+        statusDiv.textContent = '❌ 削除エラー: ' + error.message;
+        unregisterBtn.textContent = 'Service Workerを削除';
+        unregisterBtn.disabled = false;
+      }
+    });
+
+    clearCacheBtn.addEventListener('click', async () => {
+      clearCacheBtn.disabled = true;
+      clearCacheBtn.textContent = '削除中...';
+      
+      try {
+        const cacheNames = await caches.keys();
+        
+        for (const cacheName of cacheNames) {
+          await caches.delete(cacheName);
+        }
+        
+        const tempStatus = document.createElement('div');
+        tempStatus.className = 'status success';
+        tempStatus.textContent = `✅ ${cacheNames.length}個のキャッシュを削除しました！`;
+        statusDiv.insertAdjacentElement('afterend', tempStatus);
+        
+        clearCacheBtn.textContent = 'キャッシュを削除';
+        clearCacheBtn.disabled = false;
+        
+      } catch (error) {
+        alert('キャッシュ削除エラー: ' + error.message);
+        clearCacheBtn.textContent = 'キャッシュを削除';
+        clearCacheBtn.disabled = false;
+      }
+    });
+
+    reloadBtn.addEventListener('click', () => {
+      window.location.reload();
+    });
+
+    // 初期チェック
+    checkServiceWorkers();
+    
+    // 5秒ごとに再チェック
+    setInterval(checkServiceWorkers, 5000);
+  </script>
+</body>
+</html>

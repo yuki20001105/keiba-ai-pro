@@ -70,6 +70,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Ultimate版のレスポンス構造に対応
+    console.log('Race info from scraper:', JSON.stringify(scrapeData.race_info, null, 2))
     const raceInfo = scrapeData.race_info || {}
     const raceTitle = raceInfo.race_name || ''
     const distance = raceInfo.distance || 0
@@ -89,13 +90,16 @@ export async function POST(request: NextRequest) {
       field_condition: fieldCondition,
     }
     
-    if (userId && userId !== '00000000-0000-0000-0000-000000000000') {
-      raceRecord.user_id = userId
-    }
+    // user_idは常に含める（デフォルトUUIDでも）
+    raceRecord.user_id = userId
     
+    console.log('Upserting race:', raceRecord)
     const { error: raceError } = await supabase.from('races').upsert(raceRecord)
 
-    if (raceError) throw raceError
+    if (raceError) {
+      console.error('Race upsert error:', raceError)
+      throw new Error(`Race upsert failed: ${raceError.message}`)
+    }
 
     // スクレイピングサービスから取得した結果を保存
     const scrapedResults = scrapeData.results || []
@@ -119,20 +123,26 @@ export async function POST(request: NextRequest) {
           finish_time: result.finish_time || '',
           odds: parseFloat(result.odds) || 0,
           popularity: parseInt(result.popularity) || 0,
-          ...(userId && userId !== '00000000-0000-0000-0000-000000000000' ? { user_id: userId } : {})
+          user_id: userId
         }
       })
 
+      console.log('Inserting results:', results.length)
       const { error: resultsError } = await supabase
-        .from('results')
+        .from('race_results')
         .insert(results)
 
-      if (resultsError) throw resultsError
+      if (resultsError) {
+        console.error('Results insert error:', resultsError)
+        throw new Error(`Results insert failed: ${resultsError.message}`)
+      }
     }
 
     // 払い戻し情報を保存
     const scrapedPayouts = scrapeData.payouts || []
     if (scrapedPayouts.length > 0) {
+      console.log('Raw payout data sample:', JSON.stringify(scrapedPayouts[0], null, 2))
+      
       const payouts = scrapedPayouts.map((payout: any) => {
         // 金額から「円」と「,」を削除して数値に変換
         const amountStr = (payout.amount || payout.payout || '0').toString()
@@ -143,15 +153,20 @@ export async function POST(request: NextRequest) {
           bet_type: payout.type || payout.bet_type || '',
           combination: payout.numbers || payout.combination || '',
           payout: amount,
-          ...(userId && userId !== '00000000-0000-0000-0000-000000000000' ? { user_id: userId } : {})
+          user_id: userId
         }
       })
 
+      console.log('Inserting payouts:', payouts.length)
+      console.log('Parsed payout sample:', payouts[0])
       const { error: payoutsError } = await supabase
         .from('race_payouts')
         .insert(payouts)
 
-      if (payoutsError) throw payoutsError
+      if (payoutsError) {
+        console.error('Payouts insert error:', payoutsError)
+        throw new Error(`Payouts insert failed: ${payoutsError.message}`)
+      }
     }
 
     return NextResponse.json({
@@ -162,9 +177,34 @@ export async function POST(request: NextRequest) {
     })
   } catch (error: any) {
     console.error('Scrape race error:', error)
+    console.error('Error stack:', error.stack)
+    
+    // エラータイプに応じた適切なステータスコードとメッセージを返す
+    let status = 500
+    let errorMessage = 'レース結果の取得に失敗しました'
+    
+    if (error.message?.includes('Supabase')) {
+      status = 503
+      errorMessage = 'データベース接続エラー'
+    } else if (error.message?.includes('Scraping service')) {
+      status = 503
+      errorMessage = 'スクレイピングサービス接続エラー'
+    } else if (error.message?.includes('fetch')) {
+      status = 502
+      errorMessage = 'ネットワークエラー'
+    } else if (error.message?.includes('upsert') || error.message?.includes('insert')) {
+      status = 422
+      errorMessage = 'データ保存エラー'
+    }
+    
     return NextResponse.json(
-      { error: 'レース結果の取得に失敗しました: ' + error.message },
-      { status: 500 }
+      { 
+        success: false,
+        error: errorMessage,
+        message: error.message || String(error),
+        details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      },
+      { status }
     )
   }
 }

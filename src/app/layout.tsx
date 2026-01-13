@@ -44,10 +44,10 @@ export default function RootLayout({
           {children}
         </UltimateModeProvider>
         
-        {/* Service Worker登録 */}
+        {/* Service Worker登録（本番環境のみ） */}
         <Script id="register-sw" strategy="afterInteractive">
           {`
-            if ('serviceWorker' in navigator) {
+            if ('serviceWorker' in navigator && window.location.hostname !== 'localhost') {
               window.addEventListener('load', function() {
                 navigator.serviceWorker.register('/sw.js').then(
                   function(registration) {

@@ -1,0 +1,42 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Start FastAPI",
+      "type": "shell",
+      "command": "${workspaceFolder}/python-api/.venv/Scripts/python.exe",
+      "args": ["main.py"],
+      "options": {
+        "cwd": "${workspaceFolder}/python-api"
+      },
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "servers"
+      }
+    },
+    {
+      "label": "Start Next.js",
+      "type": "shell",
+      "command": "npm",
+      "args": ["run", "dev"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "servers"
+      }
+    },
+    {
+      "label": "Start All Servers",
+      "dependsOn": ["Start FastAPI", "Start Next.js"],
+      "problemMatcher": []
+    }
+  ]
+}

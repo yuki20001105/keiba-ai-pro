@@ -1,12 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
-import * as cheerio from 'cheerio'
-
-const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-const BASE_URL = 'https://race.netkeiba.com'
 
 /**
- * 特定日のレースID一覧を取得（効率化版）
- * レース一覧ページから直接race_idを抽出
+ * 特定日のレースID一覧を取得
+ * Python APIのスクレイピングサービス（undetected_chromedriver使用）を利用
  */
 export async function POST(request: NextRequest) {
   try {
@@ -21,43 +17,41 @@ export async function POST(request: NextRequest) {
 
     // YYYY-MM-DD → YYYYMMDD
     const dateStr = date.replace(/-/g, '')
-    const url = `${BASE_URL}/top/race_list.html?kaisai_date=${dateStr}`
+    
+    console.log(`[race-list] Fetching race list for date: ${dateStr}`)
 
-    const response = await fetch(url, {
+    // Python APIの/scrape/race_listエンドポイントを呼び出し
+    // このAPIはundetected_chromedriverを使用してJavaScript動的生成に対応
+    const response = await fetch('http://localhost:8001/scrape/race_list', {
+      method: 'POST',
       headers: {
-        'User-Agent': USER_AGENT,
+        'Content-Type': 'application/json',
       },
+      body: JSON.stringify({
+        kaisai_date: dateStr
+      })
     })
 
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`)
+      const errorText = await response.text()
+      console.error(`[race-list] Python API error: ${response.status} - ${errorText}`)
+      throw new Error(`Python API returned ${response.status}`)
     }
 
-    const html = await response.text()
-    const $ = cheerio.load(html)
+    const data = await response.json()
+    
+    console.log(`[race-list] Response from Python API:`, data)
+    console.log(`[race-list] Found ${data.races?.length || 0} races for ${dateStr}`)
 
-    const raceIds: string[] = []
-
-    // HTMLから全てのrace_idリンクを抽出
-    $('a[href*="race_id="]').each((_, element) => {
-      const href = $(element).attr('href')
-      if (href) {
-        const match = href.match(/race_id=(\d+)/)
-        if (match) {
-          const raceId = match[1]
-          if (!raceIds.includes(raceId)) {
-            raceIds.push(raceId)
-          }
-        }
-      }
-    })
+    // Python APIのレスポンス形式: { races: [...], source: "scraping" }
+    const raceIds = data.races || []
 
     return NextResponse.json({ 
       raceIds,
       count: raceIds.length 
     })
   } catch (error: any) {
-    console.error('Netkeiba race list error:', error)
+    console.error('[race-list] Error:', error)
     return NextResponse.json(
       { error: 'レースIDの取得に失敗しました: ' + error.message },
       { status: 500 }

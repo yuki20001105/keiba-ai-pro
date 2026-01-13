@@ -21,9 +21,41 @@ self.addEventListener('install', (event) => {
 
 // フェッチ時（ネットワーク優先、フォールバックでキャッシュ）
 self.addEventListener('fetch', (event) => {
+  // POSTやHEADリクエストはキャッシュしない
+  if (event.request.method !== 'GET') {
+    return;  // Service Workerをバイパス
+  }
+
+  // 開発環境の特殊なリクエストはキャッシュしない
+  const url = new URL(event.request.url);
+  
+  // Next.js HMR、WebSocket、開発サーバーのリクエストは無視
+  if (url.pathname.includes('/_next/webpack-hmr') ||
+      url.pathname.includes('/_next/static/webpack') ||
+      url.protocol === 'ws:' ||
+      url.protocol === 'wss:') {
+    return;  // Service Workerをバイパス
+  }
+
+  // APIリクエストはキャッシュしない
+  if (url.pathname.includes('/api/')) {
+    return;  // Service Workerをバイパス
+  }
+
+  // 外部リクエスト（localhost:8001等）はキャッシュしない
+  if (url.hostname !== self.location.hostname) {
+    return;  // Service Workerをバイパス
+  }
+
+  // 静的ファイルのみキャッシュ戦略を適用
   event.respondWith(
     fetch(event.request)
       .then((response) => {
+        // 成功したレスポンスのみキャッシュ
+        if (!response || response.status !== 200 || response.type === 'error') {
+          return response;
+        }
+
         // レスポンスをクローンしてキャッシュに保存
         const responseToCache = response.clone();
         caches.open(CACHE_NAME)
@@ -33,7 +65,7 @@ self.addEventListener('fetch', (event) => {
         return response;
       })
       .catch(() => {
-        // ネットワークエラー時はキャッシュから返す
+        // ネットワークエラー時はキャッシュから返す（オフライン対応）
         return caches.match(event.request);
       })
   );

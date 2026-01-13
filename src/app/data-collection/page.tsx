@@ -280,21 +280,27 @@ export default function DataCollectionPage() {
       
       // タイムアウト設定（10分）- 完全モード対応
       const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 600000) // 10分
+      const timeoutId = setTimeout(() => {
+        console.log('⏱️ タイムアウト（10分）に達しました')
+        controller.abort()
+      }, 600000) // 10分
       
-      const response = await fetch('http://localhost:8001/scrape/ultimate/batch_by_period', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          start_date: startDateStr,
-          end_date: endDateStr,
-          include_details: includeDetails,
-          max_workers: batchMaxWorkers
-        }),
-        signal: controller.signal
-      })
-      
-      clearTimeout(timeoutId)
+      let response: Response
+      try {
+        response = await fetch('http://localhost:8001/scrape/ultimate/batch_by_period', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            start_date: startDateStr,
+            end_date: endDateStr,
+            include_details: includeDetails,
+            max_workers: batchMaxWorkers
+          }),
+          signal: controller.signal
+        })
+      } finally {
+        clearTimeout(timeoutId) // 成功・失敗に関わらずタイムアウトをクリア
+      }
       
       clearInterval(phase1Timer)
       
@@ -378,7 +384,12 @@ export default function DataCollectionPage() {
       console.error('エラーメッセージ:', error.message)
       console.error('エラースタック:', error.stack)
       
-      alert(`期間バッチ取得エラー: ${error.message}`)
+      // AbortErrorの場合はタイムアウトメッセージを表示
+      if (error.name === 'AbortError') {
+        alert('処理がタイムアウトしました（10分）。\n期間を短くするか、後でもう一度お試しください。')
+      } else {
+        alert(`期間バッチ取得エラー: ${error.message}`)
+      }
       console.error('Period batch scrape error:', error)
       setBatchProgress({ current: 0, total: 100, message: '❌ エラーが発生しました' })
     } finally {

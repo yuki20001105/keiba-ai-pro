@@ -77,6 +77,7 @@ def get_driver():
             options.headless = False
             options.add_argument('--no-sandbox')
             options.add_argument('--disable-dev-shm-usage')
+            options.add_argument('--log-level=3')  # ログ抑制のみ追加
             _driver = uc.Chrome(options=options, use_subprocess=False, version_main=None)
         return _driver
 
@@ -84,12 +85,16 @@ def get_driver():
 def get_optimized_driver():
     """最適化されたChromeDriverを取得（使い捨て用）"""
     options = uc.ChromeOptions()
+    
+    # 高速化フラグ（記事推奨）
+    options.add_argument('--headless=new')  # 新型ヘッドレス（20-40%高速化）
     options.add_argument('--disable-blink-features=AutomationControlled')
-    options.add_argument('--headless')
-    options.add_argument('--disable-gpu')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--blink-settings=imagesEnabled=false')
+    options.add_argument('--disable-gpu')
+    options.add_argument('--blink-settings=imagesEnabled=false')  # 画像のみブロック
+    options.add_argument('--log-level=3')  # ログ抑制
+    
     options.page_load_timeout = 10
     driver = uc.Chrome(options=options, use_subprocess=False, version_main=None)
     return driver

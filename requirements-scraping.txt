@@ -1,3 +1,0 @@
-# Selenium用の依存パッケージ
-selenium
-webdriver-manager

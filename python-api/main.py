@@ -23,10 +23,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "keiba"))
 
 from keiba_ai.config import load_config
 from keiba_ai.db import connect, init_db, load_training_frame
+from keiba_ai.db_ultimate_loader import load_ultimate_training_frame
 from keiba_ai.train import train as train_model_internal
 from keiba_ai.feature_engineering import add_derived_features
 from keiba_ai.lightgbm_feature_optimizer import prepare_for_lightgbm_ultimate
 from keiba_ai.optuna_optimizer import OptunaLightGBMOptimizer
+from keiba_ai.ultimate_features import UltimateFeatureCalculator
+from keiba_ai.optuna_all_models import optimize_model
 
 # 購入推奨システムをインポート
 from betting_strategy import BettingRecommender, ProBettingStrategy, RaceAnalyzer
@@ -355,13 +358,16 @@ async def train_model(request: TrainRequest):
                 # config.yamlがあるディレクトリ（keiba/）からの相対パスとして解決
                 db_path = CONFIG_PATH.parent / db_path
         
-        # データベース接続
-        con = connect(db_path)
-        init_db(con)
-        
-        # 訓練データ読み込み
-        df = load_training_frame(con)
-        con.close()
+        # 訓練データ読み込み（Ultimate版と通常版で分岐）
+        if request.ultimate_mode:
+            # Ultimate版: JSON形式のデータを読み込み
+            df = load_ultimate_training_frame(db_path)
+        else:
+            # 通常版: SQLiteから読み込み
+            con = connect(db_path)
+            init_db(con)
+            df = load_training_frame(con)
+            con.close()
         
         print(f"DEBUG: Loaded {len(df)} rows from database")
         print(f"DEBUG: Database path: {db_path}")
@@ -374,6 +380,13 @@ async def train_model(request: TrainRequest):
         
         # 派生特徴量を追加
         df = add_derived_features(df, full_history_df=df)
+        
+        # Ultimate版特徴量を追加（オプション）
+        if request.ultimate_mode:
+            print("\n=== Ultimate版特徴量計算 ===")
+            calculator = UltimateFeatureCalculator(str(db_path))
+            df = calculator.add_ultimate_features(df)
+            print(f"  合計特徴量: {len(df.columns)}列")
         
         # ターゲット作成
         from keiba_ai.train import _make_target
@@ -518,98 +531,133 @@ async def train_model(request: TrainRequest):
                     print("\n=== Optunaハイパーパラメータ最適化 ===")
                     logger.info("[TRACE-009] コンソール出力完了")
                     
-                    # categorical_featuresを整数インデックスに変換
-                    categorical_indices = []
-                    for cat_feature in categorical_features:
-                        logger.info(f"[TRACE-012] 処理中: {cat_feature}")
-                        if cat_feature in X.columns:
-                            idx = X.columns.get_loc(cat_feature)
-                            categorical_indices.append(idx)
-                            logger.info(f"[TRACE-013] {cat_feature} のインデックス: {idx}")
+                    # モデルタイプに応じて最適化を実行
+                    model_type_map = {
+                        "logistic_regression": "logistic",
+                        "random_forest": "random_forest",
+                        "gradient_boosting": "gradient_boosting"
+                    }
                     
-                    logger.info(f"[TRACE-014] カテゴリカル特徴量変換完了: {len(categorical_indices)}個")
-                    print(f"  カテゴリカル特徴量: {len(categorical_indices)}個")
-                    print(f"  インデックス: {categorical_indices}")
+                    if request.model_type == "lightgbm":
+                        # LightGBM（既存の処理）
+                        # categorical_featuresを整数インデックスに変換
+                        categorical_indices = []
+                        for cat_feature in categorical_features:
+                            logger.info(f"[TRACE-012] 処理中: {cat_feature}")
+                            if cat_feature in X.columns:
+                                idx = X.columns.get_loc(cat_feature)
+                                categorical_indices.append(idx)
+                                logger.info(f"[TRACE-013] {cat_feature} のインデックス: {idx}")
+                        
+                        logger.info(f"[TRACE-014] カテゴリカル特徴量変換完了: {len(categorical_indices)}個")
+                        print(f"  カテゴリカル特徴量: {len(categorical_indices)}個")
+                        print(f"  インデックス: {categorical_indices}")
+                        
+                        logger.info("[TRACE-015] OptunaLightGBMOptimizer初期化開始")
+                        print(f"[DEBUG] OptunaLightGBMOptimizerを初期化します...")
+                        optuna_optimizer = OptunaLightGBMOptimizer(
+                            n_trials=request.optuna_trials,
+                            cv_folds=request.cv_folds,
+                            random_state=42,
+                            timeout=300  # 5分タイムアウト
+                        )
+                        logger.info("[TRACE-016] OptunaLightGBMOptimizer初期化完了")
+                        
+                        logger.info(f"[TRACE-017] 最適化開始準備: trials={request.optuna_trials}, folds={request.cv_folds}")
+                        print(f"[DEBUG] 最適化を開始します（試行数: {request.optuna_trials}, CVフォールド: {request.cv_folds}）...")
+                        # 最適パラメータを探索（ndarrayで渡す）
+                        logger.info("[TRACE-018] データ変換開始")
+                        X_array = X.values if hasattr(X, 'values') else X
+                        y_array = y.values if hasattr(y, 'values') else y
+                        logger.info(f"[TRACE-019] データ変換完了: X={X_array.shape}, y={len(y_array)}")
+                        print(f"[DEBUG] データサイズ: X={X_array.shape}, y={len(y_array)}")
+                        
+                        logger.info("[TRACE-020] ★★★ optimize()メソッド呼び出し直前 ★★★")
+                        print("[DEBUG] ★★★ optimize()呼び出し直前 ★★★")
+                        print(f"[DEBUG] X_array type: {type(X_array)}, shape: {X_array.shape}")
+                        print(f"[DEBUG] y_array type: {type(y_array)}, shape: {y_array.shape}")
+                        print(f"[DEBUG] categorical_indices: {categorical_indices}")
+                        
+                        print("[DEBUG] optimize()メソッド実行開始...")
+                        best_params, best_optuna_score = optuna_optimizer.optimize(
+                            X_array, y_array,  # 全データで最適化
+                            categorical_features=categorical_indices
+                        )
+                        print(f"[DEBUG] optimize()メソッド実行完了")
+                        print(f"[DEBUG] best_score={best_optuna_score:.4f}")
+                        logger.info("[TRACE-021] ★★★ optimize()メソッド呼び出し完了 ★★★")
+                        logger.info(f"[TRACE-022] best_score={best_optuna_score:.4f}")
+                        
+                        print(f"[DEBUG] Optuna最適化完了。最良スコア: {best_optuna_score:.4f}")
+                        
+                        # 最適パラメータで再学習
+                        print("\n  最適パラメータで再学習中...")
+                        optimized_params = optuna_optimizer.get_best_model_params()
+                        
+                        train_data = lgb.Dataset(
+                            X_train, y_train,
+                            categorical_feature=categorical_indices
+                        )
+                        test_data = lgb.Dataset(
+                            X_test, y_test,
+                            categorical_feature=categorical_indices,
+                            reference=train_data
+                        )
+                        
+                        model = lgb.train(
+                            optimized_params,
+                            train_data,
+                            valid_sets=[train_data, test_data],
+                            valid_names=['train', 'test'],
+                            callbacks=[lgb.early_stopping(stopping_rounds=50, verbose=False)]
+                        )
+                        
+                        # 再評価
+                        y_pred_proba = model.predict(X_test)
+                        auc = roc_auc_score(y_test, y_pred_proba)
+                        logloss = log_loss(y_test, y_pred_proba)
+                        
+                        # クロスバリデーション
+                        cv_result = lgb.cv(
+                            optimized_params,
+                            train_data,
+                            num_boost_round=optimized_params.get('n_estimators', 100),
+                            nfold=request.cv_folds,
+                            stratified=True,
+                            return_cvbooster=False,
+                            callbacks=[lgb.early_stopping(stopping_rounds=50, verbose=False)]
+                        )
+                        cv_auc_mean = cv_result['valid auc-mean'][-1]
+                        cv_auc_std = cv_result['valid auc-stdv'][-1]
+                        
+                        print(f"✓ Optuna最適化完了: AUC={auc:.4f}, CV AUC={cv_auc_mean:.4f}±{cv_auc_std:.4f}")
+                        print(f"  Optunaスコア改善: {best_optuna_score:.4f}")
                     
-                    logger.info("[TRACE-015] OptunaLightGBMOptimizer初期化開始")
-                    print(f"[DEBUG] OptunaLightGBMOptimizerを初期化します...")
-                    optuna_optimizer = OptunaLightGBMOptimizer(
-                        n_trials=request.optuna_trials,
-                        cv_folds=request.cv_folds,
-                        random_state=42,
-                        timeout=300  # 5分タイムアウト
-                    )
-                    logger.info("[TRACE-016] OptunaLightGBMOptimizer初期化完了")
-                    
-                    logger.info(f"[TRACE-017] 最適化開始準備: trials={request.optuna_trials}, folds={request.cv_folds}")
-                    print(f"[DEBUG] 最適化を開始します（試行数: {request.optuna_trials}, CVフォールド: {request.cv_folds}）...")
-                    # 最適パラメータを探索（ndarrayで渡す）
-                    logger.info("[TRACE-018] データ変換開始")
-                    X_array = X.values if hasattr(X, 'values') else X
-                    y_array = y.values if hasattr(y, 'values') else y
-                    logger.info(f"[TRACE-019] データ変換完了: X={X_array.shape}, y={len(y_array)}")
-                    print(f"[DEBUG] データサイズ: X={X_array.shape}, y={len(y_array)}")
-                    
-                    logger.info("[TRACE-020] ★★★ optimize()メソッド呼び出し直前 ★★★")
-                    print("[DEBUG] ★★★ optimize()呼び出し直前 ★★★")
-                    print(f"[DEBUG] X_array type: {type(X_array)}, shape: {X_array.shape}")
-                    print(f"[DEBUG] y_array type: {type(y_array)}, shape: {y_array.shape}")
-                    print(f"[DEBUG] categorical_indices: {categorical_indices}")
-                    
-                    print("[DEBUG] optimize()メソッド実行開始...")
-                    best_params, best_optuna_score = optuna_optimizer.optimize(
-                        X_array, y_array,  # 全データで最適化
-                        categorical_features=categorical_indices
-                    )
-                    print(f"[DEBUG] optimize()メソッド実行完了")
-                    print(f"[DEBUG] best_score={best_optuna_score:.4f}")
-                    logger.info("[TRACE-021] ★★★ optimize()メソッド呼び出し完了 ★★★")
-                    logger.info(f"[TRACE-022] best_score={best_optuna_score:.4f}")
-                    
-                    print(f"[DEBUG] Optuna最適化完了。最良スコア: {best_optuna_score:.4f}")
-                    
-                    # 最適パラメータで再学習
-                    print("\n  最適パラメータで再学習中...")
-                    optimized_params = optuna_optimizer.get_best_model_params()
-                    
-                    train_data = lgb.Dataset(
-                        X_train, y_train,
-                        categorical_feature=categorical_indices
-                    )
-                    test_data = lgb.Dataset(
-                        X_test, y_test,
-                        categorical_feature=categorical_indices,
-                        reference=train_data
-                    )
-                    
-                    model = lgb.train(
-                        optimized_params,
-                        train_data,
-                        valid_sets=[train_data, test_data],
-                        valid_names=['train', 'test'],
-                        callbacks=[lgb.early_stopping(stopping_rounds=50, verbose=False)]
-                    )
-                    
-                    # 再評価
-                    y_pred_proba = model.predict(X_test)
-                    auc = roc_auc_score(y_test, y_pred_proba)
-                    logloss = log_loss(y_test, y_pred_proba)
-                    
-                    # クロスバリデーション
-                    cv_result = lgb.cv(
-                        optimized_params,
-                        train_data,
-                        num_boost_round=optimized_params.get('n_estimators', 100),
-                        nfold=request.cv_folds,
-                        stratified=True,
-                        return_cvbooster=False,
-                        callbacks=[lgb.early_stopping(stopping_rounds=50, verbose=False)]
-                    )
-                    cv_auc_mean = cv_result['valid auc-mean'][-1]
-                    cv_auc_std = cv_result['valid auc-stdv'][-1]
-                    
-                    print(f"✓ Optuna最適化完了: AUC={auc:.4f}, CV AUC={cv_auc_mean:.4f}±{cv_auc_std:.4f}")
-                    print(f"  Optunaスコア改善: {best_optuna_score:.4f}")
+                    elif request.model_type in model_type_map:
+                        # LogisticRegression, RandomForest, GradientBoosting（新実装）
+                        logger.info(f"[TRACE-NEW] {request.model_type}の最適化開始")
+                        print(f"\n  {request.model_type}の最適化を開始...")
+                        
+                        # データ変換
+                        X_array = X.values if hasattr(X, 'values') else X
+                        y_array = y.values if hasattr(y, 'values') else y
+                        
+                        # 最適化実行
+                        optuna_model_type = model_type_map[request.model_type]
+                        best_params = optimize_model(
+                            optuna_model_type,
+                            X_array,
+                            y_array,
+                            n_trials=request.optuna_trials,
+                            timeout=300
+                        )
+                        
+                        logger.info(f"[TRACE-NEW] 最適化完了: {best_params}")
+                        print(f"✓ Optuna最適化完了: {request.model_type}")
+                        print(f"  最適パラメータ: {best_params}")
+                        
+                        # 最適パラメータでモデル再構築（後続の処理で使用）
+                        # ※ 標準モードの処理に任せる
                 
                 except Exception as e:
                     logger.error("[TRACE-ERROR] ★★★ 例外発生 ★★★")

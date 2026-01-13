@@ -13,8 +13,8 @@ export default function TrainPage() {
   const [userId, setUserId] = useState<string | null>(null)
   const { ultimateMode, setUltimateMode } = useUltimateMode()
 
-  // 環境チェック
-  const isProduction = process.env.NODE_ENV === 'production' && typeof window !== 'undefined' && window.location.hostname !== 'localhost'
+  // 環境チェック（ブラウザ環境でも安全）
+  const isProduction = typeof window !== 'undefined' && window.location.hostname !== 'localhost'
 
   // 学習設定
   const [target, setTarget] = useState<'win' | 'place3'>('win')
@@ -78,7 +78,7 @@ export default function TrainPage() {
           cv_folds: cvFolds,
           use_sqlite: true,
           use_optimizer: modelType === 'lightgbm',
-          use_optuna: useOptuna && modelType === 'lightgbm',
+          use_optuna: useOptuna, // 全モデル対応（LR, RF, GB, LightGBM）
           optuna_trials: optunaTrials,
           optuna_timeout: optunaTimeout,
           ultimate_mode: ultimateMode
