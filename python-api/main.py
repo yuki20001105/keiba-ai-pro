@@ -4,7 +4,7 @@ Streamlit版の機械学習パイプラインをREST APIとして提供
 【3-3. 一括予測・購入推奨】機能を完全実装
 """
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
@@ -2735,15 +2735,15 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
     """バックグラウンドでスクレイピングを実行しジョブストアを更新する"""
     import aiohttp
     import time as _time
-
-    job = _scrape_jobs[job_id]
-    job["status"] = "running"
-
-    ULTIMATE_DB = Path(__file__).parent.parent / "keiba" / "data" / "keiba_ultimate.db"
-    start_time = _time.time()
+    from datetime import datetime as _dt, timedelta as _td
 
     try:
-        from datetime import datetime as _dt, timedelta as _td
+        job = _scrape_jobs[job_id]
+        job["status"] = "running"
+
+        ULTIMATE_DB = Path(__file__).parent.parent / "keiba" / "data" / "keiba_ultimate.db"
+        start_time = _time.time()
+
         def _parse(s):
             for fmt in ("%Y%m%d", "%Y/%m/%d", "%Y-%m-%d"):
                 try:
@@ -2819,13 +2819,14 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
             "message": f"{saved_races}レース・{saved_horses}頭のデータを収集しました",
         }
     except Exception as e:
-        job["status"] = "error"
-        job["error"] = str(e)
         logger.error(f"スクレイピングジョブ失敗 {job_id}: {e}")
+        if job_id in _scrape_jobs:
+            _scrape_jobs[job_id]["status"] = "error"
+            _scrape_jobs[job_id]["error"] = str(e)
 
 
 @app.post("/api/scrape/start")
-async def scrape_start(request: ScrapeRequest, background_tasks: BackgroundTasks):
+async def scrape_start(request: ScrapeRequest):
     """スクレイピングをバックグラウンドで開始し、即座に job_id を返す（Vercel プロキシ対応）"""
     job_id = str(uuid.uuid4())[:8]
     _scrape_jobs[job_id] = {
@@ -2834,7 +2835,7 @@ async def scrape_start(request: ScrapeRequest, background_tasks: BackgroundTasks
         "result": None,
         "error": None,
     }
-    background_tasks.add_task(_run_scrape_job, job_id, request.start_date, request.end_date)
+    asyncio.create_task(_run_scrape_job(job_id, request.start_date, request.end_date))
     return {"job_id": job_id, "status": "queued"}
 
 
