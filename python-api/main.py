@@ -35,6 +35,23 @@ from keiba_ai.optuna_all_models import optimize_model
 # 購入推奨システムをインポート
 from betting_strategy import BettingRecommender
 
+# Supabase クライアント（永続化）
+try:
+    from supabase_client import (
+        save_race_to_supabase,
+        get_data_stats_from_supabase,
+        sync_supabase_to_sqlite,
+        upload_model_to_supabase,
+        download_model_from_supabase,
+        list_models_from_supabase,
+        delete_model_from_supabase,
+        get_client as get_supabase_client,
+    )
+    SUPABASE_ENABLED = True
+except ImportError:
+    SUPABASE_ENABLED = False
+    logger.warning("supabase_client.py が見つかりません: Supabase 連携無効")
+
 # ログ設定
 log_file = Path(__file__).parent.parent / "optuna_debug.log"
 logging.basicConfig(
@@ -221,6 +238,20 @@ def get_latest_model() -> Optional[Path]:
     return max(models, key=lambda p: p.stat().st_mtime)
 
 
+def _ensure_model_local(model_id: str) -> Optional[Path]:
+    """モデルをローカルで探し、なければ Supabase からダウンロード"""
+    # ローカルで探す
+    local_files = list(MODELS_DIR.glob(f"*{model_id}*.joblib"))
+    if local_files:
+        return local_files[0]
+    # Supabase からダウンロード
+    if SUPABASE_ENABLED and get_supabase_client():
+        dest = MODELS_DIR / f"model_{model_id}.joblib"
+        if download_model_from_supabase(model_id, dest):
+            return dest
+    return None
+
+
 def load_model_bundle(model_path: Path) -> Dict[str, Any]:
     """モデルバンドルをロード"""
     try:
@@ -273,6 +304,10 @@ async def get_data_stats(ultimate: bool = False):
         ultimate: Ultimate版DBを使用するかどうか
     """
     try:
+        # Supabase が使える場合はそちらから取得
+        if SUPABASE_ENABLED and get_supabase_client():
+            return get_data_stats_from_supabase()
+
         # データベースパスを決定
         if ultimate:
             db_path = (
@@ -405,6 +440,13 @@ async def train_model(request: TrainRequest):
             if not db_path.is_absolute():
                 # config.yamlがあるディレクトリ（keiba/）からの相対パスとして解決
                 db_path = CONFIG_PATH.parent / db_path
+
+        # Supabase からローカル SQLite に同期（Render 環境での永続化対応）
+        if SUPABASE_ENABLED and get_supabase_client() and request.ultimate_mode:
+            logger.info("Supabase からデータを同期中...")
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            synced = sync_supabase_to_sqlite(db_path)
+            logger.info(f"同期完了: {synced} レース")
 
         # 訓練データ読み込み（Ultimate版と通常版で分岐）
         if request.ultimate_mode:
@@ -970,6 +1012,23 @@ async def train_model(request: TrainRequest):
 
         joblib.dump(bundle, model_path)
 
+        # Supabase Storage にモデルをアップロード
+        if SUPABASE_ENABLED and get_supabase_client():
+            upload_model_to_supabase(model_path, model_id, {
+                "model_id": model_id,
+                "target": request.target,
+                "model_type": request.model_type,
+                "ultimate_mode": request.ultimate_mode,
+                "use_optimizer": request.use_optimizer,
+                "auc": float(auc),
+                "cv_auc_mean": float(cv_auc_mean),
+                "data_count": len(df),
+                "race_count": int(df["race_id"].nunique()) if "race_id" in df.columns else 0,
+                "created_at": model_id,
+                "training_date_from": _get_actual_date_from(df, request.training_date_from),
+                "training_date_to": _get_actual_date_to(df, request.training_date_to),
+            })
+
         end_time = datetime.now()
         training_time = (end_time - start_time).total_seconds()
 
@@ -1014,20 +1073,26 @@ async def predict(request: PredictRequest):
     try:
         # モデルをロード
         if request.model_id:
-            model_files = list(MODELS_DIR.glob(f"*{request.model_id}*.joblib"))
-            if not model_files:
+            model_path = _ensure_model_local(request.model_id)
+            if not model_path:
                 raise HTTPException(
                     status_code=404,
                     detail=f"モデル {request.model_id} が見つかりません",
                 )
-            model_path = model_files[0]
         else:
             model_path = get_latest_model()
             if model_path is None:
-                raise HTTPException(
-                    status_code=404,
-                    detail="学習済みモデルが見つかりません。先に学習を実行してください。",
-                )
+                # Supabase から最新モデルを取得
+                if SUPABASE_ENABLED and get_supabase_client():
+                    sb_models = list_models_from_supabase()
+                    if sb_models:
+                        latest_id = sb_models[0]["model_id"]
+                        model_path = _ensure_model_local(latest_id)
+                if model_path is None:
+                    raise HTTPException(
+                        status_code=404,
+                        detail="学習済みモデルが見つかりません。先に学習を実行してください。",
+                    )
 
         # モデルバンドルをロード
         bundle = load_model_bundle(model_path)
@@ -1125,6 +1190,16 @@ async def list_models(ultimate: bool = False):
         ultimate: Ultimate版モデルのみフィルタリング
     """
     try:
+        # Supabase からモデル一覧を取得
+        if SUPABASE_ENABLED and get_supabase_client():
+            sb_models = list_models_from_supabase()
+            if ultimate:
+                sb_models = [m for m in sb_models if m.get("ultimate_mode", False)]
+            else:
+                sb_models = [m for m in sb_models if not m.get("ultimate_mode", False)]
+            return {"models": sb_models, "count": len(sb_models)}
+
+        # ローカルファイルから取得（フォールバック）
         models = []
         for model_path in MODELS_DIR.glob("model_*.joblib"):
             try:
@@ -1169,13 +1244,18 @@ async def list_models(ultimate: bool = False):
 async def delete_model(model_id: str):
     """保存済みモデルを削除"""
     try:
-        model_files = list(MODELS_DIR.glob(f"*{model_id}*.joblib"))
-        if not model_files:
-            raise HTTPException(status_code=404, detail=f"モデル {model_id} が見つかりません")
         deleted = []
+        # Supabase から削除
+        if SUPABASE_ENABLED and get_supabase_client():
+            delete_model_from_supabase(model_id)
+            deleted.append(f"supabase:{model_id}")
+        # ローカルからも削除
+        model_files = list(MODELS_DIR.glob(f"*{model_id}*.joblib"))
         for f in model_files:
             f.unlink()
             deleted.append(f.name)
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"モデル {model_id} が見つかりません")
         return {"success": True, "deleted": deleted}
     except HTTPException:
         raise
@@ -1219,31 +1299,35 @@ async def analyze_race(request: AnalyzeRaceRequest):
 
         # モデルロード（Ultimate版モデルを優先）
         if request.model_id:
-            model_files = list(MODELS_DIR.glob(f"model_*_{request.model_id}*.joblib"))
-            if not model_files:
+            model_path = _ensure_model_local(request.model_id)
+            if not model_path:
                 raise HTTPException(
                     status_code=404,
                     detail=f"モデル {request.model_id} が見つかりません",
                 )
-            model_path = model_files[0]
         else:
-            # Ultimate版モデルを優先的に検索
-            if request.ultimate_mode:
-                ultimate_models = [
-                    p for p in MODELS_DIR.glob("model_*_ultimate.joblib")
-                ]
-                if ultimate_models:
-                    model_path = max(ultimate_models, key=lambda p: p.stat().st_mtime)
+            # Supabase からモデル一覧を取得して最新を使う
+            if SUPABASE_ENABLED and get_supabase_client():
+                sb_models = list_models_from_supabase()
+                if request.ultimate_mode:
+                    sb_models = [m for m in sb_models if m.get("ultimate_mode", False)]
+                if sb_models:
+                    model_path = _ensure_model_local(sb_models[0]["model_id"])
                 else:
-                    raise HTTPException(
-                        status_code=404, detail="Ultimate版モデルが見つかりません"
-                    )
+                    model_path = None
             else:
-                model_path = get_latest_model()
-                if not model_path:
-                    raise HTTPException(
-                        status_code=404, detail="訓練済みモデルが見つかりません"
-                    )
+                model_path = None
+            # ローカルフォールバック
+            if not model_path:
+                if request.ultimate_mode:
+                    ultimate_models = [p for p in MODELS_DIR.glob("model_*_ultimate.joblib")]
+                    model_path = max(ultimate_models, key=lambda p: p.stat().st_mtime) if ultimate_models else None
+                else:
+                    model_path = get_latest_model()
+            if not model_path:
+                raise HTTPException(
+                    status_code=404, detail="訓練済みモデルが見つかりません"
+                )
 
         bundle = load_model_bundle(model_path)
         model = bundle["model"]
@@ -2472,7 +2556,13 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '') -> d
 
 
 def _save_race_to_ultimate_db(race_data: dict, db_path: Path, overwrite: bool = True):
-    """スクレイピング結果を keiba_ultimate.db の両テーブルに保存"""
+    """スクレイピング結果を keiba_ultimate.db と Supabase の両方に保存"""
+    # Supabase に保存
+    if SUPABASE_ENABLED:
+        try:
+            save_race_to_supabase(race_data)
+        except Exception as e:
+            logger.warning(f"Supabase 保存失敗（ローカル保存は継続）: {e}")
     import json as json_mod
     import sqlite3
 

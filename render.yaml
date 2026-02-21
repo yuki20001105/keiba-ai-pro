@@ -10,6 +10,8 @@ services:
       - key: PYTHON_VERSION
         value: "3.11.11"
       - key: ALLOWED_ORIGINS
-        value: https://keiba-ai-pro.vercel.app,http://localhost:3000
-      - key: PYTHONUNBUFFERED
+        value: https://keiba-ai-pro.vercel.app,http://localhost:3000        - key: SUPABASE_URL
+          value: https://grfwkutcsavqicaimssn.supabase.co
+        - key: SUPABASE_SERVICE_KEY
+          sync: false      - key: PYTHONUNBUFFERED
         value: "1"
