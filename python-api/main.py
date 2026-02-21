@@ -46,6 +46,8 @@ try:
         list_models_from_supabase,
         delete_model_from_supabase,
         get_client as get_supabase_client,
+        get_pedigree_cache,
+        save_pedigree_cache,
     )
     SUPABASE_ENABLED = True
 except ImportError:
@@ -2369,6 +2371,52 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '') -> Optio
     }
 
 
+def _parse_blood_table(blood_table, result: dict):
+    """blood_table (BeautifulSoup Tag) から sire/dam/damsire を抽出する共通ロジック。
+    複数の HTML パターン（class 名・行構造の違い）に対応する。"""
+    trs = blood_table.find_all('tr')
+    if not trs:
+        return
+
+    half = len(trs) // 2  # 5世代=32行 → half=16
+
+    # ---- 父 (sire) ----
+    # パターン1: tr[0] の最初の td の <a>
+    sire_tds = trs[0].find_all('td')
+    if sire_tds:
+        a = sire_tds[0].find('a')
+        if a:
+            result['sire'] = a.get_text(strip=True)
+
+    # パターン2: class="b_ml" のセルから取得
+    if not result.get('sire'):
+        for td in blood_table.find_all('td', class_=lambda c: c and 'b_ml' in c):
+            a = td.find('a')
+            if a:
+                result['sire'] = a.get_text(strip=True)
+                break
+
+    # ---- 母 (dam) / 母の父 (damsire) ----
+    if half > 0 and len(trs) > half:
+        dam_tds = trs[half].find_all('td')
+        if dam_tds:
+            a = dam_tds[0].find('a')
+            if a:
+                result['dam'] = a.get_text(strip=True)
+        if len(dam_tds) >= 2:
+            a = dam_tds[1].find('a')
+            if a:
+                result['damsire'] = a.get_text(strip=True)
+
+    # パターン2: class="b_fml" から母を取得
+    if not result.get('dam'):
+        for td in blood_table.find_all('td', class_=lambda c: c and 'b_fml' in c):
+            a = td.find('a')
+            if a:
+                result['dam'] = a.get_text(strip=True)
+                break
+
+
 async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '') -> dict:
     """
     馬の詳細ページをスクレイピング。
@@ -2460,45 +2508,73 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '') -> d
                 elif '産地' in key and 'horse_breeding_farm' not in result:
                     result['horse_breeding_farm'] = val
 
-    # ===== 血統（専用ページから取得） =====
-    # 新HTML構造: blood_table は AJAX で動的ロードされるため、
-    # 別ページ /horse/ped/{horse_id}/ から取得する
-    ped_url = f"https://db.netkeiba.com/horse/ped/{horse_id}/"
-    try:
-        await asyncio.sleep(0.4)
-        async with session.get(ped_url) as ped_resp:
-            if ped_resp.status == 200:
-                ped_content = await ped_resp.read()
-                ped_html = ped_content.decode('euc-jp', errors='ignore')
-                ped_soup = BeautifulSoup(ped_html, 'html.parser')
+    # ===== 血統 (sire / dam / damsire) =====
+    # 優先順位: 1) Supabase キャッシュ  2) メインページの blood_table
+    #           3) ped 専用ページ（最大3回リトライ）  4) キャッシュ保存
 
-                # blood_table の取得
-                # 現在のnetkeiba HTML: class=b_ml (父), class=b_fml (母)
-                # tr[0]の1番目td = 父(sire), tr[half]の1番目td = 母(dam), 2番目td = 母の父(damsire)
-                blood_table = ped_soup.find('table', class_='blood_table')
-                if blood_table:
-                    trs = blood_table.find_all('tr')
-                    half = len(trs) // 2  # 5世代=32行 → half=16
-                    # sire: tr[0]の最初のtd
-                    if trs:
-                        sire_tds = trs[0].find_all('td')
-                        if sire_tds:
-                            a = sire_tds[0].find('a')
-                            if a:
-                                result['sire'] = a.get_text(strip=True)
-                    # dam / damsire: tr[half]のtd
-                    if half > 0 and len(trs) > half:
-                        dam_tds = trs[half].find_all('td')
-                        if dam_tds:
-                            a = dam_tds[0].find('a')
-                            if a:
-                                result['dam'] = a.get_text(strip=True)
-                        if len(dam_tds) >= 2:
-                            a = dam_tds[1].find('a')
-                            if a:
-                                result['damsire'] = a.get_text(strip=True)
-    except Exception as e:
-        logger.debug(f"血統ページ取得失敗 {horse_id}: {e}")
+    pedigree_cached = False
+
+    # 1. Supabase キャッシュ確認（HTTP リクエスト不要）
+    if SUPABASE_ENABLED and horse_id:
+        try:
+            cached = get_pedigree_cache(horse_id)
+            if cached:
+                result['sire'] = cached.get('sire') or ''
+                result['dam'] = cached.get('dam') or ''
+                result['damsire'] = cached.get('damsire') or ''
+                pedigree_cached = True
+                logger.debug(f"血統キャッシュヒット: {horse_id} sire={result['sire']}")
+        except Exception as _e:
+            logger.debug(f"血統キャッシュ確認失敗: {_e}")
+
+    if not pedigree_cached:
+        # 2. メインページの blood_table を確認（追加 HTTP リクエスト不要）
+        blood_table_main = soup.find('table', class_='blood_table')
+        if blood_table_main:
+            _parse_blood_table(blood_table_main, result)
+            logger.debug(f"メインページ血統: {horse_id} sire={result.get('sire')}")
+
+        # 3. sire が未取得なら ped 専用ページから取得（最大3回リトライ）
+        if not result.get('sire'):
+            ped_url = f"https://db.netkeiba.com/horse/ped/{horse_id}/"
+            for attempt in range(3):
+                try:
+                    wait = 0.4 + attempt * 1.5
+                    await asyncio.sleep(wait)
+                    async with session.get(ped_url) as ped_resp:
+                        if ped_resp.status == 200:
+                            ped_content = await ped_resp.read()
+                            ped_html = ped_content.decode('euc-jp', errors='ignore')
+                            ped_soup = BeautifulSoup(ped_html, 'html.parser')
+                            blood_table = ped_soup.find('table', class_='blood_table')
+                            if blood_table:
+                                _parse_blood_table(blood_table, result)
+                                if result.get('sire'):
+                                    logger.debug(f"ped ページ血統取得成功: {horse_id} 試行{attempt+1} sire={result['sire']}")
+                                    break
+                        elif ped_resp.status == 429:
+                            # レート制限: 待機してリトライ
+                            await asyncio.sleep(5.0 + attempt * 3.0)
+                            continue
+                        else:
+                            logger.debug(f"ped ページ HTTP {ped_resp.status}: {horse_id}")
+                            break
+                except Exception as _e:
+                    logger.debug(f"ped ページ取得失敗 試行{attempt+1} {horse_id}: {_e}")
+                    if attempt < 2:
+                        await asyncio.sleep(2.0 ** attempt)
+
+        # 4. 結果をキャッシュ保存（失敗時も空で保存して再取得を防ぐ）
+        if SUPABASE_ENABLED and horse_id:
+            try:
+                save_pedigree_cache(
+                    horse_id,
+                    result.get('sire', ''),
+                    result.get('dam', ''),
+                    result.get('damsire', ''),
+                )
+            except Exception:
+                pass
 
     # ===== 過去レース結果（最新2走）: /horse/result/{horse_id}/ から取得 =====
     result_url = f"https://db.netkeiba.com/horse/result/{horse_id}/"

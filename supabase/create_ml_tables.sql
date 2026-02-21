@@ -30,3 +30,14 @@ CREATE TABLE IF NOT EXISTS model_metadata (
 ALTER TABLE races_ultimate        DISABLE ROW LEVEL SECURITY;
 ALTER TABLE race_results_ultimate DISABLE ROW LEVEL SECURITY;
 ALTER TABLE model_metadata        DISABLE ROW LEVEL SECURITY;
+
+-- 血統キャッシュテーブル
+-- 同じ馬の血統を毎回スクレイピングしなくて済むようにする
+CREATE TABLE IF NOT EXISTS horse_pedigree (
+    horse_id   TEXT PRIMARY KEY,
+    sire       TEXT,           -- 父
+    dam        TEXT,           -- 母
+    damsire    TEXT,           -- 母の父
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+ALTER TABLE horse_pedigree DISABLE ROW LEVEL SECURITY;

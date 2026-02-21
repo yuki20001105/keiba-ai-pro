@@ -271,3 +271,47 @@ def delete_model_from_supabase(model_id: str) -> bool:
     except Exception as e:
         logger.error(f"モデル削除失敗 {model_id}: {e}")
         return False
+
+
+# ─────────────────────────────────────────
+# 血統キャッシュ（horse_pedigree テーブル）
+# 同じ馬の血統を毎回スクレイピングしなくて済むようにする
+# ─────────────────────────────────────────
+
+def get_pedigree_cache(horse_id: str) -> Optional[dict]:
+    """馬の血統 (sire/dam/damsire) を Supabase キャッシュから取得。
+    キャッシュなし or 全項目空の場合は None を返す。"""
+    client = get_client()
+    if not client:
+        return None
+    try:
+        res = client.table("horse_pedigree").select("sire,dam,damsire").eq("horse_id", horse_id).execute()
+        if res.data:
+            row = res.data[0]
+            # 少なくとも1項目が入っていればキャッシュヒットとみなす
+            if row.get("sire") or row.get("dam") or row.get("damsire"):
+                return row
+        return None
+    except Exception as e:
+        logger.debug(f"血統キャッシュ取得失敗 {horse_id}: {e}")
+        return None
+
+
+def save_pedigree_cache(horse_id: str, sire: str, dam: str, damsire: str) -> bool:
+    """馬の血統を Supabase キャッシュに保存（upsert）。
+    取得失敗（全空）でも保存することで二重リクエストを防ぐ。"""
+    client = get_client()
+    if not client:
+        return False
+    try:
+        client.table("horse_pedigree").upsert({
+            "horse_id": horse_id,
+            "sire": sire or None,
+            "dam": dam or None,
+            "damsire": damsire or None,
+        }).execute()
+        logger.debug(f"血統キャッシュ保存: {horse_id} sire={sire}")
+        return True
+    except Exception as e:
+        logger.debug(f"血統キャッシュ保存失敗 {horse_id}: {e}")
+        return False
