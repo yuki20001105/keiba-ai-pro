@@ -278,6 +278,24 @@ def delete_model_from_supabase(model_id: str) -> bool:
 # 同じ馬の血統を毎回スクレイピングしなくて済むようにする
 # ─────────────────────────────────────────
 
+def get_pedigree_cache_batch(horse_ids: list) -> dict:
+    """複数馬の血統を1回のクエリで取得。{horse_id: {sire,dam,damsire}} を返す。"""
+    client = get_client()
+    if not client or not horse_ids:
+        return {}
+    try:
+        res = client.table("horse_pedigree").select("horse_id,sire,dam,damsire").in_("horse_id", horse_ids).execute()
+        result = {}
+        for row in (res.data or []):
+            hid = row.get("horse_id")
+            if hid and (row.get("sire") or row.get("dam") or row.get("damsire")):
+                result[hid] = row
+        return result
+    except Exception as e:
+        logger.debug(f"血統バッチキャッシュ取得失敗: {e}")
+        return {}
+
+
 def get_pedigree_cache(horse_id: str) -> Optional[dict]:
     """馬の血統 (sire/dam/damsire) を Supabase キャッシュから取得。
     キャッシュなし or 全項目空の場合は None を返す。"""

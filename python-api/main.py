@@ -47,6 +47,7 @@ try:
         delete_model_from_supabase,
         get_client as get_supabase_client,
         get_pedigree_cache,
+        get_pedigree_cache_batch,
         save_pedigree_cache,
     )
     SUPABASE_ENABLED = True
@@ -1972,7 +1973,7 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '') -> Optio
 
     url = f"https://db.netkeiba.com/race/{race_id}/"
     try:
-        await asyncio.sleep(0.6)
+        await asyncio.sleep(0.2)
         async with session.get(url) as resp:
             if resp.status != 200:
                 logger.warning(f"HTTP {resp.status}: {url}")
@@ -2329,7 +2330,24 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '') -> Optio
                     prev = lap_cumulative[d]
                 break
 
-    # ---- 馬詳細スクレイピング（血統/通算成績/前走情報） 3並列 ----
+    # ---- 馬詳細スクレイピング（血統/通算成績/前走情報） 3並列 + バッチpedigreeキャッシュ ----
+    seen_horse_ids: set = set()
+    unique_horses = []
+    for h in horses:
+        hid = h.get('horse_id', '')
+        if hid and hid not in seen_horse_ids:
+            seen_horse_ids.add(hid)
+            unique_horses.append(h)
+
+    # pedigree を1回のSupabaseクエリでまとめて取得
+    all_horse_ids = [h.get('horse_id', '') for h in unique_horses if h.get('horse_id')]
+    pedigree_batch: dict = {}
+    if SUPABASE_ENABLED and all_horse_ids:
+        try:
+            pedigree_batch = get_pedigree_cache_batch(all_horse_ids)
+        except Exception:
+            pass
+
     sem = asyncio.Semaphore(3)
 
     async def _fetch_detail_limited(h):
@@ -2338,16 +2356,8 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '') -> Optio
         if not hid:
             return
         async with sem:
-            detail = await _scrape_horse_detail(session, hid, hurl)
+            detail = await _scrape_horse_detail(session, hid, hurl, pedigree_cache=pedigree_batch)
             h.update(detail)
-
-    seen_horse_ids: set = set()
-    unique_horses = []
-    for h in horses:
-        hid = h.get('horse_id', '')
-        if hid and hid not in seen_horse_ids:
-            seen_horse_ids.add(hid)
-            unique_horses.append(h)
 
     await asyncio.gather(*[_fetch_detail_limited(h) for h in unique_horses])
 
@@ -2421,10 +2431,11 @@ def _parse_blood_table(blood_table, result: dict):
                 break
 
 
-async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '') -> dict:
+async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedigree_cache: dict = None) -> dict:
     """
     馬の詳細ページをスクレイピング。
     血統(sire/dam/damsire)、プロフィール、通算成績、直近2走を取得。
+    pedigree_cache: {horse_id: {sire,dam,damsire}} のバッチ取得済みキャッシュ（あれば Supabase 個別クエリ省略）
     """
     from bs4 import BeautifulSoup
     import re
@@ -2438,7 +2449,7 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '') -> d
         url = url + '/'
     result = {}
     try:
-        await asyncio.sleep(0.4)
+        await asyncio.sleep(0.2)
         async with session.get(url) as resp:
             if resp.status != 200:
                 return result
@@ -2518,18 +2529,21 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '') -> d
 
     pedigree_cached = False
 
-    # 1. Supabase キャッシュ確認（HTTP リクエスト不要）
-    if SUPABASE_ENABLED and horse_id:
-        try:
-            cached = get_pedigree_cache(horse_id)
-            if cached:
-                result['sire'] = cached.get('sire') or ''
-                result['dam'] = cached.get('dam') or ''
-                result['damsire'] = cached.get('damsire') or ''
-                pedigree_cached = True
-                logger.debug(f"血統キャッシュヒット: {horse_id} sire={result['sire']}")
-        except Exception as _e:
-            logger.debug(f"血統キャッシュ確認失敗: {_e}")
+    # 1. バッチキャッシュ or 個別 Supabase キャッシュ確認
+    if horse_id:
+        # バッチ取得済みキャッシュを優先（Supabase RTTゼロ）
+        cached = (pedigree_cache or {}).get(horse_id) if pedigree_cache is not None else None
+        if cached is None and SUPABASE_ENABLED:
+            try:
+                cached = get_pedigree_cache(horse_id)
+            except Exception as _e:
+                logger.debug(f"血統キャッシュ確認失敗: {_e}")
+        if cached:
+            result['sire'] = cached.get('sire') or ''
+            result['dam'] = cached.get('dam') or ''
+            result['damsire'] = cached.get('damsire') or ''
+            pedigree_cached = True
+            logger.debug(f"血統キャッシュヒット: {horse_id} sire={result['sire']}")
 
     if not pedigree_cached:
         # 2. メインページの blood_table を確認（追加 HTTP リクエスト不要）
@@ -2543,7 +2557,7 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '') -> d
             ped_url = f"https://db.netkeiba.com/horse/ped/{horse_id}/"
             for attempt in range(3):
                 try:
-                    wait = 0.4 + attempt * 1.5
+                    wait = 0.2 + attempt * 1.5
                     await asyncio.sleep(wait)
                     async with session.get(ped_url) as ped_resp:
                         if ped_resp.status == 200:
@@ -2583,7 +2597,7 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '') -> d
     # ===== 過去レース結果（最新2走）: /horse/result/{horse_id}/ から取得 =====
     result_url = f"https://db.netkeiba.com/horse/result/{horse_id}/"
     try:
-        await asyncio.sleep(0.4)
+        await asyncio.sleep(0.2)
         async with session.get(result_url) as res_resp:
             if res_resp.status == 200:
                 res_content = await res_resp.read()
@@ -2764,10 +2778,12 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
         total = len(dates)
         job["progress"] = {"done": 0, "total": total, "message": f"0/{total}日処理済み"}
 
+        # 接続制限を緩和（5並列レース × 3並列馬 = 最大15同時接続）
         timeout = aiohttp.ClientTimeout(total=30)
-        connector = aiohttp.TCPConnector(limit=5, limit_per_host=3)
-        saved_races = 0
-        saved_horses = 0
+        connector = aiohttp.TCPConnector(limit=20, limit_per_host=10)
+        # カウンタはロック保護
+        counter = {"races": 0, "horses": 0}
+        counter_lock = asyncio.Lock()
 
         async with aiohttp.ClientSession(
             headers=SCRAPE_HEADERS, timeout=timeout, connector=connector
@@ -2775,7 +2791,7 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
             for i, date in enumerate(dates):
                 list_url = f"https://db.netkeiba.com/race/list/{date}/"
                 try:
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.2)
                     async with session.get(list_url) as resp:
                         if resp.status != 200:
                             continue
@@ -2791,12 +2807,19 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
                         if m and m.group(1) not in race_ids:
                             race_ids.append(m.group(1))
 
-                    for race_id in race_ids:
-                        race_data = await _scrape_race_full(session, race_id, date_hint=date)
-                        if race_data and race_data['horses']:
-                            _save_race_to_ultimate_db(race_data, ULTIMATE_DB, overwrite=True)
-                            saved_races += 1
-                            saved_horses += len(race_data['horses'])
+                    # ---- 5並列でレースを処理 ----
+                    race_sem = asyncio.Semaphore(5)
+
+                    async def _fetch_and_save(race_id, _date=date):
+                        async with race_sem:
+                            race_data = await _scrape_race_full(session, race_id, date_hint=_date)
+                            if race_data and race_data['horses']:
+                                _save_race_to_ultimate_db(race_data, ULTIMATE_DB, overwrite=True)
+                                async with counter_lock:
+                                    counter["races"] += 1
+                                    counter["horses"] += len(race_data['horses'])
+
+                    await asyncio.gather(*[_fetch_and_save(r) for r in race_ids], return_exceptions=True)
 
                 except Exception as e:
                     logger.error(f"ジョブ {job_id} {date} エラー: {e}")
@@ -2804,10 +2827,12 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
                 job["progress"] = {
                     "done": i + 1,
                     "total": total,
-                    "message": f"{i+1}/{total}日処理済み / {saved_races}レース取得",
-                    "saved_races": saved_races,
-                    "saved_horses": saved_horses,
+                    "message": f"{i+1}/{total}日処理済み / {counter['races']}レース取得",
+                    "saved_races": counter["races"],
+                    "saved_horses": counter["horses"],
                 }
+        saved_races = counter["races"]
+        saved_horses = counter["horses"]
 
         elapsed = _time.time() - start_time
         job["status"] = "completed"
