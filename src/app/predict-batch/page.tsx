@@ -1,59 +1,30 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { supabase } from '@/lib/supabase'
-import { useRouter } from 'next/navigation'
-import { useUltimateMode } from '@/contexts/UltimateModeContext'
+import Link from 'next/link'
+import { Logo } from '@/components/Logo'
 
 export default function PredictBatchPage() {
-  const router = useRouter()
   const [loading, setLoading] = useState(false)
-  const [authLoading, setAuthLoading] = useState(true)
-  const [userId, setUserId] = useState<string | null>(null)
-  const { ultimateMode, setUltimateMode } = useUltimateMode()
-
-  // 予測設定
   const [raceId, setRaceId] = useState('')
   const [modelId, setModelId] = useState<string | null>(null)
   const [models, setModels] = useState<any[]>([])
-
-  // 予測結果
   const [predictions, setPredictions] = useState<any[]>([])
   const [recommendations, setRecommendations] = useState<any>(null)
 
   useEffect(() => {
-    const getUser = async () => {
-      setAuthLoading(true)
-      if (!supabase) {
-        console.error('Supabase client not initialized')
-        setAuthLoading(false)
-        return
-      }
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) {
-        router.push('/auth/login')
-        return
-      }
-      setUserId(user.id)
-      await loadModels()
-      setAuthLoading(false)
-    }
-    getUser()
-  }, [router, ultimateMode])
+    loadModels()
+  }, [])
 
   const loadModels = async () => {
     try {
-      const response = await fetch(`http://localhost:8000/api/models?ultimate=${ultimateMode}`)
-      if (response.ok) {
-        const data = await response.json()
+      const res = await fetch('http://localhost:8000/api/models?ultimate=true')
+      if (res.ok) {
+        const data = await res.json()
         setModels(data.models || [])
-        if (data.models && data.models.length > 0) {
-          setModelId(data.models[0].model_id)
-        }
+        if (data.models?.length > 0) setModelId(data.models[0].model_id)
       }
-    } catch (error) {
-      console.error('モデル一覧取得エラー:', error)
-    }
+    } catch {}
   }
 
   const handlePredict = async () => {
@@ -67,159 +38,136 @@ export default function PredictBatchPage() {
     setRecommendations(null)
 
     try {
-      const response = await fetch('http://localhost:8000/api/analyze_race', {
+      const res = await fetch('http://localhost:8000/api/analyze_race', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          race_id: raceId,
-          model_id: modelId,
-          bankroll: 10000,
-          risk_mode: 'balanced',
-          ultimate_mode: ultimateMode
-        })
+        body: JSON.stringify({ race_id: raceId, model_id: modelId, bankroll: 10000, risk_mode: 'balanced', ultimate_mode: true })
       })
-
-      if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.detail || `HTTP ${response.status}`)
-      }
-
-      const data = await response.json()
+      if (!res.ok) { const e = await res.json(); throw new Error(e.detail || `HTTP ${res.status}`) }
+      const data = await res.json()
       setPredictions(data.predictions || [])
       setRecommendations(data.recommendations || null)
-      alert('予測完了！')
-    } catch (error: any) {
-      alert(`予測エラー: ${error.message}`)
+    } catch (e: any) {
+      alert(`予測エラー: ${e.message}`)
     } finally {
       setLoading(false)
     }
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 py-8 px-4">
-      <div className="max-w-6xl mx-auto">
-        {/* ヘッダー */}
-        <div className="mb-8 text-center">
-          <h1 className="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-cyan-400 mb-2">
-            🎯 予測 & 購入推奨
-          </h1>
-          <p className="text-gray-400">レース結果予測と購入戦略提案</p>
+    <div className="min-h-screen bg-[#0a0a0a] text-white">
+      <header className="border-b border-[#1e1e1e] px-6 py-4 flex items-center justify-between">
+        <Logo href="/home" />
+        <div className="flex items-center gap-4">
+          <Link href="/home" className="flex items-center gap-1 text-xs text-[#555] hover:text-white transition-colors">
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+            </svg>
+            ホーム
+          </Link>
+          <span className="text-sm text-[#888]">予測実行</span>
         </div>
+      </header>
 
-        {/* Ultimate版切り替え */}
-        <div className="mb-6 p-6 bg-slate-800/50 backdrop-blur-sm rounded-xl border border-blue-500/30">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-xl font-bold text-blue-400 mb-1">Ultimate版モード</h2>
-              <p className="text-gray-400 text-sm">90列特徴量で予測精度向上</p>
-            </div>
-            <button
-              onClick={() => setUltimateMode(!ultimateMode)}
-              className={`px-6 py-3 rounded-lg font-semibold transition-all ${
-                ultimateMode
-                  ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white shadow-lg shadow-purple-500/50'
-                  : 'bg-slate-700 text-gray-300 hover:bg-slate-600'
-              }`}
+      <main className="max-w-3xl mx-auto px-6 py-10 space-y-6">
+        <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-6 space-y-4">
+          <div>
+            <label className="text-xs text-[#666] block mb-2">レースID</label>
+            <input
+              type="text"
+              placeholder="例: 202406010101"
+              value={raceId}
+              onChange={e => setRaceId(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handlePredict()}
+              className="w-full px-4 py-3 bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg text-white placeholder-[#444] focus:outline-none focus:border-[#333] transition-colors"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-[#666] block mb-2">使用モデル</label>
+            <select
+              value={modelId || ''}
+              onChange={e => setModelId(e.target.value)}
+              className="w-full px-4 py-3 bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg text-white focus:outline-none focus:border-[#333] transition-colors"
             >
-              {ultimateMode ? '✨ Ultimate版 ON' : 'Ultimate版 OFF'}
-            </button>
+              <option value="">最新モデルを自動選択</option>
+              {models.map((m, i) => (
+                <option key={i} value={m.model_id}>{m.model_id} (AUC: {m.auc?.toFixed(4)})</option>
+              ))}
+            </select>
           </div>
-        </div>
-
-        {/* 予測設定 */}
-        <div className="mb-6 p-6 bg-slate-800/50 backdrop-blur-sm rounded-xl border border-blue-500/30">
-          <h2 className="text-xl font-bold text-blue-400 mb-4">⚙️ 予測設定</h2>
-          
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-            {/* レースID */}
-            <div>
-              <label className="block text-gray-400 text-sm mb-2">レースID</label>
-              <input
-                type="text"
-                placeholder="例: 202406010101"
-                value={raceId}
-                onChange={(e) => setRaceId(e.target.value)}
-                className="w-full px-4 py-3 bg-slate-700/50 border border-blue-500/30 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-400"
-              />
-            </div>
-
-            {/* モデル選択 */}
-            <div>
-              <label className="block text-gray-400 text-sm mb-2">使用モデル</label>
-              <select
-                value={modelId || ''}
-                onChange={(e) => setModelId(e.target.value)}
-                className="w-full px-4 py-3 bg-slate-700/50 border border-blue-500/30 rounded-lg text-white focus:outline-none focus:border-blue-400"
-              >
-                <option value="">最新モデルを自動選択</option>
-                {models.map((model: any, index: number) => (
-                  <option key={index} value={model.model_id}>
-                    {model.model_id} (AUC: {model.auc?.toFixed(4)})
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
           <button
             onClick={handlePredict}
-            disabled={authLoading || loading}
-            className="w-full px-8 py-4 bg-gradient-to-r from-purple-600 to-pink-600 text-white font-bold rounded-lg hover:from-purple-500 hover:to-pink-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg shadow-purple-500/20"
+            disabled={loading}
+            className="w-full py-3 bg-white text-black font-medium rounded-lg hover:bg-[#eee] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            {authLoading ? '認証確認中...' : loading ? '予測中...' : '🚀 予測実行'}
+            {loading ? '予測中...' : '予測実行'}
           </button>
         </div>
 
-        {/* 予測結果 */}
         {predictions.length > 0 && (
-          <div className="mb-6 p-6 bg-slate-800/50 backdrop-blur-sm rounded-xl border border-green-500/30">
-            <h2 className="text-xl font-bold text-green-400 mb-4">📊 予測結果</h2>
-            <div className="space-y-3">
-              {predictions.map((pred: any, index: number) => (
-                <div key={index} className="p-4 bg-slate-700/50 rounded-lg border border-blue-500/20 hover:border-blue-400 transition-all">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-4">
-                      <div className="text-2xl font-bold text-white w-12">{pred.horse_no}</div>
-                      <div>
-                        <p className="text-white font-semibold">{pred.horse_name}</p>
-                        <p className="text-gray-400 text-sm">{pred.jockey_name}</p>
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-cyan-400 font-bold text-xl">{(pred.probability * 100).toFixed(1)}%</p>
-                      <p className="text-gray-400 text-sm">オッズ: {pred.odds}</p>
-                    </div>
-                  </div>
-                </div>
-              ))}
+          <div className="bg-[#111] border border-[#1e1e1e] rounded-lg overflow-hidden">
+            <div className="px-5 py-3 border-b border-[#1e1e1e]">
+              <span className="text-sm font-medium text-[#888]">予測結果</span>
             </div>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-[#1e1e1e]">
+                  {['馬番', '馬名', '騎手', '勝率', 'オッズ'].map(h => (
+                    <th key={h} className="px-4 py-3 text-left text-xs text-[#555] font-normal first:pl-5">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {predictions.map((p, i) => (
+                  <tr key={i} className="border-b border-[#1a1a1a] hover:bg-[#161616] transition-colors">
+                    <td className="px-4 py-3 pl-5 font-bold">{p.horse_no}</td>
+                    <td className="px-4 py-3">{p.horse_name}</td>
+                    <td className="px-4 py-3 text-[#888]">{p.jockey_name}</td>
+                    <td className="px-4 py-3 text-[#4ade80] font-medium">{(p.probability * 100).toFixed(1)}%</td>
+                    <td className="px-4 py-3 text-[#888]">{p.odds}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
 
-        {/* 購入推奨 */}
         {recommendations && (
-          <div className="p-6 bg-slate-800/50 backdrop-blur-sm rounded-xl border border-yellow-500/30">
-            <h2 className="text-xl font-bold text-yellow-400 mb-4">💰 購入推奨</h2>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-              <div className="p-4 bg-slate-700/50 rounded-lg">
-                <p className="text-gray-400 text-sm">レースレベル</p>
-                <p className="text-2xl font-bold text-white">{recommendations.race_level}</p>
+          <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-6">
+            <div className="text-sm font-medium text-[#888] mb-4">購入推奨</div>
+            <div className="grid grid-cols-3 gap-3 mb-4">
+              <div className="bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg p-4">
+                <div className="text-xs text-[#555] mb-1">レースレベル</div>
+                <div className="font-bold">{recommendations.race_level}</div>
               </div>
-              <div className="p-4 bg-slate-700/50 rounded-lg">
-                <p className="text-gray-400 text-sm">推奨単価</p>
-                <p className="text-2xl font-bold text-white">¥{recommendations.unit_price}</p>
+              <div className="bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg p-4">
+                <div className="text-xs text-[#555] mb-1">推奨単価</div>
+                <div className="font-bold">¥{recommendations.unit_price}</div>
               </div>
-              <div className="p-4 bg-slate-700/50 rounded-lg">
-                <p className="text-gray-400 text-sm">推奨券種</p>
-                <p className="text-2xl font-bold text-white">{recommendations.bet_type}</p>
+              <div className="bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg p-4">
+                <div className="text-xs text-[#555] mb-1">券種</div>
+                <div className="font-bold">{recommendations.bet_type}</div>
               </div>
             </div>
-            <div className="p-4 bg-yellow-900/20 rounded-lg border border-yellow-500/30">
-              <p className="text-yellow-300 text-sm">{recommendations.strategy}</p>
-            </div>
+            <p className="text-sm text-[#888]">{recommendations.strategy}</p>
           </div>
         )}
-      </div>
+        <div className="p-5 bg-[#111] border border-[#1e1e1e] rounded-lg flex items-center justify-between gap-4">
+          <div>
+            <div className="text-xs text-[#666] mb-0.5">次のステップ — 04</div>
+            <div className="text-sm font-medium">履歴・統計</div>
+            <div className="text-xs text-[#555] mt-0.5">購入履歴と成績を確認します</div>
+          </div>
+          <Link
+            href="/dashboard"
+            className="shrink-0 flex items-center gap-1.5 bg-white text-black text-sm font-medium px-5 py-2.5 rounded hover:bg-[#eee] transition-colors"
+          >
+            履歴・統計へ
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+          </Link>
+        </div>      </main>
     </div>
   )
 }

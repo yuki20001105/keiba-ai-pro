@@ -73,11 +73,13 @@ keiba/data/
 keiba/models/
 keiba/.vscode/
 
-# Database files
+# Database files (ローカル開発用)
+# デプロイ用にDBを含めたい場合は下記をコメントアウトする
 *.db
 *.sqlite
 *.sqlite3
 keiba.db
+# !keiba/data/keiba_ultimate.db  ← デプロイ時はこの行のコメントを外す
 
 # Large data files
 *.csv
@@ -86,13 +88,11 @@ keiba.db
 *.pkl
 *.pickle
 
-# Jupyter
-.ipynb_checkpoints
-
-# Models (saved models are in python-api/models)
+# Models (ローカル開発用)
+# デプロイ用にモデルを含めたい場合は下記をコメントアウトする
 *.joblib
 *.model
-*.pkl
+# !python-api/models/*.joblib  ← デプロイ時はこの行のコメントを外す
 
 # Logs
 *.log

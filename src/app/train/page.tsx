@@ -1,70 +1,48 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { supabase } from '@/lib/supabase'
-import { useRouter } from 'next/navigation'
-import { useUltimateMode } from '@/contexts/UltimateModeContext'
-import { AdminOnly } from '@/components/AdminOnly'
+import Link from 'next/link'
+import { Logo } from '@/components/Logo'
 
 export default function TrainPage() {
-  const router = useRouter()
   const [loading, setLoading] = useState(false)
-  const [authLoading, setAuthLoading] = useState(true)
-  const [userId, setUserId] = useState<string | null>(null)
-  const { ultimateMode, setUltimateMode } = useUltimateMode()
-
-  // 環境チェック（ブラウザ環境でも安全）
-  const isProduction = typeof window !== 'undefined' && window.location.hostname !== 'localhost'
-
-  // 学習設定
   const [target, setTarget] = useState<'win' | 'place3'>('win')
   const [modelType, setModelType] = useState<'logistic_regression' | 'lightgbm'>('lightgbm')
   const [testSize, setTestSize] = useState(0.2)
-
-  // Optuna設定
+  const [cvFolds, setCvFolds] = useState(5)
   const [useOptuna, setUseOptuna] = useState(false)
   const [optunaTrials, setOptunaTrials] = useState(50)
-  const [cvFolds, setCvFolds] = useState(5)
   const [optunaTimeout, setOptunaTimeout] = useState(300)
-
-  // 学習結果
+  const [trainingDateFrom, setTrainingDateFrom] = useState('')
+  const [trainingDateTo, setTrainingDateTo] = useState('')
   const [trainResult, setTrainResult] = useState<any>(null)
   const [models, setModels] = useState<any[]>([])
+  const [deletingId, setDeletingId] = useState<string | null>(null)
 
-  useEffect(() => {
-    const getUser = async () => {
-      setAuthLoading(true)
-      if (!supabase) {
-        console.error('Supabase client not initialized')
-        setAuthLoading(false)
-        return
-      }
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) {
-        router.push('/auth/login')
-        return
-      }
-      setUserId(user.id)
-      await loadModels()
-      setAuthLoading(false)
-    }
-    getUser()
-  }, [router, ultimateMode])
+  useEffect(() => { loadModels() }, [])
 
   const loadModels = async () => {
     try {
-      const response = await fetch(`http://localhost:8000/api/models?ultimate=${ultimateMode}`)
-      if (response.ok) {
-        const data = await response.json()
-        setModels(data.models || [])
-      }
-    } catch (error) {
-      console.error('モデル一覧取得エラー:', error)
+      const res = await fetch('http://localhost:8000/api/models?ultimate=true')
+      if (res.ok) { const d = await res.json(); setModels(d.models || []) }
+    } catch {}
+  }
+
+  const handleDeleteModel = async (modelId: string) => {
+    if (!confirm(`モデル ${modelId} を削除しますか？`)) return
+    setDeletingId(modelId)
+    try {
+      const res = await fetch(`http://localhost:8000/api/models/${modelId}`, { method: 'DELETE' })
+      if (!res.ok) throw new Error('削除失敗')
+      loadModels()
+    } catch {
+      alert('削除に失敗しました')
+    } finally {
+      setDeletingId(null)
     }
   }
 
-  const handleTrain = async () => {
-    setLoading(true)
+  const handleTrain = async () => {    setLoading(true)
     setTrainResult(null)
 
     try {
@@ -72,16 +50,12 @@ export default function TrainPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          target,
-          model_type: modelType,
-          test_size: testSize,
-          cv_folds: cvFolds,
-          use_sqlite: true,
-          use_optimizer: modelType === 'lightgbm',
-          use_optuna: useOptuna, // 全モデル対応（LR, RF, GB, LightGBM）
-          optuna_trials: optunaTrials,
-          optuna_timeout: optunaTimeout,
-          ultimate_mode: ultimateMode
+          target, model_type: modelType, test_size: testSize, cv_folds: cvFolds,
+          use_sqlite: true, use_optimizer: modelType === 'lightgbm',
+          use_optuna: useOptuna, optuna_trials: optunaTrials, optuna_timeout: optunaTimeout,
+          ultimate_mode: true,
+          training_date_from: trainingDateFrom || null,
+          training_date_to: trainingDateTo || null,
         })
       })
 
@@ -92,7 +66,6 @@ export default function TrainPage() {
 
       const data = await response.json()
       setTrainResult(data)
-      alert('学習完了！')
       loadModels()
     } catch (error: any) {
       alert(`学習エラー: ${error.message}`)
@@ -101,181 +74,111 @@ export default function TrainPage() {
     }
   }
 
+  const FLD = 'w-full px-4 py-3 bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg text-white focus:outline-none focus:border-[#333] transition-colors'
+
   return (
-    <AdminOnly>
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 py-8 px-4">
-        <div className="max-w-6xl mx-auto">
-          {/* ヘッダー */}
-          <div className="mb-8 text-center">
-            <h1 className="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-cyan-400 mb-2">
-              🧠 モデル学習 (管理者専用)
-            </h1>
-            <p className="text-gray-400">機械学習モデルのトレーニング</p>
-          </div>
-
-          {/* 本番環境警告 */}
-          {isProduction && (
-            <div className="mb-6 bg-red-50 border-2 border-red-300 rounded-xl p-6">
-              <h3 className="text-xl font-bold text-red-700 mb-3">⚠️ 本番環境では動作しません</h3>
-              <p className="text-red-600 mb-4">
-                モデル学習機能はローカル環境専用です。Vercelのサーバーレス環境では、学習API（localhost:8000）にアクセスできません。
-              </p>
-              <div className="bg-white rounded-lg p-4 border border-red-200">
-                <h4 className="font-bold text-gray-800 mb-2">✅ 正しい使用方法：</h4>
-                <ol className="list-decimal list-inside space-y-2 text-gray-700">
-                  <li>開発環境（localhost:3000）でこのページにアクセス</li>
-                  <li>FastAPI学習サービス（localhost:8000）を起動</li>
-                  <li>モデル学習を実行</li>
-                  <li>学習済みモデルはローカルに保存</li>
-                  <li>予測機能で学習済みモデルを使用</li>
-                </ol>
-              </div>
-            </div>
-          )}
-
-        {/* Ultimate版切り替え */}
-        <div className="mb-6 p-6 bg-slate-800/50 backdrop-blur-sm rounded-xl border border-blue-500/30">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-xl font-bold text-blue-400 mb-1">Ultimate版モード</h2>
-              <p className="text-gray-400 text-sm">90列以上の特徴量で学習（通常: 60列）</p>
-            </div>
-            <button
-              onClick={() => setUltimateMode(!ultimateMode)}
-              className={`px-6 py-3 rounded-lg font-semibold transition-all ${
-                ultimateMode
-                  ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white shadow-lg shadow-purple-500/50'
-                  : 'bg-slate-700 text-gray-300 hover:bg-slate-600'
-              }`}
-            >
-              {ultimateMode ? '✨ Ultimate版 ON' : 'Ultimate版 OFF'}
-            </button>
-          </div>
+    <div className="min-h-screen bg-[#0a0a0a] text-white">
+      <header className="border-b border-[#1e1e1e] px-6 py-4 flex items-center justify-between">
+        <Logo href="/home" />
+        <div className="flex items-center gap-4">
+          <Link href="/home" className="flex items-center gap-1 text-xs text-[#555] hover:text-white transition-colors">
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+            </svg>
+            ホーム
+          </Link>
+          <span className="text-sm text-[#888]">モデル学習</span>
         </div>
+      </header>
 
-        {/* 学習設定 */}
-        <div className="mb-6 p-6 bg-slate-800/50 backdrop-blur-sm rounded-xl border border-blue-500/30">
-          <h2 className="text-xl font-bold text-blue-400 mb-4">⚙️ 学習設定</h2>
-          
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* 予測ターゲット */}
+      <main className="max-w-3xl mx-auto px-6 py-10 space-y-6">
+        <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-6 space-y-5">
+          <h2 className="text-sm font-medium text-[#888]">学習設定</h2>
+          <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-gray-400 text-sm mb-2">予測ターゲット</label>
-              <select
-                value={target}
-                onChange={(e) => setTarget(e.target.value as 'win' | 'place3')}
-                className="w-full px-4 py-3 bg-slate-700/50 border border-blue-500/30 rounded-lg text-white focus:outline-none focus:border-blue-400"
-              >
-                <option value="win">🏆 単勝（1着予測）</option>
-                <option value="place3">🎯 複勝（3着以内予測）</option>
+              <label className="text-xs text-[#666] block mb-2">予測ターゲット</label>
+              <select value={target} onChange={e => setTarget(e.target.value as any)} className={FLD}>
+                <option value="win">単勝（1着予測）</option>
+                <option value="place3">複勝（3着以内）</option>
               </select>
             </div>
-
-            {/* モデルタイプ */}
             <div>
-              <label className="block text-gray-400 text-sm mb-2">モデルタイプ</label>
-              <select
-                value={modelType}
-                onChange={(e) => setModelType(e.target.value as any)}
-                className="w-full px-4 py-3 bg-slate-700/50 border border-blue-500/30 rounded-lg text-white focus:outline-none focus:border-blue-400"
-              >
+              <label className="text-xs text-[#666] block mb-2">モデルタイプ</label>
+              <select value={modelType} onChange={e => setModelType(e.target.value as any)} className={FLD}>
                 <option value="logistic_regression">Logistic Regression</option>
                 <option value="lightgbm">LightGBM（推奨）</option>
               </select>
             </div>
-
-            {/* テストサイズ */}
-            {/* テストサイズ */}
             <div>
-              <label className="block text-gray-400 text-sm mb-2">テストデータ割合</label>
-              <input
-                type="number"
-                min="0.1"
-                max="0.5"
-                step="0.05"
-                value={testSize}
-                onChange={(e) => setTestSize(parseFloat(e.target.value))}
-                className="w-full px-4 py-3 bg-slate-700/50 border border-blue-500/30 rounded-lg text-white focus:outline-none focus:border-blue-400"
-              />
+              <label className="text-xs text-[#666] block mb-2">テストデータ割合</label>
+              <input type="number" min="0.1" max="0.5" step="0.05" value={testSize}
+                onChange={e => setTestSize(parseFloat(e.target.value))} className={FLD} />
             </div>
-
-            {/* CVフォールド数 */}
             <div>
-              <label className="block text-gray-400 text-sm mb-2">CVフォールド数</label>
-              <input
-                type="number"
-                min="2"
-                max="10"
-                step="1"
-                value={cvFolds}
-                onChange={(e) => setCvFolds(parseInt(e.target.value))}
-                className="w-full px-4 py-3 bg-slate-700/50 border border-blue-500/30 rounded-lg text-white focus:outline-none focus:border-blue-400"
-              />
+              <label className="text-xs text-[#666] block mb-2">CVフォールド数</label>
+              <input type="number" min="2" max="10" value={cvFolds}
+                onChange={e => setCvFolds(parseInt(e.target.value))} className={FLD} />
             </div>
           </div>
 
-          {/* Optuna最適化設定 */}
-          {modelType === 'lightgbm' && (
-            <div className="mt-6 p-6 bg-gradient-to-r from-purple-900/20 to-pink-900/20 border border-purple-500/30 rounded-lg">
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <h3 className="text-lg font-bold text-purple-400">🔬 Optunaハイパーパラメータ最適化</h3>
-                  <p className="text-gray-400 text-sm">ベイズ最適化で最適なパラメータを自動探索</p>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={useOptuna}
-                    onChange={(e) => setUseOptuna(e.target.checked)}
-                    className="sr-only peer"
-                  />
-                  <div className="w-14 h-7 bg-slate-700 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:left-[4px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-6 after:w-6 after:transition-all peer-checked:bg-gradient-to-r peer-checked:from-purple-600 peer-checked:to-pink-600"></div>
-                </label>
+          {/* 学習データ期間 */}
+          <div className="border border-[#1e1e1e] rounded-lg p-4 space-y-3">
+            <div>
+              <div className="text-sm font-medium">学習データ期間</div>
+              <div className="text-xs text-[#666] mt-0.5">指定しない場合は全データを使用します</div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="text-xs text-[#666] block mb-2">開始年月</label>
+                <input
+                  type="month"
+                  value={trainingDateFrom}
+                  onChange={e => setTrainingDateFrom(e.target.value)}
+                  className={FLD}
+                />
               </div>
+              <div>
+                <label className="text-xs text-[#666] block mb-2">終了年月</label>
+                <input
+                  type="month"
+                  value={trainingDateTo}
+                  onChange={e => setTrainingDateTo(e.target.value)}
+                  className={FLD}
+                />
+              </div>
+            </div>
+          </div>
 
-              {useOptuna && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
-                  {/* 試行回数 */}
-                  <div>
-                    <label className="block text-gray-400 text-sm mb-2">
-                      試行回数 (Trials): <span className="text-purple-400 font-semibold">{optunaTrials}</span>
-                    </label>
-                    <input
-                      type="range"
-                      min="3"
-                      max="100"
-                      step="1"
-                      value={optunaTrials}
-                      onChange={(e) => setOptunaTrials(parseInt(e.target.value))}
-                      className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-purple-600"
-                    />
-                    <div className="flex justify-between text-xs text-gray-500 mt-1">
-                      <span>3</span>
-                      <span>100</span>
-                    </div>
-                  </div>
-
-                  {/* タイムアウト */}
-                  <div>
-                    <label className="block text-gray-400 text-sm mb-2">タイムアウト (秒)</label>
-                    <input
-                      type="number"
-                      min="60"
-                      max="3600"
-                      step="60"
-                      value={optunaTimeout}
-                      onChange={(e) => setOptunaTimeout(parseInt(e.target.value))}
-                      className="w-full px-4 py-3 bg-slate-700/50 border border-purple-500/30 rounded-lg text-white focus:outline-none focus:border-purple-400"
-                    />
-                  </div>
+          {modelType === 'lightgbm' && (
+            <div className="border border-[#1e1e1e] rounded-lg p-4 space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-medium">Optuna 最適化</div>
+                  <div className="text-xs text-[#666] mt-0.5">ベイズ最適化でパラメータ自動探索</div>
                 </div>
-              )}
-
+                <button
+                  onClick={() => setUseOptuna(v => !v)}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${useOptuna ? 'bg-white' : 'bg-[#333]'}`}
+                >
+                  <span className={`inline-block h-4 w-4 transform rounded-full transition-transform ${useOptuna ? 'translate-x-6 bg-black' : 'translate-x-1 bg-[#888]'}`} />
+                </button>
+              </div>
               {useOptuna && (
-                <div className="mt-4 p-4 bg-purple-900/20 rounded-lg border border-purple-500/20">
-                  <p className="text-sm text-gray-400">
-                    ⏱️ 推定実行時間: <span className="text-purple-400 font-semibold">{Math.round(optunaTrials * cvFolds * 0.3 / 60)}分 〜 {Math.round(optunaTrials * cvFolds * 0.5 / 60)}分</span>
-                  </p>
+                <div className="grid grid-cols-2 gap-4 pt-2 border-t border-[#1e1e1e]">
+                  <div>
+                    <label className="text-xs text-[#666] block mb-2">試行回数: {optunaTrials}</label>
+                    <input type="range" min="3" max="100" value={optunaTrials}
+                      onChange={e => setOptunaTrials(parseInt(e.target.value))}
+                      className="w-full accent-white" />
+                  </div>
+                  <div>
+                    <label className="text-xs text-[#666] block mb-2">タイムアウト (秒)</label>
+                    <input type="number" min="60" max="3600" step="60" value={optunaTimeout}
+                      onChange={e => setOptunaTimeout(parseInt(e.target.value))} className={FLD} />
+                  </div>
+                  <div className="col-span-2 text-xs text-[#555]">
+                    推定: {Math.round(optunaTrials * cvFolds * 0.3 / 60)}～{Math.round(optunaTrials * cvFolds * 0.5 / 60)} 分
+                  </div>
                 </div>
               )}
             </div>
@@ -283,64 +186,90 @@ export default function TrainPage() {
 
           <button
             onClick={handleTrain}
-            disabled={authLoading || loading}
-            className="mt-6 w-full px-8 py-4 bg-gradient-to-r from-green-600 to-teal-600 text-white font-bold rounded-lg hover:from-green-500 hover:to-teal-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg shadow-green-500/20"
+            disabled={loading}
+            className="w-full py-3 bg-white text-black font-medium rounded-lg hover:bg-[#eee] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            {authLoading ? '認証確認中...' : loading ? '学習中...' : '🚀 学習開始'}
+            {loading ? '学習中...' : '学習開始'}
           </button>
         </div>
 
-        {/* 学習結果 */}
         {trainResult && (
-          <div className="mb-6 p-6 bg-slate-800/50 backdrop-blur-sm rounded-xl border border-green-500/30">
-            <h2 className="text-xl font-bold text-green-400 mb-4">✅ 学習結果</h2>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div className="p-4 bg-slate-700/50 rounded-lg">
-                <p className="text-gray-400 text-sm">AUC</p>
-                <p className="text-2xl font-bold text-white">{trainResult.auc?.toFixed(4)}</p>
-              </div>
-              <div className="p-4 bg-slate-700/50 rounded-lg">
-                <p className="text-gray-400 text-sm">Log Loss</p>
-                <p className="text-2xl font-bold text-white">{trainResult.logloss?.toFixed(4)}</p>
-              </div>
-              <div className="p-4 bg-slate-700/50 rounded-lg">
-                <p className="text-gray-400 text-sm">学習データ数</p>
-                <p className="text-2xl font-bold text-white">{trainResult.n_rows}</p>
-              </div>
-              <div className="p-4 bg-slate-700/50 rounded-lg">
-                <p className="text-gray-400 text-sm">モデルID</p>
-                <p className="text-sm font-bold text-cyan-400">{trainResult.model_id}</p>
-              </div>
+          <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-6">
+            <div className="text-sm font-medium text-[#888] mb-4">学習結果</div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {[
+                { label: 'AUC', value: trainResult.auc?.toFixed(4) },
+                { label: 'Log Loss', value: trainResult.logloss?.toFixed(4) },
+                { label: '学習データ数', value: trainResult.n_rows },
+                { label: 'モデルID', value: trainResult.model_id, small: true },
+              ].map(s => (
+                <div key={s.label} className="bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg p-4">
+                  <div className="text-xs text-[#555] mb-1">{s.label}</div>
+                  <div className={`font-bold ${s.small ? 'text-xs text-[#4ade80] break-all' : 'text-xl'}`}>{s.value}</div>
+                </div>
+              ))}
             </div>
           </div>
         )}
 
-        {/* 保存済みモデル一覧 */}
-        <div className="p-6 bg-slate-800/50 backdrop-blur-sm rounded-xl border border-blue-500/30">
-          <h2 className="text-xl font-bold text-blue-400 mb-4">📦 保存済みモデル</h2>
-          {models.length === 0 ? (
-            <p className="text-gray-400">モデルがありません</p>
-          ) : (
-            <div className="space-y-3">
-              {models.map((model: any, index: number) => (
-                <div key={index} className="p-4 bg-slate-700/50 rounded-lg border border-blue-500/20 hover:border-blue-400 transition-all">
-                  <div className="flex items-center justify-between">
-                    <div className="flex-1">
-                      <p className="text-white font-semibold">{model.model_id}</p>
-                      <p className="text-gray-400 text-sm">{model.target} | {model.model_type}</p>
+        <div>
+          <h2 className="text-sm font-medium text-[#888] mb-3">保存済みモデル</h2>
+          <div className="bg-[#111] border border-[#1e1e1e] rounded-lg overflow-hidden">
+            {models.length === 0 ? (
+              <div className="p-8 text-center text-[#555] text-sm">モデルがありません</div>
+            ) : (
+              <div className="divide-y divide-[#1a1a1a]">
+                {models.map((m, i) => (
+                  <div key={i} className="flex items-center justify-between px-5 py-4 hover:bg-[#161616] transition-colors">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-medium font-mono">{m.model_id}</div>
+                      <div className="text-xs text-[#555] mt-0.5">{m.target} | {m.model_type}</div>
+                      {(m.training_date_from || m.training_date_to) && (
+                        <div className="text-xs text-[#666] mt-1">
+                          期間: {m.training_date_from ?? '?'} 〜 {m.training_date_to ?? '?'}
+                        </div>
+                      )}
+                      {m.n_rows > 0 && (
+                        <div className="text-xs text-[#444] mt-0.5">{m.n_rows.toLocaleString()} 件</div>
+                      )}
                     </div>
-                    <div className="text-right">
-                      <p className="text-cyan-400 font-bold">AUC: {model.auc?.toFixed(4)}</p>
-                      <p className="text-gray-400 text-sm">{model.n_rows} rows</p>
+                    <div className="flex items-center gap-4 ml-4 shrink-0">
+                      <div className="text-right">
+                        <div className="text-sm text-[#4ade80] font-medium">AUC {m.auc?.toFixed(4)}</div>
+                        <div className="text-xs text-[#555]">CV {m.cv_auc_mean?.toFixed(4)}</div>
+                      </div>
+                      <button
+                        onClick={() => handleDeleteModel(m.model_id)}
+                        disabled={deletingId === m.model_id}
+                        className="text-xs text-[#555] hover:text-red-400 transition-colors disabled:opacity-40 px-2 py-1"
+                      >
+                        {deletingId === m.model_id ? '...' : '削除'}
+                      </button>
                     </div>
                   </div>
-                </div>
-              ))}
-            </div>
-          )}
+                ))}
+              </div>
+            )}
+          </div>
         </div>
-      </div>
+
+        <div className="p-5 bg-[#111] border border-[#1e1e1e] rounded-lg flex items-center justify-between gap-4">
+          <div>
+            <div className="text-xs text-[#666] mb-0.5">次のステップ — 03</div>
+            <div className="text-sm font-medium">予測実行</div>
+            <div className="text-xs text-[#555] mt-0.5">学習したモデルでレース結果を予測します</div>
+          </div>
+          <Link
+            href="/predict-batch"
+            className="shrink-0 flex items-center gap-1.5 bg-white text-black text-sm font-medium px-5 py-2.5 rounded hover:bg-[#eee] transition-colors"
+          >
+            予測実行へ
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+          </Link>
+        </div>
+      </main>
     </div>
-    </AdminOnly>
   )
 }

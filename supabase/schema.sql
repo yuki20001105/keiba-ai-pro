@@ -147,17 +147,41 @@ CREATE POLICY "Users can insert own ocr usage"
 
 -- Functions
 CREATE OR REPLACE FUNCTION public.handle_new_user()
-RETURNS TRIGGER AS $$
+RETURNS TRIGGER 
+SECURITY DEFINER
+SET search_path = public
+AS $$
 BEGIN
-  INSERT INTO public.profiles (id, email, full_name)
-  VALUES (NEW.id, NEW.email, NEW.raw_user_meta_data->>'full_name');
+  -- プロファイルを作成（roleカラムを含む）
+  INSERT INTO public.profiles (id, email, full_name, role)
+  VALUES (
+    NEW.id, 
+    NEW.email, 
+    NEW.raw_user_meta_data->>'full_name',
+    'user'
+  )
+  ON CONFLICT (id) DO UPDATE
+  SET email = EXCLUDED.email,
+      full_name = EXCLUDED.full_name,
+      role = COALESCE(profiles.role, 'user');
   
-  INSERT INTO public.bank_records (user_id, initial_bank, current_bank)
-  VALUES (NEW.id, 100000, 100000);
+  -- 初期資金を設定（テーブルが存在する場合のみ）
+  BEGIN
+    INSERT INTO public.bank_records (user_id, initial_bank, current_bank)
+    VALUES (NEW.id, 100000, 100000)
+    ON CONFLICT (user_id) DO NOTHING;
+  EXCEPTION
+    WHEN undefined_table THEN
+      NULL;
+  END;
   
   RETURN NEW;
+EXCEPTION
+  WHEN OTHERS THEN
+    RAISE WARNING 'Error in handle_new_user: %', SQLERRM;
+    RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql;
 
 -- Trigger for new user
 CREATE TRIGGER on_auth_user_created

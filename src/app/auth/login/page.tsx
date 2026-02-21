@@ -83,7 +83,7 @@ export default function LoginPage() {
 
         <div className="mt-6 text-center">
           <a href="/auth/signup" className="text-blue-400 hover:text-blue-300 transition">
-            アカウントを作成
+            アカウントをお持ちでない方は新規登録
           </a>
         </div>
       </div>

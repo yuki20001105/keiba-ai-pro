@@ -4,12 +4,14 @@ race_results_ultimateテーブルからJSON形式でデータを読み込む
 """
 import sqlite3
 import pandas as pd
+import numpy as np
 import json
 from pathlib import Path
 
 def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
     """
     race_results_ultimateテーブルからUltimate版データを読み込む
+    races_ultimateテーブルのdistance/track_type等もJOINして取得する
     
     Args:
         db_path: keiba_ultimate.dbのパス
@@ -17,7 +19,6 @@ def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
     Returns:
         DataFrame with Ultimate features
     """
-    # Pathオブジェクトに変換（文字列の場合も対応）
     if not isinstance(db_path, Path):
         db_path = Path(db_path)
     
@@ -39,9 +40,43 @@ def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
         conn.close()
         return pd.DataFrame()
     
-    # 全データ取得
+    # races_ultimateテーブルの存在確認
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='races_ultimate'")
+    has_races_ultimate = cursor.fetchone() is not None
+    
+    # race_results_ultimate から全データ取得
     cursor.execute("SELECT race_id, data FROM race_results_ultimate")
     rows = cursor.fetchall()
+    
+    # races_ultimate から distance/track_type/date/num_horses を取得
+    race_meta = {}
+    if has_races_ultimate:
+        cursor.execute("SELECT race_id, data FROM races_ultimate")
+        for race_id, data_json in cursor.fetchall():
+            try:
+                data = json.loads(data_json)
+                race_meta[race_id] = {
+                    'distance': data.get('distance'),
+                    'track_type': data.get('track_type'),
+                    'surface': data.get('track_type'),  # track_typeをsurfaceとして使用
+                    'num_horses': data.get('num_horses'),
+                    'race_date': data.get('date'),
+                    'race_name': data.get('race_name'),
+                    'venue': data.get('venue'),
+                    'weather': data.get('weather'),
+                    'field_condition': data.get('field_condition'),
+                    'race_class': data.get('race_class'),
+                    # 新スクレイパーで追加されたフィールド
+                    'post_time': data.get('post_time'),
+                    'kai': data.get('kai'),
+                    'day': data.get('day'),
+                    'course_direction': data.get('course_direction'),
+                    'lap_cumulative': data.get('lap_cumulative'),   # dict: {200: 12.1, ...}
+                    'lap_sectional': data.get('lap_sectional'),     # dict: {200: 12.1, ...}
+                }
+            except:
+                pass
+    
     conn.close()
     
     if len(rows) == 0:
@@ -55,9 +90,13 @@ def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
     for race_id, data_json in rows:
         try:
             data = json.loads(data_json)
-            # race_idがデータに含まれていなければ追加
             if 'race_id' not in data:
                 data['race_id'] = race_id
+            # races_ultimateのメタ情報をマージ
+            if race_id in race_meta:
+                for k, v in race_meta[race_id].items():
+                    if k not in data or data[k] is None:
+                        data[k] = v
             records.append(data)
         except json.JSONDecodeError:
             print(f"  ⚠ JSON解析エラー: race_id={race_id}")
@@ -66,4 +105,112 @@ def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
     df = pd.DataFrame(records)
     print(f"  ✓ DataFrame変換: {len(df)}行 × {len(df.columns)}列")
     
+    # ===== カラム名マッピング（Ultimate版 → 標準版） =====
+    column_mapping = {
+        'finish_position': 'finish',
+        'finish_time': 'time',
+        'track_type': 'surface',   # track_typeをsurfaceとして使用
+        # 新スクレイパー形式: last_3f → last_3f_time
+        'last_3f': 'last_3f_time',
+        # 新スクレイパー形式: weight_kg → horse_weight
+        'weight_kg': 'horse_weight',
+        # weight_changeの別名統一
+        'weight_change': 'horse_weight_change',
+    }
+    for old_name, new_name in column_mapping.items():
+        if old_name in df.columns and new_name not in df.columns:
+            df[new_name] = df[old_name]
+        elif old_name in df.columns and new_name in df.columns and df[new_name].isna().all():
+            df[new_name] = df[old_name]
+    
+    # jockey_id / trainer_id / horse_id: URLからIDを抽出、なければ名前を使用
+    for url_col, id_col, name_col in [
+        ('jockey_url', 'jockey_id', 'jockey_name'),
+        ('trainer_url', 'trainer_id', 'trainer_name'),
+        ('horse_url', 'horse_id', 'horse_name'),
+    ]:
+        if id_col not in df.columns:
+            if url_col in df.columns:
+                # URLの末尾からIDを抽出: .../01091/ → 01091
+                df[id_col] = df[url_col].str.extract(r'/([^/]+)/?$')[0]
+            elif name_col in df.columns:
+                df[id_col] = df[name_col]
+    
+    # ===== 数値変換 =====
+    numeric_cols = [
+        'bracket_number', 'horse_number', 'jockey_weight', 'odds', 'popularity',
+        'horse_weight', 'age', 'finish', 'finish_position', 'distance',
+        'last_3f_time', 'last_3f_rank', 'weight_change', 'prize_money',
+        'num_horses',
+        # 新スクレイパーで追加されたフィールド
+        'kai', 'day',
+        'corner_1', 'corner_2', 'corner_3', 'corner_4',
+        'horse_total_runs', 'horse_total_wins', 'horse_total_prize_money',
+        'prev_race_distance', 'prev_race_finish', 'prev_race_weight',
+        'prev2_race_distance', 'prev2_race_finish', 'prev2_race_weight',
+    ]
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    # last_3f が文字列 "34.9" の場合、数値に変換
+    if 'last_3f' in df.columns and df['last_3f'].dtype == object:
+        df['last_3f'] = pd.to_numeric(df['last_3f'], errors='coerce')
+    
+    # horse_weight と weight の統合（どちらかが欠損していたら補完）
+    # weight が "474(+10)" 形式の場合は数値部分を抽出
+    if 'weight' in df.columns:
+        if df['weight'].dtype == object:
+            df['weight'] = df['weight'].str.extract(r'^(\d+)')[0]
+            df['weight'] = pd.to_numeric(df['weight'], errors='coerce')
+    if 'horse_weight' in df.columns and 'weight' not in df.columns:
+        df['weight'] = df['horse_weight']
+    elif 'weight' in df.columns and ('horse_weight' not in df.columns or df['horse_weight'].isna().all()):
+        df['horse_weight'] = df['weight']
+    
+    # ===== corner_positions の解析 =====
+    # "7-7-2-2" → [7, 7, 2, 2] の変換（corner_positions_listが無い場合）
+    if 'corner_positions' in df.columns and 'corner_positions_list' not in df.columns:
+        def parse_corners(s):
+            try:
+                if pd.isna(s) or s == '':
+                    return []
+                return [int(x) for x in str(s).split('-') if x.strip().isdigit()]
+            except:
+                return []
+        df['corner_positions_list'] = df['corner_positions'].apply(parse_corners)
+    
+    # ===== finish_time を秒数に変換 =====
+    def parse_time(t):
+        try:
+            if pd.isna(t) or t == '':
+                return np.nan
+            t = str(t)
+            if ':' in t:
+                parts = t.split(':')
+                return float(parts[0]) * 60 + float(parts[1])
+            return float(t)
+        except:
+            return np.nan
+    
+    if 'time' in df.columns:
+        df['time_seconds'] = df['time'].apply(parse_time)
+    
+    # ===== sex_age のパース（"牡6" → sex="牡", age=6 で補完） =====
+    if 'sex_age' in df.columns:
+        if 'sex' not in df.columns or df['sex'].isna().all():
+            df['sex'] = df['sex_age'].str.extract(r'^([牡牝セ])')[0]
+        if 'age' not in df.columns or df['age'].isna().all():
+            df['age'] = pd.to_numeric(df['sex_age'].str.extract(r'(\d+)$')[0], errors='coerce')
+    
+    # 最終的なカラム数を表示
+    n_numeric = len(df.select_dtypes(include='number').columns)
+    n_object = len(df.select_dtypes(include='object').columns)
+    print(f"  ✓ 型変換完了: 数値={n_numeric}列, 文字列={n_object}列, 合計={len(df.columns)}列")
+    if 'distance' in df.columns:
+        print(f"  ✓ distance: {df['distance'].notna().sum()}件取得")
+    if 'surface' in df.columns:
+        print(f"  ✓ surface: {df['surface'].notna().sum()}件取得")
+    
     return df
+

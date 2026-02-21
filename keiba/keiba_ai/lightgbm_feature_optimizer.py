@@ -52,8 +52,10 @@ class LightGBMFeatureOptimizer:
             'venue': 'venue_encoded',              # 競馬場: 東京/中山/阪神など10箇所
             'venue_code': 'venue_code_encoded',    # 競馬場コード
             'track_type': 'track_type_encoded',    # 芝/ダート
+            'surface': 'surface_encoded',          # 芝/ダート (track_typeの別名)
             'weather': 'weather_encoded',          # 晴/曇/雨
             'track_condition': 'track_condition_encoded',  # 良/稍重/重/不良
+            'field_condition': 'field_condition_encoded',  # 良/稍重/重/不良(Ultimate版)
             'race_class': 'race_class_encoded',    # 新馬/未勝利/1勝/2勝...
             'course_direction': 'course_direction_encoded',  # 右/左/直線
             
@@ -120,8 +122,24 @@ class LightGBMFeatureOptimizer:
         if 'horse_name' in df.columns:
             print(f"  ✓ horse_name → 削除（horse_idから統計特徴を使用）")
             df = df.drop('horse_name', axis=1)
-        
-        # 父馬名/母馬名/母父馬名も統計化または削除
+
+        # 父馬名 → 統計特徴量（新スクレイパーで取得）
+        if 'sire' in df.columns:
+            df = self._add_entity_statistics(df, 'sire', 'sire', target_col, prefix='sire')
+            print(f"  ✓ sire → sire_win_rate, sire_avg_finish, sire_race_count")
+            df = df.drop('sire', axis=1)
+
+        # 母父馬名 → 統計特徴量（新スクレイパーで取得）
+        if 'damsire' in df.columns:
+            df = self._add_entity_statistics(df, 'damsire', 'damsire', target_col, prefix='damsire')
+            print(f"  ✓ damsire → damsire_win_rate, damsire_avg_finish, damsire_race_count")
+            df = df.drop('damsire', axis=1)
+
+        # 母馬名 → 削除（母父馬で代替）
+        if 'dam' in df.columns:
+            df = df.drop('dam', axis=1)
+
+        # 旧形式の父馬名/母馬名/母父馬名も削除
         for sire_col in ['sire_name', 'dam_name', 'dam_sire_name']:
             if sire_col in df.columns:
                 print(f"  ✓ {sire_col} → 削除（影響度が低いため）")
@@ -135,6 +153,7 @@ class LightGBMFeatureOptimizer:
             'bracket_number',         # 枠番
             'horse_weight',           # 馬体重
             'horse_weight_change',    # 馬体重変化
+            'weight_change',          # 馬体重変化（別名）
             'age',                    # 年齢
             'burden_weight',          # 斤量
             'odds',                   # オッズ
@@ -144,28 +163,73 @@ class LightGBMFeatureOptimizer:
             'straight_length',        # 直線距離
             'inner_bias',             # 内枠有利性
             'race_num',               # レース番号
-            
+            'kai',                    # 開催回数
+            'day',                    # 開催日目
+
             # 近走派生特徴
             'days_since_last_race',   # 前走からの日数
-            'last_distance_change',   # 距離変化
-            
+            'last_distance_change',   # 距離変化（旧形式）
+            'distance_change',        # 距離変化（新形式）
+            'prev_race_finish',       # 前走着順
+            'prev_race_distance',     # 前走距離
+            'prev_race_weight',       # 前走馬体重
+            'prev2_race_finish',      # 前々走着順
+
+            # 馬の通算成績
+            'horse_total_runs',       # 通算出走回数
+            'horse_total_wins',       # 通算勝利数
+            'horse_total_prize_money',# 通算獲得賞金
+            'horse_win_rate',         # 通算勝率
+
+            # 市場分析
+            'market_entropy',         # 市場エントロピー（混戦度）
+            'top3_probability',       # 上位3頭の暗黙確率和
+
+            # 騎手・調教師の複勝率
+            'jockey_place_rate_top2', # 騎手複勝率（2着以内）
+            'jockey_show_rate',       # 騎手複勝率（3着以内）
+            'trainer_place_rate_top2',# 調教師複勝率（2着以内）
+            'trainer_show_rate',      # 調教師複勝率（3着以内）
+
             # 統計特徴（feature_engineeringで生成）
             'jockey_course_win_rate',
             'jockey_course_races',
             'horse_distance_win_rate',
             'horse_distance_avg_finish',
             'trainer_recent_win_rate',
-            
+            'jockey_win_rate',        # lightgbm_feature_optimizerで生成
+            'jockey_avg_finish',
+            'jockey_race_count',
+            'trainer_win_rate',
+            'trainer_avg_finish',
+            'trainer_race_count',
+            'sire_win_rate',          # 父馬統計
+            'sire_avg_finish',
+            'sire_race_count',
+            'damsire_win_rate',       # 母父馬統計
+            'damsire_avg_finish',
+            'damsire_race_count',
+
             # コーナー派生特徴
             'corner_position_avg',
             'corner_position_variance',
             'last_corner_position',
             'position_change',
-            
+            'corner_1', 'corner_2', 'corner_3', 'corner_4',
+
+            # ラップタイム（距離別）
+            'lap_200m', 'lap_400m', 'lap_600m', 'lap_800m',
+            'lap_1000m', 'lap_1200m', 'lap_1400m', 'lap_1600m',
+            'lap_1800m', 'lap_2000m', 'lap_2200m', 'lap_2400m',
+            'lap_sect_200m', 'lap_sect_400m', 'lap_sect_600m', 'lap_sect_800m',
+            'lap_sect_1000m', 'lap_sect_1200m', 'lap_sect_1400m', 'lap_sect_1600m',
+            'lap_sect_1800m', 'lap_sect_2000m', 'lap_sect_2200m', 'lap_sect_2400m',
+
             # その他派生特徴
             'last_3f_rank',
             'last_3f_rank_normalized',
             'inner_advantage',
+            'time_seconds',
         ]
         
         available_numeric = [col for col in numeric_features if col in df.columns]
@@ -271,6 +335,23 @@ class LightGBMFeatureOptimizer:
             'prize_money',            # 賞金（結果データ）
             'finish',                 # 着順（結果データ、targetと重複）
             'finish_position',        # 着順（結果データ、targetと重複）
+            # 馬詳細（予測に不要な文字列）
+            'owner_name',             # 馬主名
+            'horse_owner',            # 馬主名（別名）
+            'horse_breeder',          # 生産者名
+            'horse_breeding_farm',    # 牧場名
+            'horse_birth_date',       # 生年月日（年齢で代替）
+            'horse_coat_color',       # 毛色（coat_colorに統一）
+            'sex_age',                # 性齢文字列（sex/ageに分解済み）
+            'race_date',              # レース日付（race_idから抽出済み）
+            'created_at',             # タイムスタンプ
+            'weight',                 # 馬体重文字列（horse_weightに変換済み）
+            'corner_positions',       # コーナー通過文字列（corner_positions_listに変換済み）
+            'id',                     # Supabase UUID
+            # 前走情報の文字列版
+            'prev_race_venue',        # 前走競馬場名文字列
+            'prev2_race_venue',       # 前々走競馬場名文字列
+            'prev_race_date',         # 前走日付（days_since_last_raceに変換済み）
         ]
         
         for col in unnecessary_cols:
@@ -278,6 +359,25 @@ class LightGBMFeatureOptimizer:
                 print(f"  ✓ {col} → 削除")
                 df = df.drop(col, axis=1)
         
+        # ===== 欠損率が高すぎる列を除去（閾値: 90%以上欠損） =====
+        # 全件 NaN の列（lap_xxxm, kai, day など JS レンダリング列）はモデルに悪影響
+        if len(df) > 0:
+            miss_rate = df.isnull().mean()
+            high_miss_cols = miss_rate[miss_rate >= 0.90].index.tolist()
+            # ID/target 列は除外対象から除く
+            keep_cols = ['race_id', 'horse_id', 'jockey_id', 'trainer_id',
+                         'win', 'place', 'finish', 'finish_position']
+            drop_miss = [c for c in high_miss_cols if c not in keep_cols]
+            if drop_miss:
+                print(f"\n  ⚠️  欠損率90%超の列を除去 ({len(drop_miss)}列): {drop_miss[:8]}{'...' if len(drop_miss)>8 else ''}")
+                df = df.drop(columns=drop_miss, errors='ignore')
+
+        # ===== 重複列の除去 =====
+        dup_cols = df.columns[df.columns.duplicated()].tolist()
+        if dup_cols:
+            print(f"  ⚠️  重複列を除去: {dup_cols}")
+            df = df.loc[:, ~df.columns.duplicated()]
+
         # ===== 最終統計 =====
         print("\n" + "="*80)
         print("【最適化完了】")
@@ -338,6 +438,10 @@ class LightGBMFeatureOptimizer:
             df = df.drop('trainer_name', axis=1)
         if 'horse_name' in df.columns:
             df = df.drop('horse_name', axis=1)
+        # 血統カラムも削除（推論時は統計値を別途準備する必要あり）
+        for col in ['sire', 'dam', 'damsire', 'sire_name', 'dam_name', 'dam_sire_name']:
+            if col in df.columns:
+                df = df.drop(col, axis=1)
         
         # リスト型変数を削除
         if 'corner_positions_list' in df.columns:
@@ -378,35 +482,59 @@ class LightGBMFeatureOptimizer:
     
     def _add_entity_statistics(self, df: pd.DataFrame, id_col: str, name_col: str, 
                               target_col: Optional[str], prefix: str) -> pd.DataFrame:
-        """エンティティ（騎手/調教師）の統計特徴量を追加
+        """エンティティ（騎手/調教師）の統計特徴量を追加（データリーク防止版）
+
+        race_id の辞書順 = 時系列順を利用し、各行に対して「それより前のレース」
+        だけで集計した expanding window 統計を使用する。
+        これにより未来のレース結果が過去の特徴量に混入するデータリークを防ぐ。
         
         Args:
-            df: データフレーム
+            df: データフレーム（race_id カラムが必須）
             id_col: IDカラム（例: 'jockey_id'）
             name_col: 名前カラム（例: 'jockey_name'）
             target_col: 目的変数カラム（win, placeなど）
             prefix: 特徴量の接頭辞（例: 'jockey'）
         """
-        if target_col and target_col in df.columns:
-            # 目的変数がある場合は統計を計算
-            stats = df.groupby(id_col).agg({
-                target_col: ['mean', 'count']
-            }).reset_index()
-            stats.columns = [id_col, f'{prefix}_win_rate', f'{prefix}_race_count']
-            
-            # 着順がある場合は平均着順も計算
-            if 'finish_position' in df.columns:
-                finish_stats = df.groupby(id_col)['finish_position'].mean().reset_index()
-                finish_stats.columns = [id_col, f'{prefix}_avg_finish']
-                stats = stats.merge(finish_stats, on=id_col, how='left')
-            
-            df = df.merge(stats, on=id_col, how='left')
+        finish_col = ('finish_position' if 'finish_position' in df.columns
+                      else 'finish' if 'finish' in df.columns else None)
+
+        if 'race_id' in df.columns and finish_col and id_col in df.columns:
+            # ── Expanding window（時系列リーク防止） ──────────────────────────
+            orig_idx = df.index.copy()
+            # race_id 辞書順 = 時系列順でソート（安定ソートで同一race_id内の順序を保持）
+            df_sorted = df.sort_values('race_id', kind='mergesort').copy()
+
+            fin_num  = pd.to_numeric(df_sorted[finish_col], errors='coerce').fillna(0)
+            win_flag = (fin_num == 1).astype(float)
+
+            # groupby().cumcount() = グループ内で現在行より前の行数（0始まり）= 「前走数」
+            race_cnt = df_sorted.groupby(id_col, sort=False).cumcount()
+
+            # cumsum() はこの行を含む累積。current を引いて「前走までの累積」に変換
+            df_sorted['_w'] = win_flag
+            cum_wins = df_sorted.groupby(id_col, sort=False)['_w'].cumsum() - df_sorted['_w']
+            df_sorted.drop(columns=['_w'], inplace=True)
+
+            df_sorted['_f'] = fin_num
+            cum_fin  = df_sorted.groupby(id_col, sort=False)['_f'].cumsum() - df_sorted['_f']
+            df_sorted.drop(columns=['_f'], inplace=True)
+
+            df_sorted[f'{prefix}_win_rate']   = (cum_wins / race_cnt.clip(1)).fillna(0.0)
+            df_sorted[f'{prefix}_race_count'] = race_cnt
+            df_sorted[f'{prefix}_avg_finish'] = (cum_fin  / race_cnt.clip(1)).fillna(8.0)
+
+            # 元の行順に戻して代入
+            df_back = df_sorted.reindex(orig_idx)
+            df[f'{prefix}_win_rate']   = df_back[f'{prefix}_win_rate'].values
+            df[f'{prefix}_race_count'] = df_back[f'{prefix}_race_count'].values
+            df[f'{prefix}_avg_finish'] = df_back[f'{prefix}_avg_finish'].values
+
         else:
-            # 目的変数がない場合（推論時）はデフォルト値
-            df[f'{prefix}_win_rate'] = 0.0
+            # race_id / finish 列がない場合（推論時など）はデフォルト値
+            df[f'{prefix}_win_rate']   = 0.0
             df[f'{prefix}_race_count'] = 0
-            df[f'{prefix}_avg_finish'] = 8.0  # 平均値
-        
+            df[f'{prefix}_avg_finish'] = 8.0
+
         return df
     
     def _process_date_column(self, df: pd.DataFrame, col: str, prefix: str = 'date') -> pd.DataFrame:

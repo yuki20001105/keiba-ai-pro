@@ -1,0 +1,740 @@
+=== keiba_ultimate.db 差分パッチ ===
+  DB: C:\Users\yuki2\Documents\ws\keiba-ai-pro\keiba\data\keiba_ultimate.db
+  フェーズ: [0, 1, 2, 3]
+  dry-run: False
+
+
+[LIST] Phase 0: horse_id補完対象 35 レース
+  [1/35] 202408010105: 17馬取得 sample_id=2021105442 (0行更新)
+  [2/35] 202406010102: 16馬取得 sample_id=2021107212 (0行更新)
+  [3/35] 202406010103: 15馬取得 sample_id=2021105032 (0行更新)
+  [10/35] 202406010110: 10馬取得 sample_id=2021105370 (0行更新)
+  [20/35] 202408010108: 16馬取得 sample_id=2020106062 (0行更新)
+  [30/35] 202406010208: 16馬取得 sample_id=2020105471 (0行更新)
+  [OK] Phase 0 完了: レース=35, 更新行数=0
+
+[LIST] Phase 1: レースメタ更新対象 311 レース
+  [1/311] 202406010308: ['race_name', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day']
+  [2/311] 202406010204: ['race_name', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day']
+  [3/311] 202410010204: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day']
+  [4/311] 202406010410: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [5/311] 202406010411: ['race_name', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [6/311] 202406010412: ['race_name', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [7/311] 202408010401: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [8/311] 202408010402: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [9/311] 202408010403: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [10/311] 202408010404: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [11/311] 202408010405: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [12/311] 202408010406: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [13/311] 202408010407: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [14/311] 202408010408: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [15/311] 202408010409: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [16/311] 202408010410: ['race_name', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [17/311] 202408010411: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [18/311] 202408010412: ['race_name', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [19/311] 202410010102: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [20/311] 202410010103: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [21/311] 202410010104: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day']
+  [22/311] 202410010105: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day']
+  [23/311] 202410010106: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [24/311] 202410010107: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [25/311] 202410010108: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [26/311] 202410010109: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [27/311] 202410010110: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [28/311] 202410010111: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [29/311] 202410010112: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [30/311] 202406010501: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [31/311] 202406010502: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [32/311] 202406010503: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [33/311] 202406010504: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [34/311] 202406010505: ['race_name', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [35/311] 202406010506: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [36/311] 202406010507: ['race_name', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [37/311] 202406010508: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [38/311] 202406010509: ['race_name', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [39/311] 202406010510: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [40/311] 202408010605: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [41/311] 202408010606: ['race_name', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [42/311] 202408010607: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [43/311] 202408010608: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [44/311] 202408010609: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [45/311] 202408010610: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [46/311] 202408010611: ['race_name', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [47/311] 202408010612: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [48/311] 202410010301: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [49/311] 202410010302: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [50/311] 202410010303: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [51/311] 202410010304: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day']
+  [52/311] 202410010305: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day']
+  [53/311] 202410010306: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [54/311] 202410010307: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [55/311] 202410010308: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [56/311] 202410010309: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [57/311] 202410010310: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [58/311] 202410010311: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [59/311] 202410010312: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [60/311] 202406010701: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [61/311] 202406010702: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [62/311] 202406010703: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [63/311] 202406010704: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [64/311] 202406010705: ['race_name', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [65/311] 202406010706: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [66/311] 202406010707: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [67/311] 202406010708: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [68/311] 202406010709: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [69/311] 202406010710: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [70/311] 202406010711: ['race_name', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [71/311] 202406010712: ['race_name', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [72/311] 202408010701: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [73/311] 202408010702: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [74/311] 202408010703: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [75/311] 202408010704: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [76/311] 202408010705: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [77/311] 202408010706: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [78/311] 202408010707: ['race_name', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [79/311] 202408010708: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [80/311] 202408010709: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [81/311] 202408010710: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [82/311] 202408010711: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [83/311] 202408010712: ['race_name', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [84/311] 202410010401: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [85/311] 202410010402: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [86/311] 202410010403: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [87/311] 202410010404: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day']
+  [88/311] 202410010405: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [89/311] 202410010406: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [90/311] 202410010407: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [91/311] 202410010408: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [92/311] 202410010409: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [93/311] 202410010410: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [94/311] 202410010411: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [95/311] 202410010412: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [96/311] 202405010101: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [97/311] 202405010102: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [98/311] 202405010103: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [99/311] 202405010104: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [100/311] 202405010105: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [101/311] 202405010106: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [102/311] 202405010107: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [103/311] 202405010108: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [104/311] 202405010109: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [105/311] 202405010110: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [106/311] 202405010111: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [107/311] 202405010112: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [108/311] 202408020101: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [109/311] 202408020102: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [110/311] 202408020103: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [111/311] 202408020104: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [112/311] 202408020105: ['race_name', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [113/311] 202408020106: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [114/311] 202408020107: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [115/311] 202408020108: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [116/311] 202408020109: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [117/311] 202408020110: ['race_name', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [118/311] 202408020111: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [119/311] 202408020112: ['race_name', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [120/311] 202410010501: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [121/311] 202410010502: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [122/311] 202410010503: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [123/311] 202410010504: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day']
+  [124/311] 202410010505: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [125/311] 202410010506: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [126/311] 202410010507: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [127/311] 202410010508: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day']
+  [128/311] 202410010509: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [129/311] 202410010510: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [130/311] 202405010203: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [131/311] 202405010208: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [132/311] 202408020201: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [133/311] 202408020206: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [134/311] 202408020211: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [135/311] 202410010604: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day']
+  [136/311] 202410010609: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [137/311] 202410010511: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [138/311] 202405010204: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [139/311] 202405010209: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [140/311] 202408020202: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [141/311] 202408020207: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [142/311] 202408020212: ['race_name', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [143/311] 202410010605: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [144/311] 202410010610: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [145/311] 202410010512: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [146/311] 202405010205: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [147/311] 202405010210: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [148/311] 202408020203: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [149/311] 202408020208: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [150/311] 202410010601: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [151/311] 202410010606: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [152/311] 202410010611: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [153/311] 202405010201: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [154/311] 202405010206: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [155/311] 202405010211: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [156/311] 202408020204: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [157/311] 202408020209: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [158/311] 202410010602: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [159/311] 202410010607: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [160/311] 202410010612: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [161/311] 202405010202: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [162/311] 202405010207: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [163/311] 202405010212: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [164/311] 202408020205: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [165/311] 202408020210: ['race_name', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [166/311] 202410010603: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [167/311] 202410010608: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [168/311] 202408010310: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [169/311] 202406010402: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [170/311] 202410010101: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [171/311] 202406010101: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [172/311] 202545010401: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [173/311] 202545010402: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [174/311] 202545010403: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [175/311] 202545010404: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [176/311] 202545010405: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [177/311] 202545010406: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [178/311] 202545010407: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [179/311] 202545010408: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [180/311] 202545010409: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [181/311] 202545010410: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [182/311] 202545010411: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [183/311] 202545010412: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [184/311] 202548010401: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [185/311] 202548010402: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [186/311] 202548010403: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [187/311] 202548010404: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [188/311] 202548010405: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [189/311] 202548010406: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [190/311] 202548010407: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [191/311] 202548010408: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [192/311] 202548010409: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [193/311] 202548010410: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [194/311] 202548010411: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [195/311] 202548010412: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [196/311] 202550010401: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [197/311] 202550010402: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [198/311] 202550010403: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [199/311] 202550010404: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [200/311] 202550010405: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [201/311] 202550010406: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [202/311] 202550010407: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [203/311] 202550010408: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [204/311] 202550010409: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [205/311] 202550010410: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [206/311] 202550010411: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [207/311] 202550010412: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [208/311] 202506010101: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [209/311] 202506010102: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [210/311] 202506010103: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [211/311] 202506010104: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [212/311] 202506010105: ['race_name', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [213/311] 202506010106: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [214/311] 202506010107: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [215/311] 202506010108: ['race_name', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [216/311] 202506010109: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [217/311] 202506010110: ['race_name', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [218/311] 202506010111: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [219/311] 202506010112: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [220/311] 202507010101: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [221/311] 202507010102: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [222/311] 202507010103: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [223/311] 202507010104: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [224/311] 202507010105: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [225/311] 202507010106: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [226/311] 202507010107: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [227/311] 202507010108: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [228/311] 202507010109: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [229/311] 202507010110: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [230/311] 202507010111: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [231/311] 202507010112: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [232/311] 202554010501: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [233/311] 202554010502: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [234/311] 202554010503: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [235/311] 202554010504: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [236/311] 202554010505: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [237/311] 202554010506: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [238/311] 202554010507: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [239/311] 202554010508: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [240/311] 202554010509: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [241/311] 202554010510: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [242/311] 202506010301: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [243/311] 202506010302: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [244/311] 202506010303: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [245/311] 202506010304: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [246/311] 202506010305: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [247/311] 202506010306: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [248/311] 202506010307: ['race_name', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [249/311] 202506010308: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [250/311] 202506010309: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [251/311] 202506010310: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [252/311] 202506010311: ['race_name', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [253/311] 202506010312: ['race_name', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [254/311] 202507010301: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [255/311] 202507010302: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [256/311] 202507010303: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [257/311] 202507010304: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [258/311] 202507010305: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [259/311] 202507010306: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [260/311] 202507010307: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [261/311] 202507010308: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day']
+  [262/311] 202507010309: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [263/311] 202507010310: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [264/311] 202507010311: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [265/311] 202507010312: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [266/311] 202555011101: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [267/311] 202555011102: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [268/311] 202555011103: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [269/311] 202555011104: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [270/311] 202555011105: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [271/311] 202555011106: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [272/311] 202555011107: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [273/311] 202555011108: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [274/311] 202555011109: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [275/311] 202555011110: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [276/311] 202555011111: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [277/311] 202506010401: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [278/311] 202506010402: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [279/311] 202506010403: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [280/311] 202506010404: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [281/311] 202506010405: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [282/311] 202506010406: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [283/311] 202506010407: ['race_name', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [284/311] 202506010408: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [285/311] 202506010409: ['race_name', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [286/311] 202506010410: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [287/311] 202506010411: ['race_name', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [288/311] 202506010412: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [289/311] 202507010401: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [290/311] 202507010402: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [291/311] 202507010403: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [292/311] 202507010404: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day']
+  [293/311] 202507010405: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [294/311] 202507010406: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [295/311] 202507010407: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [296/311] 202507010408: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [297/311] 202507010409: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [298/311] 202507010410: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [299/311] 202507010411: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [300/311] 202507010412: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'race_class', 'kai', 'day', 'course_direction']
+  [301/311] 202554011201: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [302/311] 202554011202: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [303/311] 202554011203: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [304/311] 202554011204: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [305/311] 202554011205: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [306/311] 202554011206: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [307/311] 202554011207: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [308/311] 202554011208: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [309/311] 202554011209: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [310/311] 202554011210: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [311/311] 202554011211: ['race_name', 'track_type', 'distance', 'weather', 'field_condition', 'post_time', 'kai', 'day', 'course_direction']
+  [OK] Phase 1 完了: 更新=311, スキップ=0
+
+[LIST] Phase 2: 血統更新対象 2614 頭
+  [1/2614] 2021103915: sire='マジェスティックウォリアーMajestic Warrior(米)' (2行更新)
+  [2/2614] 2021102665: sire='サンダースノーThunder Snow(愛)' (2行更新)
+  [3/2614] 2021101892: sire='モーニン' (2行更新)
+  [4/2614] 2021105018: sire='マインドユアビスケッツMind Your Biscuits(米)' (2行更新)
+  [5/2614] 2019104098: sire='ハーツクライ' (2行更新)
+  [10/2614] 2018102681: sire='ホッコータルマエ' (2行更新)
+  [20/2614] 2018105873: sire='ミキノバンジョー' (2行更新)
+  [30/2614] 2018103341: sire='ロードカナロア' (1行更新)
+  [40/2614] 2021100898: sire='ビッグアーサー' (1行更新)
+  [50/2614] 2021102916: sire='リアルインパクト' (1行更新)
+  [60/2614] 2021100108: sire='サトノアラジン' (1行更新)
+  [70/2614] 2021104592: sire='ビッグアーサー' (1行更新)
+  [80/2614] 2021103758: sire='クリエイターIICreator(米)' (1行更新)
+  [90/2614] 2021103326: sire='ジョーカプチーノ' (1行更新)
+  [100/2614] 2021104546: sire='ベストウォーリア' (1行更新)
+  [110/2614] 2021106120: sire='サトノクラウン' (1行更新)
+  [120/2614] 2021106811: sire='ゴールドシップ' (1行更新)
+  [130/2614] 2021106775: sire='ゴールドシップ' (1行更新)
+  [140/2614] 2021105801: sire='ドゥラメンテ' (1行更新)
+  [150/2614] 2021106758: sire='ラニ' (1行更新)
+  [160/2614] 2021104917: sire='ヴィクトワールピサ' (1行更新)
+  [170/2614] 2019103827: sire='フェノーメノ' (2行更新)
+  [180/2614] 2021105089: sire='スクリーンヒーロー' (2行更新)
+  [190/2614] 2020100838: sire='カレンブラックヒル' (1行更新)
+  [200/2614] 2021106939: sire='マツリダゴッホ' (1行更新)
+  [210/2614] 2020101143: sire='ダイワメジャー' (1行更新)
+  [220/2614] 2020101709: sire='キズナ' (2行更新)
+  [230/2614] 2020103679: sire='リアルスティール' (2行更新)
+  [240/2614] 2021105777: sire='モーリス' (1行更新)
+  [250/2614] 2020105744: sire='ゴールドシップ' (1行更新)
+  [260/2614] 2021104557: sire='カレンブラックヒル' (1行更新)
+  [270/2614] 2021102020: sire='レッドファルクス' (1行更新)
+  [280/2614] 2017103788: sire='バーディバーディ' (1行更新)
+  [290/2614] 2020110062: sire='War Front' (1行更新)
+  [300/2614] 2018100478: sire='マクフィMakfi(英)' (1行更新)
+  [310/2614] 2021100145: sire='キズナ' (1行更新)
+  [320/2614] 2021102896: sire='アニマルキングダムAnimal Kingdom(米)' (1行更新)
+  [330/2614] 2021103972: sire='アメリカンペイトリオット' (1行更新)
+  [340/2614] 2021101725: sire='ブリックスアンドモルタルBricks and Mortar(米)' (1行更新)
+  [350/2614] 2021104454: sire='リアルインパクト' (1行更新)
+  [360/2614] 2021102221: sire='マジェスティックウォリアーMajestic Warrior(米)' (1行更新)
+  [370/2614] 2021106152: sire='ロジャーバローズ' (1行更新)
+  [380/2614] 2021106701: sire='マジェスティックウォリアーMajestic Warrior(米)' (1行更新)
+  [390/2614] 2021106395: sire='レッドファルクス' (1行更新)
+  [400/2614] 2020103123: sire='エイシンフラッシュ' (2行更新)
+  [410/2614] 2018105131: sire='キズナ' (1行更新)
+  [420/2614] 2018104333: sire='ミッキーアイル' (1行更新)
+  [430/2614] 2019105169: sire='ハービンジャーHarbinger(英)' (1行更新)
+  [440/2614] 2019105482: sire='カレンブラックヒル' (1行更新)
+  [450/2614] 2020102641: sire='レッドファルクス' (1行更新)
+  [460/2614] 2019106575: sire='ゼンノロブロイ' (2行更新)
+  [470/2614] 2020101262: sire='アメリカンペイトリオット' (1行更新)
+  [480/2614] 2020104613: sire='サトノダイヤモンド' (1行更新)
+  [490/2614] 2021101139: sire='リアルスティール' (1行更新)
+  [500/2614] 2018100756: sire='ゴールドシップ' (1行更新)
+  [510/2614] 2020103639: sire='シルバーステート' (1行更新)
+  [520/2614] 2018103223: sire="アイルハヴアナザーI'll Have Another(米)" (1行更新)
+  [530/2614] 2018104477: sire='ドゥラメンテ' (1行更新)
+  [540/2614] 2020104224: sire='キンシャサノキセキ' (1行更新)
+  [550/2614] 2021101306: sire='カレンブラックヒル' (1行更新)
+  [560/2614] 2021102219: sire='ダノンレジェンド' (1行更新)
+  [570/2614] 2021100213: sire='リアルスティール' (1行更新)
+  [580/2614] 2021104738: sire='ジャスタウェイ' (1行更新)
+  [590/2614] 2021103804: sire='キタサンブラック' (1行更新)
+  [600/2614] 2017106236: sire='ゴールドシップ' (1行更新)
+  [610/2614] 2021104123: sire='リアルインパクト' (1行更新)
+  [620/2614] 2018106220: sire='ホッコータルマエ' (1行更新)
+  [630/2614] 2021102353: sire='ロジャーバローズ' (1行更新)
+  [640/2614] 2019105678: sire='ダノンレジェンド' (2行更新)
+  [650/2614] 2021103689: sire='タニノギムレット' (1行更新)
+  [660/2614] 2021105738: sire='キズナ' (1行更新)
+  [670/2614] 2021110090: sire='Le Havre' (1行更新)
+  [680/2614] 2021102281: sire='ハーツクライ' (1行更新)
+  [690/2614] 2019101896: sire='ブラックタイド' (1行更新)
+  [700/2614] 2019102676: sire='ワールドエース' (1行更新)
+  [710/2614] 2019100768: sire='キングカメハメハ' (1行更新)
+  [720/2614] 2018102657: sire='ドゥラメンテ' (1行更新)
+  [730/2614] 2019103393: sire='ダノンレジェンド' (1行更新)
+  [740/2614] 2021104994: sire='ダイワメジャー' (1行更新)
+  [750/2614] 2021106641: sire='キズナ' (1行更新)
+  [760/2614] 2021101781: sire='ゴールドシップ' (1行更新)
+  [770/2614] 2021102155: sire='スワーヴリチャード' (1行更新)
+  [780/2614] 2019104660: sire='ローエングリン' (1行更新)
+  [790/2614] 2018102899: sire='モーリス' (1行更新)
+  [800/2614] 2021100238: sire='コパノリッキー' (1行更新)
+  [810/2614] 2021103268: sire='ダノンレジェンド' (1行更新)
+  [820/2614] 2021109089: sire='ドレフォンDrefong(米)' (1行更新)
+  [830/2614] 2021100510: sire='スマートファルコン' (1行更新)
+  [840/2614] 2020106021: sire='ヘニーヒューズHenny Hughes(米)' (1行更新)
+  [850/2614] 2020106843: sire='ダンカークDunkirk(米)' (1行更新)
+  [860/2614] 2021101790: sire='モーリス' (1行更新)
+  [870/2614] 2021105405: sire='エピファネイア' (1行更新)
+  [880/2614] 2021102569: sire='エイシンヒカリ' (1行更新)
+  [890/2614] 2017103005: sire='ヴァンセンヌ' (1行更新)
+  [900/2614] 2015103340: sire='ダイワメジャー' (1行更新)
+  [910/2614] 2022101923: sire='コパノリッキー' (1行更新)
+  [920/2614] 2022100474: sire='シャンハイボビーShanghai Bobby(米)' (1行更新)
+  [930/2614] 2022100741: sire='ベストウォーリア' (1行更新)
+  [940/2614] 2020101355: sire='アメリカンペイトリオット' (1行更新)
+  [950/2614] 2021102172: sire='クラグオー' (1行更新)
+  [960/2614] 2020102283: sire='トゥザワールド' (1行更新)
+  [970/2614] 2017106300: sire='トーセンジョーダン' (1行更新)
+  [980/2614] 2022105840: sire='ニューイヤーズデイ' (1行更新)
+  [990/2614] 2022102782: sire='タリスマニックTalismanic(英)' (1行更新)
+  [1000/2614] 2021101245: sire='カルストンライトオ' (1行更新)
+  [1010/2614] 2019103644: sire='パイロPyro(米)' (1行更新)
+  [1020/2614] 2018106752: sire='フリオーソ' (1行更新)
+  [1030/2614] 2019100613: sire='キズナ' (1行更新)
+  [1040/2614] 2020101379: sire='ホッコータルマエ' (1行更新)
+  [1050/2614] 2021103930: sire='エスケンデレヤ' (1行更新)
+  [1060/2614] 2022102960: sire='カリフォルニアクロームCalifornia Chrome(米)' (1行更新)
+  [1070/2614] 2022106547: sire='ルーラーシップ' (1行更新)
+  [1080/2614] 2020102080: sire='ビッグアーサー' (1行更新)
+  [1090/2614] 2019106759: sire='バトルプランBattle Plan(米)' (1行更新)
+  [1100/2614] 2020103409: sire='サトノクラウン' (1行更新)
+  [1110/2614] 2021110081: sire='Zoustar' (1行更新)
+  [1120/2614] 2020104303: sire='シニスターミニスターSinister Minister(米)' (1行更新)
+  [1130/2614] 2016103657: sire='ベルシャザール' (1行更新)
+  [1140/2614] 2021103597: sire='リアルインパクト' (1行更新)
+  [1150/2614] 2019104672: sire='キングカメハメハ' (1行更新)
+  [1160/2614] 2018106709: sire='アジアエクスプレス' (1行更新)
+  [1170/2614] 2021106423: sire='ナムラタイタン' (1行更新)
+  [1180/2614] 2020100474: sire='ホッコータルマエ' (1行更新)
+  [1190/2614] 2019102010: sire='カルストンライトオ' (1行更新)
+  [1200/2614] 2021101337: sire='プレティオラス' (1行更新)
+  [1210/2614] 2019101564: sire='コメート' (1行更新)
+  [1220/2614] 2018105944: sire='エイシンアポロン' (1行更新)
+  [1230/2614] 2020102424: sire='マインドユアビスケッツMind Your Biscuits(米)' (1行更新)
+  [1240/2614] 2021102626: sire='マジェスティックウォリアーMajestic Warrior(米)' (1行更新)
+  [1250/2614] 2022107101: sire='タワーオブロンドン' (1行更新)
+  [1260/2614] 2018101044: sire='サウスヴィグラス' (1行更新)
+  [1270/2614] 2018102677: sire='ニホンピロアワーズ' (1行更新)
+  [1280/2614] 2018105941: sire='エーシンジーライン' (1行更新)
+  [1290/2614] 2019103224: sire='アドマイヤムーン' (1行更新)
+  [1300/2614] 2022106350: sire='ミスターメロディ' (1行更新)
+  [1310/2614] 2022105175: sire='キタサンブラック' (1行更新)
+  [1320/2614] 2022101812: sire='サトノクラウン' (1行更新)
+  [1330/2614] 2022105347: sire='リアルインパクト' (1行更新)
+  [1340/2614] 2022106754: sire='ラニ' (1行更新)
+  [1350/2614] 2021101927: sire='オルフェーヴル' (1行更新)
+  [1360/2614] 2022100400: sire='イスラボニータ' (1行更新)
+  [1370/2614] 2022105668: sire='マクマホンMac Mahon(伊)' (1行更新)
+  [1380/2614] 2022106403: sire='サトノダイヤモンド' (1行更新)
+  [1390/2614] 2019105457: sire='ミッキーアイル' (1行更新)
+  [1400/2614] 2019102747: sire='ビッグアーサー' (1行更新)
+  [1410/2614] 2019106707: sire='ロゴタイプ' (1行更新)
+  [1420/2614] 2020105198: sire='エイシンヒカリ' (1行更新)
+  [1430/2614] 2022102920: sire='モーリス' (1行更新)
+  [1440/2614] 2019103586: sire='ドゥラメンテ' (1行更新)
+  [1450/2614] 2021103061: sire='キンシャサノキセキ' (1行更新)
+  [1460/2614] 2018106613: sire='ディスクリートキャットDiscreet Cat(米)' (1行更新)
+  [1470/2614] 2022103202: sire='ナダルNadal(米)' (1行更新)
+  [1480/2614] 2022102052: sire='サトノアラジン' (1行更新)
+  [1490/2614] 2022103627: sire='カリフォルニアクロームCalifornia Chrome(米)' (1行更新)
+  [1500/2614] 2022100219: sire='ハービンジャーHarbinger(英)' (1行更新)
+  [1510/2614] 2022101654: sire='アメリカンペイトリオット' (1行更新)
+  [1520/2614] 2022105013: sire='サトノダイヤモンド' (1行更新)
+  [1530/2614] 2022107282: sire='キタサンブラック' (1行更新)
+  [1540/2614] 2022104816: sire='サートゥルナーリア' (1行更新)
+  [1550/2614] 2021105857: sire='リアルインパクト' (1行更新)
+  [1560/2614] 2021101413: sire='ダイワメジャー' (1行更新)
+  [1570/2614] 2019100110: sire='シニスターミニスターSinister Minister(米)' (1行更新)
+  [1580/2614] 2020103435: sire='ロードカナロア' (1行更新)
+  [1590/2614] 2019100831: sire='ハービンジャーHarbinger(英)' (1行更新)
+  [1600/2614] 2019101055: sire='エスポワールシチー' (1行更新)
+  [1610/2614] 2019104642: sire='ダイワメジャー' (1行更新)
+  [1620/2614] 2021102727: sire='モーリス' (1行更新)
+  [1630/2614] 2021105773: sire='モーリス' (1行更新)
+  [1640/2614] 2022107232: sire='ウインブライト' (1行更新)
+  [1650/2614] 2020106233: sire='ドリームバレンチノ' (1行更新)
+  [1660/2614] 2022103979: sire='エピカリス' (1行更新)
+  [1670/2614] 2018103862: sire='マクフィMakfi(英)' (1行更新)
+  [1680/2614] 2019101919: sire='アメリカンペイトリオット' (1行更新)
+  [1690/2614] 2019103281: sire='ネオユニヴァース' (1行更新)
+  [1700/2614] 2015100894: sire='ヘニーヒューズHenny Hughes(米)' (1行更新)
+  [1710/2614] 2021102605: sire='エーシントップ' (1行更新)
+  [1720/2614] 2021107378: sire='ダノンレジェンド' (1行更新)
+  [1730/2614] 2022107319: sire='マインドユアビスケッツMind Your Biscuits(米)' (1行更新)
+  [1740/2614] 2022101227: sire='ブラックタイド' (1行更新)
+  [1750/2614] 2022105121: sire='リアルスティール' (1行更新)
+  [1760/2614] 2022103755: sire='リアルスティール' (1行更新)
+  [1770/2614] 2022100200: sire='カリフォルニアクロームCalifornia Chrome(米)' (1行更新)
+  [1780/2614] 2022101938: sire='ダノンレジェンド' (1行更新)
+  [1790/2614] 2022100009: sire='リオンディーズ' (1行更新)
+  [1800/2614] 2022101100: sire='ダノンバラード' (1行更新)
+  [1810/2614] 2019106938: sire='メイショウボーラー' (1行更新)
+  [1820/2614] 2022105314: sire='モーリス' (1行更新)
+  [1830/2614] 2020100956: sire='シルバーステート' (1行更新)
+  [1840/2614] 2018104872: sire='オーシャンブルー' (1行更新)
+  [1850/2614] 2022107287: sire="Kitten's Joy(米)" (1行更新)
+  [1860/2614] 2019106691: sire='エスポワールシチー' (1行更新)
+  [1870/2614] 2020100631: sire='デクラレーションオブウォー' (1行更新)
+  [1880/2614] 2017100084: sire='キズナ' (1行更新)
+  [1890/2614] 2021105300: sire='レッドファルクス' (1行更新)
+  [1900/2614] 2022102881: sire='サンダースノーThunder Snow(愛)' (1行更新)
+  [1910/2614] 2022103775: sire='パイロPyro(米)' (1行更新)
+  [1920/2614] 2022104022: sire='シニスターミニスターSinister Minister(米)' (1行更新)
+  [1930/2614] 2022106602: sire='ダイワメジャー' (1行更新)
+  [1940/2614] 2019103092: sire='ザファクター' (1行更新)
+  [1950/2614] 2020102876: sire='ジャスタウェイ' (1行更新)
+  [1960/2614] 2022103548: sire='キズナ' (1行更新)
+  [1970/2614] 2022106123: sire='カレンブラックヒル' (1行更新)
+  [1980/2614] 2021110012: sire='Golden Horn(英)' (1行更新)
+  [1990/2614] 2021100273: sire='シャンハイボビーShanghai Bobby(米)' (1行更新)
+  [2000/2614] 2021100363: sire='スワーヴリチャード' (1行更新)
+  [2010/2614] 2020103208: sire='ジャスタウェイ' (1行更新)
+  [2020/2614] 2021101485: sire='ホークビルHawkbill(米)' (1行更新)
+  [2030/2614] 2021101703: sire='パイロPyro(米)' (1行更新)
+  [2040/2614] 2019105318: sire='スクリーンヒーロー' (1行更新)
+  [2050/2614] 2022104995: sire='ドゥラメンテ' (1行更新)
+  [2060/2614] 2021104819: sire='モーニン' (1行更新)
+  [2070/2614] 2020101339: sire='オルフェーヴル' (1行更新)
+  [2080/2614] 2017100553: sire='カジノドライヴ' (1行更新)
+  [2090/2614] 2022101839: sire='ホークビルHawkbill(米)' (1行更新)
+  [2100/2614] 2017101612: sire='ワールドエース' (1行更新)
+  [2110/2614] 2020106419: sire='シビルウォー' (1行更新)
+  [2120/2614] 2021102794: sire='インカンテーション' (1行更新)
+  [2130/2614] 2018100892: sire='カレンブラックヒル' (1行更新)
+  [2140/2614] 2018102749: sire='マジェスティックウォリアーMajestic Warrior(米)' (1行更新)
+  [2150/2614] 2018106565: sire='ハーツクライ' (1行更新)
+  [2160/2614] 2021106780: sire='ゴールドシップ' (1行更新)
+  [2170/2614] 2022103151: sire='ミスターメロディ' (1行更新)
+  [2180/2614] 2022101341: sire='モズアスコット' (1行更新)
+  [2190/2614] 2022107074: sire='ロジユニヴァース' (1行更新)
+  [2200/2614] 2022101278: sire='レッドファルクス' (1行更新)
+  [2210/2614] 2022106594: sire='キンシャサノキセキ' (1行更新)
+  [2220/2614] 2022107085: sire='レッドベルジュール' (1行更新)
+  [2230/2614] 2022106475: sire='サトノダイヤモンド' (1行更新)
+  [2240/2614] 2022103985: sire='エピファネイア' (1行更新)
+  [2250/2614] 2021100382: sire='エスポワールシチー' (1行更新)
+  [2260/2614] 2021104068: sire='シャンハイボビーShanghai Bobby(米)' (1行更新)
+  [2270/2614] 2020106694: sire='ゴールドシップ' (1行更新)
+  [2280/2614] 2021104901: sire='ロードカナロア' (1行更新)
+  [2290/2614] 2021105668: sire='ルーラーシップ' (1行更新)
+  [2300/2614] 2021100660: sire='レイデオロ' (1行更新)
+  [2310/2614] 2019105455: sire='キングカメハメハ' (1行更新)
+  [2320/2614] 2015100274: sire='キングヘイロー' (1行更新)
+  [2330/2614] 2022101464: sire='キズナ' (1行更新)
+  [2340/2614] 2020100363: sire='アジアエクスプレス' (1行更新)
+  [2350/2614] 2020102731: sire='ヘニーヒューズHenny Hughes(米)' (1行更新)
+  [2360/2614] 2022101477: sire='ロジャーバローズ' (1行更新)
+  [2370/2614] 2022106177: sire='マクフィMakfi(英)' (1行更新)
+  [2380/2614] 2022102133: sire='ミッキーアイル' (1行更新)
+  [2390/2614] 2022107147: sire='カレンブラックヒル' (1行更新)
+  [2400/2614] 2022106363: sire='ノーブルミッションNoble Mission(英)' (1行更新)
+  [2410/2614] 2022104583: sire='ナダルNadal(米)' (1行更新)
+  [2420/2614] 2022103052: sire='サトノダイヤモンド' (1行更新)
+  [2430/2614] 2022104850: sire='サトノダイヤモンド' (1行更新)
+  [2440/2614] 2022103841: sire='ノーブルミッションNoble Mission(英)' (1行更新)
+  [2450/2614] 2022100028: sire='ゴールドドリーム' (1行更新)
+  [2460/2614] 2021104210: sire='ディスクリートキャットDiscreet Cat(米)' (1行更新)
+  [2470/2614] 2020102326: sire='リオンディーズ' (1行更新)
+  [2480/2614] 2020104640: sire='ラニ' (1行更新)
+  [2490/2614] 2021105800: sire='リアルスティール' (1行更新)
+  [2500/2614] 2016102362: sire='トゥザグローリー' (1行更新)
+  [2510/2614] 2017106137: sire='キンシャサノキセキ' (1行更新)
+  [2520/2614] 2021110079: sire='Pivotal' (1行更新)
+  [2530/2614] 2020104015: sire='モーリス' (1行更新)
+  [2540/2614] 2022103982: sire='ディープブリランテ' (1行更新)
+  [2550/2614] 2022106055: sire='シュヴァルグラン' (1行更新)
+  [2560/2614] 2022100447: sire='サトノクラウン' (1行更新)
+  [2570/2614] 2016103174: sire='ローレルゲレイロ' (1行更新)
+  [2580/2614] 2019106519: sire='ロードカナロア' (1行更新)
+  [2590/2614] 2019106824: sire='モーリス' (1行更新)
+  [2600/2614] 2017102389: sire='キンシャサノキセキ' (1行更新)
+  [2610/2614] 2019100607: sire='ノヴェリストNovellist(愛)' (1行更新)
+  [OK] Phase 2 完了: 更新=2614頭, スキップ=0頭
+
+[LIST] Phase 3: 前走成績更新対象 2614 頭 / 2781 行
+  [1/2614] 2021103915: prev='2024/04/28' finish=16 2行更新 
+  [2/2614] 2021102665: prev='2024/04/24' finish=7 2行更新 
+  [3/2614] 2021101892: prev='2024/07/18' finish=4 2行更新 
+  [4/2614] 2021105018: prev='2024/01/06' finish=10 2行更新 
+  [5/2614] 2019104098: prev='2024/04/09' finish=9 2行更新 
+  [10/2614] 2018102681: prev='2024/05/18' finish=8 2行更新 
+  [20/2614] 2018105873: prev='2024/04/19' finish=12 2行更新 
+  [30/2614] 2018103341: prev='2024/04/28' finish=10 1行更新 
+  [40/2614] 2021100898: prev='2024/04/28' finish=7 1行更新 
+  [50/2614] 2021102916: prev='2024/01/28' finish=15 1行更新 
+  [60/2614] 2021100108: prev='2024/05/30' finish=1 1行更新 
+  [70/2614] 2021104592: prev='2024/05/18' finish=8 1行更新 
+  [80/2614] 2021103758: prev='2024/04/28' finish=1 1行更新 
+  [90/2614] 2021103326: prev='2024/05/25' finish=9 1行更新 
+  [100/2614] 2021104546: prev='2024/04/06' finish=12 1行更新 
+  [110/2614] 2021106120: prev='2024/05/14' finish=4 1行更新 
+  [120/2614] 2021106811: prev='2024/04/20' finish=1 1行更新 
+  [130/2614] 2021106775: prev='2024/05/11' finish=3 1行更新 
+  [140/2614] 2021105801: prev='2024/05/19' finish=14 1行更新 
+  [150/2614] 2021106758: prev='2024/06/09' finish=8 1行更新 
+  [160/2614] 2021104917: prev='2024/07/18' finish=6 1行更新 
+  [170/2614] 2019103827: prev='2024/05/26' finish=4 2行更新 
+  [180/2614] 2021105089: prev='2024/07/13' finish=13 2行更新 
+  [190/2614] 2020100838: prev='2024/03/03' finish=5 1行更新 
+  [200/2614] 2021106939: prev='2024/04/07' finish=1 1行更新 
+  [210/2614] 2020101143: prev='2024/04/14' finish=6 1行更新 
+  [220/2614] 2020101709: prev='2024/05/18' finish=6 2行更新 
+  [230/2614] 2020103679: prev='2024/01/06' finish=6 2行更新 
+  [240/2614] 2021105777: prev='2024/01/06' finish=9 1行更新 
+  [250/2614] 2020105744: prev='2024/02/07' finish=9 1行更新 
+  [260/2614] 2021104557: prev='2024/07/20' finish=9 1行更新 
+  [270/2614] 2021102020: prev='2024/06/26' finish=9 1行更新 
+  [280/2614] 2017103788: prev='2024/04/21' finish=4 1行更新 
+  [290/2614] 2020110062: prev='2024/02/11' finish=8 1行更新 
+  [300/2614] 2018100478: prev='2024/03/31' finish=8 1行更新 
+  [310/2614] 2021100145: prev='2024/06/22' finish=13 1行更新 
+  [320/2614] 2021102896: prev='2024/05/28' finish=10 1行更新 
+  [330/2614] 2021103972: prev='2024/07/04' finish=7 1行更新 
+  [340/2614] 2021101725: prev='2024/06/23' finish=5 1行更新 
+  [350/2614] 2021104454: prev='2024/06/12' finish=4 1行更新 
+  [360/2614] 2021102221: prev='2024/05/05' finish=12 1行更新 
+  [370/2614] 2021106152: prev='2024/07/14' finish=7 1行更新 
+  [380/2614] 2021106701: prev='2024/03/26' finish=3 1行更新 
+  [390/2614] 2021106395: prev='2024/07/20' finish=11 1行更新 
+  [400/2614] 2020103123: prev='2024/05/12' finish=3 2行更新 
+  [410/2614] 2018105131: prev='2024/03/03' finish=11 1行更新 
+  [420/2614] 2018104333: prev='2024/03/24' finish=6 1行更新 
+  [430/2614] 2019105169: prev='2024/01/13' finish=4 1行更新 
+  [440/2614] 2019105482: prev='2024/05/26' finish=5 1行更新 
+  [450/2614] 2020102641: prev='2024/01/14' finish=1 1行更新 
+  [460/2614] 2019106575: prev='2024/06/22' finish=1 2行更新 
+  [470/2614] 2020101262: prev='2024/05/05' finish=13 1行更新 
+  [480/2614] 2020104613: prev='2024/05/26' finish=6 1行更新 
+  [490/2614] 2021101139: prev='2024/05/28' finish=7 1行更新 
+  [500/2614] 2018100756: prev='2024/03/16' finish=None 1行更新 
+  [510/2614] 2020103639: prev='2024/06/09' finish=8 1行更新 
+  [520/2614] 2018103223: prev='2024/06/23' finish=1 1行更新 
+  [530/2614] 2018104477: prev='2024/01/20' finish=7 1行更新 
+  [540/2614] 2020104224: prev='2024/07/07' finish=3 1行更新 
+  [550/2614] 2021101306: prev='2024/05/22' finish=4 1行更新 
+  [560/2614] 2021102219: prev='2024/05/11' finish=3 1行更新 
+  [570/2614] 2021100213: prev='2024/05/04' finish=15 1行更新 
+  [580/2614] 2021104738: prev='2024/05/23' finish=1 1行更新 
+  [590/2614] 2021103804: prev='2024/07/03' finish=8 1行更新 
+  [600/2614] 2017106236: prev='2024/05/19' finish=3 1行更新 
+  [610/2614] 2021104123: prev='2024/05/18' finish=13 1行更新 
+  [620/2614] 2018106220: prev='2024/01/28' finish=7 1行更新 
+  [630/2614] 2021102353: prev='2024/09/13' finish=7 1行更新 
+  [640/2614] 2019105678: prev='2024/01/27' finish=12 2行更新 
+  [650/2614] 2021103689: prev='2024/01/07' finish=7 1行更新 
+  [660/2614] 2021105738: prev='2024/03/30' finish=1 1行更新 
+  [670/2614] 2021110090: prev='2024/05/12' finish=1 1行更新 
+  [680/2614] 2021102281: prev='2024/03/30' finish=11 1行更新 
+  [690/2614] 2019101896: prev='2024/05/19' finish=10 1行更新 
+  [700/2614] 2019102676: prev='2024/03/03' finish=6 1行更新 
+  [710/2614] 2019100768: prev='2024/04/27' finish=5 1行更新 
+  [720/2614] 2018102657: prev='2024/05/04' finish=2 1行更新 
+  [730/2614] 2019103393: prev='2024/05/30' finish=6 1行更新 
+  [740/2614] 2021104994: prev='2024/03/24' finish=3 1行更新 
+  [750/2614] 2021106641: prev='2024/07/13' finish=17 1行更新 
+  [760/2614] 2021101781: prev='2024/07/23' finish=12 1行更新 
+  [770/2614] 2021102155: prev='2024/05/19' finish=9 1行更新 
+  [780/2614] 2019104660: prev='2024/05/19' finish=8 1行更新 
+  [790/2614] 2018102899: prev='2024/05/22' finish=5 1行更新 
+  [800/2614] 2021100238: prev='2024/01/07' finish=6 1行更新 
+  [810/2614] 2021103268: prev='2024/07/21' finish=8 1行更新 
+  [820/2614] 2021109089: prev='2024/06/26' finish=3 1行更新 
+  [830/2614] 2021100510: prev='2024/07/30' finish=7 1行更新 
+  [840/2614] 2020106021: prev='2024/02/17' finish=16 1行更新 
+  [850/2614] 2020106843: prev='2024/07/21' finish=6 1行更新 
+  [860/2614] 2021101790: prev='2024/06/29' finish=14 1行更新 
+  [870/2614] 2021105405: prev='2024/05/11' finish=2 1行更新 
+  [880/2614] 2021102569: prev='2024/06/15' finish=9 1行更新 
+  [890/2614] 2017103005: prev='2024/07/28' finish=8 1行更新 
+  [900/2614] 2015103340: prev='2024/06/15' finish=8 1行更新 
+  [910/2614] 2022101923: prev='2025/12/18' finish=10 1行更新 
+  [920/2614] 2022100474: prev='2025/11/20' finish=9 1行更新 
+  [930/2614] 2022100741: prev='2025/03/03' finish=None 1行更新 
+  [940/2614] 2020101355: prev='2025/12/19' finish=4 1行更新 
+  [950/2614] 2021102172: prev='2025/12/18' finish=2 1行更新 
+  [960/2614] 2020102283: prev='2025/12/24' finish=10 1行更新 
+  [970/2614] 2017106300: prev='2025/10/15' finish=2 1行更新 
+  [980/2614] 2022105840: prev='2025/12/18' finish=2 1行更新 
+  [990/2614] 2022102782: prev='2025/09/23' finish=1 1行更新 
+  [1000/2614] 2021101245: prev='2025/02/08' finish=1 1行更新 
+  [1010/2614] 2019103644: prev='2025/03/06' finish=3 1行更新 
+  [1020/2614] 2018106752: prev='2025/12/26' finish=None 1行更新 
+  [1030/2614] 2019100613: prev='2025/09/17' finish=10 1行更新 
+  [1040/2614] 2020101379: prev='2025/08/25' finish=1 1行更新 
+  [1050/2614] 2021103930: prev='2025/07/15' finish=3 1行更新 
+  [1060/2614] 2022102960: prev='2025/11/21' finish=8 1行更新 
+  [1070/2614] 2022106547: prev='2025/12/22' finish=3 1行更新 
+  [1080/2614] 2020102080: prev='2025/10/15' finish=12 1行更新 
+  [1090/2614] 2019106759: prev='2025/12/18' finish=12 1行更新 
+  [1100/2614] 2020103409: prev='2025/02/25' finish=11 1行更新 
+  [1110/2614] 2021110081: prev='2025/10/26' finish=9 1行更新 
+  [1120/2614] 2020104303: prev='2025/12/18' finish=6 1行更新 
+  [1130/2614] 2016103657: prev='2025/11/02' finish=4 1行更新 
+  [1140/2614] 2021103597: prev='2025/04/09' finish=9 1行更新 
+  [1150/2614] 2019104672: prev='2025/12/23' finish=4 1行更新 
+  [1160/2614] 2018106709: prev='2025/07/08' finish=12 1行更新 
+  [1170/2614] 2021106423: prev='2025/12/16' finish=7 1行更新 
+  [1180/2614] 2020100474: prev='2025/12/27' finish=9 1行更新 
+  [1190/2614] 2019102010: prev='2025/04/06' finish=None 1行更新 
+  [1200/2614] 2021101337: prev='2025/11/26' finish=12 1行更新 
+  [1220/2614] 2018105944: prev='2025/12/29' finish=8 1行更新 
+  [1230/2614] 2020102424: prev='2025/12/25' finish=7 1行更新 
+  [1240/2614] 2021102626: prev='2025/12/24' finish=6 1行更新 
+  [1250/2614] 2022107101: prev='2025/02/12' finish=10 1行更新 
+  [1260/2614] 2018101044: prev='2025/01/04' finish=8 1行更新 
+  [1270/2614] 2018102677: prev='2025/09/20' finish=5 1行更新 
+  [1280/2614] 2018105941: prev='2025/07/11' finish=9 1行更新 
+  [1290/2614] 2019103224: prev='2025/06/26' finish=9 1行更新 
+  [1300/2614] 2022106350: prev='2025/03/15' finish=10 1行更新 
+  [OK] Phase 3 完了: 更新=1288頭 / 1433行, スキップ=1326頭
+
+[DONE] 全処理完了: 6054.8秒
+
+次のステップ:
+  python check_null_rates3.py  # 充填率を再確認
+  python check_features_detail.py  # 特徴量パイプライン確認

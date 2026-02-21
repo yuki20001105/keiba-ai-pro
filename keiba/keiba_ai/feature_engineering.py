@@ -217,7 +217,12 @@ def compute_trainer_recent_form(df: pd.DataFrame, current_race_id: str, trainer_
         }
     """
     current_date = current_race_id[:8]
-    cutoff_date = (pd.to_datetime(current_date) - pd.Timedelta(days=days)).strftime('%Y%m%d')
+    try:
+        cutoff_date = (pd.to_datetime(current_date, format='%Y%m%d') - pd.Timedelta(days=days)).strftime('%Y%m%d')
+    except (ValueError, Exception):
+        # race_id[:8] が有効な日付でない場合（新フォーマット: YYYY+会場+開催+日+R）
+        # race_id の辞書順比較に頼る（全データ対象）
+        cutoff_date = '00000000'
     
     recent_races = df[
         (df['race_id'] >= cutoff_date) &
@@ -356,6 +361,112 @@ def add_derived_features(df: pd.DataFrame, full_history_df: Optional[pd.DataFram
             lambda row: compute_trainer_recent_form(full_history_df, row['race_id'], row['trainer_id']),
             axis=1
         )
-        df['trainer_recent_win_rate'] = [s['trainer_recent_win_rate'] for s in trainer_stats]
-    
+        # ultimate_features.py でも同名列を計算するため fe_ プレフィックスで区別
+        df['fe_trainer_win_rate'] = [s['trainer_recent_win_rate'] for s in trainer_stats]
+
+        # ===== 騎手・調教師の複勝率（データリーク防止: expanding window） =====
+        if 'finish' in full_history_df.columns and 'race_id' in full_history_df.columns:
+            def _expanding_stats(history_df: pd.DataFrame, eid_col: str, prefix: str) -> pd.DataFrame:
+                """race_id 辞書順（= 時系列順）での expanding window 統計を計算。
+                各行には「その行より前のレース」だけを使った統計をセットする。"""
+                if eid_col not in history_df.columns:
+                    return history_df
+                orig_idx = history_df.index.copy()
+                s = history_df.sort_values('race_id', kind='mergesort').copy()
+                fin_num  = pd.to_numeric(s['finish'], errors='coerce').fillna(0)
+                # place = 3着以内, show = 2着以内
+                place_flag = (fin_num <= 3).astype(float)
+                show_flag  = (fin_num <= 2).astype(float)
+                race_cnt   = s.groupby(eid_col, sort=False).cumcount()  # 前走数（現行除く）
+                s['_pl'] = place_flag
+                s['_sh'] = show_flag
+                cum_pl = s.groupby(eid_col, sort=False)['_pl'].cumsum() - s['_pl']
+                cum_sh = s.groupby(eid_col, sort=False)['_sh'].cumsum() - s['_sh']
+                s.drop(columns=['_pl', '_sh'], inplace=True)
+                s[f'{prefix}_show_rate']       = (cum_pl / race_cnt.clip(1)).fillna(0.0)
+                s[f'{prefix}_place_rate_top2'] = (cum_sh / race_cnt.clip(1)).fillna(0.0)
+                s_back = s.reindex(orig_idx)
+                history_df = history_df.copy()
+                history_df[f'{prefix}_show_rate']       = s_back[f'{prefix}_show_rate'].values
+                history_df[f'{prefix}_place_rate_top2'] = s_back[f'{prefix}_place_rate_top2'].values
+                return history_df
+
+            if 'jockey_id' in df.columns:
+                full_history_df = _expanding_stats(full_history_df, 'jockey_id', 'jockey')
+                df = df.merge(
+                    full_history_df[['jockey_id', 'race_id', 'jockey_place_rate_top2', 'jockey_show_rate']].drop_duplicates(subset=['jockey_id', 'race_id']),
+                    on=['jockey_id', 'race_id'], how='left'
+                )
+            if 'trainer_id' in df.columns:
+                full_history_df = _expanding_stats(full_history_df, 'trainer_id', 'trainer')
+                df = df.merge(
+                    full_history_df[['trainer_id', 'race_id', 'trainer_place_rate_top2', 'trainer_show_rate']].drop_duplicates(subset=['trainer_id', 'race_id']),
+                    on=['trainer_id', 'race_id'], how='left'
+                )
+
+    # ===== 市場エントロピー / 上位3頭の暗黙確率和 =====
+    if 'odds' in df.columns and 'race_id' in df.columns:
+        def _market_features(grp):
+            o = pd.to_numeric(grp['odds'], errors='coerce').dropna()
+            if len(o) < 2:
+                return pd.Series({'market_entropy': 0.0, 'top3_probability': 0.5})
+            probs = 1.0 / o
+            total = probs.sum()
+            if total == 0:
+                return pd.Series({'market_entropy': 0.0, 'top3_probability': 0.5})
+            probs = probs / total
+            entropy = float(-np.sum(probs * np.log(probs + 1e-10)))
+            top3_prob = float(probs.nlargest(3).sum())
+            return pd.Series({'market_entropy': entropy, 'top3_probability': top3_prob})
+        market_stats = df.groupby('race_id').apply(_market_features).reset_index()
+        df = df.merge(market_stats, on='race_id', how='left')
+
+    # ===== 前走からの日数 =====
+    if 'prev_race_date' in df.columns:
+        _race_dt = pd.to_datetime(df['race_id'].str[:8], format='%Y%m%d', errors='coerce')
+        _prev_dt = pd.to_datetime(
+            df['prev_race_date'].astype(str).str.replace('/', '-').str.strip(),
+            errors='coerce'
+        )
+        df['days_since_last_race'] = (_race_dt - _prev_dt).dt.days
+
+    # ===== 距離変化 =====
+    if 'prev_race_distance' in df.columns and 'distance' in df.columns:
+        _prev_dist = pd.to_numeric(df['prev_race_distance'], errors='coerce')
+        _cur_dist  = pd.to_numeric(df['distance'], errors='coerce')
+        df['distance_change'] = _cur_dist - _prev_dist
+        df['distance_increased'] = (df['distance_change'] > 0).astype(int)
+        df['distance_decreased'] = (df['distance_change'] < 0).astype(int)
+
+    # ===== 馬の通算勝率 =====
+    if 'horse_total_runs' in df.columns and 'horse_total_wins' in df.columns:
+        _runs = pd.to_numeric(df['horse_total_runs'], errors='coerce')
+        _wins = pd.to_numeric(df['horse_total_wins'], errors='coerce')
+        df['horse_win_rate'] = np.where(_runs > 0, _wins / _runs, np.nan)
+
+    # ===== 前走着順（数値化） =====
+    if 'prev_race_finish' in df.columns:
+        df['prev_race_finish'] = pd.to_numeric(df['prev_race_finish'], errors='coerce')
+
+    # ===== ラップタイム展開 =====
+    # ※ JSONに保存すると整数キー(200)→文字列キー("200")に変換されるため両方試す
+    import json as _json_fe
+    def _lap_get(x, dist):
+        d = _json_fe.loads(x) if isinstance(x, str) else (x or {})
+        v = d.get(dist)  # int key (Python直接)
+        if v is None:
+            v = d.get(str(dist))  # str key (JSON経由)
+        return v
+
+    if 'lap_cumulative' in df.columns:
+        for _dist in [200, 400, 600, 800, 1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400]:
+            df[f'lap_{_dist}m'] = df['lap_cumulative'].apply(lambda x, d=_dist: _lap_get(x, d))
+            df[f'lap_{_dist}m'] = pd.to_numeric(df[f'lap_{_dist}m'], errors='coerce')
+        df = df.drop(columns=['lap_cumulative'], errors='ignore')
+    if 'lap_sectional' in df.columns:
+        for _dist in [200, 400, 600, 800, 1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400]:
+            df[f'lap_sect_{_dist}m'] = df['lap_sectional'].apply(lambda x, d=_dist: _lap_get(x, d))
+            df[f'lap_sect_{_dist}m'] = pd.to_numeric(df[f'lap_sect_{_dist}m'], errors='coerce')
+        df = df.drop(columns=['lap_sectional'], errors='ignore')
+
     return df

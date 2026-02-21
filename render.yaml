@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: keiba-ai-api
+    runtime: python
+    rootDir: python-api
+    buildCommand: pip install -r requirements.txt
+    startCommand: PYTHONPATH=/opt/render/project/src/keiba uvicorn main:app --host 0.0.0.0 --port $PORT
+    plan: free
+    envVars:
+      - key: ALLOWED_ORIGINS
+        value: http://localhost:3000  # Vercelデプロイ後にここを更新する
+      - key: PYTHONUNBUFFERED
+        value: "1"

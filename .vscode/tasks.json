@@ -36,7 +36,63 @@
     {
       "label": "Start All Servers",
       "dependsOn": ["Start FastAPI", "Start Next.js"],
-      "problemMatcher": []
+      "problemMatcher": [],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "Stop All Servers",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/stop-all.ps1",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": true
+      }
+    },
+    {
+      "label": "Set Admin (Prompt Email)",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "args": ["set_admin.py", "${input:adminEmail}"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": true
+      }
+    },
+    {
+      "label": "List All Users",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "args": ["set_admin.py", "--list"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": true
+      }
+    }
+  ],
+  "inputs": [
+    {
+      "id": "adminEmail",
+      "type": "promptString",
+      "description": "管理者に設定するメールアドレス",
+      "default": ""
     }
   ]
 }

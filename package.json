@@ -11,7 +11,9 @@
     "dev:all": "concurrently --names \"NEXT,API\" -c \"cyan,magenta\" \"npm run dev\" \"npm run dev:api\"",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "up": "powershell -ExecutionPolicy Bypass -File ./scripts/start-all.ps1",
+    "down": "powershell -ExecutionPolicy Bypass -File ./scripts/stop-all.ps1"
   },
   "dependencies": {
     "@google-cloud/vision": "^4.1.0",

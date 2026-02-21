@@ -1,0 +1,8 @@
+Exception in callback _ProactorBasePipeTransport._call_connection_lost(None)
+handle: <Handle _ProactorBasePipeTransport._call_connection_lost(None)>
+Traceback (most recent call last):
+  File "C:\Users\yuki2\.pyenv\pyenv-win\versions\3.11.9\Lib\asyncio\events.py", line 84, in _run
+    self._context.run(self._callback, *self._args)
+  File "C:\Users\yuki2\.pyenv\pyenv-win\versions\3.11.9\Lib\asyncio\proactor_events.py", line 165, in _call_connection_lost
+    self._sock.shutdown(socket.SHUT_RDWR)
+ConnectionResetError: [WinError 10054] 既存の接続はリモート ホストに強制的に切断されました。

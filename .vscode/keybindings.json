@@ -1,0 +1,12 @@
+[
+  {
+    "key": "f7",
+    "command": "workbench.action.tasks.runTask",
+    "args": "Start All Servers"
+  },
+  {
+    "key": "shift+f7",
+    "command": "workbench.action.tasks.runTask",
+    "args": "Stop All Servers"
+  }
+]

@@ -30,33 +30,54 @@ class UltimateFeatureCalculator:
         Returns:
             過去10走統計の辞書
         """
+        import json
         conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
         
-        # 過去10走のデータを取得（現在のレースより前）
+        # race_results_ultimateからJSONデータを取得
         query = """
-        SELECT 
-            r.finish,
-            r.time,
-            r.margin,
-            r.last3f,
-            e.odds,
-            e.popularity,
-            races.distance,
-            races.surface
-        FROM race_results r
-        JOIN entries e ON r.race_id = e.race_id AND r.horse_number = e.horse_number
-        JOIN races ON r.race_id = races.race_id
-        WHERE e.horse_id = ?
-          AND r.race_id < ?
-          AND r.finish IS NOT NULL
-        ORDER BY r.race_id DESC
-        LIMIT 10
+        SELECT race_id, data
+        FROM race_results_ultimate
+        WHERE race_id < ?
+        ORDER BY race_id DESC
         """
         
-        df = pd.read_sql_query(query, conn, params=(horse_id, current_race_id))
+        cursor.execute(query, (current_race_id,))
+        rows = cursor.fetchall()
         conn.close()
         
-        if len(df) == 0:
+        # JSON解析してhorse_idでフィルタリング
+        records = []
+        for race_id, data_json in rows:
+            try:
+                data = json.loads(data_json)
+                # horse_idまたはhorse_nameで一致判定
+                if data.get('horse_id') == horse_id or data.get('horse_name') == horse_id:
+                    records.append(data)
+                    if len(records) >= 10:
+                        break
+            except (json.JSONDecodeError, KeyError):
+                continue
+        
+        if len(records) == 0:
+            return self._get_default_stats()
+        
+        df = pd.DataFrame(records)
+        
+        # カラム名マッピング (JSON → 期待される名前)
+        if 'finish_position' in df.columns:
+            df['finish'] = df['finish_position']
+        if 'finish_time' in df.columns:
+            df['time'] = df['finish_time']
+
+        # 数値型に変換（文字列 "4" → 4, "中止" → NaN）
+        if 'finish' in df.columns:
+            df['finish'] = pd.to_numeric(df['finish'], errors='coerce')
+        if 'popularity' in df.columns:
+            df['popularity'] = pd.to_numeric(df['popularity'], errors='coerce')
+        
+        # デフォルト値設定
+        if 'finish' not in df.columns:
             return self._get_default_stats()
         
         # 統計計算
@@ -101,28 +122,42 @@ class UltimateFeatureCalculator:
         Returns:
             騎手統計の辞書
         """
+        import json
         conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
         
         current_date = current_race_id[:8]
         from datetime import datetime, timedelta
-        cutoff_date = (datetime.strptime(current_date, '%Y%m%d') - timedelta(days=days)).strftime('%Y%m%d')
+        try:
+            cutoff_date = (datetime.strptime(current_date, '%Y%m%d') - timedelta(days=days)).strftime('%Y%m%d')
+        except ValueError:
+            # race_id[:8] が有効な日付でない場合（会場コードが2桁以上の形式）
+            # race_id 辞書順で比較するのでcutoff_dateは空文字（全データ対象）
+            cutoff_date = '00000000'
         
+        # race_results_ultimateからJSONデータを取得
         query = """
-        SELECT 
-            r.finish,
-            e.popularity
-        FROM race_results r
-        JOIN entries e ON r.race_id = e.race_id AND r.horse_number = e.horse_number
-        WHERE e.jockey_id = ?
-          AND r.race_id >= ?
-          AND r.race_id < ?
-          AND r.finish IS NOT NULL
+        SELECT race_id, data
+        FROM race_results_ultimate
+        WHERE race_id >= ? AND race_id < ?
+        ORDER BY race_id DESC
         """
         
-        df = pd.read_sql_query(query, conn, params=(jockey_id, cutoff_date, current_race_id))
+        cursor.execute(query, (cutoff_date, current_race_id))
+        rows = cursor.fetchall()
         conn.close()
         
-        if len(df) == 0:
+        # JSON解析してjockey_idでフィルタリング
+        records = []
+        for race_id, data_json in rows:
+            try:
+                data = json.loads(data_json)
+                if data.get('jockey_id') == jockey_id or data.get('jockey_name') == jockey_id:
+                    records.append(data)
+            except (json.JSONDecodeError, KeyError):
+                continue
+        
+        if len(records) == 0:
             return {
                 'jockey_recent_win_rate': 0.0,
                 'jockey_recent_place_rate': 0.0,
@@ -130,6 +165,22 @@ class UltimateFeatureCalculator:
                 'jockey_recent_races': 0,
                 'jockey_avg_finish': 0.0,
             }
+        
+        df = pd.DataFrame(records)
+        
+        # カラム名マッピング
+        if 'finish_position' in df.columns:
+            df['finish'] = df['finish_position']
+        
+        if 'finish' not in df.columns:
+            return {
+                'jockey_recent_win_rate': 0.0,
+                'jockey_recent_place_rate': 0.0,
+                'jockey_recent_show_rate': 0.0,
+                'jockey_recent_races': 0,
+                'jockey_avg_finish': 0.0,
+            }
+        df['finish'] = pd.to_numeric(df['finish'], errors='coerce')
         
         return {
             'jockey_recent_win_rate': (df['finish'] == 1).sum() / len(df),
@@ -143,33 +194,61 @@ class UltimateFeatureCalculator:
         """
         調教師の最近の統計を計算
         """
+        import json
         conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
         
         current_date = current_race_id[:8]
         from datetime import datetime, timedelta
-        cutoff_date = (datetime.strptime(current_date, '%Y%m%d') - timedelta(days=days)).strftime('%Y%m%d')
+        try:
+            cutoff_date = (datetime.strptime(current_date, '%Y%m%d') - timedelta(days=days)).strftime('%Y%m%d')
+        except ValueError:
+            cutoff_date = '00000000'
         
+        # race_results_ultimateからJSONデータを取得
         query = """
-        SELECT 
-            r.finish
-        FROM race_results r
-        JOIN entries e ON r.race_id = e.race_id AND r.horse_number = e.horse_number
-        WHERE e.trainer_id = ?
-          AND r.race_id >= ?
-          AND r.race_id < ?
-          AND r.finish IS NOT NULL
+        SELECT race_id, data
+        FROM race_results_ultimate
+        WHERE race_id >= ? AND race_id < ?
+        ORDER BY race_id DESC
         """
         
-        df = pd.read_sql_query(query, conn, params=(trainer_id, cutoff_date, current_race_id))
+        cursor.execute(query, (cutoff_date, current_race_id))
+        rows = cursor.fetchall()
         conn.close()
         
-        if len(df) == 0:
+        # JSON解析してtrainer_idでフィルタリング
+        records = []
+        for race_id, data_json in rows:
+            try:
+                data = json.loads(data_json)
+                if data.get('trainer_id') == trainer_id or data.get('trainer_name') == trainer_id:
+                    records.append(data)
+            except (json.JSONDecodeError, KeyError):
+                continue
+        
+        if len(records) == 0:
             return {
                 'trainer_recent_win_rate': 0.0,
                 'trainer_recent_place_rate': 0.0,
                 'trainer_recent_show_rate': 0.0,
                 'trainer_recent_races': 0,
             }
+        
+        df = pd.DataFrame(records)
+        
+        # カラム名マッピング
+        if 'finish_position' in df.columns:
+            df['finish'] = df['finish_position']
+        
+        if 'finish' not in df.columns:
+            return {
+                'trainer_recent_win_rate': 0.0,
+                'trainer_recent_place_rate': 0.0,
+                'trainer_recent_show_rate': 0.0,
+                'trainer_recent_races': 0,
+            }
+        df['finish'] = pd.to_numeric(df['finish'], errors='coerce')
         
         return {
             'trainer_recent_win_rate': (df['finish'] == 1).sum() / len(df),

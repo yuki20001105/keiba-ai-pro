@@ -1,163 +1,126 @@
-# 🚀 競馬AI Pro - クイックスタートガイド
+# 競馬AI Pro - クイックスタートガイド
 
-## ⚡ 最速起動方法（3ステップ）
+## 🚀 セットアップ（初回のみ）
 
-### 1️⃣ デスクトップショートカットを作成（初回のみ）
-
-PowerShellで以下を実行：
-
-```powershell
-.\create-desktop-shortcut.ps1
+### 1. 環境変数の設定
+```bash
+# .env.local を作成（.env.local.example を参考に）
+NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your_anon_key
+SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
 ```
 
-デスクトップに「**競馬AI Pro.lnk**」が作成されます。
+### 2. 依存関係のインストール
+```bash
+# Node.js依存関係
+npm install
 
-### 2️⃣ ダブルクリックで起動
+# Python依存関係（FastAPI用）
+cd python-api
+python -m venv .venv
+.\.venv\Scripts\activate  # Windows
+pip install -r requirements.txt
+cd ..
 
-デスクトップの「**競馬AI Pro**」アイコンをダブルクリック！
-
-以下が自動起動します：
-- ✅ Next.js開発サーバー (http://localhost:3000)
-- ✅ Python APIサーバー (http://localhost:8001)  
-- ✅ PATH自動リフレッシュ（npmエラー回避）
-
-### 3️⃣ ブラウザでアクセス
-
-自動的にブラウザが開きます。開かない場合は：
-
-**http://localhost:3000** にアクセス
+# ML用Python環境
+cd keiba
+python -m venv .venv
+.\.venv\Scripts\activate  # Windows
+pip install -r requirements.txt
+cd ..
+```
 
 ---
 
-## 📝 その他の起動方法
+## 🎮 サーバーの起動・停止
 
-### 方法A: PowerShellスクリプト
+### VS Codeタスク（推奨）
+- **F7**: 両サーバーを起動
+- **Shift+F7**: 両サーバーを停止
 
+### PowerShellコマンド
 ```powershell
-.\start-dev.ps1
+# 起動
+npm run up
+
+# 停止
+npm run down
 ```
 
-### 方法B: バッチファイル（Windows）
-
-```cmd
-start-dev.bat
-```
-
-### 方法C: npm scripts
-
+### 個別起動
 ```bash
-npm run dev:all
+# Next.js（ポート3000）
+npm run dev
+
+# FastAPI（ポート8000）
+cd python-api
+.\.venv\Scripts\python.exe main.py
 ```
+
+---
+
+## 👤 管理者設定
+
+### 初回ログイン
+1. http://localhost:3000 にアクセス
+2. ログインボタンをクリック
+3. 既存アカウントでログイン: `yuki20001105@icloud.com`
+
+### 管理者権限を付与
+```powershell
+# ユーザーを管理者に
+.\.venv\Scripts\python.exe set_admin.py your@email.com
+
+# ユーザー一覧を確認
+.\.venv\Scripts\python.exe set_admin.py --list
+```
+
+---
+
+## 📱 主要ページ
+
+- **トップ**: http://localhost:3000
+- **ログイン**: http://localhost:3000/auth/login
+- **ホーム**: http://localhost:3000/home
+- **管理者ダッシュボード**: http://localhost:3000/admin（管理者のみ）
+- **データ収集**: http://localhost:3000/data-collection（管理者のみ）
+- **モデル訓練**: http://localhost:3000/train（管理者のみ）
+- **予測**: http://localhost:3000/predict-batch
+- **FastAPI Docs**: http://localhost:8000/docs
 
 ---
 
 ## 🛠️ トラブルシューティング
 
-### npm が見つからない
-
-→ **解決済み！** start-dev.ps1 と start-dev.bat が自動的にPATHをリフレッシュします。
-
-### ポートが使用中
-
+### サーバーが起動しない
 ```powershell
-# すべてのサーバーを停止
-Stop-Process -Name node,python -Force
+# ポートを確認
+netstat -ano | findstr :3000
+netstat -ano | findstr :8000
 
-# 再起動
-.\start-dev.ps1
+# プロセスを強制終了
+taskkill /PID <プロセスID> /F
 ```
 
-### スクリプト実行ポリシーエラー
-
+### データベースエラー
 ```powershell
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+# Supabase接続確認
+.\.venv\Scripts\python.exe -c "from supabase import create_client; import os; from dotenv import load_dotenv; load_dotenv('.env.local'); print('OK' if os.getenv('NEXT_PUBLIC_SUPABASE_URL') else 'NG')"
 ```
 
 ---
 
-## 📊 データ収集の開始
+## 📚 詳細ドキュメント
 
-1. http://localhost:3000/data-collection にアクセス
-2. 日付を選択（例: 2024-01-13）
-3. 「レース一覧取得」ボタンをクリック
-4. レースを選択して「スクレイピング開始」
-
----
-
-## 🔗 主要URL
-
-| サービス | URL | 説明 |
-|---------|-----|------|
-| **Next.js Frontend** | http://localhost:3000 | メインアプリケーション |
-| **Python API** | http://localhost:8001 | スクレイピングAPI |
-| **API Docs** | http://localhost:8001/docs | FastAPI自動ドキュメント |
-| **データ収集** | http://localhost:3000/data-collection | netkeiba.comスクレイピング |
-| **AI予測** | http://localhost:3000/predict | 機械学習予測 |
-| **分析** | http://localhost:3000/analysis | 収支分析 |
+- **セットアップ**: `docs/setup/`
+- **機能説明**: `docs/features/`
+- **開発ガイド**: `docs/development/`
 
 ---
 
-## 💡 便利なコマンド
+## 🎯 開発フロー
 
-```powershell
-# 両方のサーバーを停止
-Stop-Process -Name node,python -Force
-
-# Next.jsのみ起動
-npm run dev
-
-# Python APIのみ起動
-npm run dev:api
-
-# ビルド（本番用）
-npm run build
-
-# 本番モードで起動
-npm start
-```
-
----
-
-## ✨ 次のステップ
-
-1. ✅ **データ収集**: http://localhost:3000/data-collection
-   - 過去のレースデータを取得
-   - Supabaseに自動保存
-
-2. ✅ **AI予測**: http://localhost:3000/predict
-   - 5種類のモデルで予測
-   - Optuna最適化
-
-3. ✅ **分析**: http://localhost:3000/analysis
-   - 回収率・ROI分析
-   - グラフ可視化
-
-4. ✅ **OCRスキャン**: http://localhost:3000/ocr
-   - 馬券画像を自動認識
-   - 購入履歴に自動登録
-
----
-
-## 🎯 よくある質問
-
-**Q: 初回起動が遅い**  
-A: 初回はNext.jsのコンパイルに時間がかかります。2回目以降は高速です。
-
-**Q: データベースエラー**  
-A: Supabaseで `supabase/setup_scraping_tables.sql` を実行してください。
-
-**Q: スクレイピングが失敗する**  
-A: undetected-chromedriver がインストールされているか確認：
-```bash
-pip install undetected-chromedriver
-```
-
-**Q: デスクトップショートカットが動かない**  
-A: PowerShellの実行ポリシーを確認：
-```powershell
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-```
-
----
-
-**🎉 準備完了！ 楽しい競馬AI開発を！**
+1. **データ収集**: `/data-collection` でnetkeibaからデータ取得
+2. **モデル訓練**: `/train` で機械学習モデルを訓練
+3. **予測**: `/predict-batch` で予測を実行
+4. **収支管理**: `/dashboard` で結果を確認
