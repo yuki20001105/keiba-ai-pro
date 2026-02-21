@@ -51,8 +51,8 @@ export default function AdminDashboard() {
 
       // 統計情報
       const totalUsers = usersData?.length || 0
-      const adminUsers = usersData?.filter(u => u.role === 'admin').length || 0
-      const premiumUsers = usersData?.filter(u => u.subscription_tier === 'premium').length || 0
+      const adminUsers = usersData?.filter((u: User) => u.role === 'admin').length || 0
+      const premiumUsers = usersData?.filter((u: User) => u.subscription_tier === 'premium').length || 0
 
       // レース数を取得
       const racesResponse = await fetch('http://localhost:8000/api/data_stats')
@@ -235,7 +235,9 @@ export default function AdminDashboard() {
             </div>
           </div>
         </div>
-      </div>
+    </div>
+  )
+}
 
 function StatCard({ title, value, icon, color }: { title: string; value: number; icon: string; color: string }) {
   const colorClasses = {
