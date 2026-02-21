@@ -57,6 +57,10 @@ self.addEventListener('fetch', (event) => {
         }
 
         // レスポンスをクローンしてキャッシュに保存
+        // HEADリクエストと部分レスポンス(206)はCache APIが非対応のためスキップ
+        if (event.request.method !== 'GET' || response.status === 206) {
+          return response;
+        }
         const responseToCache = response.clone();
         caches.open(CACHE_NAME)
           .then((cache) => {
