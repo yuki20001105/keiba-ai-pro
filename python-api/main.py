@@ -119,6 +119,7 @@ class TrainRequest(BaseModel):
     optuna_timeout: int = 300  # Optunaのタイムアウト（秒）
     training_date_from: Optional[str] = None  # 学習データ開始年月 "YYYY-MM"
     training_date_to: Optional[str] = None    # 学習データ終了年月 "YYYY-MM"
+    force_sync: bool = True  # Falseの場合はSupabase→SQLite同期をスキップ（既存DBを使用）
 
 
 class TrainResponse(BaseModel):
@@ -474,11 +475,18 @@ async def train_model(request: TrainRequest):
                 db_path = CONFIG_PATH.parent / db_path
 
         # Supabase からローカル SQLite に同期（Render 環境での永続化対応）
-        if SUPABASE_ENABLED and get_supabase_client() and request.ultimate_mode:
+        if SUPABASE_ENABLED and get_supabase_client() and request.ultimate_mode and request.force_sync:
             logger.info("Supabase からデータを同期中...")
             db_path.parent.mkdir(parents=True, exist_ok=True)
             synced = sync_supabase_to_sqlite(db_path)
             logger.info(f"同期完了: {synced} レース")
+        elif SUPABASE_ENABLED and get_supabase_client() and request.ultimate_mode and not request.force_sync:
+            logger.info("force_sync=False: Supabase同期スキップ（既存SQLiteを使用）")
+            # SQLiteがない場合は小規模で同期
+            if not db_path.exists():
+                db_path.parent.mkdir(parents=True, exist_ok=True)
+                synced = sync_supabase_to_sqlite(db_path)
+                logger.info(f"初回同期: {synced} レース")
 
         # 訓練データ読み込み（Ultimate版と通常版で分岐）
         if request.ultimate_mode:
