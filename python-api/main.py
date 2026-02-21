@@ -3239,15 +3239,16 @@ async def backfill_nar_pedigree(limit: int = 100) -> dict:
         for r in res.data:
             d = r["data"] if isinstance(r["data"], dict) else json_mod.loads(r["data"])
             hid = str(d.get("horse_id", "") or "")
-            sire = str(d.get("sire", "") or "")
-            if hid.startswith("B") and sire == "unknown_local":
+            sire = str(d.get("sire", "") or "").strip()
+            # 対象: Bプレフィックス馬で sire が未取得（空文字 or unknown_local）
+            if hid.startswith("B") and sire in ("", "unknown_local"):
                 unknown_rows.append({"row_id": r["id"], "race_id": r["race_id"], "data": d, "horse_id": hid})
                 seen_horse_ids.add(hid)
         if len(res.data) < 1000:
             break
         offset += 1000
 
-    logger.info(f"NAR血統バックフィル: unknown_local 行={len(unknown_rows)} ユニーク馬={len(seen_horse_ids)}")
+    logger.info(f"NAR血統バックフィル: sire空/unknown_local 行={len(unknown_rows)} ユニーク馬={len(seen_horse_ids)}")
 
     if not unknown_rows:
         return {"success": True, "message": "バックフィル対象なし", "updated": 0, "failed": 0}
