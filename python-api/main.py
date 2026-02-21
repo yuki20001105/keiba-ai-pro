@@ -276,6 +276,33 @@ async def root():
     }
 
 
+@app.get("/api/debug")
+async def debug_info():
+    """Supabase接続状態のデバッグ情報"""
+    import os
+    supabase_url = os.environ.get("SUPABASE_URL", "")
+    supabase_key = os.environ.get("SUPABASE_SERVICE_KEY", "")
+    result = {
+        "supabase_enabled": SUPABASE_ENABLED,
+        "supabase_url_set": bool(supabase_url),
+        "supabase_key_set": bool(supabase_key),
+        "supabase_url_prefix": supabase_url[:30] if supabase_url else "",
+        "supabase_key_prefix": supabase_key[:15] if supabase_key else "",
+    }
+    if SUPABASE_ENABLED:
+        try:
+            client = get_supabase_client()
+            result["client_created"] = client is not None
+            if client:
+                # テーブル存在確認
+                res = client.table("races_ultimate").select("race_id", count="exact").limit(1).execute()
+                result["races_ultimate_accessible"] = True
+                result["races_count"] = res.count
+        except Exception as e:
+            result["client_error"] = str(e)
+    return result
+
+
 @app.post("/api/test-optuna-request")
 async def test_optuna_request(request: TrainRequest):
     """Optunaリクエストのテスト用エンドポイント"""
