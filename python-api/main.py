@@ -2381,7 +2381,7 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '') -> Optio
     pedigree_batch: dict = {}
     if SUPABASE_ENABLED and all_horse_ids:
         try:
-            pedigree_batch = get_pedigree_cache_batch(all_horse_ids)
+            pedigree_batch = await asyncio.to_thread(get_pedigree_cache_batch, all_horse_ids)
         except Exception:
             pass
 
@@ -2487,7 +2487,7 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
         cached_b = (pedigree_cache or {}).get(horse_id) if pedigree_cache is not None else None
         if cached_b is None and SUPABASE_ENABLED:
             try:
-                cached_b = get_pedigree_cache(horse_id)
+                cached_b = await asyncio.to_thread(get_pedigree_cache, horse_id)
             except Exception as _e:
                 logger.debug(f"NAR馬 血統キャッシュ確認失敗: {_e}")
         if cached_b and cached_b.get('sire') and cached_b['sire'] not in ('', 'unknown_local'):
@@ -2513,7 +2513,8 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
                             logger.info(f"NAR馬 /ped/ 血統取得成功: {horse_id} sire={pedigree_result_b['sire']}")
                             if SUPABASE_ENABLED:
                                 try:
-                                    save_pedigree_cache(
+                                    await asyncio.to_thread(
+                                        save_pedigree_cache,
                                         horse_id,
                                         pedigree_result_b.get('sire', ''),
                                         pedigree_result_b.get('dam', ''),
@@ -2639,7 +2640,7 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
         cached = (pedigree_cache or {}).get(horse_id) if pedigree_cache is not None else None
         if cached is None and SUPABASE_ENABLED:
             try:
-                cached = get_pedigree_cache(horse_id)
+                cached = await asyncio.to_thread(get_pedigree_cache, horse_id)
             except Exception as _e:
                 logger.debug(f"血統キャッシュ確認失敗: {_e}")
         if cached:
@@ -2689,7 +2690,8 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
         # 4. 結果をキャッシュ保存（失敗時も空で保存して再取得を防ぐ）
         if SUPABASE_ENABLED and horse_id:
             try:
-                save_pedigree_cache(
+                await asyncio.to_thread(
+                    save_pedigree_cache,
                     horse_id,
                     result.get('sire', ''),
                     result.get('dam', ''),
@@ -2927,7 +2929,7 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
                     race_sem = asyncio.Semaphore(5)
                     errors: list = []
 
-                    async def _fetch_and_save(race_id, _date=date):
+                    async def _fetch_and_save(race_id, _date=date, _day_idx=i):
                         async with race_sem:
                             try:
                                 race_data = await _scrape_race_full(session, race_id, date_hint=_date)
@@ -2937,6 +2939,17 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
                                         async with counter_lock:
                                             counter["races"] += 1
                                             counter["horses"] += len(race_data['horses'])
+                                            # per-race 進捗更新（フロントエンドに即反映）
+                                            job["progress"] = {
+                                                "done": _day_idx,
+                                                "total": total,
+                                                "message": (
+                                                    f"{_day_idx}/{total}日処理中 | "
+                                                    f"{counter['races']}レース・{counter['horses']}頭保存済み"
+                                                ),
+                                                "saved_races": counter["races"],
+                                                "saved_horses": counter["horses"],
+                                            }
                                         logger.info(f"保存完了: {race_id} ({len(race_data['horses'])}頭)")
                                     else:
                                         logger.warning(f"Supabase/SQLite両方失敗: {race_id}")
@@ -3348,7 +3361,7 @@ async def backfill_nar_pedigree(limit: int = 100) -> dict:
             updated += 1
             # pedigree_cache にも保存
             try:
-                save_pedigree_cache(hid, ped.get("sire", ""), ped.get("dam", ""), ped.get("damsire", ""))
+                await asyncio.to_thread(save_pedigree_cache, hid, ped.get("sire", ""), ped.get("dam", ""), ped.get("damsire", ""))
             except Exception:
                 pass
         except Exception as e:
