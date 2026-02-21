@@ -38,6 +38,22 @@ from keiba_ai.optuna_all_models import optimize_model
 # 購入推奨システムをインポート
 from betting_strategy import BettingRecommender
 
+# ログ設定（Supabase インポートより前に配置: ImportError 時に logger が未定義にならないようにする）
+log_file = Path(__file__).parent.parent / "optuna_debug.log"
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler(log_file, mode="a", encoding="utf-8"),
+        logging.StreamHandler(),
+    ],
+)
+logger = logging.getLogger(__name__)
+logger.info("=" * 80)
+logger.info("FastAPI起動 - ログ記録開始")
+logger.info(f"ログファイル: {log_file}")
+logger.info("=" * 80)
+
 # Supabase クライアント（永続化）
 try:
     from supabase_client import (
@@ -57,22 +73,6 @@ try:
 except ImportError:
     SUPABASE_ENABLED = False
     logger.warning("supabase_client.py が見つかりません: Supabase 連携無効")
-
-# ログ設定
-log_file = Path(__file__).parent.parent / "optuna_debug.log"
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler(log_file, mode="a", encoding="utf-8"),
-        logging.StreamHandler(),
-    ],
-)
-logger = logging.getLogger(__name__)
-logger.info("=" * 80)
-logger.info("FastAPI起動 - ログ記録開始")
-logger.info(f"ログファイル: {log_file}")
-logger.info("=" * 80)
 
 app = FastAPI(
     title="Keiba AI - Machine Learning API",
@@ -1961,6 +1961,9 @@ SCRAPE_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
+    'Referer': 'https://db.netkeiba.com/',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Connection': 'keep-alive',
 }
 
 
