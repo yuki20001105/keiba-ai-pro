@@ -8,6 +8,6 @@ services:
     plan: free
     envVars:
       - key: ALLOWED_ORIGINS
-        value: http://localhost:3000  # Vercelデプロイ後にここを更新する
+        value: https://keiba-ai-pro.vercel.app,http://localhost:3000
       - key: PYTHONUNBUFFERED
         value: "1"
