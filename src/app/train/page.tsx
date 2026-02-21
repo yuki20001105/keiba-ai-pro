@@ -25,7 +25,7 @@ export default function TrainPage() {
 
   const loadModels = async () => {
     try {
-      const res = await fetch(`${API_URL}/api/models?ultimate=true`)
+      const res = await fetch(`/api/models?ultimate=true`)
       if (res.ok) { const d = await res.json(); setModels(d.models || []) }
     } catch {}
   }
@@ -34,7 +34,7 @@ export default function TrainPage() {
     if (!confirm(`モデル ${modelId} を削除しますか？`)) return
     setDeletingId(modelId)
     try {
-      const res = await fetch(`${API_URL}/api/models/${modelId}`, { method: 'DELETE' })
+      const res = await fetch(`/api/models/${modelId}`, { method: 'DELETE' })
       if (!res.ok) throw new Error('削除失敗')
       loadModels()
     } catch {
@@ -48,7 +48,7 @@ export default function TrainPage() {
     setTrainResult(null)
 
     try {
-      const response = await fetch(`${API_URL}/api/train`, {
+      const response = await fetch(`/api/ml/train`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

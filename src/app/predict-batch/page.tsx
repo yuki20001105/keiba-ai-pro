@@ -20,7 +20,7 @@ export default function PredictBatchPage() {
 
   const loadModels = async () => {
     try {
-      const res = await fetch(`${API_URL}/api/models?ultimate=true`)
+      const res = await fetch(`/api/models?ultimate=true`)
       if (res.ok) {
         const data = await res.json()
         setModels(data.models || [])
@@ -40,7 +40,7 @@ export default function PredictBatchPage() {
     setRecommendations(null)
 
     try {
-      const res = await fetch(`${API_URL}/api/analyze_race`, {
+      const res = await fetch(`/api/analyze-race`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ race_id: raceId, model_id: modelId, bankroll: 10000, risk_mode: 'balanced', ultimate_mode: true })

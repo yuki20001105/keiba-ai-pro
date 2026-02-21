@@ -21,7 +21,7 @@ export default function DashboardPage() {
   const loadStats = async () => {
     const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
     try {
-      const res = await fetch(`${API_URL}/api/data_stats?ultimate=true`)
+      const res = await fetch(`/api/data-stats?ultimate=true`)
       if (res.ok) {
         const d = await res.json()
         setDataStats({ totalRaces: d.total_races || 0, totalHorses: d.total_horses || 0, totalModels: d.total_models || 0 })

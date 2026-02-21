@@ -56,7 +56,7 @@ export default function AdminDashboard() {
 
       // レース数を取得
       const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-      const racesResponse = await fetch(`${API_URL}/api/data_stats`)
+      const racesResponse = await fetch(`/api/data-stats`)
       let totalRaces = 0
       let totalModels = 0
       if (racesResponse.ok) {

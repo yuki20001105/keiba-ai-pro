@@ -130,7 +130,7 @@ export default function DataCollectionPage() {
       }, 500)
       
       const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-      console.log('APIリクエスト送信:', `${API_URL}/api/scrape`)
+      console.log('APIリクエスト送信:', `/api/scrape`)
       
       // タイムアウト設定（10分）- 完全モード対応
       const controller = new AbortController()
@@ -141,7 +141,7 @@ export default function DataCollectionPage() {
       
       let response: Response
       try {
-        response = await fetch(`${API_URL}/api/scrape`, {
+        response = await fetch(`/api/scrape`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
