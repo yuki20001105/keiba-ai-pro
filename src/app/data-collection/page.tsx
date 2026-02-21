@@ -112,136 +112,73 @@ export default function DataCollectionPage() {
 
     setBatchLoading(true)
     setBatchResult(null)
-    setBatchProgress({ current: 0, total: 100, message: 'Phase 1: レース一覧取得中...' })
+    setBatchProgress({ current: 0, total: 100, message: 'スクレイピング開始中...' })
     
     const startTime = Date.now()
     
     try {
-      console.log('[Phase 1] レース一覧取得開始...')
-      
-      // Phase 1の進捗シミュレーション
-      const phase1Timer = setInterval(() => {
-        setBatchProgress(prev => {
-          if (prev.current < 20) {
-            return { ...prev, current: prev.current + 5 }
-          }
-          return prev
-        })
-      }, 500)
-      
-      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-      console.log('APIリクエスト送信:', `${API_URL}/api/scrape`)
-      
-      // タイムアウト設定（10分）- 完全モード対応
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => {
-        console.log('タイムアウト（10分）に達しました')
-        controller.abort()
-      }, 600000) // 10分
-      
-      let response: Response
-      try {
-        // スクレイピングはVercel60秒上限を超えるため直接Renderに送信（CORS: allow_origins=*）
-        response = await fetch(`${API_URL}/api/scrape`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            start_date: startDateStr,
-            end_date: endDateStr
-          }),
-          signal: controller.signal
-        })
-      } finally {
-        clearTimeout(timeoutId) // 成功・失敗に関わらずタイムアウトをクリア
-      }
-      
-      clearInterval(phase1Timer)
-      
-      console.log('APIレスポンス受信:', response.status, response.statusText)
-      
-      if (!response.ok) {
-        const errorData = await response.json()
-        console.error('APIエラーレスポンス:', errorData)
-        throw new Error(errorData.detail || `HTTP ${response.status}`)
-      }
-      
-      // Phase 2開始
-      console.log('[Phase 2] 並列スクレイピング開始...')
-      setBatchProgress({ current: 20, total: 100, message: 'Phase 2: 並列スクレイピング中...' })
-      
-      const data = await response.json()
-      
-      console.log('取得完了！データサマリー:', {
-        resultsKeys: Object.keys(data.results || {}),
-        resultsCount: Object.keys(data.results || {}).length,
-        stats: data.stats
+      console.log('[Step 1] スクレイピングジョブ開始...')
+
+      // Vercelプロキシ経由でジョブ開始（即座にjob_idが返る）
+      const startRes = await fetch(`/api/scrape`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ start_date: startDateStr, end_date: endDateStr }),
       })
-      
-      // 各レースの詳細をログ出力
-      if (data.results) {
-        Object.keys(data.results).forEach((raceId, index) => {
-          const race = data.results[raceId]
-          console.log(`レース ${index + 1} (${raceId}):`, {
-            race_name: race.race_info?.race_name,
-            place: race.race_info?.place,
-            distance: race.race_info?.distance,
-            results_count: race.results?.length || 0,
-            first_horse: race.results?.[0] ? {
-              horse_name: race.results[0].horse_name,
-              horse_id: race.results[0].horse_id,
-              jockey_id: race.results[0].jockey_id,
-              trainer_id: race.results[0].trainer_id,
-              weight_kg: race.results[0].weight_kg,
-              columns: Object.keys(race.results[0]).length
-            } : 'データなし'
+
+      if (!startRes.ok) {
+        const err = await startRes.json()
+        throw new Error(err.detail || `HTTP ${startRes.status}`)
+      }
+
+      const { job_id } = await startRes.json()
+      console.log('[Step 2] ジョブ開始 job_id:', job_id)
+      setBatchProgress({ current: 5, total: 100, message: `ジョブ開始 (${job_id}) - データ収集中...` })
+
+      // ポーリング（3秒間隔）
+      const pollInterval = 3000
+      let completed = false
+
+      while (!completed) {
+        await new Promise(resolve => setTimeout(resolve, pollInterval))
+
+        const statusRes = await fetch(`/api/scrape/status/${job_id}`)
+        if (!statusRes.ok) continue
+
+        const status = await statusRes.json()
+        const prog = status.progress || {}
+
+        if (prog.total > 0) {
+          const pct = Math.min(95, Math.round((prog.done / prog.total) * 90) + 5)
+          setBatchProgress({
+            current: pct,
+            total: 100,
+            message: prog.message || `${prog.done}/${prog.total}日処理済み`,
           })
-        })
+        }
+
+        console.log('ジョブ状態:', status.status, prog.message)
+
+        if (status.status === 'completed') {
+          completed = true
+          const result = status.result || {}
+          setBatchProgress({ current: 100, total: 100, message: `完了: ${result.races_collected || 0}レース取得` })
+          setBatchResult(result)
+          alert(
+            `取得完了\n\n` +
+            `${result.message || '完了'}\n` +
+            `所要時間: ${result.elapsed_time?.toFixed(1) || '?'}秒`
+          )
+          loadStats()
+        } else if (status.status === 'error') {
+          completed = true
+          throw new Error(status.error || 'スクレイピングジョブが失敗しました')
+        }
       }
-      
-      setBatchResult(data)
-      
-      const stats = data.stats
-      const elapsed = (Date.now() - startTime) / 1000
-      
-      console.log('=== 完了統計 ===')
-      console.log('期間:', stats.period)
-      console.log('対象日数:', stats.days, '日')
-      console.log('総レース数:', stats.total_races)
-      console.log('成功:', stats.success)
-      console.log('失敗:', stats.failed)
-      console.log('所要時間:', stats.elapsed_seconds, '秒')
-      console.log('フロントエンド所要時間:', elapsed.toFixed(2), '秒')
-      console.log('1レースあたり:', stats.avg_seconds_per_race, '秒')
-      console.log('高速化率:', stats.speedup_vs_sequential, '倍')
-      
-      setBatchProgress({ 
-        current: 100, 
-        total: 100, 
-        message: `完了: ${stats.success}/${stats.total_races}レース` 
-      })
-      
-      alert(
-        `取得完了\n\n` +
-        `期間: ${stats.period}\n` +
-        `対象日数: ${stats.days}日\n` +
-        `成功: ${stats.success}/${stats.total_races}レース\n` +
-        `所要時間: ${stats.elapsed_seconds}秒`
-      )
-      
-      loadStats()
     } catch (error: any) {
       console.error('=== エラー発生 ===')
       console.error('エラー詳細:', error)
-      console.error('エラーメッセージ:', error.message)
-      console.error('エラースタック:', error.stack)
-      
-      // AbortErrorの場合はタイムアウトメッセージを表示
-      if (error.name === 'AbortError') {
-        alert('処理がタイムアウトしました（10分）。\n期間を短くするか、後でもう一度お試しください。')
-      } else {
-        alert(`期間バッチ取得エラー: ${error.message}`)
-      }
-      console.error('Period batch scrape error:', error)
+      alert(`期間バッチ取得エラー: ${error.message}`)
       setBatchProgress({ current: 0, total: 100, message: 'エラーが発生しました' })
     } finally {
       setBatchLoading(false)

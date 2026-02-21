@@ -6,11 +6,10 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
 
-    const response = await fetch(`${ML_API_URL}/api/scrape`, {
+    const response = await fetch(`${ML_API_URL}/api/scrape/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-      // タイムアウトなし（スクレイピングは長時間かかる）
     })
 
     const data = await response.json()

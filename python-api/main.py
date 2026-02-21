@@ -4,7 +4,7 @@ Streamlit版の機械学習パイプラインをREST APIとして提供
 【3-3. 一括予測・購入推奨】機能を完全実装
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
@@ -2705,6 +2705,140 @@ def _save_race_to_ultimate_db(race_data: dict, db_path: Path, overwrite: bool = 
 
     conn.commit()
     conn.close()
+
+
+# ============================================
+# 非同期スクレイピングジョブ管理
+# POST /api/scrape/start  → 即座に job_id を返す
+# GET  /api/scrape/status/{job_id} → 進捗/結果をポーリング
+# ============================================
+
+import uuid
+
+# メモリ上のジョブストア（Render 再起動でリセット、それで問題なし）
+_scrape_jobs: dict = {}    # job_id -> {"status", "progress", "result", "error"}
+
+
+async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
+    """バックグラウンドでスクレイピングを実行しジョブストアを更新する"""
+    import aiohttp
+    import time as _time
+
+    job = _scrape_jobs[job_id]
+    job["status"] = "running"
+
+    ULTIMATE_DB = Path(__file__).parent.parent / "keiba" / "data" / "keiba_ultimate.db"
+    start_time = _time.time()
+
+    try:
+        from datetime import datetime as _dt, timedelta as _td
+        def _parse(s):
+            for fmt in ("%Y%m%d", "%Y/%m/%d", "%Y-%m-%d"):
+                try:
+                    return _dt.strptime(s, fmt)
+                except ValueError:
+                    pass
+            raise ValueError(f"日付フォーマット不正: {s}")
+
+        s_dt = _parse(start_date)
+        e_dt = _parse(end_date)
+        dates = []
+        cur = s_dt
+        while cur <= e_dt:
+            if cur.weekday() in [5, 6]:
+                dates.append(cur.strftime("%Y%m%d"))
+            cur += _td(days=1)
+
+        total = len(dates)
+        job["progress"] = {"done": 0, "total": total, "message": f"0/{total}日処理済み"}
+
+        timeout = aiohttp.ClientTimeout(total=30)
+        connector = aiohttp.TCPConnector(limit=5, limit_per_host=3)
+        saved_races = 0
+        saved_horses = 0
+
+        async with aiohttp.ClientSession(
+            headers=SCRAPE_HEADERS, timeout=timeout, connector=connector
+        ) as session:
+            for i, date in enumerate(dates):
+                list_url = f"https://db.netkeiba.com/race/list/{date}/"
+                try:
+                    await asyncio.sleep(0.5)
+                    async with session.get(list_url) as resp:
+                        if resp.status != 200:
+                            continue
+                        content = await resp.read()
+                        html = content.decode('euc-jp', errors='ignore')
+
+                    from bs4 import BeautifulSoup
+                    import re as _re
+                    soup = BeautifulSoup(html, 'html.parser')
+                    race_ids = []
+                    for a in soup.find_all('a', href=True):
+                        m = _re.search(r'/race/(\d{12})/', a['href'])
+                        if m and m.group(1) not in race_ids:
+                            race_ids.append(m.group(1))
+
+                    for race_id in race_ids:
+                        race_data = await _scrape_race_full(session, race_id, date_hint=date)
+                        if race_data and race_data['horses']:
+                            _save_race_to_ultimate_db(race_data, ULTIMATE_DB, overwrite=True)
+                            saved_races += 1
+                            saved_horses += len(race_data['horses'])
+
+                except Exception as e:
+                    logger.error(f"ジョブ {job_id} {date} エラー: {e}")
+
+                job["progress"] = {
+                    "done": i + 1,
+                    "total": total,
+                    "message": f"{i+1}/{total}日処理済み / {saved_races}レース取得",
+                    "saved_races": saved_races,
+                    "saved_horses": saved_horses,
+                }
+
+        elapsed = _time.time() - start_time
+        job["status"] = "completed"
+        job["result"] = {
+            "success": True,
+            "races_collected": saved_races,
+            "saved_horses": saved_horses,
+            "elapsed_time": elapsed,
+            "message": f"{saved_races}レース・{saved_horses}頭のデータを収集しました",
+        }
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = str(e)
+        logger.error(f"スクレイピングジョブ失敗 {job_id}: {e}")
+
+
+@app.post("/api/scrape/start")
+async def scrape_start(request: ScrapeRequest, background_tasks: BackgroundTasks):
+    """スクレイピングをバックグラウンドで開始し、即座に job_id を返す（Vercel プロキシ対応）"""
+    job_id = str(uuid.uuid4())[:8]
+    _scrape_jobs[job_id] = {
+        "status": "queued",
+        "progress": {"done": 0, "total": 0, "message": "開始待ち"},
+        "result": None,
+        "error": None,
+    }
+    background_tasks.add_task(_run_scrape_job, job_id, request.start_date, request.end_date)
+    return {"job_id": job_id, "status": "queued"}
+
+
+@app.get("/api/scrape/status/{job_id}")
+async def scrape_status(job_id: str):
+    """スクレイピングジョブの進捗・結果を返す"""
+    job = _scrape_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"ジョブ {job_id} が見つかりません")
+    return {
+        "job_id": job_id,
+        "status": job["status"],       # queued / running / completed / error
+        "progress": job["progress"],
+        "result": job.get("result"),
+        "error": job.get("error"),
+    }
 
 
 @app.post("/api/scrape", response_model=ScrapeResponse)
