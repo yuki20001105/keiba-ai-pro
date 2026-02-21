@@ -7,6 +7,8 @@ services:
     startCommand: PYTHONPATH=/opt/render/project/src/keiba uvicorn main:app --host 0.0.0.0 --port $PORT
     plan: free
     envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.11"
       - key: ALLOWED_ORIGINS
         value: https://keiba-ai-pro.vercel.app,http://localhost:3000
       - key: PYTHONUNBUFFERED
