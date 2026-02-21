@@ -2733,11 +2733,11 @@ _scrape_jobs: dict = {}    # job_id -> {"status", "progress", "result", "error"}
 
 async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
     """バックグラウンドでスクレイピングを実行しジョブストアを更新する"""
-    import aiohttp
-    import time as _time
-    from datetime import datetime as _dt, timedelta as _td
-
     try:
+        import aiohttp
+        import time as _time
+        from datetime import datetime as _dt, timedelta as _td
+
         job = _scrape_jobs[job_id]
         job["status"] = "running"
 
