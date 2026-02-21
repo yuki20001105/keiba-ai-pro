@@ -2825,6 +2825,20 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
             _scrape_jobs[job_id]["error"] = str(e)
 
 
+@app.get("/api/test/task")
+async def scrape_start_debug():
+    """GETテスト: asyncio.create_taskと1秒待機してstatusをconfirmedに変えるタスクを発火テスト"""
+    test_id = "test_" + str(uuid.uuid4())[:4]
+    _scrape_jobs[test_id] = {"status": "queued", "progress": {}, "result": None, "error": None}
+
+    async def _quick_task():
+        await asyncio.sleep(1)
+        _scrape_jobs[test_id]["status"] = "confirmed"
+
+    asyncio.get_running_loop().create_task(_quick_task())
+    return {"test_id": test_id, "message": "1秒待って GET /api/scrape/status/{test_id} で確認"}
+
+
 @app.post("/api/scrape/start")
 async def scrape_start(request: ScrapeRequest):
     """スクレイピングをバックグラウンドで開始し、即座に job_id を返す（Vercel プロキシ対応）"""
@@ -2835,8 +2849,15 @@ async def scrape_start(request: ScrapeRequest):
         "result": None,
         "error": None,
     }
-    asyncio.create_task(_run_scrape_job(job_id, request.start_date, request.end_date))
-    return {"job_id": job_id, "status": "queued"}
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_run_scrape_job(job_id, request.start_date, request.end_date))
+        logger.info(f"ジョブ {job_id} を create_task でスケジュール済み")
+    except Exception as e:
+        logger.error(f"create_task 失敗: {e}")
+        _scrape_jobs[job_id]["status"] = "error"
+        _scrape_jobs[job_id]["error"] = f"タスク起動失敗: {e}"
+    return {"job_id": job_id, "status": _scrape_jobs[job_id]["status"]}
 
 
 @app.get("/api/scrape/status/{job_id}")
