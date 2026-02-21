@@ -18,6 +18,9 @@ import numpy as np
 from datetime import datetime
 import sqlite3
 import logging
+import aiohttp
+from bs4 import BeautifulSoup
+import re
 import json
 
 # keiba_aiモジュールをインポート（親ディレクトリのkeibaから）
@@ -1967,8 +1970,6 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '') -> Optio
     race_results_ultimate / races_ultimate 形式で返す。
     date_hint: YYYYMMDD 形式の日付（リストページから判明した場合に渡す）
     """
-    import aiohttp
-    from bs4 import BeautifulSoup
     import re
 
     url = f"https://db.netkeiba.com/race/{race_id}/"
@@ -1984,7 +1985,6 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '') -> Optio
         logger.error(f"取得エラー {race_id}: {e}")
         return None
 
-    from bs4 import BeautifulSoup
     soup = BeautifulSoup(html, 'html.parser')
 
     # ---- レース基本情報 ----
@@ -2437,7 +2437,6 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
     血統(sire/dam/damsire)、プロフィール、通算成績、直近2走を取得。
     pedigree_cache: {horse_id: {sire,dam,damsire}} のバッチ取得済みキャッシュ（あれば Supabase 個別クエリ省略）
     """
-    from bs4 import BeautifulSoup
     import re
 
     if not horse_id and not horse_url:
@@ -2748,7 +2747,6 @@ _scrape_jobs: dict = {}    # job_id -> {"status", "progress", "result", "error"}
 async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
     """バックグラウンドでスクレイピングを実行しジョブストアを更新する"""
     try:
-        import aiohttp
         import time as _time
         from datetime import datetime as _dt, timedelta as _td
 
@@ -2798,7 +2796,6 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
                         content = await resp.read()
                         html = content.decode('euc-jp', errors='ignore')
 
-                    from bs4 import BeautifulSoup
                     import re as _re
                     soup = BeautifulSoup(html, 'html.parser')
                     race_ids = []
@@ -2911,7 +2908,6 @@ async def scrape_data(request: ScrapeRequest):
       - タイム, 着差, コーナー通過順, 上がり3F, 上がり3F順位
       - 距離, 芝/ダート, 天候, 馬場状態, 開催場
     """
-    import aiohttp
     import time
 
     logger.info(f"完全スクレイピング開始: {request.start_date} ～ {request.end_date}")
@@ -2960,8 +2956,6 @@ async def scrape_data(request: ScrapeRequest):
                     content = await resp.read()
                     html = content.decode('euc-jp', errors='ignore')
 
-                from bs4 import BeautifulSoup
-                import re
                 soup = BeautifulSoup(html, 'html.parser')
                 race_ids = []
                 for a in soup.find_all('a', href=True):
@@ -3015,7 +3009,6 @@ async def rescrape_incomplete(limit: int = 50) -> RescrapeResponse:
     Args:
         limit: 一度に処理するレース数の上限（デフォルト50）
     """
-    import aiohttp
     import json as json_mod
     import time
 
