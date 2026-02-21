@@ -2540,7 +2540,8 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
     soup = BeautifulSoup(html, 'html.parser')
 
     # ===== プロフィール（db_prof_table から取得） =====
-    prof_table = soup.find('table', class_='db_prof_table')
+    # class_ にラムダを使うことで 'db_prof_table no_under' など複合クラスにも対応
+    prof_table = soup.find('table', class_=lambda c: c and 'db_prof_table' in c)
     if prof_table:
         for row in prof_table.find_all('tr'):
             th = row.find('th')
@@ -2594,6 +2595,8 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
                 val = td_tag.get_text(strip=True)
                 if '生年月日' in key:
                     result['horse_birth_date'] = val
+                elif '毛色' in key and 'horse_coat_color' not in result:
+                    result['horse_coat_color'] = val
                 elif '馬主' in key and 'horse_owner' not in result:
                     result['horse_owner'] = val
                 elif '生産者' in key and 'horse_breeder' not in result:
