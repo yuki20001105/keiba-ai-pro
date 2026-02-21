@@ -1981,7 +1981,7 @@ SCRAPE_HEADERS = {
 # -------- 毛色ヘルパー --------
 # 長いパターンを先に並べ (黒鹿毛 > 鹿毛 など部分マッチ防止)
 _COAT_COLORS = [
-    '黒鹿毛', '青鹿毛', '青駁毛', '鹿駁毛', '栗駁毛', '駁栗毛', '駁鹿毛', '駁青毛', '栃栗毛',
+    '黒鹿毛', '青鹿駁毛', '青鹿毛', '青駁毛', '鹿駁毛', '栗駁毛', '駁栗毛', '駁鹿毛', '駁青毛', '駁青鹿毛', '駁青暴毛', '栃栗毛',
     '鹿毛', '青毛', '栗毛', '芦毛', '白毛', '駁毛',
 ]
 _COAT_RE = re.compile('|'.join(re.escape(c) for c in _COAT_COLORS))
@@ -2169,10 +2169,10 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '') -> Optio
     if day_m:
         day = int(day_m.group(1))
 
-    # ---- コース方向（右/左/直線） ----
-    # 形式: "芝左1400m" "ダ右2000m"
+    # ---- コース方向（右/左/右外/左内 等） ----
+    # 形式: "芝左1400m" "ダ右2000m" "芝右外" "芝右内"
     course_direction = ''
-    dir_m = re.search(r'[芝ダ](右|左)(外)?', info_text)
+    dir_m = re.search(r'[芝ダ](右|左)([外内])?', info_text)
     if dir_m:
         course_direction = dir_m.group(1) + (dir_m.group(2) or '')
     elif '直線' in info_text:
@@ -2589,7 +2589,8 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
                 logger.debug(f"NAR馬 血統取得不可: {horse_id} → unknown_local")
                 _nar_result = {'sire': 'unknown_local', 'dam': 'unknown_local', 'damsire': 'unknown_local'}
 
-        # 3) sp.netkeiba で毛色を取得（PC版 /horse/<id>/ は NAR馬に 400 を返すため）
+        # 3) sp.netkeiba で毛色 + プロフィール情報を取得（PC版 /horse/<id>/ は NAR馬に 400 を返すため）
+        _sp_html_parsed: 'BeautifulSoup | None' = None
         if not _nar_result.get('horse_coat_color'):
             for _sp_url in [
                 f"https://db.sp.netkeiba.com/horse/{horse_id}/",
@@ -2599,14 +2600,48 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
                     await asyncio.sleep(0.3)
                     async with session.get(_sp_url) as _sp_resp:
                         if _sp_resp.status == 200:
-                            _sp_html = (await _sp_resp.read()).decode('euc-jp', errors='ignore')
-                            coat = _extract_coat_color(BeautifulSoup(_sp_html, 'html.parser'), _sp_html)
+                            _sp_html_raw = (await _sp_resp.read()).decode('euc-jp', errors='ignore')
+                            _sp_soup = BeautifulSoup(_sp_html_raw, 'html.parser')
+                            coat = _extract_coat_color(_sp_soup, _sp_html_raw)
                             if coat:
                                 _nar_result['horse_coat_color'] = coat
                                 logger.info(f"NAR馬 毛色取得成功: {horse_id} coat={coat}")
+                                _sp_html_parsed = _sp_soup
                                 break
                 except Exception:
                     pass
+
+        # sp.netkeiba から生年月日・通算成績も取得（毛色と同じページから）
+        if _sp_html_parsed is None:
+            try:
+                await asyncio.sleep(0.3)
+                async with session.get(f"https://db.sp.netkeiba.com/horse/{horse_id}/") as _sp_resp2:
+                    if _sp_resp2.status == 200:
+                        _sp_html_parsed = BeautifulSoup(
+                            (await _sp_resp2.read()).decode('euc-jp', errors='ignore'),
+                            'html.parser'
+                        )
+            except Exception:
+                pass
+
+        if _sp_html_parsed:
+            sp_text = _sp_html_parsed.get_text()
+            # 生年月日
+            if not _nar_result.get('horse_birth_date'):
+                for tbl in _sp_html_parsed.find_all('table'):
+                    for tr in tbl.find_all('tr'):
+                        th2, td2 = tr.find('th'), tr.find('td')
+                        if th2 and td2 and '生年月日' in th2.get_text(strip=True):
+                            _nar_result['horse_birth_date'] = td2.get_text(strip=True)
+                            break
+                    if _nar_result.get('horse_birth_date'):
+                        break
+            # 通算成績
+            if not _nar_result.get('horse_total_runs'):
+                runs_m2 = re.search(r'(\d+)戦\s*(\d+)勝', sp_text)
+                if runs_m2:
+                    _nar_result['horse_total_runs'] = int(runs_m2.group(1))
+                    _nar_result['horse_total_wins'] = int(runs_m2.group(2))
 
         return _nar_result
 
@@ -2998,6 +3033,7 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
         ) as session:
             for i, date in enumerate(dates):
                 list_url = f"https://db.netkeiba.com/race/list/{date}/"
+                errors: list = []  # try ブロック外で初期化 → exception 時の NameError 防止
                 try:
                     await asyncio.sleep(0.2)
                     async with session.get(list_url) as resp:
@@ -3017,7 +3053,6 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
 
                     # ---- 5並列でレースを処理 ----
                     race_sem = asyncio.Semaphore(5)
-                    errors: list = []
 
                     async def _fetch_and_save(race_id, _date=date, _day_idx=i):
                         async with race_sem:
