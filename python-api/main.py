@@ -2445,9 +2445,65 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
     if not horse_id and not horse_url:
         return {}
 
-    # ── 地方馬（B プレフィックス）はdb.netkeiba.com に詳細ページが存在しない（HTTP 400）。
-    # 血統取得不可のため、カテゴリ特徴量として識別できる固定値を返す。
+    # ── 地方馬（B プレフィックス）
+    # /horse/B.../ は HTTP 400 だが、/horse/ped/B.../ は血統データを返す場合がある。
+    # キャッシュ → /ped/ 直接取得 → 失敗時 unknown_local の順で試みる。
     if horse_id and re.match(r'^B', str(horse_id)):
+        # 1) Supabase キャッシュ確認（unknown_local でないものだけ使用）
+        cached_b = (pedigree_cache or {}).get(horse_id) if pedigree_cache is not None else None
+        if cached_b is None and SUPABASE_ENABLED:
+            try:
+                cached_b = get_pedigree_cache(horse_id)
+            except Exception as _e:
+                logger.debug(f"NAR馬 血統キャッシュ確認失敗: {_e}")
+        if cached_b and cached_b.get('sire') and cached_b['sire'] not in ('', 'unknown_local'):
+            logger.debug(f"NAR馬 血統キャッシュヒット: {horse_id} sire={cached_b['sire']}")
+            return {k: cached_b.get(k, '') for k in ('sire', 'dam', 'damsire')}
+
+        # 2) /horse/ped/<horse_id>/ を直接取得（通常の /horse/ URL は 400 エラー）
+        ped_url_b = f"https://db.netkeiba.com/horse/ped/{horse_id}/"
+        pedigree_result_b: dict = {}
+        for attempt in range(3):
+            try:
+                wait = 0.3 + attempt * 1.5
+                await asyncio.sleep(wait)
+                async with session.get(ped_url_b) as ped_resp_b:
+                    if ped_resp_b.status == 200:
+                        ped_content_b = await ped_resp_b.read()
+                        ped_html_b = ped_content_b.decode('euc-jp', errors='ignore')
+                        ped_soup_b = BeautifulSoup(ped_html_b, 'html.parser')
+                        blood_table_b = ped_soup_b.find('table', class_='blood_table')
+                        if blood_table_b:
+                            _parse_blood_table(blood_table_b, pedigree_result_b)
+                        if pedigree_result_b.get('sire'):
+                            logger.info(f"NAR馬 /ped/ 血統取得成功: {horse_id} sire={pedigree_result_b['sire']}")
+                            if SUPABASE_ENABLED:
+                                try:
+                                    save_pedigree_cache(
+                                        horse_id,
+                                        pedigree_result_b.get('sire', ''),
+                                        pedigree_result_b.get('dam', ''),
+                                        pedigree_result_b.get('damsire', ''),
+                                    )
+                                except Exception:
+                                    pass
+                            return pedigree_result_b
+                        # 200 だがデータなし → リトライ不要
+                        logger.debug(f"NAR馬 /ped/ 200 だが blood_table 未検出: {horse_id}")
+                        break
+                    elif ped_resp_b.status == 429:
+                        await asyncio.sleep(5.0 + attempt * 3.0)
+                        continue
+                    else:
+                        logger.debug(f"NAR馬 /ped/ HTTP {ped_resp_b.status}: {horse_id}")
+                        break
+            except Exception as e_b:
+                logger.debug(f"NAR馬 /ped/ 取得失敗 試行{attempt + 1} {horse_id}: {e_b}")
+                if attempt < 2:
+                    await asyncio.sleep(2.0 ** attempt)
+
+        # 3) /ped/ でも取得できない場合はフォールバック（キャッシュには保存しない → 次回再試行）
+        logger.debug(f"NAR馬 血統取得不可: {horse_id} → unknown_local")
         return {
             'sire': 'unknown_local',
             'dam': 'unknown_local',
@@ -3152,6 +3208,121 @@ async def rescrape_incomplete(limit: int = 50) -> RescrapeResponse:
         updated_horses=updated_horses,
         elapsed_time=elapsed,
     )
+
+
+@app.post("/api/backfill/nar-pedigree")
+async def backfill_nar_pedigree(limit: int = 100) -> dict:
+    """
+    Supabase の race_results_ultimate で sire='unknown_local' の NAR 馬（B プレフィックス）に対して
+    db.netkeiba.com/horse/ped/<horse_id>/ から血統を再取得し、レコードを更新する。
+
+    Args:
+        limit: 一度に処理するユニーク horse_id の上限（デフォルト100）
+    """
+    import json as json_mod
+
+    if not SUPABASE_ENABLED:
+        return {"success": False, "message": "Supabase 無効"}
+
+    sb = get_supabase_client()
+    if sb is None:
+        return {"success": False, "message": "Supabase クライアント取得失敗"}
+
+    # 1) unknown_local の行を収集（最大 limit*10 行をスキャン）
+    offset = 0
+    unknown_rows: list[dict] = []  # [{row_id, horse_id, race_id}]
+    seen_horse_ids: set = set()
+    while len(seen_horse_ids) < limit:
+        res = sb.table("race_results_ultimate").select("id,race_id,data").range(offset, offset + 999).execute()
+        if not res.data:
+            break
+        for r in res.data:
+            d = r["data"] if isinstance(r["data"], dict) else json_mod.loads(r["data"])
+            hid = str(d.get("horse_id", "") or "")
+            sire = str(d.get("sire", "") or "")
+            if hid.startswith("B") and sire == "unknown_local":
+                unknown_rows.append({"row_id": r["id"], "race_id": r["race_id"], "data": d, "horse_id": hid})
+                seen_horse_ids.add(hid)
+        if len(res.data) < 1000:
+            break
+        offset += 1000
+
+    logger.info(f"NAR血統バックフィル: unknown_local 行={len(unknown_rows)} ユニーク馬={len(seen_horse_ids)}")
+
+    if not unknown_rows:
+        return {"success": True, "message": "バックフィル対象なし", "updated": 0, "failed": 0}
+
+    # 2) 馬ごとに /ped/ を取得
+    timeout = aiohttp.ClientTimeout(total=30)
+    connector = aiohttp.TCPConnector(limit=3, limit_per_host=2)
+    pedigree_map: dict = {}  # horse_id → {sire, dam, damsire}
+
+    unique_horse_ids = list(seen_horse_ids)[:limit]
+    async with aiohttp.ClientSession(headers=SCRAPE_HEADERS, timeout=timeout, connector=connector) as session:
+        for hid in unique_horse_ids:
+            ped_url = f"https://db.netkeiba.com/horse/ped/{hid}/"
+            for attempt in range(3):
+                try:
+                    await asyncio.sleep(0.5 + attempt * 1.5)
+                    async with session.get(ped_url) as resp:
+                        if resp.status == 200:
+                            content = await resp.read()
+                            html = content.decode("euc-jp", errors="ignore")
+                            soup_p = BeautifulSoup(html, "html.parser")
+                            bt = soup_p.find("table", class_="blood_table")
+                            pedigree_map[hid] = {}
+                            if bt:
+                                _parse_blood_table(bt, pedigree_map[hid])
+                            if pedigree_map[hid].get("sire"):
+                                logger.info(f"  /ped/ 成功: {hid} sire={pedigree_map[hid]['sire']}")
+                            else:
+                                logger.debug(f"  /ped/ 200 だが blood_table 未取得: {hid}")
+                            break
+                        elif resp.status == 429:
+                            await asyncio.sleep(5.0 + attempt * 3.0)
+                            continue
+                        else:
+                            logger.debug(f"  /ped/ HTTP {resp.status}: {hid}")
+                            break
+                except Exception as e:
+                    logger.debug(f"  /ped/ エラー 試行{attempt+1} {hid}: {e}")
+                    if attempt < 2:
+                        await asyncio.sleep(2.0 ** attempt)
+
+    # 3) 取得成功した馬の Supabase レコードを更新
+    updated, failed = 0, 0
+    for row in unknown_rows:
+        hid = row["horse_id"]
+        ped = pedigree_map.get(hid, {})
+        sire = ped.get("sire", "")
+        if not sire:
+            failed += 1
+            continue
+        # data を更新
+        new_data = dict(row["data"])
+        new_data["sire"] = ped.get("sire", "")
+        new_data["dam"] = ped.get("dam", "")
+        new_data["damsire"] = ped.get("damsire", "")
+        try:
+            sb.table("race_results_ultimate").update({"data": new_data}).eq("id", row["row_id"]).execute()
+            updated += 1
+            # pedigree_cache にも保存
+            try:
+                save_pedigree_cache(hid, ped.get("sire", ""), ped.get("dam", ""), ped.get("damsire", ""))
+            except Exception:
+                pass
+        except Exception as e:
+            logger.warning(f"Supabase 更新失敗: row_id={row['row_id']} {e}")
+            failed += 1
+
+    return {
+        "success": True,
+        "message": f"{updated}件更新、{failed}件失敗",
+        "updated": updated,
+        "failed": failed,
+        "total_unique_horses": len(unique_horse_ids),
+        "total_rows_scanned": len(unknown_rows),
+    }
 
 
 if __name__ == "__main__":
