@@ -2681,55 +2681,66 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
     return result
 
 
-def _save_race_to_ultimate_db(race_data: dict, db_path: Path, overwrite: bool = True):
-    """スクレイピング結果を keiba_ultimate.db と Supabase の両方に保存"""
-    # Supabase に保存
-    if SUPABASE_ENABLED:
-        try:
-            save_race_to_supabase(race_data)
-        except Exception as e:
-            logger.warning(f"Supabase 保存失敗（ローカル保存は継続）: {e}")
+def _save_race_to_ultimate_db(race_data: dict, db_path: Path, overwrite: bool = True) -> bool:
+    """スクレイピング結果を keiba_ultimate.db と Supabase の両方に保存。
+    成功フラグ(bool)を返す。
+    """
     import json as json_mod
     import sqlite3
 
     race_info = race_data['race_info']
     horses = race_data['horses']
     race_id = race_info['race_id']
+    supabase_ok = False
 
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
+    # Supabase に保存
+    if SUPABASE_ENABLED:
+        try:
+            save_race_to_supabase(race_data)
+            supabase_ok = True
+        except Exception as e:
+            logger.warning(f"Supabase 保存失敗 {race_id}: {e}")
 
-    # races_ultimate
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS races_ultimate (
-            race_id TEXT PRIMARY KEY,
-            data TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    cur.execute(
-        "INSERT OR REPLACE INTO races_ultimate (race_id, data) VALUES (?, ?)",
-        (race_id, json_mod.dumps(race_info, ensure_ascii=False))
-    )
+    # ローカル SQLite に保存（ディレクトリがなければ自動作成）
+    try:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(db_path))
+        cur = conn.cursor()
 
-    # race_results_ultimate
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS race_results_ultimate (
-            race_id TEXT,
-            data TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    if overwrite:
-        cur.execute("DELETE FROM race_results_ultimate WHERE race_id = ?", (race_id,))
-    for h in horses:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS races_ultimate (
+                race_id TEXT PRIMARY KEY,
+                data TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         cur.execute(
-            "INSERT INTO race_results_ultimate (race_id, data) VALUES (?, ?)",
-            (race_id, json_mod.dumps(h, ensure_ascii=False))
+            "INSERT OR REPLACE INTO races_ultimate (race_id, data) VALUES (?, ?)",
+            (race_id, json_mod.dumps(race_info, ensure_ascii=False))
         )
 
-    conn.commit()
-    conn.close()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS race_results_ultimate (
+                race_id TEXT,
+                data TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        if overwrite:
+            cur.execute("DELETE FROM race_results_ultimate WHERE race_id = ?", (race_id,))
+        for h in horses:
+            cur.execute(
+                "INSERT INTO race_results_ultimate (race_id, data) VALUES (?, ?)",
+                (race_id, json_mod.dumps(h, ensure_ascii=False))
+            )
+
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.warning(f"SQLite 保存失敗 {race_id}: {e}")
+
+    # Supabase かローカルのどちらかでも成功があればTrue
+    return supabase_ok or SUPABASE_ENABLED is False
 
 
 # ============================================
@@ -2803,20 +2814,35 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
                         m = _re.search(r'/race/(\d{12})/', a['href'])
                         if m and m.group(1) not in race_ids:
                             race_ids.append(m.group(1))
+                    logger.info(f"{date}: {len(race_ids)}\u30ec\u30fc\u30b9ID\u691c\u51fa")
 
                     # ---- 5並列でレースを処理 ----
                     race_sem = asyncio.Semaphore(5)
+                    errors: list = []
 
                     async def _fetch_and_save(race_id, _date=date):
                         async with race_sem:
-                            race_data = await _scrape_race_full(session, race_id, date_hint=_date)
-                            if race_data and race_data['horses']:
-                                _save_race_to_ultimate_db(race_data, ULTIMATE_DB, overwrite=True)
-                                async with counter_lock:
-                                    counter["races"] += 1
-                                    counter["horses"] += len(race_data['horses'])
+                            try:
+                                race_data = await _scrape_race_full(session, race_id, date_hint=_date)
+                                if race_data and race_data.get('horses'):
+                                    saved = _save_race_to_ultimate_db(race_data, ULTIMATE_DB, overwrite=True)
+                                    if saved:
+                                        async with counter_lock:
+                                            counter["races"] += 1
+                                            counter["horses"] += len(race_data['horses'])
+                                        logger.info(f"保存完了: {race_id} ({len(race_data['horses'])}頭)")
+                                    else:
+                                        logger.warning(f"Supabase/SQLite両方失敗: {race_id}")
+                                else:
+                                    logger.warning(f"レースデータなし/出走馬なし: {race_id}")
+                            except Exception as exc:
+                                err_msg = f"{race_id}: {exc}"
+                                errors.append(err_msg)
+                                logger.error(f"_fetch_and_save 失敗 {err_msg}")
 
-                    await asyncio.gather(*[_fetch_and_save(r) for r in race_ids], return_exceptions=True)
+                    await asyncio.gather(*[_fetch_and_save(r) for r in race_ids])
+                    if errors:
+                        logger.warning(f"エラー一覧: {errors[:5]}")
 
                 except Exception as e:
                     logger.error(f"ジョブ {job_id} {date} エラー: {e}")
@@ -2824,9 +2850,10 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
                 job["progress"] = {
                     "done": i + 1,
                     "total": total,
-                    "message": f"{i+1}/{total}日処理済み / {counter['races']}レース取得",
+                    "message": f"{i+1}/{total}日処理済み / {counter['races']}レース保存 (errors:{len(errors)})",
                     "saved_races": counter["races"],
                     "saved_horses": counter["horses"],
+                    "last_errors": errors[-3:] if errors else [],
                 }
         saved_races = counter["races"]
         saved_horses = counter["horses"]
@@ -2859,6 +2886,53 @@ async def scrape_start_debug():
 
     asyncio.get_running_loop().create_task(_quick_task())
     return {"test_id": test_id, "message": "1秒待って GET /api/scrape/status/{test_id} で確認"}
+
+
+@app.get("/api/test/connectivity")
+async def test_connectivity():
+    """netkeiba疎通確認・Supabase書き込みテスト"""
+    result = {}
+
+    # netkeiba 疎通確認
+    try:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(headers=SCRAPE_HEADERS, timeout=timeout) as session:
+            async with session.get("https://db.netkeiba.com/race/list/20250101/") as resp:
+                content = await resp.read()
+                html = content.decode('euc-jp', errors='ignore')
+                import re as _re
+                ids = _re.findall(r'/race/(\d{12})/', html)
+                result["netkeiba"] = {
+                    "status": resp.status,
+                    "race_ids_found": len(set(ids)),
+                    "sample": list(set(ids))[:3],
+                }
+    except Exception as e:
+        result["netkeiba"] = {"error": str(e)}
+
+    # Supabase 書き込みテスト
+    if SUPABASE_ENABLED:
+        try:
+            from supabase_client import get_client as _gc
+            client = _gc()
+            test_race_id = "TEST000000000"
+            client.table("races_ultimate").upsert({
+                "race_id": test_race_id,
+                "data": '{"test": true}'
+            }).execute()
+            client.table("races_ultimate").delete().eq("race_id", test_race_id).execute()
+            result["supabase_write"] = "ok"
+        except Exception as e:
+            result["supabase_write"] = f"error: {e}"
+    else:
+        result["supabase_write"] = "disabled"
+
+    # SQLite パス確認
+    ULTIMATE_DB = Path(__file__).parent.parent / "keiba" / "data" / "keiba_ultimate.db"
+    result["sqlite_path"] = str(ULTIMATE_DB)
+    result["sqlite_dir_exists"] = ULTIMATE_DB.parent.exists()
+
+    return result
 
 
 @app.post("/api/scrape/start")
