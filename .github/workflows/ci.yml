@@ -1,0 +1,45 @@
+# CI: main / release への PR 時に自動テスト
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+      - release
+
+jobs:
+  # ── フロントエンド（Next.js）ビルド確認 ──
+  test-frontend:
+    name: Frontend Build Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+  # ── バックエンド（FastAPI）起動確認 ──
+  test-backend:
+    name: Backend Import Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r python-api/requirements.txt
+
+      - name: Import check
+        run: cd python-api && python -c "import main; print('FastAPI import OK')"
