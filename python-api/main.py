@@ -2329,15 +2329,27 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '') -> Optio
                     prev = lap_cumulative[d]
                 break
 
-    # ---- 馬詳細スクレイピング（血統/通算成績/前走情報） ----
-    seen_horse_ids = set()
-    for h in horses:
+    # ---- 馬詳細スクレイピング（血統/通算成績/前走情報） 3並列 ----
+    sem = asyncio.Semaphore(3)
+
+    async def _fetch_detail_limited(h):
         hid = h.get('horse_id', '')
         hurl = h.get('horse_url', '')
-        if hid and hid not in seen_horse_ids:
-            seen_horse_ids.add(hid)
+        if not hid:
+            return
+        async with sem:
             detail = await _scrape_horse_detail(session, hid, hurl)
             h.update(detail)
+
+    seen_horse_ids: set = set()
+    unique_horses = []
+    for h in horses:
+        hid = h.get('horse_id', '')
+        if hid and hid not in seen_horse_ids:
+            seen_horse_ids.add(hid)
+            unique_horses.append(h)
+
+    await asyncio.gather(*[_fetch_detail_limited(h) for h in unique_horses])
 
     return {
         'race_info': {
