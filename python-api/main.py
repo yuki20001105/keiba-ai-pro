@@ -1965,7 +1965,8 @@ VENUE_MAP = {
     '54': '福山',
     '55': '高知',
     '60': '佐賀',
-    '65': '荒尾', '66': '中津',
+    # 帯広(ばんえい) は 65、荒尾は 2013年廃止のため使用しない
+    '65': '帯広(ばんえい)', '66': '中津',
 }
 
 SCRAPE_HEADERS = {
@@ -2028,8 +2029,16 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '') -> Optio
         track_type = '芝' if dist_m.group(1) == '芝' else 'ダート'
         distance = int(dist_m.group(2))
     else:
-        track_type = ''
-        distance = 0
+        # ばんえい競馬（venue_code=65 帯広）: 「ばんえい200m」「200m」形式
+        _vc_tmp = race_id[4:6]
+        if _vc_tmp == '65':
+            track_type = 'ばんえい'
+            banei_m = (re.search(r'ばんえい\s*(\d+)', info_text) or
+                       re.search(r'(\d{3})\s*m', info_text))
+            distance = int(banei_m.group(1)) if banei_m else 200
+        else:
+            track_type = ''
+            distance = 0
 
     # ---- 天候 ----
     weather_m = re.search(r'天候\s*[:/：]\s*([^\s/]+)', info_text)
@@ -2083,7 +2092,18 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '') -> Optio
     for src in [race_name, smalltxt_text, info_text]:
         if race_class:
             break
-        for pat in [r'(G[1-3])', r'(新馬)', r'(未勝利)', r'([1-3]勝クラス)', r'(オープン)', r'(重賞)']:
+        for pat in [
+            r'(G[1-3])',
+            r'(新馬)',
+            r'(未勝利)',
+            r'([1-3]勝クラス)',
+            r'(オープン|OP)',
+            r'(重賞)',
+            # NAR クラス: C1/C2/C3/B1/B2/B3/A1/A2/A3
+            r'\b([ABC][1-3])\b',
+            # 括弧内 NAR クラス: (B), (C2), （A1）
+            r'[（(]([ABC][1-3]?)[）)]',
+        ]:
             cm = re.search(pat, src)
             if cm:
                 race_class = cm.group(1)
@@ -2108,6 +2128,8 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '') -> Optio
     if dir_m:
         course_direction = dir_m.group(1) + (dir_m.group(2) or '')
     elif '直線' in info_text:
+        course_direction = '直線'
+    elif race_id[4:6] == '65':  # ばんえい競馬は常に直線
         course_direction = '直線'
 
     # ---- 結果テーブル ----
@@ -3339,6 +3361,144 @@ async def backfill_nar_pedigree(limit: int = 100) -> dict:
         "failed": failed,
         "total_unique_horses": len(unique_horse_ids),
         "total_rows_scanned": len(unknown_rows),
+    }
+
+
+@app.post("/api/backfill/coat-color")
+async def backfill_coat_color(limit: int = 200) -> dict:
+    """
+    race_results_ultimate で horse_coat_color が未取得（null/空文字）の馬について
+    db.netkeiba.com/horse/<horse_id>/ を再スクレイプして毛色を補完する。
+
+    Args:
+        limit: 処理するユニーク horse_id の上限（デフォルト200）
+    """
+    import json as json_mod
+
+    if not SUPABASE_ENABLED:
+        return {"success": False, "message": "Supabase 無効"}
+
+    sb = get_supabase_client()
+    if sb is None:
+        return {"success": False, "message": "Supabase クライアント取得失敗"}
+
+    # 1) coat_color 欠損行を収集
+    offset = 0
+    target_rows: list[dict] = []
+    seen_horse_ids: set = set()
+
+    while len(seen_horse_ids) < limit:
+        res = sb.table("race_results_ultimate").select("id,race_id,data").range(offset, offset + 999).execute()
+        if not res.data:
+            break
+        for r in res.data:
+            d = r["data"] if isinstance(r["data"], dict) else json_mod.loads(r["data"])
+            hid = str(d.get("horse_id", "") or "")
+            coat = str(d.get("horse_coat_color", "") or "").strip()
+            hurl = str(d.get("horse_url", "") or "")
+            # 対象: horse_id あり、coat_color 未取得、NAR馬(B prefix)は /horse/ URL が使えないためスキップ
+            if hid and not coat and not hid.startswith("B"):
+                target_rows.append({
+                    "row_id": r["id"], "race_id": r["race_id"],
+                    "data": d, "horse_id": hid, "horse_url": hurl,
+                })
+                seen_horse_ids.add(hid)
+        if len(res.data) < 1000:
+            break
+        offset += 1000
+
+    logger.info(f"coat_color バックフィル: 欠損行={len(target_rows)} ユニーク馬={len(seen_horse_ids)}")
+
+    if not target_rows:
+        return {"success": True, "message": "バックフィル対象なし", "updated": 0, "failed": 0}
+
+    # 2) 馬ごとに detail ページから coat_color を取得
+    timeout = aiohttp.ClientTimeout(total=30)
+    connector = aiohttp.TCPConnector(limit=3, limit_per_host=2)
+    coat_map: dict = {}  # horse_id → coat_color string
+
+    unique_horse_ids = list(seen_horse_ids)[:limit]
+    # horse_id → horse_url のマップ作成
+    url_map = {r["horse_id"]: r["horse_url"] for r in target_rows}
+
+    async with aiohttp.ClientSession(headers=SCRAPE_HEADERS, timeout=timeout, connector=connector) as session:
+        for hid in unique_horse_ids:
+            hurl = url_map.get(hid, "")
+            url = hurl if hurl.startswith("http") else f"https://db.netkeiba.com/horse/{hid}/"
+            if not url.endswith("/"):
+                url = url + "/"
+            for attempt in range(3):
+                try:
+                    await asyncio.sleep(0.4 + attempt * 1.5)
+                    async with session.get(url) as resp:
+                        if resp.status == 200:
+                            content = await resp.read()
+                            html = content.decode("euc-jp", errors="ignore")
+                            soup_h = BeautifulSoup(html, "html.parser")
+                            # db_prof_table からの毛色取得（lambda でマルチクラスにも対応）
+                            prof_table = soup_h.find("table", class_=lambda c: c and "db_prof_table" in c)
+                            coat = ""
+                            if prof_table:
+                                for row in prof_table.find_all("tr"):
+                                    th = row.find("th")
+                                    td = row.find("td")
+                                    if th and td and "毛色" in th.get_text(strip=True):
+                                        coat = td.get_text(strip=True)
+                                        break
+                            if not coat:
+                                # フォールバック: 全テーブルをスキャン
+                                for tbl in soup_h.find_all("table"):
+                                    for tr in tbl.find_all("tr"):
+                                        th2 = tr.find("th")
+                                        td2 = tr.find("td")
+                                        if th2 and td2 and "毛色" in th2.get_text(strip=True):
+                                            coat = td2.get_text(strip=True)
+                                            break
+                                    if coat:
+                                        break
+                            if coat:
+                                coat_map[hid] = coat
+                                logger.info(f"  coat_color 取得: {hid} → {coat}")
+                            else:
+                                coat_map[hid] = ""
+                                logger.debug(f"  coat_color 未取得: {hid}")
+                            break
+                        elif resp.status == 429:
+                            await asyncio.sleep(5.0 + attempt * 3.0)
+                            continue
+                        else:
+                            logger.debug(f"  coat_color HTTP {resp.status}: {hid}")
+                            coat_map[hid] = ""
+                            break
+                except Exception as e:
+                    logger.debug(f"  coat_color エラー 試行{attempt+1} {hid}: {e}")
+                    if attempt < 2:
+                        await asyncio.sleep(2.0 ** attempt)
+
+    # 3) 取得できた horse_id の全行を Supabase 更新
+    updated, failed, skipped = 0, 0, 0
+    for row in target_rows:
+        hid = row["horse_id"]
+        coat = coat_map.get(hid, "")
+        if not coat:
+            skipped += 1
+            continue
+        new_data = dict(row["data"])
+        new_data["horse_coat_color"] = coat
+        try:
+            sb.table("race_results_ultimate").update({"data": new_data}).eq("id", row["row_id"]).execute()
+            updated += 1
+        except Exception as e:
+            logger.warning(f"Supabase 更新失敗: row_id={row['row_id']} {e}")
+            failed += 1
+
+    return {
+        "success": True,
+        "message": f"{updated}件更新、{failed}件失敗、{skipped}件coat_color未取得",
+        "updated": updated,
+        "failed": failed,
+        "skipped": skipped,
+        "total_unique_horses": len(unique_horse_ids),
     }
 
 

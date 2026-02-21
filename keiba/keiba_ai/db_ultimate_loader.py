@@ -8,6 +8,23 @@ import numpy as np
 import json
 from pathlib import Path
 
+# 会場コード → 会場名 マップ（旧データでコードが数字のまま保存されているケースを学習時に解決）
+_VENUE_MAP = {
+    '01': '札幌', '02': '函館', '03': '福島', '04': '新潟',
+    '05': '東京', '06': '中山', '07': '中京', '08': '京都',
+    '09': '阪神', '10': '小倉',
+    # NAR 会場
+    '30': '門別', '31': '帯広（ば）',
+    '35': '盛岡', '36': '水沢',
+    '42': '浦和', '43': '船橋', '44': '大井', '45': '川崎',
+    '46': '金沢', '47': '笠松', '48': '名古屋',
+    '50': '園田', '51': '姫路',
+    '54': '福山',
+    '55': '高知',
+    '60': '佐賀',
+    '65': '帯広(ばんえい)', '66': '中津',
+}
+
 def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
     """
     race_results_ultimateテーブルからUltimate版データを読み込む
@@ -104,7 +121,16 @@ def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
     
     df = pd.DataFrame(records)
     print(f"  ✓ DataFrame変換: {len(df)}行 × {len(df.columns)}列")
-    
+
+    # ===== venue コード解決（旧データでコードが数字のまま保存されているケースを解決） =====
+    # 例: "55" → "高知", "65" → "帯広(ばんえい)"
+    if 'venue' in df.columns:
+        df['venue'] = df['venue'].apply(
+            lambda v: _VENUE_MAP.get(str(v).zfill(2), v) if v and str(v).isdigit() else v
+        )
+        n_resolved = (df['venue'].notna() & ~df['venue'].apply(lambda v: str(v).isdigit() if v else False)).sum()
+        print(f"  ✓ venue コード解決: {n_resolved}件")
+
     # ===== カラム名マッピング（Ultimate版 → 標準版） =====
     column_mapping = {
         'finish_position': 'finish',
