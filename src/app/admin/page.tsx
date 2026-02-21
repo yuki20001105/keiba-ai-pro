@@ -55,7 +55,8 @@ export default function AdminDashboard() {
       const premiumUsers = usersData?.filter((u: User) => u.subscription_tier === 'premium').length || 0
 
       // レース数を取得
-      const racesResponse = await fetch('http://localhost:8000/api/data_stats')
+      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+      const racesResponse = await fetch(`${API_URL}/api/data_stats`)
       let totalRaces = 0
       let totalModels = 0
       if (racesResponse.ok) {
