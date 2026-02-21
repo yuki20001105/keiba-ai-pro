@@ -1952,9 +1952,20 @@ class ScrapeResponse(BaseModel):
 # ============================================
 
 VENUE_MAP = {
+    # JRA 会場
     '01': '札幌', '02': '函館', '03': '福島', '04': '新潟',
     '05': '東京', '06': '中山', '07': '中京', '08': '京都',
-    '09': '阪神', '10': '小倉'
+    '09': '阪神', '10': '小倉',
+    # NAR 会場（地方競馬）
+    '30': '門別', '31': '帯広（ば）',
+    '35': '盛岡', '36': '水沢',
+    '42': '浦和', '43': '船橋', '44': '大井', '45': '川崎',
+    '46': '金沢', '47': '笠松', '48': '名古屋',
+    '50': '園田', '51': '姫路',
+    '54': '福山',
+    '55': '高知',
+    '60': '佐賀',
+    '65': '荒尾', '66': '中津',
 }
 
 SCRAPE_HEADERS = {
@@ -2804,11 +2815,13 @@ def _save_race_to_ultimate_db(race_data: dict, db_path: Path, overwrite: bool = 
 
         conn.commit()
         conn.close()
+        sqlite_ok = True
     except Exception as e:
         logger.warning(f"SQLite 保存失敗 {race_id}: {e}")
+        sqlite_ok = False
 
-    # Supabase かローカルのどちらかでも成功があればTrue
-    return supabase_ok or SUPABASE_ENABLED is False
+    # Supabase かローカルのどちらかでも成功があれば True
+    return supabase_ok or sqlite_ok
 
 
 # ============================================
@@ -2848,8 +2861,8 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
         dates = []
         cur = s_dt
         while cur <= e_dt:
-            if cur.weekday() in [5, 6]:
-                dates.append(cur.strftime("%Y%m%d"))
+            # 全日程を対象（JRA は土日のみだが NAR は平日も開催される）
+            dates.append(cur.strftime("%Y%m%d"))
             cur += _td(days=1)
 
         total = len(dates)
