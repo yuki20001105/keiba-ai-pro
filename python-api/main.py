@@ -137,6 +137,7 @@ class TrainResponse(BaseModel):
     message: str
     optuna_executed: bool = False  # デバッグ用
     optuna_error: Optional[str] = None  # デバッグ用
+    feature_columns: List[str] = []  # 学習に使用した全特徴量名
 
 
 class PredictRequest(BaseModel):
@@ -537,6 +538,8 @@ async def train_model(request: TrainRequest):
             )
 
         # LightGBM最適化を使用する場合
+        # （全パスで参照されるため先に初期化）
+        _all_feature_columns: List[str] = []
         optimizer = None
         categorical_features = []
         feature_count = 0  # 特徴量数
@@ -576,7 +579,10 @@ async def train_model(request: TrainRequest):
 
                 # デバッグ情報
                 feature_count = len(X.columns)
+                # 学習に使用する全特徴量名を保存（レスポンスで返す）
+                _all_feature_columns = X.columns.tolist()
                 print(f"  最終特徴量数: {feature_count}列")
+                print(f"  特徴量一覧: {_all_feature_columns}")
                 print(f"  データ型: {X.dtypes.value_counts().to_dict()}")
 
                 # モデル学習（LightGBMネイティブAPI）
@@ -1005,6 +1011,7 @@ async def train_model(request: TrainRequest):
 
             # 特徴量数を設定（標準モード）
             feature_count = len(valid_num_cols) + len(valid_cat_cols)
+            _all_feature_columns = valid_num_cols + valid_cat_cols
 
         # モデル保存
         model_id = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1080,6 +1087,7 @@ async def train_model(request: TrainRequest):
             message=f"モデル学習完了 (AUC: {auc:.4f}, LogLoss: {logloss:.4f})",
             optuna_executed=optuna_executed,
             optuna_error=optuna_error,
+            feature_columns=_all_feature_columns,
         )
 
     except HTTPException:
