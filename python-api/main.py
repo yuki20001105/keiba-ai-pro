@@ -75,7 +75,7 @@ app = FastAPI(
 )
 
 # CORS設定（Next.jsからのアクセスを許可）
-_raw = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:3001")
+_raw = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:3001,https://keiba-ai-pro.vercel.app")
 _allowed_origins = [o.strip() for o in _raw.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
