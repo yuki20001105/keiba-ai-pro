@@ -1978,6 +1978,53 @@ SCRAPE_HEADERS = {
     'Connection': 'keep-alive',
 }
 
+# -------- 毛色ヘルパー --------
+# 長いパターンを先に並べ (黒鹿毛 > 鹿毛 など部分マッチ防止)
+_COAT_COLORS = [
+    '黒鹿毛', '青鹿毛', '青駁毛', '鹿駁毛', '栗駁毛', '駁栗毛', '駁鹿毛', '駁青毛', '栃栗毛',
+    '鹿毛', '青毛', '栗毛', '芦毛', '白毛', '駁毛',
+]
+_COAT_RE = re.compile('|'.join(re.escape(c) for c in _COAT_COLORS))
+
+
+def _extract_coat_color(soup: 'BeautifulSoup', html: str = '') -> str:
+    """複数の手法でHTMLから毛色文字列を抽出する。"""
+    # 1) db_prof_table: <th>毛色</th>
+    prof = soup.find('table', class_=lambda c: c and 'db_prof_table' in c)
+    if prof:
+        for tr in prof.find_all('tr'):
+            th, td = tr.find('th'), tr.find('td')
+            if th and td and '毛色' in th.get_text(strip=True):
+                v = td.get_text(strip=True)
+                if v:
+                    return v
+    # 2) 全テーブル: <th>毛色</th> / 性齢 or 性別フィールドから抽出
+    for tbl in soup.find_all('table'):
+        for tr in tbl.find_all('tr'):
+            th, td = tr.find('th'), tr.find('td')
+            if not th or not td:
+                continue
+            label = th.get_text(strip=True)
+            if '毛色' in label:
+                v = td.get_text(strip=True)
+                if v:
+                    return v
+            if '性齢' in label or '性別' in label:
+                v = td.get_text(strip=True)
+                m = _COAT_RE.search(v)
+                if m:
+                    return m.group(0)
+    # 3) ページ先頭3000文字 から「牡/牝/セン + 毛色」パターンを探す
+    if html:
+        target = html[:3000]
+        sex_coat = re.search(
+            r'(?:牡|牝|セン?)\s*(' + '|'.join(re.escape(c) for c in _COAT_COLORS) + r')',
+            target,
+        )
+        if sex_coat:
+            return sex_coat.group(1)
+    return ''
+
 
 async def _scrape_race_full(session, race_id: str, date_hint: str = '') -> Optional[dict]:
     """
@@ -2481,9 +2528,11 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
 
     # ── 地方馬（B プレフィックス）
     # /horse/B.../ は HTTP 400 だが、/horse/ped/B.../ は血統データを返す場合がある。
-    # キャッシュ → /ped/ 直接取得 → 失敗時 unknown_local の順で試みる。
+    # NAR馬（B プレフィックス）: /horse/<id>/ は 400 のため /ped/ で血統 + sp URL で毛色を取得
     if horse_id and re.match(r'^B', str(horse_id)):
-        # 1) Supabase キャッシュ確認（unknown_local でないものだけ使用）
+        _nar_result: dict = {}
+
+        # 1) Supabase 血統キャッシュ確認
         cached_b = (pedigree_cache or {}).get(horse_id) if pedigree_cache is not None else None
         if cached_b is None and SUPABASE_ENABLED:
             try:
@@ -2492,58 +2541,74 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
                 logger.debug(f"NAR馬 血統キャッシュ確認失敗: {_e}")
         if cached_b and cached_b.get('sire') and cached_b['sire'] not in ('', 'unknown_local'):
             logger.debug(f"NAR馬 血統キャッシュヒット: {horse_id} sire={cached_b['sire']}")
-            return {k: cached_b.get(k, '') for k in ('sire', 'dam', 'damsire')}
+            _nar_result = {k: cached_b.get(k, '') for k in ('sire', 'dam', 'damsire')}
+        else:
+            # 2) /horse/ped/<horse_id>/ を直接取得
+            ped_url_b = f"https://db.netkeiba.com/horse/ped/{horse_id}/"
+            pedigree_result_b: dict = {}
+            for attempt in range(3):
+                try:
+                    wait = 0.3 + attempt * 1.5
+                    await asyncio.sleep(wait)
+                    async with session.get(ped_url_b) as ped_resp_b:
+                        if ped_resp_b.status == 200:
+                            ped_content_b = await ped_resp_b.read()
+                            ped_html_b = ped_content_b.decode('euc-jp', errors='ignore')
+                            ped_soup_b = BeautifulSoup(ped_html_b, 'html.parser')
+                            blood_table_b = ped_soup_b.find('table', class_='blood_table')
+                            if blood_table_b:
+                                _parse_blood_table(blood_table_b, pedigree_result_b)
+                            if pedigree_result_b.get('sire'):
+                                logger.info(f"NAR馬 /ped/ 血統取得成功: {horse_id} sire={pedigree_result_b['sire']}")
+                                if SUPABASE_ENABLED:
+                                    try:
+                                        await asyncio.to_thread(
+                                            save_pedigree_cache,
+                                            horse_id,
+                                            pedigree_result_b.get('sire', ''),
+                                            pedigree_result_b.get('dam', ''),
+                                            pedigree_result_b.get('damsire', ''),
+                                        )
+                                    except Exception:
+                                        pass
+                                _nar_result = pedigree_result_b
+                                break
+                            logger.debug(f"NAR馬 /ped/ 200 だが blood_table 未検出: {horse_id}")
+                            break
+                        elif ped_resp_b.status == 429:
+                            await asyncio.sleep(5.0 + attempt * 3.0)
+                            continue
+                        else:
+                            logger.debug(f"NAR馬 /ped/ HTTP {ped_resp_b.status}: {horse_id}")
+                            break
+                except Exception as e_b:
+                    logger.debug(f"NAR馬 /ped/ 取得失敗 試行{attempt + 1} {horse_id}: {e_b}")
+                    if attempt < 2:
+                        await asyncio.sleep(2.0 ** attempt)
+            if not _nar_result.get('sire'):
+                logger.debug(f"NAR馬 血統取得不可: {horse_id} → unknown_local")
+                _nar_result = {'sire': 'unknown_local', 'dam': 'unknown_local', 'damsire': 'unknown_local'}
 
-        # 2) /horse/ped/<horse_id>/ を直接取得（通常の /horse/ URL は 400 エラー）
-        ped_url_b = f"https://db.netkeiba.com/horse/ped/{horse_id}/"
-        pedigree_result_b: dict = {}
-        for attempt in range(3):
-            try:
-                wait = 0.3 + attempt * 1.5
-                await asyncio.sleep(wait)
-                async with session.get(ped_url_b) as ped_resp_b:
-                    if ped_resp_b.status == 200:
-                        ped_content_b = await ped_resp_b.read()
-                        ped_html_b = ped_content_b.decode('euc-jp', errors='ignore')
-                        ped_soup_b = BeautifulSoup(ped_html_b, 'html.parser')
-                        blood_table_b = ped_soup_b.find('table', class_='blood_table')
-                        if blood_table_b:
-                            _parse_blood_table(blood_table_b, pedigree_result_b)
-                        if pedigree_result_b.get('sire'):
-                            logger.info(f"NAR馬 /ped/ 血統取得成功: {horse_id} sire={pedigree_result_b['sire']}")
-                            if SUPABASE_ENABLED:
-                                try:
-                                    await asyncio.to_thread(
-                                        save_pedigree_cache,
-                                        horse_id,
-                                        pedigree_result_b.get('sire', ''),
-                                        pedigree_result_b.get('dam', ''),
-                                        pedigree_result_b.get('damsire', ''),
-                                    )
-                                except Exception:
-                                    pass
-                            return pedigree_result_b
-                        # 200 だがデータなし → リトライ不要
-                        logger.debug(f"NAR馬 /ped/ 200 だが blood_table 未検出: {horse_id}")
-                        break
-                    elif ped_resp_b.status == 429:
-                        await asyncio.sleep(5.0 + attempt * 3.0)
-                        continue
-                    else:
-                        logger.debug(f"NAR馬 /ped/ HTTP {ped_resp_b.status}: {horse_id}")
-                        break
-            except Exception as e_b:
-                logger.debug(f"NAR馬 /ped/ 取得失敗 試行{attempt + 1} {horse_id}: {e_b}")
-                if attempt < 2:
-                    await asyncio.sleep(2.0 ** attempt)
+        # 3) sp.netkeiba で毛色を取得（PC版 /horse/<id>/ は NAR馬に 400 を返すため）
+        if not _nar_result.get('horse_coat_color'):
+            for _sp_url in [
+                f"https://db.sp.netkeiba.com/horse/{horse_id}/",
+                f"https://db.sp.netkeiba.com/horse/result/{horse_id}/",
+            ]:
+                try:
+                    await asyncio.sleep(0.3)
+                    async with session.get(_sp_url) as _sp_resp:
+                        if _sp_resp.status == 200:
+                            _sp_html = (await _sp_resp.read()).decode('euc-jp', errors='ignore')
+                            coat = _extract_coat_color(BeautifulSoup(_sp_html, 'html.parser'), _sp_html)
+                            if coat:
+                                _nar_result['horse_coat_color'] = coat
+                                logger.info(f"NAR馬 毛色取得成功: {horse_id} coat={coat}")
+                                break
+                except Exception:
+                    pass
 
-        # 3) /ped/ でも取得できない場合はフォールバック（キャッシュには保存しない → 次回再試行）
-        logger.debug(f"NAR馬 血統取得不可: {horse_id} → unknown_local")
-        return {
-            'sire': 'unknown_local',
-            'dam': 'unknown_local',
-            'damsire': 'unknown_local',
-        }
+        return _nar_result
 
     url = horse_url if horse_url.startswith('http') else f"https://db.netkeiba.com/horse/{horse_id}/"
     # horse_url の末尾スラッシュを保証
@@ -2627,6 +2692,31 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
                     result['horse_breeder'] = val
                 elif '産地' in key and 'horse_breeding_farm' not in result:
                     result['horse_breeding_farm'] = val
+
+    # ===== 毛色フォールバック（PC版で取得できなかった場合） =====
+    if not result.get('horse_coat_color'):
+        # まず _extract_coat_color でもう一度試す（soup / html は PC版）
+        coat_fb = _extract_coat_color(soup, html)
+        if coat_fb:
+            result['horse_coat_color'] = coat_fb
+        else:
+            # sp.netkeiba の馬ページ/成績ページを試す
+            for _sp_url in [
+                f"https://db.sp.netkeiba.com/horse/{horse_id}/",
+                f"https://db.sp.netkeiba.com/horse/result/{horse_id}/",
+            ]:
+                try:
+                    await asyncio.sleep(0.3)
+                    async with session.get(_sp_url) as _sp_resp:
+                        if _sp_resp.status == 200:
+                            _sp_html = (await _sp_resp.read()).decode('euc-jp', errors='ignore')
+                            coat_fb = _extract_coat_color(BeautifulSoup(_sp_html, 'html.parser'), _sp_html)
+                            if coat_fb:
+                                result['horse_coat_color'] = coat_fb
+                                logger.info(f"毛色 sp 取得成功: {horse_id} coat={coat_fb}")
+                                break
+                except Exception:
+                    pass
 
     # ===== 血統 (sire / dam / damsire) =====
     # 優先順位: 1) Supabase キャッシュ  2) メインページの blood_table
@@ -3410,11 +3500,12 @@ async def backfill_coat_color(limit: int = 200) -> dict:
             hid = str(d.get("horse_id", "") or "")
             coat = str(d.get("horse_coat_color", "") or "").strip()
             hurl = str(d.get("horse_url", "") or "")
-            # 対象: horse_id あり、coat_color 未取得、NAR馬(B prefix)は /horse/ URL が使えないためスキップ
-            if hid and not coat and not hid.startswith("B"):
+            # 対象: horse_id あり、coat_color 未取得（NAR馬も sp URL で取得するため含める）
+            if hid and not coat:
                 target_rows.append({
                     "row_id": r["id"], "race_id": r["race_id"],
                     "data": d, "horse_id": hid, "horse_url": hurl,
+                    "is_nar": hid.startswith("B"),
                 })
                 seen_horse_ids.add(hid)
         if len(res.data) < 1000:
@@ -3435,59 +3526,60 @@ async def backfill_coat_color(limit: int = 200) -> dict:
     # horse_id → horse_url のマップ作成
     url_map = {r["horse_id"]: r["horse_url"] for r in target_rows}
 
+    # NAR馬は sp.netkeiba を使用する URL リストを組み立てる
+    def _coat_urls(hid: str, hurl: str, is_nar: bool) -> list:
+        """毛色取得を試みる URL リスト（優先順位順）"""
+        if is_nar:
+            return [
+                f"https://db.sp.netkeiba.com/horse/{hid}/",
+                f"https://db.sp.netkeiba.com/horse/result/{hid}/",
+            ]
+        pc = hurl if hurl.startswith("http") else f"https://db.netkeiba.com/horse/{hid}/"
+        if not pc.endswith("/"):
+            pc += "/"
+        return [
+            pc,
+            f"https://db.sp.netkeiba.com/horse/{hid}/",
+            f"https://db.sp.netkeiba.com/horse/result/{hid}/",
+        ]
+
+    is_nar_map = {r["horse_id"]: r.get("is_nar", False) for r in target_rows}
+    url_map = {r["horse_id"]: r["horse_url"] for r in target_rows}
+
     async with aiohttp.ClientSession(headers=SCRAPE_HEADERS, timeout=timeout, connector=connector) as session:
         for hid in unique_horse_ids:
             hurl = url_map.get(hid, "")
-            url = hurl if hurl.startswith("http") else f"https://db.netkeiba.com/horse/{hid}/"
-            if not url.endswith("/"):
-                url = url + "/"
-            for attempt in range(3):
-                try:
-                    await asyncio.sleep(0.4 + attempt * 1.5)
-                    async with session.get(url) as resp:
-                        if resp.status == 200:
-                            content = await resp.read()
-                            html = content.decode("euc-jp", errors="ignore")
-                            soup_h = BeautifulSoup(html, "html.parser")
-                            # db_prof_table からの毛色取得（lambda でマルチクラスにも対応）
-                            prof_table = soup_h.find("table", class_=lambda c: c and "db_prof_table" in c)
-                            coat = ""
-                            if prof_table:
-                                for row in prof_table.find_all("tr"):
-                                    th = row.find("th")
-                                    td = row.find("td")
-                                    if th and td and "毛色" in th.get_text(strip=True):
-                                        coat = td.get_text(strip=True)
-                                        break
-                            if not coat:
-                                # フォールバック: 全テーブルをスキャン
-                                for tbl in soup_h.find_all("table"):
-                                    for tr in tbl.find_all("tr"):
-                                        th2 = tr.find("th")
-                                        td2 = tr.find("td")
-                                        if th2 and td2 and "毛色" in th2.get_text(strip=True):
-                                            coat = td2.get_text(strip=True)
-                                            break
-                                    if coat:
-                                        break
-                            if coat:
-                                coat_map[hid] = coat
-                                logger.info(f"  coat_color 取得: {hid} → {coat}")
+            is_nar = is_nar_map.get(hid, False)
+            urls_to_try = _coat_urls(hid, hurl, is_nar)
+            coat = ""
+            for url in urls_to_try:
+                for attempt in range(2):
+                    try:
+                        await asyncio.sleep(0.4 + attempt * 1.5)
+                        async with session.get(url) as resp:
+                            if resp.status == 200:
+                                content = await resp.read()
+                                html = content.decode("euc-jp", errors="ignore")
+                                soup_h = BeautifulSoup(html, "html.parser")
+                                coat = _extract_coat_color(soup_h, html)
+                                if coat:
+                                    logger.info(f"  coat_color 取得: {hid} → {coat} ({url})")
+                                else:
+                                    logger.debug(f"  coat_color 未取得: {hid} ({url})")
+                                break
+                            elif resp.status == 429:
+                                await asyncio.sleep(5.0 + attempt * 3.0)
+                                continue
                             else:
-                                coat_map[hid] = ""
-                                logger.debug(f"  coat_color 未取得: {hid}")
-                            break
-                        elif resp.status == 429:
-                            await asyncio.sleep(5.0 + attempt * 3.0)
-                            continue
-                        else:
-                            logger.debug(f"  coat_color HTTP {resp.status}: {hid}")
-                            coat_map[hid] = ""
-                            break
-                except Exception as e:
-                    logger.debug(f"  coat_color エラー 試行{attempt+1} {hid}: {e}")
-                    if attempt < 2:
-                        await asyncio.sleep(2.0 ** attempt)
+                                logger.debug(f"  coat_color HTTP {resp.status}: {hid} ({url})")
+                                break
+                    except Exception as e:
+                        logger.debug(f"  coat_color エラー 試行{attempt+1} {hid}: {e}")
+                        if attempt < 1:
+                            await asyncio.sleep(2.0)
+                if coat:
+                    break  # 取得できたら次の URL は試さない
+            coat_map[hid] = coat
 
     # 3) 取得できた horse_id の全行を Supabase 更新
     updated, failed, skipped = 0, 0, 0
