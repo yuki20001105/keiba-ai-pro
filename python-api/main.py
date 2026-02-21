@@ -3235,6 +3235,73 @@ async def scrape_status(job_id: str):
     }
 
 
+# ============================================
+# 非同期学習ジョブ管理
+# POST /api/train/start  → 即座に job_id を返す
+# GET  /api/train/status/{job_id} → 進捗/結果をポーリング
+# ============================================
+
+_train_jobs: dict = {}    # job_id -> {"status", "progress", "result", "error"}
+
+
+async def _run_train_job(job_id: str, request: "TrainRequest"):
+    """バックグラウンドで学習を実行しジョブストアを更新する"""
+    import traceback as _tb
+    job = _train_jobs[job_id]
+    job["status"] = "running"
+    try:
+        job["progress"] = "学習データ読み込み中..."
+        # TrainRequest をそのまま train_model に渡す（同期的に呼ぶ）
+        # train_model は async なので await
+        train_result = await train_model(request)
+        job["status"] = "completed"
+        job["result"] = train_result.dict()
+        job["progress"] = "完了"
+    except HTTPException as e:
+        job["status"] = "error"
+        job["error"] = e.detail
+        job["progress"] = f"エラー: {e.detail}"
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = str(e)
+        job["progress"] = f"エラー: {str(e)}"
+        logger.error(f"学習ジョブ {job_id} 失敗:\n{_tb.format_exc()}")
+
+
+@app.post("/api/train/start")
+async def train_start(request: TrainRequest):
+    """非同期学習ジョブを起動してすぐに job_id を返す"""
+    job_id = str(uuid.uuid4())
+    _train_jobs[job_id] = {
+        "status": "queued",
+        "progress": "キュー待ち",
+        "result": None,
+        "error": None,
+    }
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_run_train_job(job_id, request))
+    except Exception as e:
+        _train_jobs[job_id]["status"] = "error"
+        _train_jobs[job_id]["error"] = f"タスク起動失敗: {e}"
+    return {"job_id": job_id, "status": _train_jobs[job_id]["status"]}
+
+
+@app.get("/api/train/status/{job_id}")
+async def train_job_status(job_id: str):
+    """学習ジョブの進捗・結果を返す"""
+    job = _train_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"学習ジョブ {job_id} が見つかりません")
+    return {
+        "job_id": job_id,
+        "status": job["status"],       # queued / running / completed / error
+        "progress": job["progress"],
+        "result": job.get("result"),
+        "error": job.get("error"),
+    }
+
+
 @app.post("/api/scrape", response_model=ScrapeResponse)
 async def scrape_data(request: ScrapeRequest):
     """
