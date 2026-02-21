@@ -2445,6 +2445,15 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
     if not horse_id and not horse_url:
         return {}
 
+    # ── 地方馬（B プレフィックス）はdb.netkeiba.com に詳細ページが存在しない（HTTP 400）。
+    # 血統取得不可のため、カテゴリ特徴量として識別できる固定値を返す。
+    if horse_id and re.match(r'^B', str(horse_id)):
+        return {
+            'sire': 'unknown_local',
+            'dam': 'unknown_local',
+            'damsire': 'unknown_local',
+        }
+
     url = horse_url if horse_url.startswith('http') else f"https://db.netkeiba.com/horse/{horse_id}/"
     # horse_url の末尾スラッシュを保証
     if url and not url.endswith('/'):
