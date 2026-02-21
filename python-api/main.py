@@ -2190,7 +2190,7 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '') -> Optio
 
             horse_name = link_text(IDX_HORSE)
             horse_url = link_href(IDX_HORSE)
-            horse_id_m = re.search(r'/horse/(\d+)', horse_url)
+            horse_id_m = re.search(r'/horse/([A-Za-z0-9]+)', horse_url)
             horse_id = horse_id_m.group(1) if horse_id_m else ''
 
             sex_age = txt(IDX_SEX_AGE)
@@ -2203,7 +2203,7 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '') -> Optio
 
             jockey_name = link_text(IDX_JOCKEY)
             jockey_url = link_href(IDX_JOCKEY)
-            jockey_id_m = re.search(r'/jockey/(?:result/recent/)?(\d+)', jockey_url)
+            jockey_id_m = re.search(r'/jockey/(?:result/recent/)?([A-Za-z0-9]+)', jockey_url)
             jockey_id = jockey_id_m.group(1) if jockey_id_m else ''
 
             finish_time = txt(IDX_TIME)
@@ -2231,7 +2231,7 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '') -> Optio
 
             trainer_name = link_text(IDX_TRAINER) if IDX_TRAINER >= 0 and IDX_TRAINER < len(cols) else ''
             trainer_url = link_href(IDX_TRAINER) if IDX_TRAINER >= 0 and IDX_TRAINER < len(cols) else ''
-            trainer_id_m = re.search(r'/trainer/(?:result/recent/)?(\d+)', trainer_url)
+            trainer_id_m = re.search(r'/trainer/(?:result/recent/)?([A-Za-z0-9]+)', trainer_url)
             trainer_id = trainer_id_m.group(1) if trainer_id_m else ''
 
             prize_t = txt(IDX_PRIZE) if IDX_PRIZE >= 0 and IDX_PRIZE < len(cols) else ''

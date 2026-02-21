@@ -124,6 +124,8 @@ def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
             df[new_name] = df[old_name]
     
     # jockey_id / trainer_id / horse_id: URLからIDを抽出、なければ名前を使用
+    # ※ 地方馬・騎手は B プレフィックス付きID（例: B0060, B201600118）のため
+    #   [A-Za-z0-9]+ で抽出（\d+ では取れない）
     for url_col, id_col, name_col in [
         ('jockey_url', 'jockey_id', 'jockey_name'),
         ('trainer_url', 'trainer_id', 'trainer_name'),
@@ -131,10 +133,27 @@ def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
     ]:
         if id_col not in df.columns:
             if url_col in df.columns:
-                # URLの末尾からIDを抽出: .../01091/ → 01091
-                df[id_col] = df[url_col].str.extract(r'/([^/]+)/?$')[0]
+                # URLの末尾からIDを抽出: .../B0060/ → B0060, .../01091/ → 01091
+                df[id_col] = df[url_col].str.extract(r'/([A-Za-z0-9]+)/?$')[0]
             elif name_col in df.columns:
                 df[id_col] = df[name_col]
+        elif url_col in df.columns:
+            # ID列が存在するが空・NaNの行はURLから補完する
+            # （旧スクレイパーが \d+ で地方IDをスキップしたケースを救済）
+            mask_empty = (
+                df[id_col].isna() |
+                df[id_col].astype(str).str.strip().isin(['', 'None', 'nan'])
+            )
+            if mask_empty.any():
+                extracted = df.loc[mask_empty, url_col].str.extract(r'/([A-Za-z0-9]+)/?$')[0]
+                df.loc[mask_empty, id_col] = extracted
+                # それでも空ならname_colから補完
+                mask_still = (
+                    df[id_col].isna() |
+                    df[id_col].astype(str).str.strip().isin(['', 'None', 'nan'])
+                )
+                if mask_still.any() and name_col in df.columns:
+                    df.loc[mask_still, id_col] = df.loc[mask_still, name_col]
     
     # ===== 数値変換 =====
     numeric_cols = [
