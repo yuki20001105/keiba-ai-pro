@@ -2023,8 +2023,9 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '') -> Optio
         info_text = smalltxt.get_text(' ') if smalltxt else html[:3000]
 
     # ---- 距離・芝/ダート ----
-    # 新形式: "芝左1400m" "ダ右2000m" "障害右3900m" など（方向文字が挟まる場合がある）
-    dist_m = re.search(r'(芝|ダ)[右左直外内障]?\s*(\d+)m', info_text)
+    # 新形式: "芝左1400m" "ダ右2000m" "障害右3900m" "芝右外1800m" など
+    # ※ 方向文字は 0〜3文字（右外・左内・右内など複合あり）、全角ｍも考慮
+    dist_m = re.search(r'(芝|ダ)[右左直外内障]{0,3}\s*(\d+)[mｍ]', info_text)
     if dist_m:
         track_type = '芝' if dist_m.group(1) == '芝' else 'ダート'
         distance = int(dist_m.group(2))
