@@ -342,6 +342,8 @@ class LightGBMFeatureOptimizer:
             'horse_breeding_farm',    # 牧場名
             'horse_birth_date',       # 生年月日（年齢で代替）
             'horse_coat_color',       # 毛色（coat_colorに統一）
+            'surface_ja',             # surface日本語版（surface列に統合済み）
+            'surface_en',             # surface英語版（コースマスター参照用の中間列）
             'sex_age',                # 性齢文字列（sex/ageに分解済み）
             'race_date',              # レース日付（race_idから抽出済み）
             'created_at',             # タイムスタンプ
@@ -415,14 +417,18 @@ class LightGBMFeatureOptimizer:
             ('venue', 'venue_encoded'),
             ('venue_code', 'venue_code_encoded'),
             ('track_type', 'track_type_encoded'),
+            ('surface', 'surface_encoded'),
             ('weather', 'weather_encoded'),
             ('track_condition', 'track_condition_encoded'),
+            ('field_condition', 'field_condition_encoded'),
             ('race_class', 'race_class_encoded'),
+            ('course_direction', 'course_direction_encoded'),
             ('sex', 'sex_encoded'),
             ('corner_radius', 'corner_radius_encoded'),
             ('pace_classification', 'pace_encoded'),
             ('predicted_pace', 'predicted_pace_encoded'),
             ('running_style', 'running_style_encoded'),
+            ('coat_color', 'coat_color_encoded'),   # horse_coat_color → coat_color 変換後
         ]:
             if original_col in df.columns and original_col in self.label_encoders:
                 le = self.label_encoders[original_col]
@@ -457,7 +463,8 @@ class LightGBMFeatureOptimizer:
         
         # 不要な変数を削除
         unnecessary_cols = ['post_time', 'result_url', 'horse_url', 'jockey_url', 
-                          'trainer_url', 'time', 'margin', 'last_3f', 'prize_money']
+                          'trainer_url', 'time', 'margin', 'last_3f', 'prize_money',
+                          'horse_coat_color', 'surface_en', 'surface_ja']
         for col in unnecessary_cols:
             if col in df.columns:
                 df = df.drop(col, axis=1)

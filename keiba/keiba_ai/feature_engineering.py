@@ -323,10 +323,23 @@ def add_derived_features(df: pd.DataFrame, full_history_df: Optional[pd.DataFram
     
     # コース特性を追加（distance, surfaceカラムが必要）
     if 'distance' in df.columns and 'surface' in df.columns:
+        # surface_en があればそちらを優先（日本語→英語変換済み）
+        # なければその場で変換: 芝→turf, ダート→dirt
+        _SF_EN = {'芝': 'turf', 'ダート': 'dirt', 'ばんえい': 'dirt', 'sand': 'dirt'}
+        if 'surface_en' in df.columns:
+            _surface_col = 'surface_en'
+        else:
+            df['_surface_tmp'] = df['surface'].map(
+                lambda v: _SF_EN.get(str(v), v) if pd.notna(v) else 'turf'
+            )
+            _surface_col = '_surface_tmp'
+
         course_features = df.apply(
-            lambda row: get_course_features(row['race_id'], row['distance'], row['surface']),
+            lambda row: get_course_features(row['race_id'], row['distance'], row[_surface_col]),
             axis=1
         )
+        if '_surface_tmp' in df.columns:
+            df = df.drop(columns=['_surface_tmp'])
         df['straight_length'] = [f['straight_length'] for f in course_features]
         df['track_type'] = [f['track_type'] for f in course_features]
         df['corner_radius'] = [f['corner_radius'] for f in course_features]

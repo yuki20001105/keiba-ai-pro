@@ -142,6 +142,10 @@ def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
         'weight_kg': 'horse_weight',
         # weight_changeの別名統一
         'weight_change': 'horse_weight_change',
+        # 毛色: horse_coat_color → coat_color (LightGBMが期待する名称)
+        'horse_coat_color': 'coat_color',
+        # 斤量: jockey_weight → burden_weight (LightGBMが期待する名称)
+        'jockey_weight': 'burden_weight',
     }
     for old_name, new_name in column_mapping.items():
         if old_name in df.columns and new_name not in df.columns:
@@ -183,16 +187,16 @@ def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
     
     # ===== 数値変換 =====
     numeric_cols = [
-        'bracket_number', 'horse_number', 'jockey_weight', 'odds', 'popularity',
+        'bracket_number', 'horse_number', 'jockey_weight', 'burden_weight', 'odds', 'popularity',
         'horse_weight', 'age', 'finish', 'finish_position', 'distance',
-        'last_3f_time', 'last_3f_rank', 'weight_change', 'prize_money',
+        'last_3f_time', 'last_3f_rank', 'weight_change', 'horse_weight_change', 'prize_money',
         'num_horses',
         # 新スクレイパーで追加されたフィールド
         'kai', 'day',
         'corner_1', 'corner_2', 'corner_3', 'corner_4',
         'horse_total_runs', 'horse_total_wins', 'horse_total_prize_money',
-        'prev_race_distance', 'prev_race_finish', 'prev_race_weight',
-        'prev2_race_distance', 'prev2_race_finish', 'prev2_race_weight',
+        'prev_race_distance', 'prev_race_finish', 'prev_race_weight', 'prev_race_time',
+        'prev2_race_distance', 'prev2_race_finish', 'prev2_race_weight', 'prev2_race_time',
     ]
     for col in numeric_cols:
         if col in df.columns:
@@ -248,6 +252,27 @@ def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
         if 'age' not in df.columns or df['age'].isna().all():
             df['age'] = pd.to_numeric(df['sex_age'].str.extract(r'(\d+)$')[0], errors='coerce')
     
+    # ===== race_class の表記統一 =====
+    # スクレイパーが "OP" / "オープン" を混在して格納するケースを統一
+    _RACE_CLASS_NORM = {
+        'OP': 'オープン',
+        'op': 'オープン',
+        'Open': 'オープン',
+        'OPEN': 'オープン',
+    }
+    if 'race_class' in df.columns:
+        df['race_class'] = df['race_class'].replace(_RACE_CLASS_NORM)
+
+    # ===== surface の日本語 → 英語変換（feature_engineering.get_course_featuresへ渡す用） =====
+    # LightGBM encoding では元の日本語 surface_ja を保持し、
+    # コース特性マスター参照用に surface_en を別途作成する
+    _SURFACE_EN = {'芝': 'turf', 'ダート': 'dirt', 'ばんえい': 'dirt', 'sand': 'dirt'}
+    if 'surface' in df.columns:
+        # 元の日本語値を surface_ja に保存（LightGBM カテゴリ用）
+        df['surface_ja'] = df['surface']
+        # コースマスター参照用の英語値を surface_en に追加
+        df['surface_en'] = df['surface'].map(lambda v: _SURFACE_EN.get(str(v), 'turf') if pd.notna(v) else 'turf')
+
     # 最終的なカラム数を表示
     n_numeric = len(df.select_dtypes(include='number').columns)
     n_object = len(df.select_dtypes(include='object').columns)

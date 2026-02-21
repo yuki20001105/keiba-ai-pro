@@ -2158,6 +2158,9 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '') -> Optio
                 break
 
     # ---- 開催回・日目: p.smalltxt から抽出 ----
+    # race_class 表記ゆれを統一（OP → オープン）
+    if race_class == 'OP':
+        race_class = 'オープン'
     # 形式: "2025年01月12日 1回中京4日目 4歳以上1勝クラス"
     kai = None
     day = None
