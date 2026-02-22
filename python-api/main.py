@@ -3306,12 +3306,13 @@ async def train_job_status(job_id: str):
 # /api/export-db : Supabase → SQLite → ストリーム返却
 # ローカル検証用: GET /api/export-db?date=20260201
 # ============================================
-from fastapi.responses import StreamingResponse as _StreamingResponse
-import io as _io
 
 @app.get("/api/export-db")
 async def export_db(date: str = ""):
     """指定日（date=YYYYMMDD）の race_id プレフィックスでデータを SQLite に書き出してダウンロード"""
+    import sqlite3 as _sql, io as _io, os as _os, tempfile as _tempfile
+    from fastapi.responses import StreamingResponse as _SR
+
     if not SUPABASE_ENABLED:
         raise HTTPException(status_code=503, detail="Supabase 未接続")
 
@@ -3319,52 +3320,57 @@ async def export_db(date: str = ""):
     if not client:
         raise HTTPException(status_code=503, detail="Supabase クライアント未初期化")
 
-    import sqlite3 as _sql
-
     prefix_filter = date  # 空=全件
 
-    # メモリ上に SQLite を作成
-    buf = _io.BytesIO()
-
-    # 一時ファイルを /tmp に作成（Render は /tmp が書き込み可能）
-    import tempfile as _tempfile, os as _os
-    tmp_path = _tempfile.mktemp(suffix=".db", dir="/tmp")
-
     try:
-        conn = _sql.connect(tmp_path)
-        cur = conn.cursor()
-        cur.execute("CREATE TABLE races_ultimate (race_id TEXT PRIMARY KEY, data TEXT NOT NULL)")
-        cur.execute("CREATE TABLE race_results_ultimate (race_id TEXT, data TEXT NOT NULL)")
-
-        # races_ultimate
+        # races を取得
         q = client.table("races_ultimate").select("race_id,data")
         if prefix_filter:
             q = q.like("race_id", f"{prefix_filter}%")
         races_resp = q.execute()
         races = races_resp.data or []
-        for r in races:
-            cur.execute("INSERT OR REPLACE INTO races_ultimate VALUES (?,?)", (r["race_id"], r["data"]))
 
-        # race_results_ultimate
+        # race_results を取得
+        all_results = []
         race_ids = [r["race_id"] for r in races]
         for rid in race_ids:
             res = client.table("race_results_ultimate").select("race_id,data").eq("race_id", rid).execute()
-            for r2 in (res.data or []):
-                cur.execute("INSERT INTO race_results_ultimate VALUES (?,?)", (r2["race_id"], r2["data"]))
+            all_results.extend(res.data or [])
 
-        conn.commit()
-        conn.close()
+        # メモリ上で SQLite を構築して serialize
+        src_conn = _sql.connect(":memory:")
+        src_cur = src_conn.cursor()
+        src_cur.execute("CREATE TABLE races_ultimate (race_id TEXT PRIMARY KEY, data TEXT NOT NULL)")
+        src_cur.execute("CREATE TABLE race_results_ultimate (race_id TEXT, data TEXT NOT NULL)")
+        for r in races:
+            src_cur.execute("INSERT OR REPLACE INTO races_ultimate VALUES (?,?)", (r["race_id"], r["data"]))
+        for r2 in all_results:
+            src_cur.execute("INSERT INTO race_results_ultimate VALUES (?,?)", (r2["race_id"], r2["data"]))
+        src_conn.commit()
 
-        # ファイルを読み込んでストリームで返す
-        with open(tmp_path, "rb") as f:
-            db_bytes = f.read()
-
-    finally:
-        if _os.path.exists(tmp_path):
+        # sqlite3.Connection.serialize() で bytes に変換（Python 3.11+）または tempfile 経由
+        try:
+            db_bytes = bytes(src_conn.serialize())
+        except AttributeError:
+            # serialize() が使えない場合は tempfile 経由
+            import atexit
+            tmp_path = _tempfile.mktemp(suffix=".db")
+            dst_conn = _sql.connect(tmp_path)
+            src_conn.backup(dst_conn)
+            dst_conn.close()
+            with open(tmp_path, "rb") as f:
+                db_bytes = f.read()
             _os.unlink(tmp_path)
+        finally:
+            src_conn.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB構築エラー: {str(e)}")
 
     fname = f"keiba_ultimate_{prefix_filter or 'all'}.db"
-    return _StreamingResponse(
+    return _SR(
         _io.BytesIO(db_bytes),
         media_type="application/octet-stream",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
