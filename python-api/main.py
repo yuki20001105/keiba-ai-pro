@@ -3305,7 +3305,15 @@ async def scrape_status(job_id: str):
     """スクレイピングジョブの進捗・結果を返す"""
     job = _scrape_jobs.get(job_id)
     if not job:
-        raise HTTPException(status_code=404, detail=f"ジョブ {job_id} が見つかりません")
+        # 404は返さず 200+not_foundにする。
+        # Render再起動後にインメモリがクリアされた場合でもフロントエンドが明確に検知できる。
+        return {
+            "job_id": job_id,
+            "status": "not_found",
+            "progress": {},
+            "result": None,
+            "error": f"ジョブ {job_id} が見つかりません（サーバー再起動の可能性）",
+        }
     return {
         "job_id": job_id,
         "status": job["status"],       # queued / running / completed / error
@@ -3383,7 +3391,13 @@ async def train_job_status(job_id: str):
     """学習ジョブの進捗・結果を返す"""
     job = _train_jobs.get(job_id)
     if not job:
-        raise HTTPException(status_code=404, detail=f"学習ジョブ {job_id} が見つかりません")
+        return {
+            "job_id": job_id,
+            "status": "not_found",
+            "progress": "",
+            "result": None,
+            "error": f"学習ジョブ {job_id} が見つかりません（サーバー再起動の可能性）",
+        }
     return {
         "job_id": job_id,
         "status": job["status"],       # queued / running / completed / error

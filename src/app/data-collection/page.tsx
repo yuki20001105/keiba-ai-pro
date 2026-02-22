@@ -146,15 +146,33 @@ export default function DataCollectionPage() {
       // ポーリング（3秒間隔）
       const pollInterval = 3000
       let completed = false
+      let notFoundCount = 0  // 連続 not_found カウンタ（Render再起動検知用）
 
       while (!completed) {
         await new Promise(resolve => setTimeout(resolve, pollInterval))
 
         const statusRes = await fetch(`/api/scrape/status/${job_id}`)
-        if (!statusRes.ok) continue
+        if (!statusRes.ok) {
+          notFoundCount++
+          if (notFoundCount >= 3) {
+            throw new Error(`サーバーが再起動したためジョブ情報が失われました (job_id: ${job_id})。取得済みデータはSupabaseに保存されている可能性があります。`)
+          }
+          continue
+        }
+        notFoundCount = 0
 
         const status = await statusRes.json()
         const prog = status.progress || {}
+
+        // Render再起動によるジョブ失厄を検知
+        if (status.status === 'not_found') {
+          notFoundCount++
+          if (notFoundCount >= 3) {
+            throw new Error(`サーバーが再起動しジョブ情報が失われました (job_id: ${job_id})。取得済みデータはSupabaseに保存されている可能性があります。`)
+          }
+          continue
+        }
+        notFoundCount = 0
 
         if (prog.total > 0) {
           const pct = Math.min(95, Math.round((prog.done / prog.total) * 90) + 5)
