@@ -2514,7 +2514,7 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '', quick_mo
         except Exception:
             pass
 
-    sem = asyncio.Semaphore(15)
+    sem = asyncio.Semaphore(6)
 
     async def _fetch_detail_limited(h):
         hid = h.get('horse_id', '')
@@ -3131,8 +3131,8 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
                             race_ids.append(m.group(1))
                     logger.info(f"{date}: {len(race_ids)}\u30ec\u30fc\u30b9ID\u691c\u51fa")
 
-                    # ---- 12並列でレースを処理 ----
-                    race_sem = asyncio.Semaphore(12)
+                    # ---- 4並列でレースを処理 (Render 512MB対応) ----
+                    race_sem = asyncio.Semaphore(4)
 
                     async def _fetch_and_save(race_id, _date=date, _day_idx=i):
                         async with race_sem:
