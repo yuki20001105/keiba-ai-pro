@@ -3423,9 +3423,15 @@ async def export_db(date: str = ""):
             cur.execute("CREATE TABLE races_ultimate (race_id TEXT PRIMARY KEY, data TEXT NOT NULL)")
             cur.execute("CREATE TABLE race_results_ultimate (race_id TEXT, data TEXT NOT NULL)")
             for r in all_races:
-                cur.execute("INSERT OR REPLACE INTO races_ultimate VALUES (?,?)", (r["race_id"], r["data"]))
+                data_val = r["data"]
+                if isinstance(data_val, dict):
+                    data_val = json.dumps(data_val, ensure_ascii=False)
+                cur.execute("INSERT OR REPLACE INTO races_ultimate VALUES (?,?)", (r["race_id"], data_val))
             for r2 in all_results:
-                cur.execute("INSERT INTO race_results_ultimate VALUES (?,?)", (r2["race_id"], r2["data"]))
+                data_val2 = r2["data"]
+                if isinstance(data_val2, dict):
+                    data_val2 = json.dumps(data_val2, ensure_ascii=False)
+                cur.execute("INSERT INTO race_results_ultimate VALUES (?,?)", (r2["race_id"], data_val2))
             conn.commit()
             conn.close()
             with open(tmp_path, "rb") as f:

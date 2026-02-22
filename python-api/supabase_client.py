@@ -142,9 +142,14 @@ def sync_supabase_to_sqlite(db_path: Path) -> int:
             if not rows:
                 break
             for row in rows:
+                # data が dict (JSONB) の場合は JSON文字列に変換
+                data_val = row["data"]
+                if isinstance(data_val, dict):
+                    import json as _json
+                    data_val = _json.dumps(data_val, ensure_ascii=False)
                 cur.execute(
                     "INSERT OR REPLACE INTO races_ultimate (race_id, data) VALUES (?, ?)",
-                    (row["race_id"], row["data"])
+                    (row["race_id"], data_val)
                 )
             total_races += len(rows)
             offset += page_size
@@ -160,9 +165,14 @@ def sync_supabase_to_sqlite(db_path: Path) -> int:
             if not rows:
                 break
             for row in rows:
+                # data が dict (JSONB) の場合は JSON文字列に変換
+                data_val = row["data"]
+                if isinstance(data_val, dict):
+                    import json as _json
+                    data_val = _json.dumps(data_val, ensure_ascii=False)
                 cur.execute(
                     "INSERT INTO race_results_ultimate (race_id, data) VALUES (?, ?)",
-                    (row["race_id"], row["data"])
+                    (row["race_id"], data_val)
                 )
             offset += page_size
             if len(rows) < page_size:
