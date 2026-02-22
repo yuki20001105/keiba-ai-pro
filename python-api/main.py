@@ -3306,54 +3306,85 @@ async def train_job_status(job_id: str):
 # /api/export-db : Supabase → SQLite → ストリーム返却
 # ローカル検証用: GET /api/export-db?date=20260201
 # ============================================
-from fastapi.responses import StreamingResponse, FileResponse as _FR
-import tempfile as _tempfile, io as _io
+from fastapi.responses import StreamingResponse as _StreamingResponse
+import io as _io
 
 @app.get("/api/export-db")
 async def export_db(date: str = ""):
     """指定日（date=YYYYMMDD）の race_id プレフィックスでデータを SQLite に書き出してダウンロード"""
-    if not SUPABASE_ENABLED or not get_supabase_client():
+    if not SUPABASE_ENABLED:
         raise HTTPException(status_code=503, detail="Supabase 未接続")
 
-    import sqlite3 as _sql, json as _json_ex
     client = get_supabase_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="Supabase クライアント未初期化")
+
+    import sqlite3 as _sql
 
     prefix_filter = date  # 空=全件
 
-    tmp_f = _tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    tmp_path = tmp_f.name
-    tmp_f.close()
+    # メモリ上に SQLite を作成
+    buf = _io.BytesIO()
 
-    conn = _sql.connect(tmp_path)
-    cur = conn.cursor()
-    for sql in [
-        "CREATE TABLE races_ultimate (race_id TEXT PRIMARY KEY, data TEXT NOT NULL)",
-        "CREATE TABLE race_results_ultimate (race_id TEXT, data TEXT NOT NULL)",
-    ]:
-        cur.execute(sql)
+    # 一時ファイルを /tmp に作成（Render は /tmp が書き込み可能）
+    import tempfile as _tempfile, os as _os
+    tmp_path = _tempfile.mktemp(suffix=".db", dir="/tmp")
 
-    # races_ultimate
-    q = client.table("races_ultimate").select("race_id,data")
-    if prefix_filter:
-        q = q.like("race_id", f"{prefix_filter}%")
-    races = q.execute().data
-    for r in races:
-        cur.execute("INSERT OR REPLACE INTO races_ultimate VALUES (?,?)", (r["race_id"], r["data"]))
+    try:
+        conn = _sql.connect(tmp_path)
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE races_ultimate (race_id TEXT PRIMARY KEY, data TEXT NOT NULL)")
+        cur.execute("CREATE TABLE race_results_ultimate (race_id TEXT, data TEXT NOT NULL)")
 
-    # race_results_ultimate
-    race_ids = [r["race_id"] for r in races]
-    for rid in race_ids:
-        res = client.table("race_results_ultimate").select("race_id,data").eq("race_id", rid).execute()
-        for r2 in res.data:
-            cur.execute("INSERT INTO race_results_ultimate VALUES (?,?)", (r2["race_id"], r2["data"]))
+        # races_ultimate
+        q = client.table("races_ultimate").select("race_id,data")
+        if prefix_filter:
+            q = q.like("race_id", f"{prefix_filter}%")
+        races_resp = q.execute()
+        races = races_resp.data or []
+        for r in races:
+            cur.execute("INSERT OR REPLACE INTO races_ultimate VALUES (?,?)", (r["race_id"], r["data"]))
 
-    conn.commit()
-    conn.close()
+        # race_results_ultimate
+        race_ids = [r["race_id"] for r in races]
+        for rid in race_ids:
+            res = client.table("race_results_ultimate").select("race_id,data").eq("race_id", rid).execute()
+            for r2 in (res.data or []):
+                cur.execute("INSERT INTO race_results_ultimate VALUES (?,?)", (r2["race_id"], r2["data"]))
+
+        conn.commit()
+        conn.close()
+
+        # ファイルを読み込んでストリームで返す
+        with open(tmp_path, "rb") as f:
+            db_bytes = f.read()
+
+    finally:
+        if _os.path.exists(tmp_path):
+            _os.unlink(tmp_path)
 
     fname = f"keiba_ultimate_{prefix_filter or 'all'}.db"
-    return _FR(tmp_path, media_type="application/octet-stream",
-               filename=fname,
-               headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+    return _StreamingResponse(
+        _io.BytesIO(db_bytes),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@app.get("/api/debug/race-ids")
+async def debug_race_ids(limit: int = 10):
+    """race_idのサンプルを返す（デバッグ用）"""
+    if not SUPABASE_ENABLED:
+        raise HTTPException(status_code=503, detail="Supabase 未接続")
+    client = get_supabase_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="Supabase クライアント未初期化")
+    try:
+        res = client.table("races_ultimate").select("race_id").limit(limit).execute()
+        ids = [r["race_id"] for r in (res.data or [])]
+        return {"race_ids": ids, "count": len(ids)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/scrape", response_model=ScrapeResponse)
