@@ -3209,12 +3209,14 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
                             race_data = await _scrape_race_full(session, race_id, date_hint=_date, quick_mode=True)
                             if race_data and race_data.get('horses'):
                                 n_horses = len(race_data['horses'])
-                                # Supabase: fire-and-forget（RTTをブロックしない）
+                                # SQLite + Supabase を同時並列 await（fire-and-forgetはTask蓄積でOOM）
+                                # asyncio.gather で両者を同時実行 → RTT分の待機なし、かつ完了後に race_data を即解放
+                                _save_tasks = [asyncio.to_thread(_save_race_sqlite_only, race_data, ULTIMATE_DB)]
                                 if SUPABASE_ENABLED:
-                                    asyncio.ensure_future(asyncio.to_thread(save_race_to_supabase, race_data))
-                                # SQLite: 非同期書き込み（高速・ブロッキングI/OをThreadで実行）
-                                saved = await asyncio.to_thread(_save_race_sqlite_only, race_data, ULTIMATE_DB)
-                                del race_data  # 大きなdictを即解放（ensure_futureがrefを保持）
+                                    _save_tasks.append(asyncio.to_thread(save_race_to_supabase, race_data))
+                                _save_results = await asyncio.gather(*_save_tasks, return_exceptions=True)
+                                saved = _save_results[0] if not isinstance(_save_results[0], Exception) else False
+                                del race_data  # gather完了後＝全Taskが参照を手放した後に解放（確実に即解放）
                                 if saved:
                                     async with counter_lock:
                                         counter["races"] += 1
