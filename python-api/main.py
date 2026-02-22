@@ -2496,7 +2496,10 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '', quick_mo
                     prev = lap_cumulative[d]
                 break
 
-    # ---- 馬詳細スクレイピング（血統/通算成績/前走情報） 15並列 + バッチpedigreeキャッシュ ----
+    # soup/html を明示的に解放（BS4オブジェクトは大きい）
+    del soup, html
+
+    # ---- 馬詳細スクレイピング（血統/通算成績/前走情報） 3並列 + バッチpedigreeキャッシュ ----
     seen_horse_ids: set = set()
     unique_horses = []
     for h in horses:
@@ -2514,7 +2517,7 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '', quick_mo
         except Exception:
             pass
 
-    sem = asyncio.Semaphore(6)
+    sem = asyncio.Semaphore(3)  # Render 512MB: ピークメモリ制御
 
     async def _fetch_detail_limited(h):
         hid = h.get('horse_id', '')
@@ -2762,6 +2765,7 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
         return result
 
     soup = BeautifulSoup(html, 'lxml')
+    del html  # raw HTML文字列解放（soupがあれば不要）
 
     # ===== プロフィール（db_prof_table から取得） =====
     # class_ にラムダを使うことで 'db_prof_table no_under' など複合クラスにも対応
@@ -2830,8 +2834,8 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
 
     # ===== 毛色フォールバック（PC版で取得できなかった場合） =====
     if not result.get('horse_coat_color'):
-        # まず _extract_coat_color でもう一度試す（soup / html は PC版）
-        coat_fb = _extract_coat_color(soup, html)
+        # まず _extract_coat_color でもう一度試す（soupから、htmlは既に解放済み）
+        coat_fb = _extract_coat_color(soup, '')
         if coat_fb:
             result['horse_coat_color'] = coat_fb
         elif not quick_mode:
@@ -2875,6 +2879,11 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
             pedigree_cached = True
             logger.debug(f"血統キャッシュヒット: {horse_id} sire={result['sire']}")
 
+    # pedigree_cached の次の処理の前に soup/html 解放
+    _soup_saved = not pedigree_cached  # blood_table がまだ必要か
+    if not _soup_saved:
+        del soup, html  # 血統キャッシュ済みならそこで解放
+
     if not pedigree_cached:
         # 2. メインページの blood_table を確認（追加 HTTP リクエスト不要）
         blood_table_main = soup.find('table', class_='blood_table')
@@ -2886,6 +2895,7 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
         if not result.get('sire'):
             if _pre_ped_html:
                 ped_soup = BeautifulSoup(_pre_ped_html, 'lxml')
+                del _pre_ped_html  # 即解放
                 blood_table = ped_soup.find('table', class_='blood_table')
                 if blood_table:
                     _parse_blood_table(blood_table, result)
@@ -2919,11 +2929,17 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
                 result.get('dam', ''),
                 result.get('damsire', ''),
             ))
+        # soup 解放（血統キャッシュなしの場合はここで解放）
+        try:
+            del soup
+        except NameError:
+            pass
 
     # ===== 過去レース結果（最新2走）: 並列プリフェッチ済みHTMLを使用 =====
     try:
         if _pre_result_html is not None:
             res_soup = BeautifulSoup(_pre_result_html, 'lxml')
+            del _pre_result_html  # 即解放
             race_hist_table = None
             for tbl in res_soup.find_all('table'):
                 headers = [th.get_text(strip=True) for th in tbl.find_all('th')]
