@@ -28,6 +28,7 @@ export default function DataCollectionPage() {
   const [selectedRaceDetail, setSelectedRaceDetail] = useState<any>(null)
 
   // プロファイリング
+  const [showProfiling, setShowProfiling] = useState(false)
   const [profilingJobId, setProfilingJobId] = useState<string | null>(null)
   const [profilingStatus, setProfilingStatus] = useState<'idle' | 'running' | 'completed' | 'error'>('idle')
   const [profilingMessage, setProfilingMessage] = useState('')
@@ -548,75 +549,89 @@ export default function DataCollectionPage() {
         )}
 
         {/* プロファイリングレポート */}
-        <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-6">
-          <h2 className="text-sm font-medium text-[#888] mb-4">特徴量プロファイリングレポート</h2>
-          <p className="text-xs text-[#555] mb-4">取得済みデータに特徴量エンジニアリングを適用し、ydata-profiling で可視化します。</p>
-
-          <div className="flex items-center gap-3 mb-4">
-            <label className="flex items-center gap-2 text-xs text-[#888] cursor-pointer select-none">
+        <div className="border border-[#1e1e1e] rounded-lg overflow-hidden">
+          {/* ヘッダー（常時表示） */}
+          <label className="flex items-center justify-between px-5 py-3.5 bg-[#111] cursor-pointer select-none">
+            <span className="text-xs text-[#666]">特徴量プロファイリングレポート</span>
+            <span className="flex items-center gap-2 text-xs text-[#555]">
+              {!showProfiling ? '展開' : '閉じる'}
               <input
                 type="checkbox"
-                checked={useOptimized}
-                onChange={e => setUseOptimized(e.target.checked)}
-                className="w-4 h-4 accent-white"
+                checked={showProfiling}
+                onChange={e => setShowProfiling(e.target.checked)}
+                className="w-3.5 h-3.5 accent-white"
               />
-              LightGBM最適化済み（リーク除去・変換適用）
-            </label>
-          </div>
+            </span>
+          </label>
 
-          <div className="flex items-center gap-3">
-            <button
-              onClick={handleStartProfiling}
-              disabled={profilingStatus === 'running'}
-              className={`px-5 py-2.5 rounded text-sm font-medium transition-colors ${
-                profilingStatus === 'running'
-                  ? 'bg-[#222] text-[#555] cursor-not-allowed'
-                  : 'bg-white text-black hover:bg-[#eee]'
-              }`}
-            >
-              {profilingStatus === 'running' ? (
-                <span className="flex items-center gap-2">
-                  <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                  </svg>
-                  生成中...
-                </span>
-              ) : 'レポート生成'}
-            </button>
+          {/* コンテンツ（折りたたみ） */}
+          {showProfiling && (
+            <div className="px-5 pb-5 pt-4 bg-[#0d0d0d] border-t border-[#1e1e1e] space-y-4">
+              <label className="flex items-center gap-2 text-xs text-[#888] cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={useOptimized}
+                  onChange={e => setUseOptimized(e.target.checked)}
+                  className="w-3.5 h-3.5 accent-white"
+                />
+                LightGBM最適化済み（リーク除去・変換適用）
+              </label>
 
-            {profilingStatus === 'completed' && profilingJobId && (
-              <a
-                href={`/api/profiling/html/${profilingJobId}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="px-5 py-2.5 rounded text-sm font-medium bg-[#1a3a1a] text-[#4ade80] border border-[#2a5a2a] hover:bg-[#1f4a1f] transition-colors"
-              >
-                レポートを開く →
-              </a>
-            )}
-          </div>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={handleStartProfiling}
+                  disabled={profilingStatus === 'running'}
+                  className={`px-4 py-2 rounded text-xs font-medium transition-colors ${
+                    profilingStatus === 'running'
+                      ? 'bg-[#1a1a1a] text-[#555] cursor-not-allowed'
+                      : 'bg-white text-black hover:bg-[#eee]'
+                  }`}
+                >
+                  {profilingStatus === 'running' ? (
+                    <span className="flex items-center gap-1.5">
+                      <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                      </svg>
+                      生成中...
+                    </span>
+                  ) : 'レポート生成'}
+                </button>
 
-          {profilingStatus !== 'idle' && (
-            <div className="mt-4 space-y-1.5">
-              {(profilingStatus === 'running' || profilingStatus === 'completed') && (
-                <>
-                  <div className="flex justify-between text-xs text-[#888] mb-1">
-                    <span>{profilingMessage}</span>
-                    <span>{profilingProgress}%</span>
-                  </div>
-                  <div className="w-full bg-[#1e1e1e] rounded-full h-1.5 overflow-hidden">
-                    <div
-                      className={`h-1.5 rounded-full transition-all duration-700 ${
-                        profilingStatus === 'completed' ? 'bg-[#4ade80]' : 'bg-white'
-                      }`}
-                      style={{ width: `${profilingProgress}%` }}
-                    />
-                  </div>
-                </>
-              )}
-              {profilingStatus === 'error' && (
-                <p className="text-xs text-red-400">{profilingMessage}</p>
+                {profilingStatus === 'completed' && profilingJobId && (
+                  <a
+                    href={`/api/profiling/html/${profilingJobId}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-[#4ade80] hover:underline"
+                  >
+                    レポートを開く →
+                  </a>
+                )}
+              </div>
+
+              {profilingStatus !== 'idle' && (
+                <div className="space-y-1.5">
+                  {(profilingStatus === 'running' || profilingStatus === 'completed') && (
+                    <>
+                      <div className="flex justify-between text-xs text-[#555]">
+                        <span>{profilingMessage}</span>
+                        <span>{profilingProgress}%</span>
+                      </div>
+                      <div className="w-full bg-[#1e1e1e] rounded-full h-1 overflow-hidden">
+                        <div
+                          className={`h-1 rounded-full transition-all duration-700 ${
+                            profilingStatus === 'completed' ? 'bg-[#4ade80]' : 'bg-[#555]'
+                          }`}
+                          style={{ width: `${profilingProgress}%` }}
+                        />
+                      </div>
+                    </>
+                  )}
+                  {profilingStatus === 'error' && (
+                    <p className="text-xs text-red-400">{profilingMessage}</p>
+                  )}
+                </div>
               )}
             </div>
           )}
