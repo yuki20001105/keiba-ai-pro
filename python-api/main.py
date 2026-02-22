@@ -1172,6 +1172,12 @@ async def predict(request: PredictRequest):
                 [col for col in exclude_cols if col in df_optimized.columns], axis=1
             )
 
+            # object型カラムを除外（学習時と同じ処理）
+            object_cols = X.select_dtypes(include=["object"]).columns.tolist()
+            if object_cols:
+                print(f"  [predict] 除外するobject型カラム: {object_cols}")
+                X = X.drop(columns=object_cols)
+
             # 予測実行
             proba = model.predict(X)
         else:
