@@ -22,6 +22,7 @@ import aiohttp
 from bs4 import BeautifulSoup
 import re
 import json
+import gc
 
 # keiba_aiモジュールをインポート（親ディレクトリのkeibaから）
 sys.path.insert(0, str(Path(__file__).parent.parent / "keiba"))
@@ -3145,14 +3146,15 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
                             continue
                         content = await resp.read()
                         html = content.decode('euc-jp', errors='ignore')
+                        del content  # decoded済み、生バイト即解放
 
                     import re as _re
                     # BS4不要: 生HTMLにregexを直接適用（BS4生成コスト削除）
                     race_ids = list(dict.fromkeys(_re.findall(r'/race/(\d{12})/', html)))
                     logger.info(f"{date}: {len(race_ids)}\u30ec\u30fc\u30b9ID\u691c\u51fa")
 
-                    # ---- 4並列でレースを処理 (Render 512MB対応) ----
-                    race_sem = asyncio.Semaphore(4)
+                    # ---- 2並列でレースを処理 (Render 512MB OOM対策) ----
+                    race_sem = asyncio.Semaphore(2)
 
                     async def _fetch_and_save(race_id, _date=date, _day_idx=i):
                         async with race_sem:
@@ -3161,9 +3163,11 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
                                 if race_data and race_data.get('horses'):
                                     saved = await asyncio.to_thread(_save_race_to_ultimate_db, race_data, ULTIMATE_DB, True)
                                     if saved:
+                                        n_horses = len(race_data['horses'])
+                                        del race_data  # 大きなdictを即解放
                                         async with counter_lock:
                                             counter["races"] += 1
-                                            counter["horses"] += len(race_data['horses'])
+                                            counter["horses"] += n_horses
                                             # per-race 進捗更新（フロントエンドに即反映）
                                             job["progress"] = {
                                                 "done": _day_idx,
@@ -3175,7 +3179,7 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
                                                 "saved_races": counter["races"],
                                                 "saved_horses": counter["horses"],
                                             }
-                                        logger.info(f"保存完了: {race_id} ({len(race_data['horses'])}頭)")
+                                        logger.info(f"保存完了: {race_id} ({n_horses}頭)")
                                     else:
                                         logger.warning(f"Supabase/SQLite両方失敗: {race_id}")
                                 else:
@@ -3186,6 +3190,7 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
                                 logger.error(f"_fetch_and_save 失敗 {err_msg}")
 
                     await asyncio.gather(*[_fetch_and_save(r) for r in race_ids])
+                    gc.collect()  # 1日分完了後に循環参照も強制回収
                     if errors:
                         logger.warning(f"エラー一覧: {errors[:5]}")
 
