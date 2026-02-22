@@ -1039,6 +1039,7 @@ async def train_model(request: TrainRequest):
             "categorical_features": categorical_features,
             "feature_cols_num": valid_num_cols if not request.use_optimizer else None,
             "feature_cols_cat": valid_cat_cols if not request.use_optimizer else None,
+            "feature_columns": _all_feature_columns,  # 予測時のカラム整合用
             "target": request.target,
             "model_type": request.model_type,
             "ultimate_mode": request.ultimate_mode,
@@ -1177,6 +1178,19 @@ async def predict(request: PredictRequest):
             if object_cols:
                 print(f"  [predict] 除外するobject型カラム: {object_cols}")
                 X = X.drop(columns=object_cols)
+
+            # 学習時と同じカラム構成に揃える（feature_columns が保存されている場合）
+            saved_feature_columns = bundle.get("feature_columns")
+            if saved_feature_columns:
+                # 不足カラムを 0 で補完
+                for col in saved_feature_columns:
+                    if col not in X.columns:
+                        X[col] = 0.0
+                # 学習時と同じ順序・同じカラムのみ使用
+                X = X[saved_feature_columns]
+                print(f"  [predict] カラム整合: {len(X.columns)}列")
+            else:
+                print(f"  [predict] WARNING: feature_columns 未保存 → カラム数: {len(X.columns)}")
 
             # 予測実行
             proba = model.predict(X)
