@@ -2484,7 +2484,7 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '', quick_mo
     for _ci in range(0, len(unique_horses), 4):
         _chunk = unique_horses[_ci:_ci + 4]
         await asyncio.gather(*[_fetch_detail(h) for h in _chunk])
-    gc.collect(0)  # gen0のみGC（BS4短命オブジェクトはgen0で十分、全世代より5-10x高速）
+    gc.collect()  # BS4循環参照はgen0→gen1に昇格するため全世代GCが必須（gen0のみでは解放されない）
 
     return {
         'race_info': {
@@ -2601,14 +2601,14 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
                             if pedigree_result_b.get('sire'):
                                 logger.info(f"NAR馬 /ped/ 血統取得成功: {horse_id} sire={pedigree_result_b['sire']}")
                                 if SUPABASE_ENABLED:
-                                    # fire-and-forget: スロットをブロックしない
-                                    asyncio.ensure_future(asyncio.to_thread(
+                                    # await: fire-and-forgetはThreadPooolを蓄積しOOMの原因になる
+                                    await asyncio.to_thread(
                                         save_pedigree_cache,
                                         horse_id,
                                         pedigree_result_b.get('sire', ''),
                                         pedigree_result_b.get('dam', ''),
                                         pedigree_result_b.get('damsire', ''),
-                                    ))
+                                    )
                                 _nar_result = pedigree_result_b
                                 break
                             logger.debug(f"NAR馬 /ped/ 200 だが blood_table 未検出: {horse_id}")
@@ -2869,17 +2869,29 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
                             await asyncio.sleep(8.0)
                 except Exception as _e:
                     logger.debug(f"ped リトライ失敗 {horse_id}: {_e}")
+        else:
+            # Issue3修正: sireがメインページから取得済み → ped HTMLは不要、即解放
+            if _pre_ped_html is not None:
+                del _pre_ped_html
 
-        # 4. 結果をキャッシュ保存（fire-and-forget: horseスロットをブロックしない）
+        # 4. 結果をキャッシュ保存（await: fire-and-forgetはThreadPoolを蓄積しOOMの原因になる）
+        # 各馬は horse chunk 内で並列なので await しても他馬をブロックしない
         if SUPABASE_ENABLED and horse_id:
-            asyncio.ensure_future(asyncio.to_thread(
+            await asyncio.to_thread(
                 save_pedigree_cache,
                 horse_id,
                 result.get('sire', ''),
                 result.get('dam', ''),
                 result.get('damsire', ''),
-            ))
-        # soup 解放（血統キャッシュなしの場合はここで解放）
+            )
+        # soup 解放（blood_table処理完了後に解放）
+        try:
+            del soup
+        except NameError:
+            pass
+    else:
+        # Issue2修正: pedigree_cached=True パスでも soup を明示的に解放
+        # BS4循環参照はgc.collect(0)では回収されないため del で参照を切ることが重要
         try:
             del soup
         except NameError:
@@ -3242,10 +3254,10 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
                             errors.append(err_msg)
                             logger.error(f"_fetch_and_save 失敗 {err_msg}")
 
-                    for ci in range(0, len(race_ids), 3):
-                        chunk = race_ids[ci:ci + 3]
+                    for ci in range(0, len(race_ids), 2):
+                        chunk = race_ids[ci:ci + 2]
                         await asyncio.gather(*[_fetch_and_save(r) for r in chunk])
-                        gc.collect(0)  # gen0のみGC（del soup,html済みなのでgen0で十分、全世代より5-10x高速）
+                        gc.collect()  # BS4循環参照はgen1に昇格→全世代GC必須(gc.collect(0)では不十分)
                     if errors:
                         logger.warning(f"エラー一覧: {errors[:5]}")
 
