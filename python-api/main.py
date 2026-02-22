@@ -3456,6 +3456,55 @@ async def export_db(date: str = ""):
     )
 
 
+@app.delete("/api/data/all")
+async def delete_all_data(date_prefix: str = ""):
+    """Supabase の races_ultimate / race_results_ultimate を全削除（検証用）
+    
+    Args:
+        date_prefix: 指定すると race_id がそのプレフィックスに一致するものだけ削除
+                     例: date_prefix=2026 → 2026年分のみ削除
+    """
+    if not SUPABASE_ENABLED:
+        raise HTTPException(status_code=503, detail="Supabase 未接続")
+    client = get_supabase_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="Supabase クライアント未初期化")
+
+    try:
+        deleted_races = 0
+        deleted_results = 0
+
+        if date_prefix:
+            # 対象 race_id を列挙してから削除
+            res = client.table("races_ultimate").select("race_id").like("race_id", f"{date_prefix}%").execute()
+            target_ids = [r["race_id"] for r in (res.data or [])]
+            for rid in target_ids:
+                client.table("race_results_ultimate").delete().eq("race_id", rid).execute()
+                client.table("races_ultimate").delete().eq("race_id", rid).execute()
+                deleted_races += 1
+                deleted_results += 1  # 概数
+        else:
+            # 全件取得して全削除
+            offset = 0
+            while True:
+                res = client.table("races_ultimate").select("race_id").range(offset, offset + 999).execute()
+                rows = res.data or []
+                if not rows:
+                    break
+                for row in rows:
+                    client.table("race_results_ultimate").delete().eq("race_id", row["race_id"]).execute()
+                    client.table("races_ultimate").delete().eq("race_id", row["race_id"]).execute()
+                    deleted_races += 1
+                offset += len(rows)
+                if len(rows) < 1000:
+                    break
+
+        return {"success": True, "deleted_races": deleted_races, "date_prefix": date_prefix or "all"}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"削除エラー: {str(e)}")
+
+
 @app.get("/api/debug/race-ids")
 async def debug_race_ids(limit: int = 10):
     """race_idのサンプルを返す（デバッグ用）"""
