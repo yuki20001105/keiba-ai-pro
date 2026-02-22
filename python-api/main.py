@@ -3160,7 +3160,11 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
         job["progress"] = {"done": 0, "total": total, "message": f"0/{total}日処理済み"}
 
         # --- Supabaseで取得済み日付を事前チェック（Render再起動後の再実行でレジューム） ---
+        # 注意: OOMクラッシュ時に部分データが残っている場合を考慮し
+        # 1日あたり6件以上のレースがある日のみ「取得完了」とみなしてスキップする
+        # (1開催日は通常10-12レース。6未満 = 部分取得 = 再スクレイピング対象)
         scraped_dates: set = set()
+        _MIN_RACES_PER_DAY = 6
         if SUPABASE_ENABLED:
             try:
                 _sb = get_supabase_client()
@@ -3169,11 +3173,22 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
                         .gte("race_id", start_date) \
                         .lte("race_id", end_date + "99") \
                         .execute()
+                    # 日付ごとのレース数をカウント
+                    _date_count: dict = {}
                     for _row in (_res.data or []):
-                        scraped_dates.add(str(_row["race_id"])[:8])
+                        _d = str(_row["race_id"])[:8]
+                        _date_count[_d] = _date_count.get(_d, 0) + 1
+                    # _MIN_RACES_PER_DAY 件以上ある日だけスキップ対象
+                    for _d, _cnt in _date_count.items():
+                        if _cnt >= _MIN_RACES_PER_DAY:
+                            scraped_dates.add(_d)
                     if scraped_dates:
-                        logger.info(f"取得済み日付: {len(scraped_dates)}日分をスキップ（レジューム機能）")
+                        logger.info(f"取得済み日付: {len(scraped_dates)}日分をスキップ（各{_MIN_RACES_PER_DAY}件以上確認）")
                         job["progress"]["message"] = f"{len(scraped_dates)}日分は取得済み、スキップします"
+                    # 部分取得の日がある場合はログに記録
+                    _partial = {d: c for d, c in _date_count.items() if c < _MIN_RACES_PER_DAY}
+                    if _partial:
+                        logger.info(f"部分取得日（再スクレイピング対象）: {list(_partial.items())[:5]}")
             except Exception as _e:
                 logger.warning(f"取得済み日付確認失敗（全日付を処理）: {_e}")
 
