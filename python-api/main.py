@@ -3303,9 +3303,58 @@ async def train_job_status(job_id: str):
 
 
 # ============================================
-# /api/export-db : Supabase → SQLite → ストリーム返却
+# /api/export-db : Supabase → JSON → クライアント側SQLite変換
 # ローカル検証用: GET /api/export-db?date=20260201
 # ============================================
+
+@app.get("/api/export-data")
+async def export_data(date: str = ""):
+    """Supabase から JSON でデータをエクスポート（クライアント側でSQLiteに変換可能）"""
+    import json as _json_exp
+
+    if not SUPABASE_ENABLED:
+        raise HTTPException(status_code=503, detail="Supabase 未接続")
+
+    client = get_supabase_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="Supabase クライアント未初期化")
+
+    prefix_filter = date  # 空=全件
+
+    try:
+        # races を取得（1000件上限を回避: ページング）
+        all_races = []
+        offset = 0
+        while True:
+            q = client.table("races_ultimate").select("race_id,data").range(offset, offset + 999)
+            if prefix_filter:
+                q = q.like("race_id", f"{prefix_filter}%")
+            resp = q.execute()
+            chunk = resp.data or []
+            all_races.extend(chunk)
+            if len(chunk) < 1000:
+                break
+            offset += 1000
+
+        # race_results を取得
+        all_results = []
+        race_ids = [r["race_id"] for r in all_races]
+        for rid in race_ids:
+            res = client.table("race_results_ultimate").select("race_id,data").eq("race_id", rid).execute()
+            all_results.extend(res.data or [])
+
+        return {
+            "races_count": len(all_races),
+            "results_count": len(all_results),
+            "races": all_races,
+            "results": all_results,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"データ取得エラー: {str(e)}")
+
 
 @app.get("/api/export-db")
 async def export_db(date: str = ""):
@@ -3321,53 +3370,57 @@ async def export_db(date: str = ""):
         raise HTTPException(status_code=503, detail="Supabase クライアント未初期化")
 
     prefix_filter = date  # 空=全件
+    db_bytes = None
 
     try:
-        # races を取得
-        q = client.table("races_ultimate").select("race_id,data")
-        if prefix_filter:
-            q = q.like("race_id", f"{prefix_filter}%")
-        races_resp = q.execute()
-        races = races_resp.data or []
+        # races を取得（ページング）
+        all_races = []
+        offset = 0
+        while True:
+            q = client.table("races_ultimate").select("race_id,data").range(offset, offset + 999)
+            if prefix_filter:
+                q = q.like("race_id", f"{prefix_filter}%")
+            resp = q.execute()
+            chunk = resp.data or []
+            all_races.extend(chunk)
+            if len(chunk) < 1000:
+                break
+            offset += 1000
 
         # race_results を取得
         all_results = []
-        race_ids = [r["race_id"] for r in races]
+        race_ids = [r["race_id"] for r in all_races]
         for rid in race_ids:
             res = client.table("race_results_ultimate").select("race_id,data").eq("race_id", rid).execute()
             all_results.extend(res.data or [])
 
-        # メモリ上で SQLite を構築して serialize
-        src_conn = _sql.connect(":memory:")
-        src_cur = src_conn.cursor()
-        src_cur.execute("CREATE TABLE races_ultimate (race_id TEXT PRIMARY KEY, data TEXT NOT NULL)")
-        src_cur.execute("CREATE TABLE race_results_ultimate (race_id TEXT, data TEXT NOT NULL)")
-        for r in races:
-            src_cur.execute("INSERT OR REPLACE INTO races_ultimate VALUES (?,?)", (r["race_id"], r["data"]))
-        for r2 in all_results:
-            src_cur.execute("INSERT INTO race_results_ultimate VALUES (?,?)", (r2["race_id"], r2["data"]))
-        src_conn.commit()
-
-        # sqlite3.Connection.serialize() で bytes に変換（Python 3.11+）または tempfile 経由
+        # tempfile で SQLite を作成（serialize() 非対応環境向け）
+        tmp_fd, tmp_path = _tempfile.mkstemp(suffix=".db")
+        _os.close(tmp_fd)
         try:
-            db_bytes = bytes(src_conn.serialize())
-        except AttributeError:
-            # serialize() が使えない場合は tempfile 経由
-            import atexit
-            tmp_path = _tempfile.mktemp(suffix=".db")
-            dst_conn = _sql.connect(tmp_path)
-            src_conn.backup(dst_conn)
-            dst_conn.close()
+            conn = _sql.connect(tmp_path)
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE races_ultimate (race_id TEXT PRIMARY KEY, data TEXT NOT NULL)")
+            cur.execute("CREATE TABLE race_results_ultimate (race_id TEXT, data TEXT NOT NULL)")
+            for r in all_races:
+                cur.execute("INSERT OR REPLACE INTO races_ultimate VALUES (?,?)", (r["race_id"], r["data"]))
+            for r2 in all_results:
+                cur.execute("INSERT INTO race_results_ultimate VALUES (?,?)", (r2["race_id"], r2["data"]))
+            conn.commit()
+            conn.close()
             with open(tmp_path, "rb") as f:
                 db_bytes = f.read()
-            _os.unlink(tmp_path)
         finally:
-            src_conn.close()
+            if _os.path.exists(tmp_path):
+                _os.unlink(tmp_path)
 
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"DB構築エラー: {str(e)}")
+
+    if db_bytes is None:
+        raise HTTPException(status_code=500, detail="DBバイト生成失敗")
 
     fname = f"keiba_ultimate_{prefix_filter or 'all'}.db"
     return _SR(
