@@ -1966,6 +1966,7 @@ class ScrapeRequest(BaseModel):
     """スクレイピングリクエスト"""
     start_date: str  # YYYYMMDD形式
     end_date: str    # YYYYMMDD形式
+    force_rescrape: bool = False  # True=scraped_datesスキップ（部分データ蓄積時の強制再取得用）
 
 class ScrapeResponse(BaseModel):
     """スクレイピングレスポンス"""
@@ -3126,7 +3127,7 @@ def _save_race_to_ultimate_db(race_data: dict, db_path: Path, overwrite: bool = 
 _scrape_jobs: dict = {}    # job_id -> {"status", "progress", "result", "error"}
 
 
-async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
+async def _run_scrape_job(job_id: str, start_date: str, end_date: str, force_rescrape: bool = False):
     """バックグラウンドでスクレイピングを実行しジョブストアを更新する"""
     try:
         import time as _time
@@ -3160,12 +3161,10 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
         job["progress"] = {"done": 0, "total": total, "message": f"0/{total}日処理済み"}
 
         # --- Supabaseで取得済み日付を事前チェック（Render再起動後の再実行でレジューム） ---
-        # 注意: OOMクラッシュ時に部分データが残っている場合を考慮し
-        # 1日あたり6件以上のレースがある日のみ「取得完了」とみなしてスキップする
-        # (1開催日は通常10-12レース。6未満 = 部分取得 = 再スクレイピング対象)
+        # force_rescrape=True のときはスキップ判定を無効化（部分データ蓄積時の強制再取得）
         scraped_dates: set = set()
         _MIN_RACES_PER_DAY = 6
-        if SUPABASE_ENABLED:
+        if SUPABASE_ENABLED and not force_rescrape:
             try:
                 _sb = get_supabase_client()
                 if _sb:
@@ -3379,7 +3378,7 @@ async def scrape_start(request: ScrapeRequest):
     }
     try:
         loop = asyncio.get_running_loop()
-        loop.create_task(_run_scrape_job(job_id, request.start_date, request.end_date))
+        loop.create_task(_run_scrape_job(job_id, request.start_date, request.end_date, request.force_rescrape))
         logger.info(f"ジョブ {job_id} を create_task でスケジュール済み")
     except Exception as e:
         logger.error(f"create_task 失敗: {e}")

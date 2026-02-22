@@ -17,6 +17,7 @@ export default function DataCollectionPage() {
   const [endYear, setEndYear] = useState(new Date().getFullYear())
   const [endMonth, setEndMonth] = useState(new Date().getMonth() + 1)
   const batchMaxWorkers = 3
+  const [forceRescrape, setForceRescrape] = useState(false)
   const [batchResult, setBatchResult] = useState<any>(null)
   const [batchLoading, setBatchLoading] = useState(false)
   const [batchProgress, setBatchProgress] = useState({ current: 0, total: 100, message: '' })
@@ -131,7 +132,7 @@ export default function DataCollectionPage() {
       const startRes = await fetch(`/api/scrape`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ start_date: startDateStr, end_date: endDateStr }),
+        body: JSON.stringify({ start_date: startDateStr, end_date: endDateStr, force_rescrape: forceRescrape }),
       })
 
       if (!startRes.ok) {
@@ -341,6 +342,19 @@ export default function DataCollectionPage() {
           <p className="text-sm text-[#888] mb-6">
             取得期間: {startYear}年{startMonth}月 〜 {endYear}年{endMonth}月
           </p>
+
+          {/* 強制再取得オプション */}
+          <label className="flex items-center gap-2 mb-4 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={forceRescrape}
+              onChange={e => setForceRescrape(e.target.checked)}
+              className="w-4 h-4 accent-white"
+            />
+            <span className="text-sm text-[#aaa]">
+              強制再取得（取得済みデータを上書き）
+            </span>
+          </label>
 
           {/* 実行ボタン */}
           <button
