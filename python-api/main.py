@@ -34,6 +34,8 @@ _HTML_STRAINER = SoupStrainer(
 import re
 import json
 import gc
+import uuid
+import traceback
 
 # keiba_aiモジュールをインポート（親ディレクトリのkeibaから）
 sys.path.insert(0, str(Path(__file__).parent.parent / "keiba"))
@@ -720,8 +722,6 @@ async def train_model(request: TrainRequest):
                 print(f"\n[ERROR-LIGHTGBM] LightGBM処理中にエラーが発生しました")
                 print(f"[ERROR-LIGHTGBM] 例外型: {type(lightgbm_error).__name__}")
                 print(f"[ERROR-LIGHTGBM] 例外メッセージ: {str(lightgbm_error)}")
-                import traceback
-
                 print("[ERROR-LIGHTGBM] スタックトレース:")
                 traceback.print_exc()
                 logger.error(
@@ -729,28 +729,13 @@ async def train_model(request: TrainRequest):
                 )
                 raise
 
-            # デバッグ: use_optunaの値を確認
+            # Optunaによるハイパーパラメータ最適化（オプション）
             optuna_executed = False
             optuna_error = None
-            logger.info(f"\n[TRACE-001] request.use_optuna = {request.use_optuna}")
-            logger.info(f"[TRACE-002] request.optuna_trials = {request.optuna_trials}")
-            logger.info(f"[TRACE-003] request.use_optimizer = {request.use_optimizer}")
-            logger.info(f"[TRACE-004] request.model_type = {request.model_type}")
-
-            # Optunaによるハイパーパラメータ最適化（オプション）
-            logger.info(
-                f"[TRACE-005] Optunaブロック判定前: use_optuna={request.use_optuna}"
-            )
             if request.use_optuna:
-                logger.info("[TRACE-006] ★★★ Optunaブロックに入りました ★★★")
                 try:
-                    logger.info("[TRACE-007] try節に入りました")
                     optuna_executed = True
-                    logger.info(
-                        f"[TRACE-008] optuna_executed を True に設定: {optuna_executed}"
-                    )
                     print("\n=== Optunaハイパーパラメータ最適化 ===")
-                    logger.info("[TRACE-009] コンソール出力完了")
 
                     # モデルタイプに応じて最適化を実行
                     model_type_map = {
@@ -764,75 +749,32 @@ async def train_model(request: TrainRequest):
                         # categorical_featuresを整数インデックスに変換
                         categorical_indices = []
                         for cat_feature in categorical_features:
-                            logger.info(f"[TRACE-012] 処理中: {cat_feature}")
                             if cat_feature in X.columns:
                                 idx = X.columns.get_loc(cat_feature)
                                 categorical_indices.append(idx)
-                                logger.info(
-                                    f"[TRACE-013] {cat_feature} のインデックス: {idx}"
-                                )
 
-                        logger.info(
-                            f"[TRACE-014] カテゴリカル特徴量変換完了: {len(categorical_indices)}個"
-                        )
                         print(f"  カテゴリカル特徴量: {len(categorical_indices)}個")
-                        print(f"  インデックス: {categorical_indices}")
 
-                        logger.info("[TRACE-015] OptunaLightGBMOptimizer初期化開始")
-                        print(f"[DEBUG] OptunaLightGBMOptimizerを初期化します...")
                         optuna_optimizer = OptunaLightGBMOptimizer(
                             n_trials=request.optuna_trials,
                             cv_folds=request.cv_folds,
                             random_state=42,
                             timeout=300,  # 5分タイムアウト
                         )
-                        logger.info("[TRACE-016] OptunaLightGBMOptimizer初期化完了")
-
-                        logger.info(
-                            f"[TRACE-017] 最適化開始準備: trials={request.optuna_trials}, folds={request.cv_folds}"
-                        )
-                        print(
-                            f"[DEBUG] 最適化を開始します（試行数: {request.optuna_trials}, CVフォールド: {request.cv_folds}）..."
-                        )
-                        # 最適パラメータを探索（ndarrayで渡す）
-                        logger.info("[TRACE-018] データ変換開始")
+                        logger.info(f"Optuna初期化完了: trials={request.optuna_trials}, folds={request.cv_folds}")
+                        print(f"  最適化開始（試行数: {request.optuna_trials}, CVフォールド: {request.cv_folds}）...")
                         X_array = X.values if hasattr(X, "values") else X
                         y_array = y.values if hasattr(y, "values") else y
-                        logger.info(
-                            f"[TRACE-019] データ変換完了: X={X_array.shape}, y={len(y_array)}"
-                        )
-                        print(
-                            f"[DEBUG] データサイズ: X={X_array.shape}, y={len(y_array)}"
-                        )
+                        print(f"  データ: X={X_array.shape}, y={len(y_array)}")
 
-                        logger.info(
-                            "[TRACE-020] ★★★ optimize()メソッド呼び出し直前 ★★★"
-                        )
-                        print("[DEBUG] ★★★ optimize()呼び出し直前 ★★★")
-                        print(
-                            f"[DEBUG] X_array type: {type(X_array)}, shape: {X_array.shape}"
-                        )
-                        print(
-                            f"[DEBUG] y_array type: {type(y_array)}, shape: {y_array.shape}"
-                        )
-                        print(f"[DEBUG] categorical_indices: {categorical_indices}")
-
-                        print("[DEBUG] optimize()メソッド実行開始...")
+                        print("  optimize()実行中...")
                         best_params, best_optuna_score = optuna_optimizer.optimize(
                             X_array,
                             y_array,  # 全データで最適化
                             categorical_features=categorical_indices,
                         )
-                        print(f"[DEBUG] optimize()メソッド実行完了")
-                        print(f"[DEBUG] best_score={best_optuna_score:.4f}")
-                        logger.info(
-                            "[TRACE-021] ★★★ optimize()メソッド呼び出し完了 ★★★"
-                        )
-                        logger.info(f"[TRACE-022] best_score={best_optuna_score:.4f}")
-
-                        print(
-                            f"[DEBUG] Optuna最適化完了。最良スコア: {best_optuna_score:.4f}"
-                        )
+                        logger.info(f"Optuna完了: best_score={best_optuna_score:.4f}")
+                        print(f"  Optuna最適化完了。最良スコア: {best_optuna_score:.4f}")
 
                         # 最適パラメータで「CV best round → 全量再学習」方式
                         print("\n  最適パラメータで再学習中（CV best round方式）...")
@@ -915,8 +857,6 @@ async def train_model(request: TrainRequest):
                     )
                     optuna_error = f"{type(e).__name__}: {str(e)}"
                     print(f"\n❌ Optuna最適化中にエラーが発生: {optuna_error}")
-                    import traceback
-
                     traceback.print_exc()
                     print("   標準の学習を継続します...")
 
@@ -1137,7 +1077,6 @@ async def train_model(request: TrainRequest):
         print(f"\n[ERROR] 学習中にエラーが発生しました")
         print(f"[ERROR] 例外型: {type(e).__name__}")
         print(f"[ERROR] 例外メッセージ: {str(e)}")
-        import traceback
         print(f"[ERROR] スタックトレース:")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"学習中にエラーが発生: {str(e)}")
@@ -1416,7 +1355,8 @@ async def analyze_race(request: AnalyzeRaceRequest):
                 db_path = CONFIG_PATH.parent / db_path
 
         # tracking.dbパス（購入履歴用）
-        CONFIG_PATH.parent / "data" / "tracking.db"
+        _tracking_db = CONFIG_PATH.parent / "data" / "tracking.db"
+        del _tracking_db  # 現時点ではanalyze_raceで購入履歴DBは使わない
 
         # モデルロード（Ultimate版モデルを優先）
         if request.model_id:
@@ -1724,8 +1664,6 @@ async def analyze_race(request: AnalyzeRaceRequest):
     except HTTPException:
         raise
     except Exception as e:
-        import traceback
-
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"レース分析に失敗: {str(e)}")
 
@@ -2123,7 +2061,6 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '', quick_mo
     date_hint: YYYYMMDD 形式の日付（リストページから判明した場合に渡す）
     quick_mode: True=毛色SPフォールバックをスキップして高速化（バックフィルAPIで後処理）
     """
-    import re
     _quick_mode = quick_mode  # クロージャ内から参照
 
     url = f"https://db.netkeiba.com/race/{race_id}/"
@@ -2621,8 +2558,6 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
     pedigree_cache: {horse_id: {sire,dam,damsire}} のバッチ取得済みキャッシュ（あれば Supabase 個別クエリ省略）
     quick_mode: True=毛色SPフォールバックをスキップして高速化
     """
-    import re
-
     if not horse_id and not horse_url:
         return {}
 
@@ -2894,11 +2829,6 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
             pedigree_cached = True
             logger.debug(f"血統キャッシュヒット: {horse_id} sire={result['sire']}")
 
-    # pedigree_cached の次の処理の前に soup/html 解放
-    _soup_saved = not pedigree_cached  # blood_table がまだ必要か
-    if not _soup_saved:
-        del soup, html  # 血統キャッシュ済みならそこで解放
-
     if not pedigree_cached:
         # 2. メインページの blood_table を確認（追加 HTTP リクエスト不要）
         blood_table_main = soup.find('table', class_='blood_table')
@@ -2910,6 +2840,7 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
         if not result.get('sire'):
             if _pre_ped_html:
                 ped_soup = BeautifulSoup(_pre_ped_html, 'lxml', parse_only=_HTML_STRAINER)
+                del _pre_ped_html  # 即解放
                 blood_table = ped_soup.find('table', class_='blood_table')
                 if blood_table:
                     _parse_blood_table(blood_table, result)
@@ -3102,8 +3033,6 @@ def _save_race_to_ultimate_db(race_data: dict, db_path: Path, overwrite: bool = 
 # GET  /api/scrape/status/{job_id} → 進捗/結果をポーリング
 # ============================================
 
-import uuid
-
 # メモリ上のジョブストア（Render 再起動でリセット、それで問題なし）
 _scrape_jobs: dict = {}    # job_id -> {"status", "progress", "result", "error"}
 
@@ -3161,9 +3090,8 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
                         html = content.decode('euc-jp', errors='ignore')
                         del content  # decoded済み、生バイト即解放
 
-                    import re as _re
-                    # BS4不要: 生HTMLにregexを直接適用（BS4生成コスト削除）
-                    race_ids = list(dict.fromkeys(_re.findall(r'/race/(\d{12})/', html)))
+                    # BS4不要: 生HTMLにregexを直接適用（トップでimport済みreを使用）
+                    race_ids = list(dict.fromkeys(re.findall(r'/race/(\d{12})/', html)))
                     logger.info(f"{date}: {len(race_ids)}\u30ec\u30fc\u30b9ID\u691c\u51fa")
 
                     # ---- レースを2件ずつ並列処理（全コルーチン同時生成でOOM → チャンク化）----
@@ -3262,8 +3190,7 @@ async def test_connectivity():
             async with session.get("https://db.netkeiba.com/race/list/20250101/") as resp:
                 content = await resp.read()
                 html = content.decode('euc-jp', errors='ignore')
-                import re as _re
-                ids = _re.findall(r'/race/(\d{12})/', html)
+                ids = re.findall(r'/race/(\d{12})/', html)
                 result["netkeiba"] = {
                     "status": resp.status,
                     "race_ids_found": len(set(ids)),
@@ -3300,6 +3227,7 @@ async def test_connectivity():
 @app.post("/api/scrape/start")
 async def scrape_start(request: ScrapeRequest):
     """スクレイピングをバックグラウンドで開始し、即座に job_id を返す（Vercel プロキシ対応）"""
+    _purge_old_jobs(_scrape_jobs)
     job_id = str(uuid.uuid4())[:8]
     _scrape_jobs[job_id] = {
         "status": "queued",
@@ -3341,10 +3269,20 @@ async def scrape_status(job_id: str):
 
 _train_jobs: dict = {}    # job_id -> {"status", "progress", "result", "error"}
 
+_MAX_JOBS = 50  # _scrape_jobs / _train_jobs の最大保持数
+
+
+def _purge_old_jobs(store: dict, max_keep: int = _MAX_JOBS) -> None:
+    """completed/error ジョブを古い順に削除してメモリリークを防ぐ"""
+    if len(store) <= max_keep:
+        return
+    finished = [k for k, v in store.items() if v.get("status") in ("completed", "error")]
+    for key in finished[: len(store) - max_keep]:
+        del store[key]
+
 
 async def _run_train_job(job_id: str, request: "TrainRequest"):
     """バックグラウンドで学習を実行しジョブストアを更新する"""
-    import traceback as _tb
     job = _train_jobs[job_id]
     job["status"] = "running"
     try:
@@ -3363,12 +3301,13 @@ async def _run_train_job(job_id: str, request: "TrainRequest"):
         job["status"] = "error"
         job["error"] = str(e)
         job["progress"] = f"エラー: {str(e)}"
-        logger.error(f"学習ジョブ {job_id} 失敗:\n{_tb.format_exc()}")
+        logger.error(f"学習ジョブ {job_id} 失敗:\n{traceback.format_exc()}")
 
 
 @app.post("/api/train/start")
 async def train_start(request: TrainRequest):
     """非同期学習ジョブを起動してすぐに job_id を返す"""
+    _purge_old_jobs(_train_jobs)
     job_id = str(uuid.uuid4())
     _train_jobs[job_id] = {
         "status": "queued",
