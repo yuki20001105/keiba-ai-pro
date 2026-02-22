@@ -19,7 +19,18 @@ from datetime import datetime
 import sqlite3
 import logging
 import aiohttp
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, SoupStrainer
+
+# script/style/meta/head/noscript を除外: BS4オブジェクトのメモリ60-70%削減 + パース高速化
+_HTML_STRAINER = SoupStrainer(
+    ['html', 'body',
+     'table', 'thead', 'tbody', 'tfoot', 'tr', 'td', 'th', 'caption', 'col', 'colgroup',
+     'div', 'span', 'p', 'a', 'b', 'i', 'em', 'strong', 'small', 'br', 'hr',
+     'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+     'dl', 'dt', 'dd', 'ul', 'ol', 'li',
+     'form', 'input', 'select', 'option', 'img',
+     'section', 'article', 'aside', 'header', 'footer', 'main', 'nav']
+)
 import re
 import json
 import gc
@@ -2127,7 +2138,7 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '', quick_mo
         logger.error(f"取得エラー {race_id}: {e}")
         return None
 
-    soup = BeautifulSoup(html, 'lxml')
+    soup = BeautifulSoup(html, 'lxml', parse_only=_HTML_STRAINER)
     _smalltxt_p = soup.find('p', class_='smalltxt')  # キャッシュ（3回 find を避ける）
 
     # ---- レース基本情報 ----
@@ -2518,18 +2529,20 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '', quick_mo
         except Exception:
             pass
 
-    sem = asyncio.Semaphore(2)  # Render 512MB: 2並列まで（3だと3レース×2馬×3ページ=18接続でOOM）
-
-    async def _fetch_detail_limited(h):
+    # 馬を2頭ずつ並列処理（全コルーチン同時生成によるメモリ圧迫を防ぐ + 速度維持）
+    async def _fetch_detail(h):
         hid = h.get('horse_id', '')
         hurl = h.get('horse_url', '')
         if not hid:
             return
-        async with sem:
-            detail = await _scrape_horse_detail(session, hid, hurl, pedigree_cache=pedigree_batch, quick_mode=_quick_mode)
-            h.update(detail)
+        detail = await _scrape_horse_detail(session, hid, hurl, pedigree_cache=pedigree_batch, quick_mode=_quick_mode)
+        h.update(detail)
+        del detail
 
-    await asyncio.gather(*[_fetch_detail_limited(h) for h in unique_horses])
+    for _ci in range(0, len(unique_horses), 2):
+        _chunk = unique_horses[_ci:_ci + 2]
+        await asyncio.gather(*[_fetch_detail(h) for h in _chunk])
+        gc.collect()
 
     return {
         'race_info': {
@@ -2641,7 +2654,7 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
                         if ped_resp_b.status == 200:
                             ped_content_b = await ped_resp_b.read()
                             ped_html_b = ped_content_b.decode('euc-jp', errors='ignore')
-                            ped_soup_b = BeautifulSoup(ped_html_b, 'lxml')
+                            ped_soup_b = BeautifulSoup(ped_html_b, 'lxml', parse_only=_HTML_STRAINER)
                             blood_table_b = ped_soup_b.find('table', class_='blood_table')
                             if blood_table_b:
                                 _parse_blood_table(blood_table_b, pedigree_result_b)
@@ -2687,7 +2700,7 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
                     async with session.get(_sp_url) as _sp_resp:
                         if _sp_resp.status == 200:
                             _sp_html_raw = (await _sp_resp.read()).decode('euc-jp', errors='ignore')
-                            _sp_soup = BeautifulSoup(_sp_html_raw, 'lxml')
+                            _sp_soup = BeautifulSoup(_sp_html_raw, 'lxml', parse_only=_HTML_STRAINER)
                             coat = _extract_coat_color(_sp_soup, _sp_html_raw)
                             if coat:
                                 _nar_result['horse_coat_color'] = coat
@@ -2705,7 +2718,8 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
                     if _sp_resp2.status == 200:
                         _sp_html_parsed = BeautifulSoup(
                             (await _sp_resp2.read()).decode('euc-jp', errors='ignore'),
-                            'lxml'
+                            'lxml',
+                            parse_only=_HTML_STRAINER,
                         )
             except Exception:
                 pass
@@ -2765,7 +2779,7 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
         logger.debug(f"馬詳細取得失敗 {horse_id}")
         return result
 
-    soup = BeautifulSoup(html, 'lxml')
+    soup = BeautifulSoup(html, 'lxml', parse_only=_HTML_STRAINER)
     del html  # raw HTML文字列解放（soupがあれば不要）
 
     # ===== プロフィール（db_prof_table から取得） =====
@@ -2850,7 +2864,7 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
                     async with session.get(_sp_url) as _sp_resp:
                         if _sp_resp.status == 200:
                             _sp_html = (await _sp_resp.read()).decode('euc-jp', errors='ignore')
-                            coat_fb = _extract_coat_color(BeautifulSoup(_sp_html, 'lxml'), _sp_html)
+                            coat_fb = _extract_coat_color(BeautifulSoup(_sp_html, 'lxml', parse_only=_HTML_STRAINER), _sp_html)
                             if coat_fb:
                                 result['horse_coat_color'] = coat_fb
                                 logger.info(f"毛色 sp 取得成功: {horse_id} coat={coat_fb}")
@@ -2895,8 +2909,7 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
         # 3. sire が未取得なら 並列プリフェッチ済みped HTMLを使用（追加HTTP不要）
         if not result.get('sire'):
             if _pre_ped_html:
-                ped_soup = BeautifulSoup(_pre_ped_html, 'lxml')
-                del _pre_ped_html  # 即解放
+                ped_soup = BeautifulSoup(_pre_ped_html, 'lxml', parse_only=_HTML_STRAINER)
                 blood_table = ped_soup.find('table', class_='blood_table')
                 if blood_table:
                     _parse_blood_table(blood_table, result)
@@ -2911,7 +2924,7 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
                         if ped_resp.status == 200:
                             ped_content = await ped_resp.read()
                             ped_html_retry = ped_content.decode('euc-jp', errors='ignore')
-                            ped_soup = BeautifulSoup(ped_html_retry, 'lxml')
+                            ped_soup = BeautifulSoup(ped_html_retry, 'lxml', parse_only=_HTML_STRAINER)
                             blood_table = ped_soup.find('table', class_='blood_table')
                             if blood_table:
                                 _parse_blood_table(blood_table, result)
@@ -2939,7 +2952,7 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
     # ===== 過去レース結果（最新2走）: 並列プリフェッチ済みHTMLを使用 =====
     try:
         if _pre_result_html is not None:
-            res_soup = BeautifulSoup(_pre_result_html, 'lxml')
+            res_soup = BeautifulSoup(_pre_result_html, 'lxml', parse_only=_HTML_STRAINER)
             del _pre_result_html  # 即解放
             race_hist_table = None
             for tbl in res_soup.find_all('table'):
@@ -3129,7 +3142,7 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
 
         # Render 512MB: 接続プールを最小限に（1接続あたり~1MB×100=100MBを節約）
         timeout = aiohttp.ClientTimeout(total=15, connect=5)
-        connector = aiohttp.TCPConnector(limit=10, limit_per_host=4)
+        connector = aiohttp.TCPConnector(limit=15, limit_per_host=6)
         # カウンタはロック保護
         counter = {"races": 0, "horses": 0}
         counter_lock = asyncio.Lock()
@@ -3153,7 +3166,7 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
                     race_ids = list(dict.fromkeys(_re.findall(r'/race/(\d{12})/', html)))
                     logger.info(f"{date}: {len(race_ids)}\u30ec\u30fc\u30b9ID\u691c\u51fa")
 
-                    # ---- レースを1件ずつ逐次処理（asyncio.gatherで全コルーチン同時生成するとOOM） ----
+                    # ---- レースを2件ずつ並列処理（全コルーチン同時生成でOOM → チャンク化）----
                     async def _fetch_and_save(race_id, _date=date, _day_idx=i):
                         try:
                             race_data = await _scrape_race_full(session, race_id, date_hint=_date, quick_mode=True)
@@ -3186,9 +3199,10 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
                             errors.append(err_msg)
                             logger.error(f"_fetch_and_save 失敗 {err_msg}")
 
-                    for r in race_ids:
-                        await _fetch_and_save(r)
-                        gc.collect()  # 1レース完了ごとにGC（BS4オブジェクトの循環参照回収）
+                    for ci in range(0, len(race_ids), 2):
+                        chunk = race_ids[ci:ci + 2]
+                        await asyncio.gather(*[_fetch_and_save(r) for r in chunk])
+                        gc.collect()  # 2レース完了ごとにBS4循環参照を強制回収
                     if errors:
                         logger.warning(f"エラー一覧: {errors[:5]}")
 
