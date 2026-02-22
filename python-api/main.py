@@ -2126,7 +2126,8 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '', quick_mo
         logger.error(f"取得エラー {race_id}: {e}")
         return None
 
-    soup = BeautifulSoup(html, 'html.parser')
+    soup = BeautifulSoup(html, 'lxml')
+    _smalltxt_p = soup.find('p', class_='smalltxt')  # キャッシュ（3回 find を避ける）
 
     # ---- レース基本情報 ----
     # race_name: ロゴ h1 を除く最初の非空 h1
@@ -2144,8 +2145,7 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '', quick_mo
         info_text = mainrace_div.get_text(' ')
     else:
         # フォールバック: p.smalltxt（以前の class名）または div.smalltxt
-        smalltxt = (soup.find('p', class_='smalltxt') or
-                    soup.find('div', class_='smalltxt'))
+        smalltxt = (_smalltxt_p or soup.find('div', class_='smalltxt'))
         info_text = smalltxt.get_text(' ') if smalltxt else html[:3000]
 
     # ---- 距離・芝/ダート ----
@@ -2183,8 +2183,8 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '', quick_mo
     # ---- 日付: date_hint 優先、次に HTML から抽出 ----
     date_str = date_hint  # YYYYMMDD
     if not date_str:
-        # p.smalltxt の日付が最も信頼できる
-        smalltxt_p = soup.find('p', class_='smalltxt')
+        # p.smalltxt の日付が最も信頼できる（キャッシュ済み）
+        smalltxt_p = _smalltxt_p
         if smalltxt_p:
             stxt = smalltxt_p.get_text()
             sdm = re.search(r'(\d{4})年(\d{1,2})月(\d{1,2})日', stxt)
@@ -2213,7 +2213,7 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '', quick_mo
     race_class = ''
     # p.smalltxt に「4歳以上1勝クラス」等が含まれる
     smalltxt_text = ''
-    smalltxt_p2 = soup.find('p', class_='smalltxt')
+    smalltxt_p2 = _smalltxt_p  # キャッシュ済み
     if smalltxt_p2:
         smalltxt_text = smalltxt_p2.get_text(' ')
     for src in [race_name, smalltxt_text, info_text]:
@@ -2637,7 +2637,7 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
                         if ped_resp_b.status == 200:
                             ped_content_b = await ped_resp_b.read()
                             ped_html_b = ped_content_b.decode('euc-jp', errors='ignore')
-                            ped_soup_b = BeautifulSoup(ped_html_b, 'html.parser')
+                            ped_soup_b = BeautifulSoup(ped_html_b, 'lxml')
                             blood_table_b = ped_soup_b.find('table', class_='blood_table')
                             if blood_table_b:
                                 _parse_blood_table(blood_table_b, pedigree_result_b)
@@ -2683,7 +2683,7 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
                     async with session.get(_sp_url) as _sp_resp:
                         if _sp_resp.status == 200:
                             _sp_html_raw = (await _sp_resp.read()).decode('euc-jp', errors='ignore')
-                            _sp_soup = BeautifulSoup(_sp_html_raw, 'html.parser')
+                            _sp_soup = BeautifulSoup(_sp_html_raw, 'lxml')
                             coat = _extract_coat_color(_sp_soup, _sp_html_raw)
                             if coat:
                                 _nar_result['horse_coat_color'] = coat
@@ -2701,7 +2701,7 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
                     if _sp_resp2.status == 200:
                         _sp_html_parsed = BeautifulSoup(
                             (await _sp_resp2.read()).decode('euc-jp', errors='ignore'),
-                            'html.parser'
+                            'lxml'
                         )
             except Exception:
                 pass
@@ -2743,17 +2743,25 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
         except Exception:
             return None
 
+    # 血統キャッシュ済みならped取得スキップ（HTTPリクエスト削減）
+    _cached_ped = (pedigree_cache or {}).get(horse_id)
+    _has_ped_cache = bool(_cached_ped and _cached_ped.get('sire'))
+
+    async def _noop_fetch() -> None:
+        return None
+
     # メイン・成績・血統の3ページを同時並列取得（直列3RTT → 1RTT）
+    # 血統キャッシュ済みの場合はped取得をスキップ
     html, _pre_result_html, _pre_ped_html = await asyncio.gather(
         _safe_get_horse(url),
         _safe_get_horse(f"https://db.netkeiba.com/horse/result/{horse_id}/"),
-        _safe_get_horse(f"https://db.netkeiba.com/horse/ped/{horse_id}/"),
+        _noop_fetch() if _has_ped_cache else _safe_get_horse(f"https://db.netkeiba.com/horse/ped/{horse_id}/"),
     )
     if html is None:
         logger.debug(f"馬詳細取得失敗 {horse_id}")
         return result
 
-    soup = BeautifulSoup(html, 'html.parser')
+    soup = BeautifulSoup(html, 'lxml')
 
     # ===== プロフィール（db_prof_table から取得） =====
     # class_ にラムダを使うことで 'db_prof_table no_under' など複合クラスにも対応
@@ -2837,7 +2845,7 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
                     async with session.get(_sp_url) as _sp_resp:
                         if _sp_resp.status == 200:
                             _sp_html = (await _sp_resp.read()).decode('euc-jp', errors='ignore')
-                            coat_fb = _extract_coat_color(BeautifulSoup(_sp_html, 'html.parser'), _sp_html)
+                            coat_fb = _extract_coat_color(BeautifulSoup(_sp_html, 'lxml'), _sp_html)
                             if coat_fb:
                                 result['horse_coat_color'] = coat_fb
                                 logger.info(f"毛色 sp 取得成功: {horse_id} coat={coat_fb}")
@@ -2877,7 +2885,7 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
         # 3. sire が未取得なら 並列プリフェッチ済みped HTMLを使用（追加HTTP不要）
         if not result.get('sire'):
             if _pre_ped_html:
-                ped_soup = BeautifulSoup(_pre_ped_html, 'html.parser')
+                ped_soup = BeautifulSoup(_pre_ped_html, 'lxml')
                 blood_table = ped_soup.find('table', class_='blood_table')
                 if blood_table:
                     _parse_blood_table(blood_table, result)
@@ -2892,7 +2900,7 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
                         if ped_resp.status == 200:
                             ped_content = await ped_resp.read()
                             ped_html_retry = ped_content.decode('euc-jp', errors='ignore')
-                            ped_soup = BeautifulSoup(ped_html_retry, 'html.parser')
+                            ped_soup = BeautifulSoup(ped_html_retry, 'lxml')
                             blood_table = ped_soup.find('table', class_='blood_table')
                             if blood_table:
                                 _parse_blood_table(blood_table, result)
@@ -2915,7 +2923,7 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
     # ===== 過去レース結果（最新2走）: 並列プリフェッチ済みHTMLを使用 =====
     try:
         if _pre_result_html is not None:
-            res_soup = BeautifulSoup(_pre_result_html, 'html.parser')
+            res_soup = BeautifulSoup(_pre_result_html, 'lxml')
             race_hist_table = None
             for tbl in res_soup.find_all('table'):
                 headers = [th.get_text(strip=True) for th in tbl.find_all('th')]
@@ -3123,12 +3131,8 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
                         html = content.decode('euc-jp', errors='ignore')
 
                     import re as _re
-                    soup = BeautifulSoup(html, 'html.parser')
-                    race_ids = []
-                    for a in soup.find_all('a', href=True):
-                        m = _re.search(r'/race/(\d{12})/', a['href'])
-                        if m and m.group(1) not in race_ids:
-                            race_ids.append(m.group(1))
+                    # BS4不要: 生HTMLにregexを直接適用（BS4生成コスト削除）
+                    race_ids = list(dict.fromkeys(_re.findall(r'/race/(\d{12})/', html)))
                     logger.info(f"{date}: {len(race_ids)}\u30ec\u30fc\u30b9ID\u691c\u51fa")
 
                     # ---- 4並列でレースを処理 (Render 512MB対応) ----
@@ -3621,12 +3625,7 @@ async def scrape_data(request: ScrapeRequest):
                     content = await resp.read()
                     html = content.decode('euc-jp', errors='ignore')
 
-                soup = BeautifulSoup(html, 'html.parser')
-                race_ids = []
-                for a in soup.find_all('a', href=True):
-                    m = re.search(r'/race/(\d{12})/', a['href'])
-                    if m and m.group(1) not in race_ids:
-                        race_ids.append(m.group(1))
+                race_ids = list(dict.fromkeys(re.findall(r'/race/(\d{12})/', html)))
 
                 logger.info(f"  {len(race_ids)}レース発見")
 
@@ -3792,7 +3791,7 @@ async def backfill_nar_pedigree(limit: int = 100) -> dict:
                         if resp.status == 200:
                             content = await resp.read()
                             html = content.decode("euc-jp", errors="ignore")
-                            soup_p = BeautifulSoup(html, "html.parser")
+                            soup_p = BeautifulSoup(html, 'lxml')
                             bt = soup_p.find("table", class_="blood_table")
                             pedigree_map[hid] = {}
                             if bt:
@@ -3941,7 +3940,7 @@ async def backfill_coat_color(limit: int = 200) -> dict:
                             if resp.status == 200:
                                 content = await resp.read()
                                 html = content.decode("euc-jp", errors="ignore")
-                                soup_h = BeautifulSoup(html, "html.parser")
+                                soup_h = BeautifulSoup(html, 'lxml')
                                 coat = _extract_coat_color(soup_h, html)
                                 if coat:
                                     logger.info(f"  coat_color 取得: {hid} → {coat} ({url})")
