@@ -2411,6 +2411,20 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '', quick_mo
     for i, h in enumerate(horses):
         h['last_3f_rank'] = ranks[i] if ranks[i] > 0 else None
 
+    # ---- 馬IDを先に確定しpedigreeバッチ取得を先行起動（ラップ解析とオーバーラップ）----
+    seen_horse_ids: set = set()
+    unique_horses = []
+    for h in horses:
+        hid = h.get('horse_id', '')
+        if hid and hid not in seen_horse_ids:
+            seen_horse_ids.add(hid)
+            unique_horses.append(h)
+    all_horse_ids = [h.get('horse_id', '') for h in unique_horses if h.get('horse_id')]
+    # pedigreeバッチ取得をタスクとして先行起動（ラップ解析中にSupabase RTT ~200msをオーバーラップ）
+    _ped_task: 'asyncio.Task | None' = None
+    if SUPABASE_ENABLED and all_horse_ids:
+        _ped_task = asyncio.ensure_future(asyncio.to_thread(get_pedigree_cache_batch, all_horse_ids))
+
     # ---- ラップタイム解析 ----
     lap_cumulative = {}
     lap_sectional = {}
@@ -2449,24 +2463,15 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '', quick_mo
     del soup, html
 
     # ---- 馬詳細スクレイピング（血統/通算成績/前走情報） 3並列 + バッチpedigreeキャッシュ ----
-    seen_horse_ids: set = set()
-    unique_horses = []
-    for h in horses:
-        hid = h.get('horse_id', '')
-        if hid and hid not in seen_horse_ids:
-            seen_horse_ids.add(hid)
-            unique_horses.append(h)
-
-    # pedigree を1回のSupabaseクエリでまとめて取得
-    all_horse_ids = [h.get('horse_id', '') for h in unique_horses if h.get('horse_id')]
+    # pedigreeタスク待機（ラップ解析中にオーバーラップ済のため多くの場合即座に完了）
     pedigree_batch: dict = {}
-    if SUPABASE_ENABLED and all_horse_ids:
+    if _ped_task is not None:
         try:
-            pedigree_batch = await asyncio.to_thread(get_pedigree_cache_batch, all_horse_ids)
+            pedigree_batch = await _ped_task
         except Exception:
             pass
 
-    # 馬を2頭ずつ並列処理（全コルーチン同時生成によるメモリ圧迫を防ぐ + 速度維持）
+    # 馬を3頭ずつ並列処理（limit_per_host=10に対して3頭×3req=9接続で効率的に活用）
     async def _fetch_detail(h):
         hid = h.get('horse_id', '')
         hurl = h.get('horse_url', '')
@@ -2476,10 +2481,10 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '', quick_mo
         h.update(detail)
         del detail
 
-    for _ci in range(0, len(unique_horses), 2):
-        _chunk = unique_horses[_ci:_ci + 2]
+    for _ci in range(0, len(unique_horses), 3):
+        _chunk = unique_horses[_ci:_ci + 3]
         await asyncio.gather(*[_fetch_detail(h) for h in _chunk])
-        gc.collect()
+    gc.collect()  # 全馬完了後に1回だけGC（チャンクごとの頻繁なGCを廃止）
 
     return {
         'race_info': {
@@ -2718,8 +2723,8 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
     del html  # raw HTML文字列解放（soupがあれば不要）
 
     # ===== プロフィール（db_prof_table から取得） =====
-    # class_ にラムダを使うことで 'db_prof_table no_under' など複合クラスにも対応
-    prof_table = soup.find('table', class_=lambda c: c and 'db_prof_table' in c)
+    # re.compile: lambdaより高速（BS4がDFS全ノードでlambdaを呼ぶオーバーヘッドを回避）
+    prof_table = soup.find('table', attrs={"class": re.compile(r"db_prof_table")})
     if prof_table:
         for row in prof_table.find_all('tr'):
             th = row.find('th')
@@ -2850,7 +2855,7 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
             if not result.get('sire'):
                 ped_url = f"https://db.netkeiba.com/horse/ped/{horse_id}/"
                 try:
-                    await asyncio.sleep(1.0)
+                    await asyncio.sleep(0.2)  # 必要最小限の待機（429時は後段で8sを使用）
                     async with session.get(ped_url) as ped_resp:
                         if ped_resp.status == 200:
                             ped_content = await ped_resp.read()
@@ -2963,6 +2968,50 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
     return result
 
 
+def _save_race_sqlite_only(race_data: dict, db_path: Path, overwrite: bool = True) -> bool:
+    """スクレイピング結果を keiba_ultimate.db (SQLiteのみ) に保存。成功フラグを返す。
+    Supabaseはfire-and-forgetで並列実行するためこちらはSQLiteのみ担当。
+    """
+    race_info = race_data['race_info']
+    horses = race_data['horses']
+    race_id = race_info['race_id']
+    try:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(db_path))
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS races_ultimate (
+                race_id TEXT PRIMARY KEY,
+                data TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cur.execute(
+            "INSERT OR REPLACE INTO races_ultimate (race_id, data) VALUES (?, ?)",
+            (race_id, json.dumps(race_info, ensure_ascii=False))
+        )
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS race_results_ultimate (
+                race_id TEXT,
+                data TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        if overwrite:
+            cur.execute("DELETE FROM race_results_ultimate WHERE race_id = ?", (race_id,))
+        for h in horses:
+            cur.execute(
+                "INSERT INTO race_results_ultimate (race_id, data) VALUES (?, ?)",
+                (race_id, json.dumps(h, ensure_ascii=False))
+            )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.warning(f"SQLite 保存失敗 {race_id}: {e}")
+        return False
+
+
 def _save_race_to_ultimate_db(race_data: dict, db_path: Path, overwrite: bool = True) -> bool:
     """スクレイピング結果を keiba_ultimate.db と Supabase の両方に保存。
     成功フラグ(bool)を返す。
@@ -3069,9 +3118,10 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
         total = len(dates)
         job["progress"] = {"done": 0, "total": total, "message": f"0/{total}日処理済み"}
 
-        # Render 512MB: 接続プールを最小限に（1接続あたり~1MB×100=100MBを節約）
-        timeout = aiohttp.ClientTimeout(total=15, connect=5)
-        connector = aiohttp.TCPConnector(limit=15, limit_per_host=6)
+        # SoupStrainer導入後メモリ削減済のため接続プールを拡張して高速化
+        # limit=20: 4レース並列×3馬×3req=36リク対応, limit_per_host=10: per-host詰まり解消
+        timeout = aiohttp.ClientTimeout(total=25, connect=8)
+        connector = aiohttp.TCPConnector(limit=20, limit_per_host=10)
         # カウンタはロック保護
         counter = {"races": 0, "horses": 0}
         counter_lock = asyncio.Lock()
@@ -3099,10 +3149,14 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
                         try:
                             race_data = await _scrape_race_full(session, race_id, date_hint=_date, quick_mode=True)
                             if race_data and race_data.get('horses'):
-                                saved = await asyncio.to_thread(_save_race_to_ultimate_db, race_data, ULTIMATE_DB, True)
+                                n_horses = len(race_data['horses'])
+                                # Supabase: fire-and-forget（RTTをブロックしない）
+                                if SUPABASE_ENABLED:
+                                    asyncio.ensure_future(asyncio.to_thread(save_race_to_supabase, race_data))
+                                # SQLite: 非同期書き込み（高速・ブロッキングI/OをThreadで実行）
+                                saved = await asyncio.to_thread(_save_race_sqlite_only, race_data, ULTIMATE_DB)
+                                del race_data  # 大きなdictを即解放（ensure_futureがrefを保持）
                                 if saved:
-                                    n_horses = len(race_data['horses'])
-                                    del race_data  # 大きなdictを即解放
                                     async with counter_lock:
                                         counter["races"] += 1
                                         counter["horses"] += n_horses
@@ -3119,7 +3173,7 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
                                         }
                                     logger.info(f"保存完了: {race_id} ({n_horses}頭)")
                                 else:
-                                    logger.warning(f"Supabase/SQLite両方失敗: {race_id}")
+                                    logger.warning(f"SQLite保存失敗: {race_id}")
                             else:
                                 logger.warning(f"レースデータなし/出走馬なし: {race_id}")
                         except Exception as exc:
@@ -3127,10 +3181,10 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
                             errors.append(err_msg)
                             logger.error(f"_fetch_and_save 失敗 {err_msg}")
 
-                    for ci in range(0, len(race_ids), 2):
-                        chunk = race_ids[ci:ci + 2]
+                    for ci in range(0, len(race_ids), 4):
+                        chunk = race_ids[ci:ci + 4]
                         await asyncio.gather(*[_fetch_and_save(r) for r in chunk])
-                        gc.collect()  # 2レース完了ごとにBS4循環参照を強制回収
+                        gc.collect()  # 4レース完了ごとにBS4循環参照を強制回収
                     if errors:
                         logger.warning(f"エラー一覧: {errors[:5]}")
 
