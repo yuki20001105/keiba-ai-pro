@@ -31,6 +31,7 @@ export default function DataCollectionPage() {
   const [profilingJobId, setProfilingJobId] = useState<string | null>(null)
   const [profilingStatus, setProfilingStatus] = useState<'idle' | 'running' | 'completed' | 'error'>('idle')
   const [profilingMessage, setProfilingMessage] = useState('')
+  const [profilingProgress, setProfilingProgress] = useState(0)
   const [useOptimized, setUseOptimized] = useState(true)
 
   useEffect(() => {
@@ -194,7 +195,18 @@ export default function DataCollectionPage() {
   const handleStartProfiling = async () => {
     setProfilingStatus('running')
     setProfilingMessage('開始中...')
+    setProfilingProgress(5)
     setProfilingJobId(null)
+
+    const inferProgress = (msg: string): number => {
+      if (msg.includes('読み込み')) return 15
+      if (msg.includes('エンジニアリング')) return 35
+      if (msg.includes('最適化')) return 55
+      if (msg.includes('ydata-profiling') || msg.includes('生成中')) return 75
+      if (msg.includes('完了')) return 100
+      return 5
+    }
+
     try {
       const res = await fetch('/api/profiling', {
         method: 'POST',
@@ -209,19 +221,24 @@ export default function DataCollectionPage() {
         try {
           const sr = await fetch(`/api/profiling/status/${job_id}`)
           const st = await sr.json()
-          setProfilingMessage(st.message || '')
+          const msg = st.message || ''
+          setProfilingMessage(msg)
+          setProfilingProgress(inferProgress(msg))
           if (st.status === 'completed') {
             clearInterval(poll)
             setProfilingStatus('completed')
+            setProfilingProgress(100)
           } else if (st.status === 'error') {
             clearInterval(poll)
             setProfilingStatus('error')
+            setProfilingProgress(0)
           }
         } catch { /* ignore poll error */ }
       }, 5000)
     } catch (e: any) {
       setProfilingStatus('error')
       setProfilingMessage(e.message)
+      setProfilingProgress(0)
     }
   }
 
@@ -581,12 +598,27 @@ export default function DataCollectionPage() {
           </div>
 
           {profilingStatus !== 'idle' && (
-            <p className={`mt-3 text-xs ${
-              profilingStatus === 'error' ? 'text-red-400' :
-              profilingStatus === 'completed' ? 'text-[#4ade80]' : 'text-[#888]'
-            }`}>
-              {profilingMessage}
-            </p>
+            <div className="mt-4 space-y-1.5">
+              {(profilingStatus === 'running' || profilingStatus === 'completed') && (
+                <>
+                  <div className="flex justify-between text-xs text-[#888] mb-1">
+                    <span>{profilingMessage}</span>
+                    <span>{profilingProgress}%</span>
+                  </div>
+                  <div className="w-full bg-[#1e1e1e] rounded-full h-1.5 overflow-hidden">
+                    <div
+                      className={`h-1.5 rounded-full transition-all duration-700 ${
+                        profilingStatus === 'completed' ? 'bg-[#4ade80]' : 'bg-white'
+                      }`}
+                      style={{ width: `${profilingProgress}%` }}
+                    />
+                  </div>
+                </>
+              )}
+              {profilingStatus === 'error' && (
+                <p className="text-xs text-red-400">{profilingMessage}</p>
+              )}
+            </div>
           )}
         </div>
 
