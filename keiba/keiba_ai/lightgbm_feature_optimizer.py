@@ -40,7 +40,10 @@ class LightGBMFeatureOptimizer:
         """
         df = df.copy()
         self.categorical_features = []
-        
+
+        # ===== 0. 欠損値補完（学習・推論共通） =====
+        df = self._fill_missing_values(df)
+
         print("\n" + "="*80)
         print("【LightGBM特徴量最適化】学習モード")
         print("="*80)
@@ -413,9 +416,12 @@ class LightGBMFeatureOptimizer:
             raise ValueError("先にfit_transform()を実行してください")
         
         df = df.copy()
-        
+
+        # ===== 0. 欠損値補完（学習・推論共通） =====
+        df = self._fill_missing_values(df)
+
         print("\n【LightGBM特徴量最適化】推論モード")
-        
+
         # 学習時と同じ変換を適用
         # Label Encoding
         for original_col, encoded_col in [
@@ -549,6 +555,57 @@ class LightGBMFeatureOptimizer:
 
         return df
     
+    def _fill_missing_values(self, df: pd.DataFrame) -> pd.DataFrame:
+        """欠損値を補完する（LightGBM投入前の前処理）
+
+        補完方針:
+          - 前走/前々走情報 (prev_race_*): 0埋め + is_first_race フラグ追加
+          - コーナー通過 (corner_1~4, 派生): 0埋め（未計測コーナーなし扱い）
+          - 血統 (sire, damsire, dam): "Unknown" 埋め（統計変換で処理）
+          - 通算成績 (horse_total_*, horse_win_rate): 0埋め（新馬扱い）
+          - 体重・オッズ: LightGBMがNaNを自動処理するため補完不要
+        """
+        # ── 初出走フラグ（前走情報が全欠損の馬）──────────────────────────────
+        if 'prev_race_finish' in df.columns:
+            df['is_first_race'] = df['prev_race_finish'].isna().astype(int)
+        else:
+            df['is_first_race'] = 0
+
+        # ── 前走情報: 数値列を 0 埋め ────────────────────────────────────────
+        prev_numeric_cols = [
+            'prev_race_finish', 'prev_race_time', 'prev_race_weight', 'prev_race_distance',
+            'prev2_race_finish', 'prev2_race_time', 'prev2_race_weight', 'prev2_race_distance',
+            'days_since_last_race', 'distance_change',
+        ]
+        for col in prev_numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+        # ── コーナー通過: 0 埋め（短距離・通過なし扱い）──────────────────────
+        corner_cols = [
+            'corner_1', 'corner_2', 'corner_3', 'corner_4',
+            'corner_position_avg', 'corner_position_variance',
+            'last_corner_position', 'position_change',
+        ]
+        for col in corner_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+        # ── 血統: "Unknown" 埋め（_add_entity_statistics が文字列を期待）────
+        for col in ['sire', 'damsire', 'dam']:
+            if col in df.columns:
+                df[col] = df[col].fillna('Unknown')
+
+        # ── 通算成績: 0 埋め（新馬・データ未取得馬）─────────────────────────
+        career_cols = [
+            'horse_total_runs', 'horse_total_wins', 'horse_total_prize_money', 'horse_win_rate',
+        ]
+        for col in career_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+        return df
+
     def _process_date_column(self, df: pd.DataFrame, col: str, prefix: str = 'date') -> pd.DataFrame:
         """日付カラムを数値特徴量に変換"""
         if col not in df.columns:
