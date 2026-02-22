@@ -2481,10 +2481,10 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '', quick_mo
         h.update(detail)
         del detail
 
-    for _ci in range(0, len(unique_horses), 3):
-        _chunk = unique_horses[_ci:_ci + 3]
+    for _ci in range(0, len(unique_horses), 4):
+        _chunk = unique_horses[_ci:_ci + 4]
         await asyncio.gather(*[_fetch_detail(h) for h in _chunk])
-    gc.collect()  # 全馬完了後に1回だけGC（チャンクごとの頻繁なGCを廃止）
+    gc.collect(0)  # gen0のみGC（BS4短命オブジェクトはgen0で十分、全世代より5-10x高速）
 
     return {
         'race_info': {
@@ -2968,6 +2968,33 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
     return result
 
 
+def _init_sqlite_db(db_path: Path) -> None:
+    """ジョブ開始時にWALモード設定 + テーブル事前作成（毎レースのDDL重複を削減）。"""
+    try:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA journal_mode=WAL")  # WALモード: 書き込み中も読み取り可、ロック競合削減
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS races_ultimate (
+                race_id TEXT PRIMARY KEY,
+                data TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS race_results_ultimate (
+                race_id TEXT,
+                data TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+        conn.close()
+        logger.debug(f"SQLite初期化完了(WAL): {db_path}")
+    except Exception as e:
+        logger.warning(f"SQLite初期化失敗: {e}")
+
+
 def _save_race_sqlite_only(race_data: dict, db_path: Path, overwrite: bool = True) -> bool:
     """スクレイピング結果を keiba_ultimate.db (SQLiteのみ) に保存。成功フラグを返す。
     Supabaseはfire-and-forgetで並列実行するためこちらはSQLiteのみ担当。
@@ -2978,6 +3005,7 @@ def _save_race_sqlite_only(race_data: dict, db_path: Path, overwrite: bool = Tru
     try:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA journal_mode=WAL")  # WALモード確保（init済みなら即no-op）
         cur = conn.cursor()
         cur.execute("""
             CREATE TABLE IF NOT EXISTS races_ultimate (
@@ -3096,6 +3124,7 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
         job["status"] = "running"
 
         ULTIMATE_DB = Path(__file__).parent.parent / "keiba" / "data" / "keiba_ultimate.db"
+        _init_sqlite_db(ULTIMATE_DB)  # WALモード + テーブル事前作成（毎レースのDDL処理を省略）
         start_time = _time.time()
 
         def _parse(s):
@@ -3211,10 +3240,10 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
                             errors.append(err_msg)
                             logger.error(f"_fetch_and_save 失敗 {err_msg}")
 
-                    for ci in range(0, len(race_ids), 2):
-                        chunk = race_ids[ci:ci + 2]
+                    for ci in range(0, len(race_ids), 3):
+                        chunk = race_ids[ci:ci + 3]
                         await asyncio.gather(*[_fetch_and_save(r) for r in chunk])
-                        gc.collect()  # 2レース完了ごとにBS4循環参照を強制回収（OOM防止）
+                        gc.collect(0)  # gen0のみGC（del soup,html済みなのでgen0で十分、全世代より5-10x高速）
                     if errors:
                         logger.warning(f"エラー一覧: {errors[:5]}")
 
