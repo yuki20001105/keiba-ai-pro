@@ -520,6 +520,26 @@ async def train_model(request: TrainRequest):
                 detail=f"訓練データが見つかりません。先にデータ取得を実行してください。DB: {db_path}, Rows: {len(df)}",
             )
 
+        # ── レース後にしか確定しない情報を除去（リーク防止）──────────────────
+        # finish_position は ターゲット作成 + expanding window 集計に必要なので残す
+        TRAIN_POST_RACE_DROP = [
+            'finish_time',          # 走破タイム文字列
+            'time_seconds',         # 走破秒数
+            'corner_1', 'corner_2', 'corner_3', 'corner_4',
+            'corner_positions',
+            'corner_positions_list',
+            'last_3f',              # 上がり3F タイム
+            'last_3f_rank',
+            'last_3f_rank_normalized',
+            'last_3f_time',
+            'margin',               # 着差
+            'prize_money',          # 獲得賞金（当該レース分）
+        ]
+        drop_train = [c for c in TRAIN_POST_RACE_DROP if c in df.columns]
+        if drop_train:
+            print(f"  [train] レース後データを除去: {drop_train}")
+            df = df.drop(columns=drop_train)
+
         # 派生特徴量を追加
         df = add_derived_features(df, full_history_df=df)
 
@@ -1149,8 +1169,30 @@ async def predict(request: PredictRequest):
         use_optimizer = bundle.get("use_optimizer", False)
         bundle.get("categorical_features", [])
 
+        # ── レース後にしか確定しない情報を除去（リーク防止）──────────────────
+        # 予測時には finish_position / コーナー通過 / 走破タイム / 上がり3F 等は
+        # 存在しないデータ。検証時にこれらを含めて送っても必ず削除する。
+        POST_RACE_FIELDS = {
+            'finish_position',      # 着順
+            'finish_time',          # 走破タイム文字列
+            'time_seconds',         # 走破秒数
+            'corner_1', 'corner_2', 'corner_3', 'corner_4',  # コーナー通過順位
+            'corner_positions',     # コーナー通過生データ
+            'corner_positions_list',# コーナー通過リスト
+            'last_3f',              # 上がり3F（タイム）
+            'last_3f_rank',         # 上がり3Fランク
+            'last_3f_rank_normalized',
+            'last_3f_time',
+            'margin',               # 着差
+            'prize_money',          # 獲得賞金（当該レース分）
+        }
+        cleaned_horses = [
+            {k: v for k, v in h.items() if k not in POST_RACE_FIELDS}
+            for h in request.horses
+        ]
+
         # 入力データをDataFrameに変換
-        df = pd.DataFrame(request.horses)
+        df = pd.DataFrame(cleaned_horses)
 
         # 派生特徴量を追加
         df = add_derived_features(df, full_history_df=None)
