@@ -4,10 +4,11 @@ const ML_API_URL = process.env.ML_API_URL || process.env.NEXT_PUBLIC_API_URL || 
 
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const response = await fetch(`${ML_API_URL}/api/models/${params.id}`, {
+    const { id } = await params
+    const response = await fetch(`${ML_API_URL}/api/models/${id}`, {
       method: 'DELETE',
     })
     const data = await response.json()

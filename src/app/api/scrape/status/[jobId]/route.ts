@@ -4,10 +4,11 @@ const ML_API_URL = process.env.ML_API_URL || process.env.NEXT_PUBLIC_API_URL || 
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { jobId: string } }
+  { params }: { params: Promise<{ jobId: string }> }
 ) {
   try {
-    const response = await fetch(`${ML_API_URL}/api/scrape/status/${params.jobId}`)
+    const { jobId } = await params
+    const response = await fetch(`${ML_API_URL}/api/scrape/status/${jobId}`)
     const data = await response.json()
     return NextResponse.json(data, { status: response.status })
   } catch (error) {
