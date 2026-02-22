@@ -2116,7 +2116,6 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '', quick_mo
 
     url = f"https://db.netkeiba.com/race/{race_id}/"
     try:
-        await asyncio.sleep(0.05)
         async with session.get(url) as resp:
             if resp.status != 200:
                 logger.warning(f"HTTP {resp.status}: {url}")
@@ -2497,7 +2496,7 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '', quick_mo
                     prev = lap_cumulative[d]
                 break
 
-    # ---- 馬詳細スクレイピング（血統/通算成績/前走情報） 10並列 + バッチpedigreeキャッシュ ----
+    # ---- 馬詳細スクレイピング（血統/通算成績/前走情報） 15並列 + バッチpedigreeキャッシュ ----
     seen_horse_ids: set = set()
     unique_horses = []
     for h in horses:
@@ -2515,7 +2514,7 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '', quick_mo
         except Exception:
             pass
 
-    sem = asyncio.Semaphore(10)
+    sem = asyncio.Semaphore(15)
 
     async def _fetch_detail_limited(h):
         hid = h.get('horse_id', '')
@@ -2632,8 +2631,8 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
             pedigree_result_b: dict = {}
             for attempt in range(3):
                 try:
-                    wait = 0.1 + attempt * 1.0
-                    await asyncio.sleep(wait)
+                    if attempt > 0:
+                        await asyncio.sleep(attempt * 1.0)
                     async with session.get(ped_url_b) as ped_resp_b:
                         if ped_resp_b.status == 200:
                             ped_content_b = await ped_resp_b.read()
@@ -2645,16 +2644,14 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
                             if pedigree_result_b.get('sire'):
                                 logger.info(f"NAR馬 /ped/ 血統取得成功: {horse_id} sire={pedigree_result_b['sire']}")
                                 if SUPABASE_ENABLED:
-                                    try:
-                                        await asyncio.to_thread(
-                                            save_pedigree_cache,
-                                            horse_id,
-                                            pedigree_result_b.get('sire', ''),
-                                            pedigree_result_b.get('dam', ''),
-                                            pedigree_result_b.get('damsire', ''),
-                                        )
-                                    except Exception:
-                                        pass
+                                    # fire-and-forget: スロットをブロックしない
+                                    asyncio.ensure_future(asyncio.to_thread(
+                                        save_pedigree_cache,
+                                        horse_id,
+                                        pedigree_result_b.get('sire', ''),
+                                        pedigree_result_b.get('dam', ''),
+                                        pedigree_result_b.get('damsire', ''),
+                                    ))
                                 _nar_result = pedigree_result_b
                                 break
                             logger.debug(f"NAR馬 /ped/ 200 だが blood_table 未検出: {horse_id}")
@@ -2735,15 +2732,25 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
     if url and not url.endswith('/'):
         url = url + '/'
     result = {}
-    try:
-        await asyncio.sleep(0.05)
-        async with session.get(url) as resp:
-            if resp.status != 200:
-                return result
-            content = await resp.read()
-            html = content.decode('euc-jp', errors='ignore')
-    except Exception as e:
-        logger.debug(f"馬詳細取得失敗 {horse_id}: {e}")
+
+    async def _safe_get_horse(u: str) -> 'str | None':
+        """HTTP GET → EUC-JP str or None（例外・非200はNone）"""
+        try:
+            async with session.get(u) as r:
+                if r.status != 200:
+                    return None
+                return (await r.read()).decode('euc-jp', errors='ignore')
+        except Exception:
+            return None
+
+    # メイン・成績・血統の3ページを同時並列取得（直列3RTT → 1RTT）
+    html, _pre_result_html, _pre_ped_html = await asyncio.gather(
+        _safe_get_horse(url),
+        _safe_get_horse(f"https://db.netkeiba.com/horse/result/{horse_id}/"),
+        _safe_get_horse(f"https://db.netkeiba.com/horse/ped/{horse_id}/"),
+    )
+    if html is None:
+        logger.debug(f"馬詳細取得失敗 {horse_id}")
         return result
 
     soup = BeautifulSoup(html, 'html.parser')
@@ -2867,131 +2874,120 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
             _parse_blood_table(blood_table_main, result)
             logger.debug(f"メインページ血統: {horse_id} sire={result.get('sire')}")
 
-        # 3. sire が未取得なら ped 専用ページから取得（最大3回リトライ）
+        # 3. sire が未取得なら 並列プリフェッチ済みped HTMLを使用（追加HTTP不要）
         if not result.get('sire'):
-            ped_url = f"https://db.netkeiba.com/horse/ped/{horse_id}/"
-            for attempt in range(3):
+            if _pre_ped_html:
+                ped_soup = BeautifulSoup(_pre_ped_html, 'html.parser')
+                blood_table = ped_soup.find('table', class_='blood_table')
+                if blood_table:
+                    _parse_blood_table(blood_table, result)
+                    if result.get('sire'):
+                        logger.debug(f"ped 血統取得成功(並列): {horse_id} sire={result['sire']}")
+            # プリフェッチ失敗 or 未解決の場合は1回だけリトライ
+            if not result.get('sire'):
+                ped_url = f"https://db.netkeiba.com/horse/ped/{horse_id}/"
                 try:
-                    wait = 0.05 + attempt * 1.0
-                    await asyncio.sleep(wait)
+                    await asyncio.sleep(1.0)
                     async with session.get(ped_url) as ped_resp:
                         if ped_resp.status == 200:
                             ped_content = await ped_resp.read()
-                            ped_html = ped_content.decode('euc-jp', errors='ignore')
-                            ped_soup = BeautifulSoup(ped_html, 'html.parser')
+                            ped_html_retry = ped_content.decode('euc-jp', errors='ignore')
+                            ped_soup = BeautifulSoup(ped_html_retry, 'html.parser')
                             blood_table = ped_soup.find('table', class_='blood_table')
                             if blood_table:
                                 _parse_blood_table(blood_table, result)
-                                if result.get('sire'):
-                                    logger.debug(f"ped ページ血統取得成功: {horse_id} 試行{attempt+1} sire={result['sire']}")
-                                    break
+                                logger.debug(f"ped リトライ成功: {horse_id} sire={result.get('sire')}")
                         elif ped_resp.status == 429:
-                            # レート制限: 待機してリトライ
-                            await asyncio.sleep(5.0 + attempt * 3.0)
-                            continue
-                        else:
-                            logger.debug(f"ped ページ HTTP {ped_resp.status}: {horse_id}")
-                            break
+                            await asyncio.sleep(8.0)
                 except Exception as _e:
-                    logger.debug(f"ped ページ取得失敗 試行{attempt+1} {horse_id}: {_e}")
-                    if attempt < 2:
-                        await asyncio.sleep(2.0 ** attempt)
+                    logger.debug(f"ped リトライ失敗 {horse_id}: {_e}")
 
-        # 4. 結果をキャッシュ保存（失敗時も空で保存して再取得を防ぐ）
+        # 4. 結果をキャッシュ保存（fire-and-forget: horseスロットをブロックしない）
         if SUPABASE_ENABLED and horse_id:
-            try:
-                await asyncio.to_thread(
-                    save_pedigree_cache,
-                    horse_id,
-                    result.get('sire', ''),
-                    result.get('dam', ''),
-                    result.get('damsire', ''),
-                )
-            except Exception:
-                pass
+            asyncio.ensure_future(asyncio.to_thread(
+                save_pedigree_cache,
+                horse_id,
+                result.get('sire', ''),
+                result.get('dam', ''),
+                result.get('damsire', ''),
+            ))
 
-    # ===== 過去レース結果（最新2走）: /horse/result/{horse_id}/ から取得 =====
-    result_url = f"https://db.netkeiba.com/horse/result/{horse_id}/"
+    # ===== 過去レース結果（最新2走）: 並列プリフェッチ済みHTMLを使用 =====
     try:
-        await asyncio.sleep(0.05)
-        async with session.get(result_url) as res_resp:
-            if res_resp.status == 200:
-                res_content = await res_resp.read()
-                res_html = res_content.decode('euc-jp', errors='ignore')
-                res_soup = BeautifulSoup(res_html, 'html.parser')
+        if _pre_result_html is not None:
+            res_soup = BeautifulSoup(_pre_result_html, 'html.parser')
+            race_hist_table = None
+            for tbl in res_soup.find_all('table'):
+                headers = [th.get_text(strip=True) for th in tbl.find_all('th')]
+                if '日付' in headers and ('着順' in headers or '着' in headers):
+                    race_hist_table = tbl
+                    break
 
-                race_hist_table = None
-                for tbl in res_soup.find_all('table'):
-                    headers = [th.get_text(strip=True) for th in tbl.find_all('th')]
-                    if '日付' in headers and ('着順' in headers or '着' in headers):
-                        race_hist_table = tbl
+            if race_hist_table:
+                # ヘッダー行のみから th を取得（全体の find_all('th') だとインデックスがずれる）
+                header_rows = [r for r in race_hist_table.find_all('tr') if r.find('th')]
+                if header_rows:
+                    header_ths = header_rows[0].find_all('th')
+                    headers = [th.get_text(strip=True) for th in header_ths]
+                else:
+                    headers = []
+                # 逆引き辞書（重複キーは後勝ち）
+                cidx = {h: i for i, h in enumerate(headers)}
+                date_i   = cidx.get('日付', 0)
+                venue_i  = cidx.get('開催', 1)
+                finish_i = cidx.get('着順', cidx.get('着', -1))
+                time_i   = cidx.get('タイム', -1)
+                weight_i = cidx.get('馬体重', -1)
+                # 距離列: '距離' → '芝・距離' → 'コース' の順で探す
+                course_i = -1
+                for cname in ['距離', 'コース', '芝・距離']:
+                    if cname in cidx:
+                        course_i = cidx[cname]
                         break
+                if course_i == -1:
+                    course_i = next((cidx[h] for h in headers if 'コース' in h or '距離' in h), -1)
 
-                if race_hist_table:
-                    # ヘッダー行のみから th を取得（全体の find_all('th') だとインデックスがずれる）
-                    header_rows = [r for r in race_hist_table.find_all('tr') if r.find('th')]
-                    if header_rows:
-                        header_ths = header_rows[0].find_all('th')
-                        headers = [th.get_text(strip=True) for th in header_ths]
-                    else:
-                        headers = []
-                    # 逆引き辞書（重複キーは後勝ち）
-                    cidx = {h: i for i, h in enumerate(headers)}
-                    date_i   = cidx.get('日付', 0)
-                    venue_i  = cidx.get('開催', 1)
-                    finish_i = cidx.get('着順', cidx.get('着', -1))
-                    time_i   = cidx.get('タイム', -1)
-                    weight_i = cidx.get('馬体重', -1)
-                    # 距離列: '距離' → '芝・距離' → 'コース' の順で探す
-                    course_i = -1
-                    for cname in ['距離', 'コース', '芝・距離']:
-                        if cname in cidx:
-                            course_i = cidx[cname]
-                            break
-                    if course_i == -1:
-                        course_i = next((cidx[h] for h in headers if 'コース' in h or '距離' in h), -1)
-
-                    data_rows = [r for r in race_hist_table.find_all('tr') if r.find('td')]
-                    for i, row in enumerate(data_rows[:2]):
-                        cols = row.find_all('td')
-                        pfx = 'prev' if i == 0 else 'prev2'
-                        try:
-                            if date_i < len(cols):
-                                result[f'{pfx}_race_date'] = cols[date_i].get_text(strip=True)
-                            if venue_i < len(cols):
-                                result[f'{pfx}_race_venue'] = cols[venue_i].get_text(strip=True)
-                            if finish_i != -1 and finish_i < len(cols):
-                                fin_t = cols[finish_i].get_text(strip=True)
-                                if re.match(r'^\d+$', fin_t):
-                                    result[f'{pfx}_race_finish'] = int(fin_t)
-                            if time_i != -1 and time_i < len(cols):
-                                t_t = cols[time_i].get_text(strip=True)
-                                # "1:23.4" または "83.4" 形式
-                                tm = re.match(r'(\d+):(\d+\.\d+)', t_t)
-                                if tm:
-                                    result[f'{pfx}_race_time'] = float(tm.group(1)) * 60 + float(tm.group(2))
-                                else:
-                                    try:
-                                        result[f'{pfx}_race_time'] = float(t_t)
-                                    except ValueError:
-                                        pass
-                            if weight_i != -1 and weight_i < len(cols):
-                                w_t = cols[weight_i].get_text(strip=True)
-                                w_m = re.match(r'(\d+)', w_t)
-                                if w_m:
-                                    result[f'{pfx}_race_weight'] = int(w_m.group(1))
-                            if course_i != -1 and course_i < len(cols):
-                                c_t = cols[course_i].get_text(strip=True)
-                                d_m = re.search(r'(\d{3,4})', c_t)
-                                if d_m:
-                                    result[f'{pfx}_race_distance'] = int(d_m.group(1))
-                                # 芝/ダート種別も取得
-                                if '芝' in c_t:
-                                    result[f'{pfx}_race_surface'] = '芝'
-                                elif 'ダ' in c_t or 'ダート' in c_t:
-                                    result[f'{pfx}_race_surface'] = 'ダート'
-                        except Exception:
-                            pass
+                data_rows = [r for r in race_hist_table.find_all('tr') if r.find('td')]
+                for i, row in enumerate(data_rows[:2]):
+                    cols = row.find_all('td')
+                    pfx = 'prev' if i == 0 else 'prev2'
+                    try:
+                        if date_i < len(cols):
+                            result[f'{pfx}_race_date'] = cols[date_i].get_text(strip=True)
+                        if venue_i < len(cols):
+                            result[f'{pfx}_race_venue'] = cols[venue_i].get_text(strip=True)
+                        if finish_i != -1 and finish_i < len(cols):
+                            fin_t = cols[finish_i].get_text(strip=True)
+                            if re.match(r'^\d+$', fin_t):
+                                result[f'{pfx}_race_finish'] = int(fin_t)
+                        if time_i != -1 and time_i < len(cols):
+                            t_t = cols[time_i].get_text(strip=True)
+                            # "1:23.4" または "83.4" 形式
+                            tm = re.match(r'(\d+):(\d+\.\d+)', t_t)
+                            if tm:
+                                result[f'{pfx}_race_time'] = float(tm.group(1)) * 60 + float(tm.group(2))
+                            else:
+                                try:
+                                    result[f'{pfx}_race_time'] = float(t_t)
+                                except ValueError:
+                                    pass
+                        if weight_i != -1 and weight_i < len(cols):
+                            w_t = cols[weight_i].get_text(strip=True)
+                            w_m = re.match(r'(\d+)', w_t)
+                            if w_m:
+                                result[f'{pfx}_race_weight'] = int(w_m.group(1))
+                        if course_i != -1 and course_i < len(cols):
+                            c_t = cols[course_i].get_text(strip=True)
+                            d_m = re.search(r'(\d{3,4})', c_t)
+                            if d_m:
+                                result[f'{pfx}_race_distance'] = int(d_m.group(1))
+                            # 芝/ダート種別も取得
+                            if '芝' in c_t:
+                                result[f'{pfx}_race_surface'] = '芝'
+                            elif 'ダ' in c_t or 'ダート' in c_t:
+                                result[f'{pfx}_race_surface'] = 'ダート'
+                    except Exception:
+                        pass
     except Exception as e:
         logger.debug(f"過去成績ページ取得失敗 {horse_id}: {e}")
 
@@ -3106,9 +3102,9 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
         total = len(dates)
         job["progress"] = {"done": 0, "total": total, "message": f"0/{total}日処理済み"}
 
-        # 接続制限を拡張（8並列レース × 10並列馬 = 最大80同時接続、実効はlimit_per_hostで制御）
-        timeout = aiohttp.ClientTimeout(total=20, connect=5)
-        connector = aiohttp.TCPConnector(limit=60, limit_per_host=25)
+        # 接続制限を拡張（12並列レース × 15並列馬 × 3並列取得 = 最大540同時接続、実効はlimit_per_hostで制御）
+        timeout = aiohttp.ClientTimeout(total=15, connect=5)
+        connector = aiohttp.TCPConnector(limit=100, limit_per_host=40)
         # カウンタはロック保護
         counter = {"races": 0, "horses": 0}
         counter_lock = asyncio.Lock()
@@ -3120,7 +3116,6 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
                 list_url = f"https://db.netkeiba.com/race/list/{date}/"
                 errors: list = []  # try ブロック外で初期化 → exception 時の NameError 防止
                 try:
-                    await asyncio.sleep(0.05)
                     async with session.get(list_url) as resp:
                         if resp.status != 200:
                             continue
@@ -3136,15 +3131,15 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
                             race_ids.append(m.group(1))
                     logger.info(f"{date}: {len(race_ids)}\u30ec\u30fc\u30b9ID\u691c\u51fa")
 
-                    # ---- 8並列でレースを処理 ----
-                    race_sem = asyncio.Semaphore(8)
+                    # ---- 12並列でレースを処理 ----
+                    race_sem = asyncio.Semaphore(12)
 
                     async def _fetch_and_save(race_id, _date=date, _day_idx=i):
                         async with race_sem:
                             try:
                                 race_data = await _scrape_race_full(session, race_id, date_hint=_date, quick_mode=True)
                                 if race_data and race_data.get('horses'):
-                                    saved = _save_race_to_ultimate_db(race_data, ULTIMATE_DB, overwrite=True)
+                                    saved = await asyncio.to_thread(_save_race_to_ultimate_db, race_data, ULTIMATE_DB, True)
                                     if saved:
                                         async with counter_lock:
                                             counter["races"] += 1
