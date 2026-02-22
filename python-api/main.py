@@ -2518,7 +2518,7 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '', quick_mo
         except Exception:
             pass
 
-    sem = asyncio.Semaphore(3)  # Render 512MB: ピークメモリ制御
+    sem = asyncio.Semaphore(2)  # Render 512MB: 2並列まで（3だと3レース×2馬×3ページ=18接続でOOM）
 
     async def _fetch_detail_limited(h):
         hid = h.get('horse_id', '')
@@ -3127,9 +3127,9 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
         total = len(dates)
         job["progress"] = {"done": 0, "total": total, "message": f"0/{total}日処理済み"}
 
-        # 接続制限を拡張（12並列レース × 15並列馬 × 3並列取得 = 最大540同時接続、実効はlimit_per_hostで制御）
+        # Render 512MB: 接続プールを最小限に（1接続あたり~1MB×100=100MBを節約）
         timeout = aiohttp.ClientTimeout(total=15, connect=5)
-        connector = aiohttp.TCPConnector(limit=100, limit_per_host=40)
+        connector = aiohttp.TCPConnector(limit=10, limit_per_host=4)
         # カウンタはロック保護
         counter = {"races": 0, "horses": 0}
         counter_lock = asyncio.Lock()
@@ -3153,44 +3153,42 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
                     race_ids = list(dict.fromkeys(_re.findall(r'/race/(\d{12})/', html)))
                     logger.info(f"{date}: {len(race_ids)}\u30ec\u30fc\u30b9ID\u691c\u51fa")
 
-                    # ---- 2並列でレースを処理 (Render 512MB OOM対策) ----
-                    race_sem = asyncio.Semaphore(2)
-
+                    # ---- レースを1件ずつ逐次処理（asyncio.gatherで全コルーチン同時生成するとOOM） ----
                     async def _fetch_and_save(race_id, _date=date, _day_idx=i):
-                        async with race_sem:
-                            try:
-                                race_data = await _scrape_race_full(session, race_id, date_hint=_date, quick_mode=True)
-                                if race_data and race_data.get('horses'):
-                                    saved = await asyncio.to_thread(_save_race_to_ultimate_db, race_data, ULTIMATE_DB, True)
-                                    if saved:
-                                        n_horses = len(race_data['horses'])
-                                        del race_data  # 大きなdictを即解放
-                                        async with counter_lock:
-                                            counter["races"] += 1
-                                            counter["horses"] += n_horses
-                                            # per-race 進捗更新（フロントエンドに即反映）
-                                            job["progress"] = {
-                                                "done": _day_idx,
-                                                "total": total,
-                                                "message": (
-                                                    f"{_day_idx}/{total}日処理中 | "
-                                                    f"{counter['races']}レース・{counter['horses']}頭保存済み"
-                                                ),
-                                                "saved_races": counter["races"],
-                                                "saved_horses": counter["horses"],
-                                            }
-                                        logger.info(f"保存完了: {race_id} ({n_horses}頭)")
-                                    else:
-                                        logger.warning(f"Supabase/SQLite両方失敗: {race_id}")
+                        try:
+                            race_data = await _scrape_race_full(session, race_id, date_hint=_date, quick_mode=True)
+                            if race_data and race_data.get('horses'):
+                                saved = await asyncio.to_thread(_save_race_to_ultimate_db, race_data, ULTIMATE_DB, True)
+                                if saved:
+                                    n_horses = len(race_data['horses'])
+                                    del race_data  # 大きなdictを即解放
+                                    async with counter_lock:
+                                        counter["races"] += 1
+                                        counter["horses"] += n_horses
+                                        # per-race 進捗更新（フロントエンドに即反映）
+                                        job["progress"] = {
+                                            "done": _day_idx,
+                                            "total": total,
+                                            "message": (
+                                                f"{_day_idx}/{total}日処理中 | "
+                                                f"{counter['races']}レース・{counter['horses']}頭保存済み"
+                                            ),
+                                            "saved_races": counter["races"],
+                                            "saved_horses": counter["horses"],
+                                        }
+                                    logger.info(f"保存完了: {race_id} ({n_horses}頭)")
                                 else:
-                                    logger.warning(f"レースデータなし/出走馬なし: {race_id}")
-                            except Exception as exc:
-                                err_msg = f"{race_id}: {exc}"
-                                errors.append(err_msg)
-                                logger.error(f"_fetch_and_save 失敗 {err_msg}")
+                                    logger.warning(f"Supabase/SQLite両方失敗: {race_id}")
+                            else:
+                                logger.warning(f"レースデータなし/出走馬なし: {race_id}")
+                        except Exception as exc:
+                            err_msg = f"{race_id}: {exc}"
+                            errors.append(err_msg)
+                            logger.error(f"_fetch_and_save 失敗 {err_msg}")
 
-                    await asyncio.gather(*[_fetch_and_save(r) for r in race_ids])
-                    gc.collect()  # 1日分完了後に循環参照も強制回収
+                    for r in race_ids:
+                        await _fetch_and_save(r)
+                        gc.collect()  # 1レース完了ごとにGC（BS4オブジェクトの循環参照回収）
                     if errors:
                         logger.warning(f"エラー一覧: {errors[:5]}")
 
