@@ -146,33 +146,36 @@ export default function DataCollectionPage() {
       // ポーリング（3秒間隔）
       const pollInterval = 3000
       let completed = false
-      let notFoundCount = 0  // 連続 not_found カウンタ（Render再起動検知用）
+      let failCount = 0  // 連続失敗カウンタ（Render再起動~30秒をカバー: 3s×10=30s）
+      const MAX_FAIL = 10
 
       while (!completed) {
         await new Promise(resolve => setTimeout(resolve, pollInterval))
 
         const statusRes = await fetch(`/api/scrape/status/${job_id}`)
         if (!statusRes.ok) {
-          notFoundCount++
-          if (notFoundCount >= 3) {
-            throw new Error(`サーバーが再起動したためジョブ情報が失われました (job_id: ${job_id})。取得済みデータはSupabaseに保存されている可能性があります。`)
+          failCount++
+          console.warn(`ポーリング失敗 (${failCount}/${MAX_FAIL}) HTTP ${statusRes.status}`)
+          if (failCount >= MAX_FAIL) {
+            throw new Error(`サーバーが再起動しました (job_id: ${job_id})。\n取得済みデータはSupabaseに保存済みです。\n同じ期間で再実行すると取得済み日付は自動スキップされます。`)
           }
           continue
         }
-        notFoundCount = 0
+        failCount = 0
 
         const status = await statusRes.json()
         const prog = status.progress || {}
 
         // Render再起動によるジョブ失厄を検知
         if (status.status === 'not_found') {
-          notFoundCount++
-          if (notFoundCount >= 3) {
-            throw new Error(`サーバーが再起動しジョブ情報が失われました (job_id: ${job_id})。取得済みデータはSupabaseに保存されている可能性があります。`)
+          failCount++
+          console.warn(`ジョブが見つかりません (${failCount}/${MAX_FAIL})`)
+          if (failCount >= MAX_FAIL) {
+            throw new Error(`サーバーが再起動しジョブ情報が失われました (job_id: ${job_id})。\n取得済みデータはSupabaseに保存済みです。\n同じ期間で再実行すると取得済み日付は自動スキップされます。`)
           }
           continue
         }
-        notFoundCount = 0
+        failCount = 0
 
         if (prog.total > 0) {
           const pct = Math.min(95, Math.round((prog.done / prog.total) * 90) + 5)

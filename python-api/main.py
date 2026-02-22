@@ -3118,7 +3118,25 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
         total = len(dates)
         job["progress"] = {"done": 0, "total": total, "message": f"0/{total}日処理済み"}
 
-        # SoupStrainer導入後メモリ削減済のため接続プールを拡張して高速化
+        # --- Supabaseで取得済み日付を事前チェック（Render再起動後の再実行でレジューム） ---
+        scraped_dates: set = set()
+        if SUPABASE_ENABLED:
+            try:
+                _sb = get_supabase_client()
+                if _sb:
+                    _res = _sb.table("races_ultimate").select("race_id") \
+                        .gte("race_id", start_date) \
+                        .lte("race_id", end_date + "99") \
+                        .execute()
+                    for _row in (_res.data or []):
+                        scraped_dates.add(str(_row["race_id"])[:8])
+                    if scraped_dates:
+                        logger.info(f"取得済み日付: {len(scraped_dates)}日分をスキップ（レジューム機能）")
+                        job["progress"]["message"] = f"{len(scraped_dates)}日分は取得済み、スキップします"
+            except Exception as _e:
+                logger.warning(f"取得済み日付確認失敗（全日付を処理）: {_e}")
+
+
         # limit=20: 4レース並列×3馬×3req=36リク対応, limit_per_host=10: per-host詰まり解消
         timeout = aiohttp.ClientTimeout(total=25, connect=8)
         connector = aiohttp.TCPConnector(limit=20, limit_per_host=10)
@@ -3132,6 +3150,17 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
             for i, date in enumerate(dates):
                 list_url = f"https://db.netkeiba.com/race/list/{date}/"
                 errors: list = []  # try ブロック外で初期化 → exception 時の NameError 防止
+
+                # 取得済み日付はスキップ（Render再起動後の再実行でレジューム）
+                if date in scraped_dates:
+                    logger.info(f"{date}: Supabase取得済み → スキップ")
+                    job["progress"] = {
+                        "done": i + 1, "total": total,
+                        "message": f"{i+1}/{total}日処理済み / {counter['races']}レース保存 (スキップ含む)",
+                        "saved_races": counter["races"], "saved_horses": counter["horses"],
+                    }
+                    continue
+
                 try:
                     async with session.get(list_url) as resp:
                         if resp.status != 200:
@@ -3142,6 +3171,7 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
 
                     # BS4不要: 生HTMLにregexを直接適用（トップでimport済みreを使用）
                     race_ids = list(dict.fromkeys(re.findall(r'/race/(\d{12})/', html)))
+                    del html  # regex適用済み、HTMLは不要なので即解放（メモリ節約）
                     logger.info(f"{date}: {len(race_ids)}\u30ec\u30fc\u30b9ID\u691c\u51fa")
 
                     # ---- レースを2件ずつ並列処理（全コルーチン同時生成でOOM → チャンク化）----
@@ -3181,10 +3211,10 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
                             errors.append(err_msg)
                             logger.error(f"_fetch_and_save 失敗 {err_msg}")
 
-                    for ci in range(0, len(race_ids), 4):
-                        chunk = race_ids[ci:ci + 4]
+                    for ci in range(0, len(race_ids), 2):
+                        chunk = race_ids[ci:ci + 2]
                         await asyncio.gather(*[_fetch_and_save(r) for r in chunk])
-                        gc.collect()  # 4レース完了ごとにBS4循環参照を強制回収
+                        gc.collect()  # 2レース完了ごとにBS4循環参照を強制回収（OOM防止）
                     if errors:
                         logger.warning(f"エラー一覧: {errors[:5]}")
 
