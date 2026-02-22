@@ -3302,6 +3302,60 @@ async def train_job_status(job_id: str):
     }
 
 
+# ============================================
+# /api/export-db : Supabase → SQLite → ストリーム返却
+# ローカル検証用: GET /api/export-db?date=20260201
+# ============================================
+from fastapi.responses import StreamingResponse, FileResponse as _FR
+import tempfile as _tempfile, io as _io
+
+@app.get("/api/export-db")
+async def export_db(date: str = ""):
+    """指定日（date=YYYYMMDD）の race_id プレフィックスでデータを SQLite に書き出してダウンロード"""
+    if not SUPABASE_ENABLED or not get_supabase_client():
+        raise HTTPException(status_code=503, detail="Supabase 未接続")
+
+    import sqlite3 as _sql, json as _json_ex
+    client = get_supabase_client()
+
+    prefix_filter = date  # 空=全件
+
+    tmp_f = _tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp_path = tmp_f.name
+    tmp_f.close()
+
+    conn = _sql.connect(tmp_path)
+    cur = conn.cursor()
+    for sql in [
+        "CREATE TABLE races_ultimate (race_id TEXT PRIMARY KEY, data TEXT NOT NULL)",
+        "CREATE TABLE race_results_ultimate (race_id TEXT, data TEXT NOT NULL)",
+    ]:
+        cur.execute(sql)
+
+    # races_ultimate
+    q = client.table("races_ultimate").select("race_id,data")
+    if prefix_filter:
+        q = q.like("race_id", f"{prefix_filter}%")
+    races = q.execute().data
+    for r in races:
+        cur.execute("INSERT OR REPLACE INTO races_ultimate VALUES (?,?)", (r["race_id"], r["data"]))
+
+    # race_results_ultimate
+    race_ids = [r["race_id"] for r in races]
+    for rid in race_ids:
+        res = client.table("race_results_ultimate").select("race_id,data").eq("race_id", rid).execute()
+        for r2 in res.data:
+            cur.execute("INSERT INTO race_results_ultimate VALUES (?,?)", (r2["race_id"], r2["data"]))
+
+    conn.commit()
+    conn.close()
+
+    fname = f"keiba_ultimate_{prefix_filter or 'all'}.db"
+    return _FR(tmp_path, media_type="application/octet-stream",
+               filename=fname,
+               headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
 @app.post("/api/scrape", response_model=ScrapeResponse)
 async def scrape_data(request: ScrapeRequest):
     """
