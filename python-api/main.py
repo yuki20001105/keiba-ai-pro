@@ -2104,17 +2104,19 @@ def _extract_coat_color(soup: 'BeautifulSoup', html: str = '') -> str:
     return ''
 
 
-async def _scrape_race_full(session, race_id: str, date_hint: str = '') -> Optional[dict]:
+async def _scrape_race_full(session, race_id: str, date_hint: str = '', quick_mode: bool = False) -> Optional[dict]:
     """
     単一レースの完全データをnetkeiba.comから取得。
     race_results_ultimate / races_ultimate 形式で返す。
     date_hint: YYYYMMDD 形式の日付（リストページから判明した場合に渡す）
+    quick_mode: True=毛色SPフォールバックをスキップして高速化（バックフィルAPIで後処理）
     """
     import re
+    _quick_mode = quick_mode  # クロージャ内から参照
 
     url = f"https://db.netkeiba.com/race/{race_id}/"
     try:
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.05)
         async with session.get(url) as resp:
             if resp.status != 200:
                 logger.warning(f"HTTP {resp.status}: {url}")
@@ -2495,7 +2497,7 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '') -> Optio
                     prev = lap_cumulative[d]
                 break
 
-    # ---- 馬詳細スクレイピング（血統/通算成績/前走情報） 3並列 + バッチpedigreeキャッシュ ----
+    # ---- 馬詳細スクレイピング（血統/通算成績/前走情報） 10並列 + バッチpedigreeキャッシュ ----
     seen_horse_ids: set = set()
     unique_horses = []
     for h in horses:
@@ -2513,7 +2515,7 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '') -> Optio
         except Exception:
             pass
 
-    sem = asyncio.Semaphore(3)
+    sem = asyncio.Semaphore(10)
 
     async def _fetch_detail_limited(h):
         hid = h.get('horse_id', '')
@@ -2521,7 +2523,7 @@ async def _scrape_race_full(session, race_id: str, date_hint: str = '') -> Optio
         if not hid:
             return
         async with sem:
-            detail = await _scrape_horse_detail(session, hid, hurl, pedigree_cache=pedigree_batch)
+            detail = await _scrape_horse_detail(session, hid, hurl, pedigree_cache=pedigree_batch, quick_mode=_quick_mode)
             h.update(detail)
 
     await asyncio.gather(*[_fetch_detail_limited(h) for h in unique_horses])
@@ -2596,11 +2598,12 @@ def _parse_blood_table(blood_table, result: dict):
                 break
 
 
-async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedigree_cache: dict = None) -> dict:
+async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedigree_cache: dict = None, quick_mode: bool = False) -> dict:
     """
     馬の詳細ページをスクレイピング。
     血統(sire/dam/damsire)、プロフィール、通算成績、直近2走を取得。
     pedigree_cache: {horse_id: {sire,dam,damsire}} のバッチ取得済みキャッシュ（あれば Supabase 個別クエリ省略）
+    quick_mode: True=毛色SPフォールバックをスキップして高速化
     """
     import re
 
@@ -2629,7 +2632,7 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
             pedigree_result_b: dict = {}
             for attempt in range(3):
                 try:
-                    wait = 0.3 + attempt * 1.5
+                    wait = 0.1 + attempt * 1.0
                     await asyncio.sleep(wait)
                     async with session.get(ped_url_b) as ped_resp_b:
                         if ped_resp_b.status == 200:
@@ -2671,14 +2674,15 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
                 _nar_result = {'sire': 'unknown_local', 'dam': 'unknown_local', 'damsire': 'unknown_local'}
 
         # 3) sp.netkeiba で毛色 + プロフィール情報を取得（PC版 /horse/<id>/ は NAR馬に 400 を返すため）
+        # quick_mode=True のときはスキップ（バックフィルAPIで後処理）
         _sp_html_parsed: 'BeautifulSoup | None' = None
-        if not _nar_result.get('horse_coat_color'):
+        if not quick_mode and not _nar_result.get('horse_coat_color'):
             for _sp_url in [
                 f"https://db.sp.netkeiba.com/horse/{horse_id}/",
                 f"https://db.sp.netkeiba.com/horse/result/{horse_id}/",
             ]:
                 try:
-                    await asyncio.sleep(0.3)
+                    await asyncio.sleep(0.1)
                     async with session.get(_sp_url) as _sp_resp:
                         if _sp_resp.status == 200:
                             _sp_html_raw = (await _sp_resp.read()).decode('euc-jp', errors='ignore')
@@ -2693,9 +2697,9 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
                     pass
 
         # sp.netkeiba から生年月日・通算成績も取得（毛色と同じページから）
-        if _sp_html_parsed is None:
+        if not quick_mode and _sp_html_parsed is None:
             try:
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.1)
                 async with session.get(f"https://db.sp.netkeiba.com/horse/{horse_id}/") as _sp_resp2:
                     if _sp_resp2.status == 200:
                         _sp_html_parsed = BeautifulSoup(
@@ -2732,7 +2736,7 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
         url = url + '/'
     result = {}
     try:
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.05)
         async with session.get(url) as resp:
             if resp.status != 200:
                 return result
@@ -2815,14 +2819,14 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
         coat_fb = _extract_coat_color(soup, html)
         if coat_fb:
             result['horse_coat_color'] = coat_fb
-        else:
-            # sp.netkeiba の馬ページ/成績ページを試す
+        elif not quick_mode:
+            # quick_mode=False のときのみ sp.netkeiba フォールバック（遅い）
             for _sp_url in [
                 f"https://db.sp.netkeiba.com/horse/{horse_id}/",
                 f"https://db.sp.netkeiba.com/horse/result/{horse_id}/",
             ]:
                 try:
-                    await asyncio.sleep(0.3)
+                    await asyncio.sleep(0.1)
                     async with session.get(_sp_url) as _sp_resp:
                         if _sp_resp.status == 200:
                             _sp_html = (await _sp_resp.read()).decode('euc-jp', errors='ignore')
@@ -2868,7 +2872,7 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
             ped_url = f"https://db.netkeiba.com/horse/ped/{horse_id}/"
             for attempt in range(3):
                 try:
-                    wait = 0.2 + attempt * 1.5
+                    wait = 0.05 + attempt * 1.0
                     await asyncio.sleep(wait)
                     async with session.get(ped_url) as ped_resp:
                         if ped_resp.status == 200:
@@ -2909,7 +2913,7 @@ async def _scrape_horse_detail(session, horse_id: str, horse_url: str = '', pedi
     # ===== 過去レース結果（最新2走）: /horse/result/{horse_id}/ から取得 =====
     result_url = f"https://db.netkeiba.com/horse/result/{horse_id}/"
     try:
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.05)
         async with session.get(result_url) as res_resp:
             if res_resp.status == 200:
                 res_content = await res_resp.read()
@@ -3102,9 +3106,9 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
         total = len(dates)
         job["progress"] = {"done": 0, "total": total, "message": f"0/{total}日処理済み"}
 
-        # 接続制限を緩和（5並列レース × 3並列馬 = 最大15同時接続）
-        timeout = aiohttp.ClientTimeout(total=30)
-        connector = aiohttp.TCPConnector(limit=20, limit_per_host=10)
+        # 接続制限を拡張（8並列レース × 10並列馬 = 最大80同時接続、実効はlimit_per_hostで制御）
+        timeout = aiohttp.ClientTimeout(total=20, connect=5)
+        connector = aiohttp.TCPConnector(limit=60, limit_per_host=25)
         # カウンタはロック保護
         counter = {"races": 0, "horses": 0}
         counter_lock = asyncio.Lock()
@@ -3116,7 +3120,7 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
                 list_url = f"https://db.netkeiba.com/race/list/{date}/"
                 errors: list = []  # try ブロック外で初期化 → exception 時の NameError 防止
                 try:
-                    await asyncio.sleep(0.2)
+                    await asyncio.sleep(0.05)
                     async with session.get(list_url) as resp:
                         if resp.status != 200:
                             continue
@@ -3132,13 +3136,13 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str):
                             race_ids.append(m.group(1))
                     logger.info(f"{date}: {len(race_ids)}\u30ec\u30fc\u30b9ID\u691c\u51fa")
 
-                    # ---- 5並列でレースを処理 ----
-                    race_sem = asyncio.Semaphore(5)
+                    # ---- 8並列でレースを処理 ----
+                    race_sem = asyncio.Semaphore(8)
 
                     async def _fetch_and_save(race_id, _date=date, _day_idx=i):
                         async with race_sem:
                             try:
-                                race_data = await _scrape_race_full(session, race_id, date_hint=_date)
+                                race_data = await _scrape_race_full(session, race_id, date_hint=_date, quick_mode=True)
                                 if race_data and race_data.get('horses'):
                                     saved = _save_race_to_ultimate_db(race_data, ULTIMATE_DB, overwrite=True)
                                     if saved:
