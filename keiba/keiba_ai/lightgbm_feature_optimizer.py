@@ -354,6 +354,11 @@ class LightGBMFeatureOptimizer:
             'prev_race_venue',        # 前走競馬場名文字列
             'prev2_race_venue',       # 前々走競馬場名文字列
             'prev_race_date',         # 前走日付（days_since_last_raceに変換済み）
+            'prev_race_surface',      # 前走馬場（文字列、変換不要）
+            'prev2_race_surface',     # 前々走馬場（文字列）
+            'prev2_race_date',        # 前々走日付（文字列）
+            'finish_time',            # 走破タイム文字列（time_secondsに変換済み）
+            'race_name',              # レース名文字列（予測に不要）
         ]
         
         for col in unnecessary_cols:
