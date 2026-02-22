@@ -3166,28 +3166,30 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str, force_res
         _MIN_RACES_PER_DAY = 6
         if SUPABASE_ENABLED and not force_rescrape:
             try:
-                _sb = get_supabase_client()
-                if _sb:
-                    _res = _sb.table("races_ultimate").select("race_id") \
+                # asyncio.to_thread で包む: 同期ブロッキング呼び出しがイベントループを止めないように
+                def _fetch_scraped_dates():
+                    _sb2 = get_supabase_client()
+                    if not _sb2:
+                        return {}
+                    _r = _sb2.table("races_ultimate").select("race_id") \
                         .gte("race_id", start_date) \
                         .lte("race_id", end_date + "99") \
                         .execute()
-                    # 日付ごとのレース数をカウント
-                    _date_count: dict = {}
-                    for _row in (_res.data or []):
+                    _dc: dict = {}
+                    for _row in (_r.data or []):
                         _d = str(_row["race_id"])[:8]
-                        _date_count[_d] = _date_count.get(_d, 0) + 1
-                    # _MIN_RACES_PER_DAY 件以上ある日だけスキップ対象
-                    for _d, _cnt in _date_count.items():
-                        if _cnt >= _MIN_RACES_PER_DAY:
-                            scraped_dates.add(_d)
-                    if scraped_dates:
-                        logger.info(f"取得済み日付: {len(scraped_dates)}日分をスキップ（各{_MIN_RACES_PER_DAY}件以上確認）")
-                        job["progress"]["message"] = f"{len(scraped_dates)}日分は取得済み、スキップします"
-                    # 部分取得の日がある場合はログに記録
-                    _partial = {d: c for d, c in _date_count.items() if c < _MIN_RACES_PER_DAY}
-                    if _partial:
-                        logger.info(f"部分取得日（再スクレイピング対象）: {list(_partial.items())[:5]}")
+                        _dc[_d] = _dc.get(_d, 0) + 1
+                    return _dc
+                _date_count = await asyncio.to_thread(_fetch_scraped_dates)
+                for _d, _cnt in _date_count.items():
+                    if _cnt >= _MIN_RACES_PER_DAY:
+                        scraped_dates.add(_d)
+                if scraped_dates:
+                    logger.info(f"取得済み日付: {len(scraped_dates)}日分をスキップ（各{_MIN_RACES_PER_DAY}件以上確認）")
+                    job["progress"]["message"] = f"{len(scraped_dates)}日分は取得済み、スキップします"
+                _partial = {d: c for d, c in _date_count.items() if c < _MIN_RACES_PER_DAY}
+                if _partial:
+                    logger.info(f"部分取得日（再スクレイピング対象）: {list(_partial.items())[:5]}")
             except Exception as _e:
                 logger.warning(f"取得済み日付確認失敗（全日付を処理）: {_e}")
 
@@ -3219,6 +3221,13 @@ async def _run_scrape_job(job_id: str, start_date: str, end_date: str, force_res
                 try:
                     async with session.get(list_url) as resp:
                         if resp.status != 200:
+                            # continue ではなく明示的スキップ: continue はループ末尾の進捗更新も飛ばしてしまう
+                            logger.warning(f"{date}: レース一覧 HTTP {resp.status} → スキップ")
+                            job["progress"] = {
+                                "done": i + 1, "total": total,
+                                "message": f"{i+1}/{total}日処理済み / {counter['races']}レース保存 (HTTP {resp.status}スキップ)",
+                                "saved_races": counter["races"], "saved_horses": counter["horses"],
+                            }
                             continue
                         content = await resp.read()
                         html = content.decode('euc-jp', errors='ignore')
