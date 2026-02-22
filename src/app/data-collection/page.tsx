@@ -27,6 +27,12 @@ export default function DataCollectionPage() {
   const [collectedRaces, setCollectedRaces] = useState<any[]>([])
   const [selectedRaceDetail, setSelectedRaceDetail] = useState<any>(null)
 
+  // プロファイリング
+  const [profilingJobId, setProfilingJobId] = useState<string | null>(null)
+  const [profilingStatus, setProfilingStatus] = useState<'idle' | 'running' | 'completed' | 'error'>('idle')
+  const [profilingMessage, setProfilingMessage] = useState('')
+  const [useOptimized, setUseOptimized] = useState(true)
+
   useEffect(() => {
     loadStats()
   }, [])
@@ -182,6 +188,40 @@ export default function DataCollectionPage() {
       setBatchProgress({ current: 0, total: 100, message: 'エラーが発生しました' })
     } finally {
       setBatchLoading(false)
+    }
+  }
+
+  const handleStartProfiling = async () => {
+    setProfilingStatus('running')
+    setProfilingMessage('開始中...')
+    setProfilingJobId(null)
+    try {
+      const res = await fetch('/api/profiling', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ use_optimized: useOptimized }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const { job_id } = await res.json()
+      setProfilingJobId(job_id)
+      // ポーリング（5秒間隔）
+      const poll = setInterval(async () => {
+        try {
+          const sr = await fetch(`/api/profiling/status/${job_id}`)
+          const st = await sr.json()
+          setProfilingMessage(st.message || '')
+          if (st.status === 'completed') {
+            clearInterval(poll)
+            setProfilingStatus('completed')
+          } else if (st.status === 'error') {
+            clearInterval(poll)
+            setProfilingStatus('error')
+          }
+        } catch { /* ignore poll error */ }
+      }, 5000)
+    } catch (e: any) {
+      setProfilingStatus('error')
+      setProfilingMessage(e.message)
     }
   }
 
@@ -489,6 +529,66 @@ export default function DataCollectionPage() {
             </div>
           </div>
         )}
+
+        {/* プロファイリングレポート */}
+        <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-6">
+          <h2 className="text-sm font-medium text-[#888] mb-4">特徴量プロファイリングレポート</h2>
+          <p className="text-xs text-[#555] mb-4">取得済みデータに特徴量エンジニアリングを適用し、ydata-profiling で可視化します。</p>
+
+          <div className="flex items-center gap-3 mb-4">
+            <label className="flex items-center gap-2 text-xs text-[#888] cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={useOptimized}
+                onChange={e => setUseOptimized(e.target.checked)}
+                className="w-4 h-4 accent-white"
+              />
+              LightGBM最適化済み（リーク除去・変換適用）
+            </label>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleStartProfiling}
+              disabled={profilingStatus === 'running'}
+              className={`px-5 py-2.5 rounded text-sm font-medium transition-colors ${
+                profilingStatus === 'running'
+                  ? 'bg-[#222] text-[#555] cursor-not-allowed'
+                  : 'bg-white text-black hover:bg-[#eee]'
+              }`}
+            >
+              {profilingStatus === 'running' ? (
+                <span className="flex items-center gap-2">
+                  <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>
+                  生成中...
+                </span>
+              ) : 'レポート生成'}
+            </button>
+
+            {profilingStatus === 'completed' && profilingJobId && (
+              <a
+                href={`/api/profiling/html/${profilingJobId}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-5 py-2.5 rounded text-sm font-medium bg-[#1a3a1a] text-[#4ade80] border border-[#2a5a2a] hover:bg-[#1f4a1f] transition-colors"
+              >
+                レポートを開く →
+              </a>
+            )}
+          </div>
+
+          {profilingStatus !== 'idle' && (
+            <p className={`mt-3 text-xs ${
+              profilingStatus === 'error' ? 'text-red-400' :
+              profilingStatus === 'completed' ? 'text-[#4ade80]' : 'text-[#888]'
+            }`}>
+              {profilingMessage}
+            </p>
+          )}
+        </div>
 
         <div className="p-5 bg-[#111] border border-[#1e1e1e] rounded-lg flex items-center justify-between gap-4">
           <div>
