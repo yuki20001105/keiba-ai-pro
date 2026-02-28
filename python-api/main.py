@@ -93,6 +93,11 @@ app.include_router(profiling.router)
 app.include_router(internal.router)
 
 
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
 if __name__ == "__main__":
     import uvicorn
 
