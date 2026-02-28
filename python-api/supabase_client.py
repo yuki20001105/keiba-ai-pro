@@ -41,8 +41,44 @@ def get_client():
 # レースデータ保存・取得
 # ─────────────────────────────────────────
 
+# ── 変換ヘルパー ───────────────────────────────────────
+
+import re as _re
+
+
+def _to_int(v) -> Optional[int]:
+    if v is None or v == "" or v == "---":
+        return None
+    try:
+        return int(float(str(v)))
+    except (ValueError, TypeError):
+        return None
+
+
+def _to_float(v) -> Optional[float]:
+    if v is None or v == "" or v == "---":
+        return None
+    try:
+        return float(str(v))
+    except (ValueError, TypeError):
+        return None
+
+
+def _id_from_url(url: Optional[str]) -> Optional[str]:
+    """正規表現で URL 末尾の ID 文字列を抽出"""
+    if not url:
+        return None
+    m = _re.search(r"/([^/]+)/?$", url)
+    return m.group(1) if m else None
+
+
 def save_race_to_supabase(race_data: dict) -> bool:
-    """スクレイピング結果を Supabase に保存"""
+    """スクレイピング結果を Supabase に保存
+
+    保存先（両方根㑻ませる 渡移期偵にjsonまㄅ1テーブル）:
+      1. 正規化テーブル（races / entries / results / horse_details / past_performances / payouts）
+      2. blob テーブル（races_ultimate / race_results_ultimate）← sync_supabase_to_sqlite の互换維持用
+    """
     client = get_client()
     if not client:
         return False
@@ -52,22 +88,129 @@ def save_race_to_supabase(race_data: dict) -> bool:
     race_id = race_info["race_id"]
 
     try:
-        # races_ultimate にアップサート
-        client.table("races_ultimate").upsert({
+        # ── 1. races ──────────────────────────────────────────
+        race_row = {
             "race_id": race_id,
-            "data": json.dumps(race_info, ensure_ascii=False)
-        }).execute()
+            "race_name": race_info.get("race_name"),
+            "post_time": race_info.get("post_time"),
+            "track_type": race_info.get("track_type"),
+            "distance": _to_int(race_info.get("distance")),
+            "course_direction": race_info.get("course_direction"),
+            "weather": race_info.get("weather"),
+            "field_condition": race_info.get("field_condition"),
+            "kai": _to_int(race_info.get("kai")),
+            "venue": race_info.get("venue"),
+            "day": _to_int(race_info.get("day")),
+            "race_class": race_info.get("race_class"),
+            "horse_count": _to_int(race_info.get("num_horses")),
+            "market_entropy": _to_float(race_info.get("market_entropy")),
+            "top3_probability": _to_float(race_info.get("top3_probability")),
+            "kaisai_date": race_info.get("date"),
+            "source": "scraping",
+        }
+        client.table("races").upsert(race_row).execute()
 
-        # race_results_ultimate: 既存削除→挿入
-        client.table("race_results_ultimate").delete().eq("race_id", race_id).execute()
-        rows = [
-            {"race_id": race_id, "data": json.dumps(h, ensure_ascii=False)}
-            for h in horses
-        ]
-        if rows:
-            client.table("race_results_ultimate").insert(rows).execute()
+        # ── 2. entries / results / horse_details / past_performances ──
+        for h in horses:
+            horse_id = _id_from_url(h.get("horse_url")) or h.get("horse_name")
+            jockey_id = _id_from_url(h.get("jockey_url")) or h.get("jockey_name")
+            trainer_id = _id_from_url(h.get("trainer_url")) or h.get("trainer_name")
 
-        logger.info(f"Supabase 保存完了: {race_id} ({len(horses)}頭)")
+            # entries
+            entry_row = {
+                "race_id": race_id,
+                "horse_id": horse_id,
+                "horse_name": h.get("horse_name"),
+                "horse_no": _to_int(h.get("horse_number")),
+                "bracket": _to_int(h.get("bracket_number")),
+                "sex": h.get("sex"),
+                "age": _to_int(h.get("age")),
+                "sex_age": h.get("sex_age"),
+                "handicap": _to_float(h.get("jockey_weight")),
+                "jockey_id": jockey_id,
+                "jockey_name": h.get("jockey_name"),
+                "trainer_id": trainer_id,
+                "trainer_name": h.get("trainer_name"),
+                "weight_kg": _to_int(h.get("weight_kg")),
+                "weight_change": _to_int(h.get("weight_change")),
+                "odds": _to_float(h.get("odds") or h.get("win_odds")),
+                "popularity": _to_int(h.get("popularity")),
+            }
+            client.table("entries").upsert(entry_row).execute()
+
+            # results (着順があるもののみ)
+            finish = _to_int(h.get("finish_position"))
+            if finish is not None:
+                result_row = {
+                    "race_id": race_id,
+                    "horse_id": horse_id,
+                    "finish": finish,
+                    "horse_number": _to_int(h.get("horse_number")),
+                    "bracket_number": _to_int(h.get("bracket_number")),
+                    "time": h.get("finish_time"),
+                    "margin": h.get("margin"),
+                    "last3f": _to_float(h.get("last_3f")),
+                    "pass_order": h.get("corner_positions"),
+                    "odds": _to_float(h.get("odds") or h.get("win_odds")),
+                    "popularity": _to_int(h.get("popularity")),
+                }
+                client.table("results").upsert(result_row).execute()
+
+            # horse_details (マスタテーブル)
+            if horse_id:
+                horse_row = {
+                    "horse_id": horse_id,
+                    "horse_name": h.get("horse_name"),
+                    "total_runs": _to_int(h.get("horse_total_runs")),
+                    "total_wins": _to_int(h.get("horse_total_wins")),
+                    "total_prize_money": _to_float(h.get("horse_total_prize_money")),
+                    "sire": h.get("sire"),
+                    "dam": h.get("dam"),
+                    "damsire": h.get("damsire"),
+                }
+                client.table("horse_details").upsert(horse_row).execute()
+
+            # past_performances
+            if h.get("prev_race_date") or h.get("prev_race_distance"):
+                pp_row = {
+                    "race_id": race_id,
+                    "horse_id": horse_id,
+                    "prev_race_date": h.get("prev_race_date"),
+                    "prev_race_venue": h.get("prev_race_venue"),
+                    "prev_race_distance": _to_int(h.get("prev_race_distance")),
+                    "prev_race_finish": _to_int(h.get("prev_race_finish")),
+                    "distance_change": _to_int(h.get("distance_change")),
+                }
+                client.table("past_performances").upsert(pp_row).execute()
+
+        # ── 3. payouts ──────────────────────────────────────────
+        for p in race_data.get("payouts", []):
+            payout_row = {
+                "race_id": race_id,
+                "bet_type": p.get("bet_type"),
+                "combination": p.get("combination"),
+                "payout": _to_int(p.get("payout")),
+                "popularity": _to_int(p.get("popularity")),
+            }
+            client.table("payouts").insert(payout_row).execute()
+
+        # ── 4. blob テーブル（sync_supabase_to_sqlite の互换維持）─────────
+        try:
+            client.table("races_ultimate").upsert({
+                "race_id": race_id,
+                "data": json.dumps(race_info, ensure_ascii=False),
+            }).execute()
+            client.table("race_results_ultimate").delete().eq("race_id", race_id).execute()
+            blob_rows = [
+                {"race_id": race_id, "data": json.dumps(h, ensure_ascii=False)}
+                for h in horses
+            ]
+            if blob_rows:
+                client.table("race_results_ultimate").insert(blob_rows).execute()
+        except Exception as blob_err:
+            logger.warning(f"blob テーブル書き込み失敗（非致命的）: {blob_err}")
+
+        logger.info(f"Supabase 正規化保存完了: {race_id} ({len(horses)}頭)")
         return True
 
     except Exception as e:
@@ -196,13 +339,14 @@ STORAGE_BUCKET = "models"
 
 
 def upload_model_to_supabase(model_path: Path, model_id: str, metadata: dict) -> bool:
-    """モデルファイルを Supabase Storage にアップロード"""
+    """モデルファイルを Supabase Storage にアップロード（{user_id}/{model_id}.joblib）"""
     client = get_client()
     if not client:
         return False
 
     try:
-        storage_path = f"{model_id}.joblib"
+        user_id = metadata.get("user_id") or "shared"
+        storage_path = f"{user_id}/{model_id}.joblib"
         with open(model_path, "rb") as f:
             client.storage.from_(STORAGE_BUCKET).upload(
                 storage_path,
@@ -213,11 +357,12 @@ def upload_model_to_supabase(model_path: Path, model_id: str, metadata: dict) ->
         # モデルメタデータを Supabase テーブルに保存
         client.table("model_metadata").upsert({
             "model_id": model_id,
+            "user_id": user_id,
             "storage_path": storage_path,
             "metadata": json.dumps(metadata, ensure_ascii=False)
         }).execute()
 
-        logger.info(f"モデルを Supabase Storage にアップロード: {model_id}")
+        logger.info(f"モデルを Supabase Storage にアップロード: {storage_path}")
         return True
 
     except Exception as e:
@@ -226,18 +371,26 @@ def upload_model_to_supabase(model_path: Path, model_id: str, metadata: dict) ->
 
 
 def download_model_from_supabase(model_id: str, dest_path: Path) -> bool:
-    """Supabase Storage からモデルをダウンロード"""
+    """Supabase Storage からモデルをダウンロード（metadataのstorage_pathを優先使用）"""
     client = get_client()
     if not client:
         return False
 
     try:
-        storage_path = f"{model_id}.joblib"
+        # model_metadata から storage_path を取得（user_id prefix 対応）
+        storage_path = f"{model_id}.joblib"  # fallback
+        try:
+            row = client.table("model_metadata").select("storage_path").eq("model_id", model_id).single().execute()
+            if row.data and row.data.get("storage_path"):
+                storage_path = row.data["storage_path"]
+        except Exception:
+            pass
+
         data = client.storage.from_(STORAGE_BUCKET).download(storage_path)
         dest_path.parent.mkdir(parents=True, exist_ok=True)
         with open(dest_path, "wb") as f:
             f.write(data)
-        logger.info(f"モデルを Supabase からダウンロード: {model_id}")
+        logger.info(f"モデルを Supabase からダウンロード: {storage_path}")
         return True
 
     except Exception as e:
@@ -272,7 +425,14 @@ def delete_model_from_supabase(model_id: str) -> bool:
         return False
 
     try:
-        storage_path = f"{model_id}.joblib"
+        # metadata から storage_path を取得（user_id prefix 対応）
+        storage_path = f"{model_id}.joblib"  # fallback
+        try:
+            row = client.table("model_metadata").select("storage_path").eq("model_id", model_id).single().execute()
+            if row.data and row.data.get("storage_path"):
+                storage_path = row.data["storage_path"]
+        except Exception:
+            pass
         client.storage.from_(STORAGE_BUCKET).remove([storage_path])
         client.table("model_metadata").delete().eq("model_id", model_id).execute()
         logger.info(f"モデルを Supabase から削除: {model_id}")
