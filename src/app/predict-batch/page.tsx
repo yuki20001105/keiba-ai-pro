@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { Logo } from '@/components/Logo'
+import { supabase } from '@/lib/supabase'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -39,16 +40,32 @@ export default function PredictBatchPage() {
     setPredictions([])
     setRecommendations(null)
 
+    // Supabase セッショントークン取得
+    const { data: { session } } = await supabase.auth.getSession()
+    const authHeaders: Record<string, string> = session?.access_token
+      ? { Authorization: `Bearer ${session.access_token}` }
+      : {}
+
     try {
       const res = await fetch(`/api/analyze-race`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({ race_id: raceId, model_id: modelId, bankroll: 10000, risk_mode: 'balanced', ultimate_mode: true })
       })
       if (!res.ok) { const e = await res.json(); throw new Error(e.detail || `HTTP ${res.status}`) }
       const data = await res.json()
       setPredictions(data.predictions || [])
-      setRecommendations(data.recommendations || null)
+      // API returns `recommendation` (singular dict) + `race_level` at root level
+      const rec = data.recommendation
+      setRecommendations(rec ? {
+        race_level: data.race_level ?? 'normal',
+        unit_price: rec.unit_price,
+        purchase_count: rec.purchase_count,
+        total_cost: rec.total_cost,
+        bet_type: data.best_bet_type,
+        strategy: rec.strategy_explanation,
+        kelly_amount: rec.kelly_recommended_amount,
+      } : null)
     } catch (e: any) {
       alert(`予測エラー: ${e.message}`)
     } finally {
@@ -125,7 +142,7 @@ export default function PredictBatchPage() {
                     <td className="px-4 py-3 pl-5 font-bold">{p.horse_no}</td>
                     <td className="px-4 py-3">{p.horse_name}</td>
                     <td className="px-4 py-3 text-[#888]">{p.jockey_name}</td>
-                    <td className="px-4 py-3 text-[#4ade80] font-medium">{(p.probability * 100).toFixed(1)}%</td>
+                    <td className="px-4 py-3 text-[#4ade80] font-medium">{((p.win_probability ?? p.probability ?? 0) * 100).toFixed(1)}%</td>
                     <td className="px-4 py-3 text-[#888]">{p.odds}</td>
                   </tr>
                 ))}
@@ -137,20 +154,29 @@ export default function PredictBatchPage() {
         {recommendations && (
           <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-6">
             <div className="text-sm font-medium text-[#888] mb-4">購入推奨</div>
-            <div className="grid grid-cols-3 gap-3 mb-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
               <div className="bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg p-4">
                 <div className="text-xs text-[#555] mb-1">レースレベル</div>
-                <div className="font-bold">{recommendations.race_level}</div>
+                <div className={`font-bold ${recommendations.race_level === 'decisive' ? 'text-yellow-400' : recommendations.race_level === 'skip' ? 'text-[#555]' : 'text-white'}`}>
+                  {recommendations.race_level === 'decisive' ? '🔥 勝負' : recommendations.race_level === 'skip' ? '見送り' : '通常'}
+                </div>
               </div>
               <div className="bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg p-4">
-                <div className="text-xs text-[#555] mb-1">推奨単価</div>
-                <div className="font-bold">¥{recommendations.unit_price}</div>
-              </div>
-              <div className="bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg p-4">
-                <div className="text-xs text-[#555] mb-1">券種</div>
+                <div className="text-xs text-[#555] mb-1">推奨券種</div>
                 <div className="font-bold">{recommendations.bet_type}</div>
               </div>
+              <div className="bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg p-4">
+                <div className="text-xs text-[#555] mb-1">単価 × 点数</div>
+                <div className="font-bold">¥{recommendations.unit_price} × {recommendations.purchase_count}点</div>
+              </div>
+              <div className="bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg p-4">
+                <div className="text-xs text-[#555] mb-1">合計投資額</div>
+                <div className="font-bold text-[#4ade80]">¥{recommendations.total_cost?.toLocaleString()}</div>
+              </div>
             </div>
+            {recommendations.kelly_amount != null && (
+              <div className="mb-3 text-xs text-[#666]">ケリー推奨額: ¥{recommendations.kelly_amount?.toLocaleString()}</div>
+            )}
             <p className="text-sm text-[#888]">{recommendations.strategy}</p>
           </div>
         )}

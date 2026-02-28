@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { Logo } from '@/components/Logo'
+import { supabase } from '@/lib/supabase'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -20,6 +21,9 @@ export default function TrainPage() {
   const [trainResult, setTrainResult] = useState<any>(null)
   const [models, setModels] = useState<any[]>([])
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [jobId, setJobId] = useState<string | null>(null)
+  const [jobStatus, setJobStatus] = useState<string>('')
+  const [jobProgress, setJobProgress] = useState<string>('')
 
   useEffect(() => { loadModels() }, [])
 
@@ -44,13 +48,24 @@ export default function TrainPage() {
     }
   }
 
-  const handleTrain = async () => {    setLoading(true)
+  const handleTrain = async () => {
+    setLoading(true)
     setTrainResult(null)
+    setJobId(null)
+    setJobStatus('queued')
+    setJobProgress('ジョブ起動中...')
+
+    // Supabase セッショントークン取得
+    const { data: { session } } = await supabase.auth.getSession()
+    const authHeaders: Record<string, string> = session?.access_token
+      ? { Authorization: `Bearer ${session.access_token}` }
+      : {}
 
     try {
-      const response = await fetch(`/api/ml/train`, {
+      // 1. 非同期ジョブ起動（すぐに job_id が返る）
+      const startRes = await fetch(`/api/ml/train/start`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({
           target, model_type: modelType, test_size: testSize, cv_folds: cvFolds,
           use_sqlite: true, use_optimizer: modelType === 'lightgbm',
@@ -61,18 +76,50 @@ export default function TrainPage() {
         })
       })
 
-      if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.detail || `HTTP ${response.status}`)
+      if (!startRes.ok) {
+        const errorData = await startRes.json()
+        throw new Error(errorData.detail || errorData.error || `HTTP ${startRes.status}`)
       }
 
-      const data = await response.json()
-      setTrainResult(data)
-      loadModels()
+      const startData = await startRes.json()
+      const newJobId = startData.job_id
+      setJobId(newJobId)
+      setJobStatus('running')
+      setJobProgress('学習開始...')
+
+      // 2. 3秒ごとにステータスをポーリング
+      const pollInterval = setInterval(async () => {
+        try {
+          const statusRes = await fetch(`/api/ml/train/status/${newJobId}`)
+          if (!statusRes.ok) return
+          const statusData = await statusRes.json()
+
+          setJobStatus(statusData.status)
+          setJobProgress(statusData.progress || '')
+
+          if (statusData.status === 'completed') {
+            clearInterval(pollInterval)
+            setLoading(false)
+            const result = statusData.result || {}
+            setTrainResult({
+              model_id: result.model_id,
+              auc: result.metrics?.auc,
+              logloss: result.metrics?.logloss,
+              n_rows: result.data_count,
+              message: result.message,
+            })
+            loadModels()
+          } else if (statusData.status === 'error') {
+            clearInterval(pollInterval)
+            setLoading(false)
+            alert(`学習エラー: ${statusData.error}`)
+          }
+        } catch {/* ポーリング中の一時エラーは無視 */}
+      }, 3000)
+
     } catch (error: any) {
-      alert(`学習エラー: ${error.message}`)
-    } finally {
       setLoading(false)
+      alert(`学習エラー: ${error.message}`)
     }
   }
 
@@ -191,8 +238,19 @@ export default function TrainPage() {
             disabled={loading}
             className="w-full py-3 bg-white text-black font-medium rounded-lg hover:bg-[#eee] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            {loading ? '学習中...' : '学習開始'}
+            {loading ? (jobProgress || '学習中...') : '学習開始'}
           </button>
+
+          {loading && jobId && (
+            <div className="mt-3 p-4 bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg space-y-2">
+              <div className="flex items-center gap-2">
+                <span className="inline-block w-2 h-2 rounded-full bg-yellow-400 animate-pulse" />
+                <span className="text-xs text-[#888]">ジョブID: <span className="font-mono text-[#555]">{jobId.slice(0, 8)}...</span></span>
+              </div>
+              <div className="text-xs text-[#666]">{jobProgress}</div>
+              <div className="text-xs text-[#444]">学習完了まで1〜3分かかります。このページを閉じないでください。</div>
+            </div>
+          )}
         </div>
 
         {trainResult && (

@@ -383,7 +383,7 @@ async def _run_train_job(job_id: str, request: TrainRequest) -> None:
     job["status"] = "running"
     try:
         job["progress"] = "学習データ読み込み中..."
-        train_result = await train_model(request)
+        train_result = await train_model(request, current_user={"user_id": "background-job"})
         job["status"] = "completed"
         job["result"] = train_result.dict()
         job["progress"] = "完了"

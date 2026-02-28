@@ -445,7 +445,11 @@ class RaceAnalyzer:
         
         if difficulty_score >= 0.7 and max_ev >= 3.0:
             recommended_action = '勝負'
-        elif max_ev < 1.2 or difficulty_score < 0.3:
+        elif max_ev < 1.2:
+            # 期待値が低すぎる場合は見送り
+            recommended_action = '見送り'
+        elif difficulty_score < 0.15 and max_ev < 1.5:
+            # 予測が分散していて期待値も低い場合のみ見送り（閾値を0.3→0.15に緩和）
             recommended_action = '見送り'
         else:
             recommended_action = '通常'
