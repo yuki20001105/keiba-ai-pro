@@ -40,7 +40,10 @@ class LightGBMFeatureOptimizer:
         """
         df = df.copy()
         self.categorical_features = []
-        
+
+        # ===== 0. 欠損値補完（学習・推論共通） =====
+        df = self._fill_missing_values(df)
+
         print("\n" + "="*80)
         print("【LightGBM特徴量最適化】学習モード")
         print("="*80)
@@ -342,6 +345,8 @@ class LightGBMFeatureOptimizer:
             'horse_breeding_farm',    # 牧場名
             'horse_birth_date',       # 生年月日（年齢で代替）
             'horse_coat_color',       # 毛色（coat_colorに統一）
+            'surface_ja',             # surface日本語版（surface列に統合済み）
+            'surface_en',             # surface英語版（コースマスター参照用の中間列）
             'sex_age',                # 性齢文字列（sex/ageに分解済み）
             'race_date',              # レース日付（race_idから抽出済み）
             'created_at',             # タイムスタンプ
@@ -352,13 +357,60 @@ class LightGBMFeatureOptimizer:
             'prev_race_venue',        # 前走競馬場名文字列
             'prev2_race_venue',       # 前々走競馬場名文字列
             'prev_race_date',         # 前走日付（days_since_last_raceに変換済み）
+            # prev_race_surface/prev2_race_surface: _add_feature_transforms で
+            # is_surface_change を生成してから削除するで、ここでは除外
+            'prev2_race_date',        # 前々走日付（文字列）
+            'finish_time',            # 走破タイム文字列（time_secondsに変換済み）
+            'race_name',              # レース名文字列（予測に不要）
+
+            # ──── 予測時リーク（当該レース結果データ）────────────────────────
+            # time_seconds は finish_time を秒数変換したもの = 当該レース走破タイム
+            # → 予測前には存在しないデータのため、モデルに含めると完全なリーク
+            'time_seconds',
+
+            # ──── 極端クラス不均衡（ほぼ定数 → モデルにとってノイズ）────────
+            # horse_distance_win_rate: 1493件=0.0, 2件=1.0 (99.9%同一クラス)
+            'horse_distance_win_rate',
+            # horse_distance_avg_finish: 98.5%がゼロ
+            'horse_distance_avg_finish',
+            # distance_increased: 1482件=0, 13件=1 (99.1%同一) → distance_change で代替可
+            'distance_increased',
+            # distance_decreased: 1437件=0, 58件=1 (96.1%同一) → distance_change で代替可
+            'distance_decreased',
+
+            # ──── 重複カラム（同一情報の二重表現）───────────────────────────
+            # weight_kg == horse_weight (完全に同一: mean=587, min=366, max=1218)
+            'weight_kg',
+            # weight_change == horse_weight_change (完全に同一)
+            'weight_change',
+
+            # ──── 当該レース結果データ（予測前には存在しない完完なリーク）───────
+            # --------------------------------------------------------------
+            # corner_1~4: 当該レースで各コーナー通過時の順位 → レース途中情報=リーク
+            'corner_1', 'corner_2', 'corner_3', 'corner_4',
+            # corner派生: 当該レースの平均位置・分散・最終コーナー位置 → 同上リーク
+            'corner_position_avg', 'corner_position_variance',
+            'last_corner_position', 'position_change',
+            # last_3f系: 当該レースの上がり3F順位・タイム・正規化 → リーク
+            'last_3f_rank', 'last_3f_rank_normalized', 'last_3f_time',
+            # prev_race_surface/prev2_race_surface は _add_feature_transforms 内で
+            # is_surface_change を生成した後に削除するため、ここには含めない
         ]
         
         for col in unnecessary_cols:
             if col in df.columns:
                 print(f"  ✓ {col} → 削除")
                 df = df.drop(col, axis=1)
-        
+
+        # sex_牡/sex_牝/sex_セ ダミーは sex_encoded と重複するため削除
+        sex_dummy_cols = [c for c in df.columns if c.startswith('sex_') and c != 'sex_encoded']
+        if sex_dummy_cols:
+            df = df.drop(columns=sex_dummy_cols, errors='ignore')
+            print(f"  ✓ 性別ダミー（重複）削除: {sex_dummy_cols}")
+
+        # ===== 10. 特徴量変換（対数変換・ベイズ平滑化・信頼度フラグ）======
+        df = self._add_feature_transforms(df)
+
         # ===== 欠損率が高すぎる列を除去（閾値: 90%以上欠損） =====
         # 全件 NaN の列（lap_xxxm, kai, day など JS レンダリング列）はモデルに悪影響
         if len(df) > 0:
@@ -406,23 +458,30 @@ class LightGBMFeatureOptimizer:
             raise ValueError("先にfit_transform()を実行してください")
         
         df = df.copy()
-        
+
+        # ===== 0. 欠損値補完（学習・推論共通） =====
+        df = self._fill_missing_values(df)
+
         print("\n【LightGBM特徴量最適化】推論モード")
-        
+
         # 学習時と同じ変換を適用
         # Label Encoding
         for original_col, encoded_col in [
             ('venue', 'venue_encoded'),
             ('venue_code', 'venue_code_encoded'),
             ('track_type', 'track_type_encoded'),
+            ('surface', 'surface_encoded'),
             ('weather', 'weather_encoded'),
             ('track_condition', 'track_condition_encoded'),
+            ('field_condition', 'field_condition_encoded'),
             ('race_class', 'race_class_encoded'),
+            ('course_direction', 'course_direction_encoded'),
             ('sex', 'sex_encoded'),
             ('corner_radius', 'corner_radius_encoded'),
             ('pace_classification', 'pace_encoded'),
             ('predicted_pace', 'predicted_pace_encoded'),
             ('running_style', 'running_style_encoded'),
+            ('coat_color', 'coat_color_encoded'),   # horse_coat_color → coat_color 変換後
         ]:
             if original_col in df.columns and original_col in self.label_encoders:
                 le = self.label_encoders[original_col]
@@ -455,15 +514,38 @@ class LightGBMFeatureOptimizer:
         if 'birth_date' in df.columns:
             df = self._process_date_column(df, 'birth_date', prefix='birth')
         
-        # 不要な変数を削除
-        unnecessary_cols = ['post_time', 'result_url', 'horse_url', 'jockey_url', 
-                          'trainer_url', 'time', 'margin', 'last_3f', 'prize_money']
+        # 不要な変数を削除（fit_transform と同一セットを維持）
+        unnecessary_cols = [
+            'post_time', 'result_url', 'horse_url', 'jockey_url',
+            'trainer_url', 'time', 'margin', 'last_3f', 'prize_money',
+            'horse_coat_color', 'surface_en', 'surface_ja',
+            # リーク（当該レース結果データ）
+            'time_seconds',
+            'corner_1', 'corner_2', 'corner_3', 'corner_4',
+            'corner_position_avg', 'corner_position_variance',
+            'last_corner_position', 'position_change',
+            'last_3f_rank', 'last_3f_rank_normalized', 'last_3f_time',
+            # 極端不均衡
+            'horse_distance_win_rate', 'horse_distance_avg_finish',
+            'distance_increased', 'distance_decreased',
+            # 重複
+            'weight_kg', 'weight_change',
+            # prev_race_surface/prev2_race_surface は _add_feature_transforms で削除
+        ]
         for col in unnecessary_cols:
             if col in df.columns:
                 df = df.drop(col, axis=1)
-        
+
+        # sex_牡/sex_牝/sex_セ ダミーは sex_encoded と重複するため削除
+        sex_dummy_cols = [c for c in df.columns if c.startswith('sex_') and c != 'sex_encoded']
+        if sex_dummy_cols:
+            df = df.drop(columns=sex_dummy_cols, errors='ignore')
+
+        # 特徴量変換（対数変換・ベイズ平滑化）
+        df = self._add_feature_transforms(df)
+
         print(f"  ✓ 変換完了: {len(df.columns)}カラム")
-        
+
         return df
     
     def _label_encode_column(self, df: pd.DataFrame, col: str, new_col: str) -> Tuple[pd.DataFrame, Optional[str]]:
@@ -537,6 +619,149 @@ class LightGBMFeatureOptimizer:
 
         return df
     
+    def _fill_missing_values(self, df: pd.DataFrame) -> pd.DataFrame:
+        """欠損値を補完する（LightGBM投入前の前処理）
+
+        補完方針:
+          - 前走/前々走情報 (prev_race_*): 0埋め + is_first_race フラグ追加
+          - コーナー通過 (corner_1~4, 派生): 0埋め（未計測コーナーなし扱い）
+          - 血統 (sire, damsire, dam): "Unknown" 埋め（統計変換で処理）
+          - 通算成績 (horse_total_*, horse_win_rate): 0埋め（新馬扱い）
+          - 体重・オッズ: LightGBMがNaNを自動処理するため補完不要
+        """
+        # ── 初出走フラグ（前走情報が全欠損の馬）──────────────────────────────
+        if 'prev_race_finish' in df.columns:
+            df['is_first_race'] = df['prev_race_finish'].isna().astype(int)
+        else:
+            df['is_first_race'] = 0
+
+        # ── 前走情報: 数値列を 0 埋め ────────────────────────────────────────
+        prev_numeric_cols = [
+            'prev_race_finish', 'prev_race_time', 'prev_race_weight', 'prev_race_distance',
+            'prev2_race_finish', 'prev2_race_time', 'prev2_race_weight', 'prev2_race_distance',
+            'days_since_last_race', 'distance_change',
+        ]
+        for col in prev_numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+        # ── コーナー通過: 0 埋め（短距離・通過なし扱い）──────────────────────
+        corner_cols = [
+            'corner_1', 'corner_2', 'corner_3', 'corner_4',
+            'corner_position_avg', 'corner_position_variance',
+            'last_corner_position', 'position_change',
+        ]
+        for col in corner_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+        # ── 血統: "Unknown" 埋め（_add_entity_statistics が文字列を期待）────
+        for col in ['sire', 'damsire', 'dam']:
+            if col in df.columns:
+                df[col] = df[col].fillna('Unknown')
+
+        # ── 通算成績: 0 埋め（新馬・データ未取得馬）─────────────────────────
+        career_cols = [
+            'horse_total_runs', 'horse_total_wins', 'horse_total_prize_money', 'horse_win_rate',
+        ]
+        for col in career_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+        # ── コーナー通過列・上がり3F列は unnecessary_cols で削除するため補完不要 ──
+        # corner_1~4, corner_position_*, last_corner_position, position_change,
+        # last_3f_rank, last_3f_rank_normalized, last_3f_time
+        # → 当該レースの結果データ（予測前には存在しない）= リーク → 削除
+
+        # ── 馬場変更フラグ（ここで生成→ track_type/surfaceはラベルエンコード後に削除されるため）──
+        _surf_map = {'苝': 'turf', 'ダート': 'dirt', '花嵐': 'dirt', 'dirt': 'dirt', 'turf': 'turf'}
+        if 'prev_race_surface' in df.columns:
+            prev_surf = df['prev_race_surface'].map(
+                lambda v: _surf_map.get(str(v), 'unknown') if pd.notna(v) else 'unknown'
+            )
+            cur_surf_col = ('track_type' if 'track_type' in df.columns
+                            else 'surface' if 'surface' in df.columns else None)
+            if cur_surf_col:
+                cur_surf = df[cur_surf_col].map(
+                    lambda v: _surf_map.get(str(v), 'unknown') if pd.notna(v) else 'unknown'
+                )
+                df['is_surface_change'] = (
+                    (prev_surf != 'unknown') &
+                    (cur_surf  != 'unknown') &
+                    (prev_surf != cur_surf)
+                ).astype(int)
+            else:
+                df['is_surface_change'] = 0
+
+        return df
+
+    def _add_feature_transforms(self, df: pd.DataFrame) -> pd.DataFrame:
+        """特徴量変換を追加する
+
+        変換メニュー:
+          A. 対数変換: 右歪み分布の特徴量を正規化
+             - log_odds           : log1p(odds)  オッズは 1〜682 の極端右歪み
+             - log_prize          : log1p(horse_total_prize_money)  賞金も右歪み
+             - log_total_runs     : log1p(horse_total_runs)  出走数も右歪み
+          B. ベイズ平滑化勝率: 少数サンプル騎手/調教師/父馬の勝率ノイズを抑制
+             - {prefix}_win_rate_smooth : (count*rate + k*global) / (count + k)
+          C. 信頼度フラグ: 統計が信頼できるか（サンプル数 >= 閾値）
+             - {prefix}_has_history : race_count >= 3 → 1
+          D. 休養区分: days_since_last_race を 4段階に離散化
+             - rest_category : 0=初出走, 1=近走(1-21日), 2=通常(22-90日), 3=休み明け(91日+)
+        """
+        # ── A. 対数変換 ──────────────────────────────────────────────────────
+        if 'odds' in df.columns:
+            df['log_odds'] = np.log1p(
+                pd.to_numeric(df['odds'], errors='coerce').fillna(50)
+            )
+        if 'horse_total_prize_money' in df.columns:
+            df['log_prize'] = np.log1p(
+                pd.to_numeric(df['horse_total_prize_money'], errors='coerce').fillna(0)
+            )
+        if 'horse_total_runs' in df.columns:
+            df['log_total_runs'] = np.log1p(
+                pd.to_numeric(df['horse_total_runs'], errors='coerce').fillna(0)
+            )
+
+        # ── B & C. ベイズ平滑化勝率 + 信頼度フラグ ──────────────────────────
+        # 地方競馬の平均勝率 ≈ 7.5%（1/頭数平均 ≈ 1/13）
+        GLOBAL_WIN_RATE = 0.075
+        K = 5  # 平滑化強度（K レース分の事前分布）
+
+        for prefix in ['jockey', 'trainer', 'sire', 'damsire']:
+            rate_col  = f'{prefix}_win_rate'
+            count_col = f'{prefix}_race_count'
+            if rate_col in df.columns and count_col in df.columns:
+                rate = pd.to_numeric(df[rate_col],  errors='coerce').fillna(0)
+                cnt  = pd.to_numeric(df[count_col], errors='coerce').fillna(0)
+                # ベイズ推定: 事前分布を全体平均として平滑化
+                df[f'{prefix}_win_rate_smooth'] = (
+                    cnt * rate + K * GLOBAL_WIN_RATE
+                ) / (cnt + K)
+                # 信頼度フラグ: 3レース以上のデータがある→信頼できる統計
+                df[f'{prefix}_has_history'] = (cnt >= 3).astype(int)
+
+        # ── D. 休養区分 ──────────────────────────────────────────────────────
+        if 'days_since_last_race' in df.columns:
+            d = pd.to_numeric(df['days_since_last_race'], errors='coerce').fillna(0)
+            df['rest_category'] = pd.cut(
+                d,
+                bins=[-1, 0, 21, 90, float('inf')],
+                labels=[0, 1, 2, 3]
+            ).astype(float).fillna(0)
+
+        # ── E. 马場変更フラグ ───────────────────────────────────────────────
+        # prev_race_surface: 山・ダート など の日本語文字列
+        # ── E. 馬場変更フラグ ──────────────────────────────────────────────
+        # is_surface_change の生成は _fill_missing_values 内（ラベルエンコード前）で実施済み
+        # ここでは不要な文字列列のクリーンアップのみ行う
+        for _col in ['prev_race_surface', 'prev2_race_surface']:
+            if _col in df.columns:
+                df = df.drop(columns=[_col], errors='ignore')
+
+        return df
+
     def _process_date_column(self, df: pd.DataFrame, col: str, prefix: str = 'date') -> pd.DataFrame:
         """日付カラムを数値特徴量に変換"""
         if col not in df.columns:

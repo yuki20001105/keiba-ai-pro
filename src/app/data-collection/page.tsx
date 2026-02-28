@@ -17,6 +17,7 @@ export default function DataCollectionPage() {
   const [endYear, setEndYear] = useState(new Date().getFullYear())
   const [endMonth, setEndMonth] = useState(new Date().getMonth() + 1)
   const batchMaxWorkers = 3
+  const [forceRescrape, setForceRescrape] = useState(false)
   const [batchResult, setBatchResult] = useState<any>(null)
   const [batchLoading, setBatchLoading] = useState(false)
   const [batchProgress, setBatchProgress] = useState({ current: 0, total: 100, message: '' })
@@ -26,6 +27,14 @@ export default function DataCollectionPage() {
   const [showCollectedData, setShowCollectedData] = useState(false)
   const [collectedRaces, setCollectedRaces] = useState<any[]>([])
   const [selectedRaceDetail, setSelectedRaceDetail] = useState<any>(null)
+
+  // プロファイリング
+  const [showProfiling, setShowProfiling] = useState(false)
+  const [profilingJobId, setProfilingJobId] = useState<string | null>(null)
+  const [profilingStatus, setProfilingStatus] = useState<'idle' | 'running' | 'completed' | 'error'>('idle')
+  const [profilingMessage, setProfilingMessage] = useState('')
+  const [profilingProgress, setProfilingProgress] = useState(0)
+  const [useOptimized, setUseOptimized] = useState(true)
 
   useEffect(() => {
     loadStats()
@@ -112,137 +121,147 @@ export default function DataCollectionPage() {
 
     setBatchLoading(true)
     setBatchResult(null)
-    setBatchProgress({ current: 0, total: 100, message: 'Phase 1: レース一覧取得中...' })
+    setBatchProgress({ current: 0, total: 100, message: 'スクレイピング開始中...' })
     
     const startTime = Date.now()
     
     try {
-      console.log('[Phase 1] レース一覧取得開始...')
-      
-      // Phase 1の進捗シミュレーション
-      const phase1Timer = setInterval(() => {
-        setBatchProgress(prev => {
-          if (prev.current < 20) {
-            return { ...prev, current: prev.current + 5 }
+      console.log('[Step 1] スクレイピングジョブ開始...')
+
+      // Vercelプロキシ経由でジョブ開始（即座にjob_idが返る）
+      const startRes = await fetch(`/api/scrape`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ start_date: startDateStr, end_date: endDateStr, force_rescrape: forceRescrape }),
+      })
+
+      if (!startRes.ok) {
+        const err = await startRes.json()
+        throw new Error(err.detail || `HTTP ${startRes.status}`)
+      }
+
+      const { job_id } = await startRes.json()
+      console.log('[Step 2] ジョブ開始 job_id:', job_id)
+      setBatchProgress({ current: 5, total: 100, message: `ジョブ開始 (${job_id}) - データ収集中...` })
+
+      // ポーリング（3秒間隔）
+      const pollInterval = 3000
+      let completed = false
+      let failCount = 0  // 連続失敗カウンタ（Render再起動~30秒をカバー: 3s×10=30s）
+      const MAX_FAIL = 10
+
+      while (!completed) {
+        await new Promise(resolve => setTimeout(resolve, pollInterval))
+
+        const statusRes = await fetch(`/api/scrape/status/${job_id}`)
+        if (!statusRes.ok) {
+          failCount++
+          console.warn(`ポーリング失敗 (${failCount}/${MAX_FAIL}) HTTP ${statusRes.status}`)
+          if (failCount >= MAX_FAIL) {
+            throw new Error(`サーバーが再起動しました (job_id: ${job_id})。\n取得済みデータはSupabaseに保存済みです。\n同じ期間で再実行すると取得済み日付は自動スキップされます。`)
           }
-          return prev
-        })
-      }, 500)
-      
-      console.log('APIリクエスト送信:', 'http://localhost:8000/api/scrape')
-      
-      // タイムアウト設定（10分）- 完全モード対応
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => {
-        console.log('タイムアウト（10分）に達しました')
-        controller.abort()
-      }, 600000) // 10分
-      
-      let response: Response
-      try {
-        response = await fetch('http://localhost:8000/api/scrape', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            start_date: startDateStr,
-            end_date: endDateStr
-          }),
-          signal: controller.signal
-        })
-      } finally {
-        clearTimeout(timeoutId) // 成功・失敗に関わらずタイムアウトをクリア
-      }
-      
-      clearInterval(phase1Timer)
-      
-      console.log('APIレスポンス受信:', response.status, response.statusText)
-      
-      if (!response.ok) {
-        const errorData = await response.json()
-        console.error('APIエラーレスポンス:', errorData)
-        throw new Error(errorData.detail || `HTTP ${response.status}`)
-      }
-      
-      // Phase 2開始
-      console.log('[Phase 2] 並列スクレイピング開始...')
-      setBatchProgress({ current: 20, total: 100, message: 'Phase 2: 並列スクレイピング中...' })
-      
-      const data = await response.json()
-      
-      console.log('取得完了！データサマリー:', {
-        resultsKeys: Object.keys(data.results || {}),
-        resultsCount: Object.keys(data.results || {}).length,
-        stats: data.stats
-      })
-      
-      // 各レースの詳細をログ出力
-      if (data.results) {
-        Object.keys(data.results).forEach((raceId, index) => {
-          const race = data.results[raceId]
-          console.log(`レース ${index + 1} (${raceId}):`, {
-            race_name: race.race_info?.race_name,
-            place: race.race_info?.place,
-            distance: race.race_info?.distance,
-            results_count: race.results?.length || 0,
-            first_horse: race.results?.[0] ? {
-              horse_name: race.results[0].horse_name,
-              horse_id: race.results[0].horse_id,
-              jockey_id: race.results[0].jockey_id,
-              trainer_id: race.results[0].trainer_id,
-              weight_kg: race.results[0].weight_kg,
-              columns: Object.keys(race.results[0]).length
-            } : 'データなし'
+          continue
+        }
+        failCount = 0
+
+        const status = await statusRes.json()
+        const prog = status.progress || {}
+
+        // Render再起動によるジョブ失厄を検知
+        if (status.status === 'not_found') {
+          failCount++
+          console.warn(`ジョブが見つかりません (${failCount}/${MAX_FAIL})`)
+          if (failCount >= MAX_FAIL) {
+            throw new Error(`サーバーが再起動しジョブ情報が失われました (job_id: ${job_id})。\n取得済みデータはSupabaseに保存済みです。\n同じ期間で再実行すると取得済み日付は自動スキップされます。`)
+          }
+          continue
+        }
+        failCount = 0
+
+        if (prog.total > 0) {
+          const pct = Math.min(95, Math.round((prog.done / prog.total) * 90) + 5)
+          setBatchProgress({
+            current: pct,
+            total: 100,
+            message: prog.message || `${prog.done}/${prog.total}日処理済み`,
           })
-        })
+        }
+
+        console.log('ジョブ状態:', status.status, prog.message)
+
+        if (status.status === 'completed') {
+          completed = true
+          const result = status.result || {}
+          setBatchProgress({ current: 100, total: 100, message: `完了: ${result.races_collected || 0}レース取得` })
+          setBatchResult(result)
+          alert(
+            `取得完了\n\n` +
+            `${result.message || '完了'}\n` +
+            `所要時間: ${result.elapsed_time?.toFixed(1) || '?'}秒`
+          )
+          loadStats()
+        } else if (status.status === 'error') {
+          completed = true
+          throw new Error(status.error || 'スクレイピングジョブが失敗しました')
+        }
       }
-      
-      setBatchResult(data)
-      
-      const stats = data.stats
-      const elapsed = (Date.now() - startTime) / 1000
-      
-      console.log('=== 完了統計 ===')
-      console.log('期間:', stats.period)
-      console.log('対象日数:', stats.days, '日')
-      console.log('総レース数:', stats.total_races)
-      console.log('成功:', stats.success)
-      console.log('失敗:', stats.failed)
-      console.log('所要時間:', stats.elapsed_seconds, '秒')
-      console.log('フロントエンド所要時間:', elapsed.toFixed(2), '秒')
-      console.log('1レースあたり:', stats.avg_seconds_per_race, '秒')
-      console.log('高速化率:', stats.speedup_vs_sequential, '倍')
-      
-      setBatchProgress({ 
-        current: 100, 
-        total: 100, 
-        message: `完了: ${stats.success}/${stats.total_races}レース` 
-      })
-      
-      alert(
-        `取得完了\n\n` +
-        `期間: ${stats.period}\n` +
-        `対象日数: ${stats.days}日\n` +
-        `成功: ${stats.success}/${stats.total_races}レース\n` +
-        `所要時間: ${stats.elapsed_seconds}秒`
-      )
-      
-      loadStats()
     } catch (error: any) {
       console.error('=== エラー発生 ===')
       console.error('エラー詳細:', error)
-      console.error('エラーメッセージ:', error.message)
-      console.error('エラースタック:', error.stack)
-      
-      // AbortErrorの場合はタイムアウトメッセージを表示
-      if (error.name === 'AbortError') {
-        alert('処理がタイムアウトしました（10分）。\n期間を短くするか、後でもう一度お試しください。')
-      } else {
-        alert(`期間バッチ取得エラー: ${error.message}`)
-      }
-      console.error('Period batch scrape error:', error)
+      alert(`期間バッチ取得エラー: ${error.message}`)
       setBatchProgress({ current: 0, total: 100, message: 'エラーが発生しました' })
     } finally {
       setBatchLoading(false)
+    }
+  }
+
+  const handleStartProfiling = async () => {
+    setProfilingStatus('running')
+    setProfilingMessage('開始中...')
+    setProfilingProgress(5)
+    setProfilingJobId(null)
+
+    const inferProgress = (msg: string): number => {
+      if (msg.includes('読み込み')) return 15
+      if (msg.includes('エンジニアリング')) return 35
+      if (msg.includes('最適化')) return 55
+      if (msg.includes('ydata-profiling') || msg.includes('生成中')) return 75
+      if (msg.includes('完了')) return 100
+      return 5
+    }
+
+    try {
+      const res = await fetch('/api/profiling', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ use_optimized: useOptimized }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const { job_id } = await res.json()
+      setProfilingJobId(job_id)
+      // ポーリング（5秒間隔）
+      const poll = setInterval(async () => {
+        try {
+          const sr = await fetch(`/api/profiling/status/${job_id}`)
+          const st = await sr.json()
+          const msg = st.message || ''
+          setProfilingMessage(msg)
+          setProfilingProgress(inferProgress(msg))
+          if (st.status === 'completed') {
+            clearInterval(poll)
+            setProfilingStatus('completed')
+            setProfilingProgress(100)
+          } else if (st.status === 'error') {
+            clearInterval(poll)
+            setProfilingStatus('error')
+            setProfilingProgress(0)
+          }
+        } catch { /* ignore poll error */ }
+      }, 5000)
+    } catch (e: any) {
+      setProfilingStatus('error')
+      setProfilingMessage(e.message)
+      setProfilingProgress(0)
     }
   }
 
@@ -323,6 +342,19 @@ export default function DataCollectionPage() {
           <p className="text-sm text-[#888] mb-6">
             取得期間: {startYear}年{startMonth}月 〜 {endYear}年{endMonth}月
           </p>
+
+          {/* 強制再取得オプション */}
+          <label className="flex items-center gap-2 mb-4 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={forceRescrape}
+              onChange={e => setForceRescrape(e.target.checked)}
+              className="w-4 h-4 accent-white"
+            />
+            <span className="text-sm text-[#aaa]">
+              強制再取得（取得済みデータを上書き）
+            </span>
+          </label>
 
           {/* 実行ボタン */}
           <button
@@ -550,6 +582,95 @@ export default function DataCollectionPage() {
             </div>
           </div>
         )}
+
+        {/* プロファイリングレポート */}
+        <div className="border border-[#1e1e1e] rounded-lg overflow-hidden">
+          {/* ヘッダー（常時表示） */}
+          <label className="flex items-center justify-between px-5 py-3.5 bg-[#111] cursor-pointer select-none">
+            <span className="text-xs text-[#666]">特徴量プロファイリングレポート</span>
+            <span className="flex items-center gap-2 text-xs text-[#555]">
+              {!showProfiling ? '展開' : '閉じる'}
+              <input
+                type="checkbox"
+                checked={showProfiling}
+                onChange={e => setShowProfiling(e.target.checked)}
+                className="w-3.5 h-3.5 accent-white"
+              />
+            </span>
+          </label>
+
+          {/* コンテンツ（折りたたみ） */}
+          {showProfiling && (
+            <div className="px-5 pb-5 pt-4 bg-[#0d0d0d] border-t border-[#1e1e1e] space-y-4">
+              <label className="flex items-center gap-2 text-xs text-[#888] cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={useOptimized}
+                  onChange={e => setUseOptimized(e.target.checked)}
+                  className="w-3.5 h-3.5 accent-white"
+                />
+                LightGBM最適化済み（リーク除去・変換適用）
+              </label>
+
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={handleStartProfiling}
+                  disabled={profilingStatus === 'running'}
+                  className={`px-4 py-2 rounded text-xs font-medium transition-colors ${
+                    profilingStatus === 'running'
+                      ? 'bg-[#1a1a1a] text-[#555] cursor-not-allowed'
+                      : 'bg-white text-black hover:bg-[#eee]'
+                  }`}
+                >
+                  {profilingStatus === 'running' ? (
+                    <span className="flex items-center gap-1.5">
+                      <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                      </svg>
+                      生成中...
+                    </span>
+                  ) : 'レポート生成'}
+                </button>
+
+                {profilingStatus === 'completed' && profilingJobId && (
+                  <a
+                    href={`/api/profiling/html/${profilingJobId}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-[#4ade80] hover:underline"
+                  >
+                    レポートを開く →
+                  </a>
+                )}
+              </div>
+
+              {profilingStatus !== 'idle' && (
+                <div className="space-y-1.5">
+                  {(profilingStatus === 'running' || profilingStatus === 'completed') && (
+                    <>
+                      <div className="flex justify-between text-xs text-[#555]">
+                        <span>{profilingMessage}</span>
+                        <span>{profilingProgress}%</span>
+                      </div>
+                      <div className="w-full bg-[#1e1e1e] rounded-full h-1 overflow-hidden">
+                        <div
+                          className={`h-1 rounded-full transition-all duration-700 ${
+                            profilingStatus === 'completed' ? 'bg-[#4ade80]' : 'bg-[#555]'
+                          }`}
+                          style={{ width: `${profilingProgress}%` }}
+                        />
+                      </div>
+                    </>
+                  )}
+                  {profilingStatus === 'error' && (
+                    <p className="text-xs text-red-400">{profilingMessage}</p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
 
         <div className="p-5 bg-[#111] border border-[#1e1e1e] rounded-lg flex items-center justify-between gap-4">
           <div>

@@ -1,5 +1,5 @@
 // Service Worker for PWA
-const CACHE_NAME = 'keiba-ai-v1';
+const CACHE_NAME = 'keiba-ai-v2';
 const urlsToCache = [
   '/',
   '/dashboard',
@@ -10,6 +10,7 @@ const urlsToCache = [
 
 // インストール時
 self.addEventListener('install', (event) => {
+  self.skipWaiting(); // 待機せず即座に新しいSWを有効化
   event.waitUntil(
     caches.open(CACHE_NAME)
       .then((cache) => {
@@ -57,6 +58,10 @@ self.addEventListener('fetch', (event) => {
         }
 
         // レスポンスをクローンしてキャッシュに保存
+        // HEADリクエストと部分レスポンス(206)はCache APIが非対応のためスキップ
+        if (event.request.method !== 'GET' || response.status === 206) {
+          return response;
+        }
         const responseToCache = response.clone();
         caches.open(CACHE_NAME)
           .then((cache) => {
@@ -75,14 +80,17 @@ self.addEventListener('fetch', (event) => {
 self.addEventListener('activate', (event) => {
   const cacheWhitelist = [CACHE_NAME];
   event.waitUntil(
-    caches.keys().then((cacheNames) => {
-      return Promise.all(
-        cacheNames.map((cacheName) => {
-          if (cacheWhitelist.indexOf(cacheName) === -1) {
-            return caches.delete(cacheName);
-          }
-        })
-      );
-    })
+    Promise.all([
+      caches.keys().then((cacheNames) => {
+        return Promise.all(
+          cacheNames.map((cacheName) => {
+            if (cacheWhitelist.indexOf(cacheName) === -1) {
+              return caches.delete(cacheName);
+            }
+          })
+        );
+      }),
+      self.clients.claim() // 全タブを即座に新しいSWで制御
+    ])
   );
 });

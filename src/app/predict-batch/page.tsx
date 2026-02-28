@@ -4,6 +4,8 @@ import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { Logo } from '@/components/Logo'
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+
 export default function PredictBatchPage() {
   const [loading, setLoading] = useState(false)
   const [raceId, setRaceId] = useState('')
@@ -18,7 +20,7 @@ export default function PredictBatchPage() {
 
   const loadModels = async () => {
     try {
-      const res = await fetch('http://localhost:8000/api/models?ultimate=true')
+      const res = await fetch(`/api/models?ultimate=true`)
       if (res.ok) {
         const data = await res.json()
         setModels(data.models || [])
@@ -38,7 +40,7 @@ export default function PredictBatchPage() {
     setRecommendations(null)
 
     try {
-      const res = await fetch('http://localhost:8000/api/analyze_race', {
+      const res = await fetch(`/api/analyze-race`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ race_id: raceId, model_id: modelId, bankroll: 10000, risk_mode: 'balanced', ultimate_mode: true })
