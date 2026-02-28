@@ -15,7 +15,7 @@ aiofiles>=23.2.1
 charset-normalizer>=3.3.0
 beautifulsoup4>=4.12.0
 lxml>=4.9.0
-ydata-profiling>=4.6.0
+# ydata-profiling は重いため任意インストール（profiling エンドポイント使用時のみ手動で pip install ydata-profiling）
 httpx>=0.27.0
 slowapi>=0.1.9
 python-jose[cryptography]>=3.3.0
