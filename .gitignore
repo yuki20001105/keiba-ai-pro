@@ -92,7 +92,7 @@ keiba.db
 # デプロイ用にモデルを含めたい場合は下記をコメントアウトする
 *.joblib
 *.model
-# !python-api/models/*.joblib  ← デプロイ時はこの行のコメントを外す
+!python-api/models/*.joblib
 
 # Logs
 *.log
