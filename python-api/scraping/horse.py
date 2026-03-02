@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from bs4 import BeautifulSoup
 
-from scraping.constants import COAT_COLORS, COAT_RE, HTML_STRAINER
+from scraping.constants import HTML_STRAINER
 
 if TYPE_CHECKING:
     pass
@@ -106,49 +106,6 @@ except ImportError:
     import logging
     SUPABASE_ENABLED = False
     logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# 毛色抽出
-# ---------------------------------------------------------------------------
-
-def extract_coat_color(soup: "BeautifulSoup", html: str = "") -> str:
-    """複数の手法でHTMLから毛色文字列を抽出する。"""
-    # 1) db_prof_table: <th>毛色</th>
-    prof = soup.find("table", class_=lambda c: c and "db_prof_table" in c)
-    if prof:
-        for tr in prof.find_all("tr"):
-            th, td = tr.find("th"), tr.find("td")
-            if th and td and "毛色" in th.get_text(strip=True):
-                v = td.get_text(strip=True)
-                if v:
-                    return v
-    # 2) 全テーブル: <th>毛色</th> / 性齢 or 性別フィールドから抽出
-    for tbl in soup.find_all("table"):
-        for tr in tbl.find_all("tr"):
-            th, td = tr.find("th"), tr.find("td")
-            if not th or not td:
-                continue
-            label = th.get_text(strip=True)
-            if "毛色" in label:
-                v = td.get_text(strip=True)
-                if v:
-                    return v
-            if "性齢" in label or "性別" in label:
-                v = td.get_text(strip=True)
-                m = COAT_RE.search(v)
-                if m:
-                    return m.group(0)
-    # 3) ページ先頭3000文字から「牡/牝/セン + 毛色」パターンを探す
-    if html:
-        target = html[:3000]
-        sex_coat = re.search(
-            r"(?:牡|牝|セン?)\s*(" + "|".join(re.escape(c) for c in COAT_COLORS) + r")",
-            target,
-        )
-        if sex_coat:
-            return sex_coat.group(1)
-    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -286,28 +243,8 @@ async def scrape_horse_detail(
                 logger.debug(f"NAR馬 血統取得不可: {horse_id} → unknown_local")
                 _nar_result = {"sire": "unknown_local", "dam": "unknown_local", "damsire": "unknown_local"}
 
-        # 3) sp.netkeiba で毛色取得（PC版は NAR馬に 400 を返すため）
+        # 3) sp.netkeiba で生年月日・通算成績を補完
         _sp_html_parsed = None
-        if not quick_mode and not _nar_result.get("horse_coat_color"):
-            for _sp_url in [
-                f"https://db.sp.netkeiba.com/horse/{horse_id}/",
-                f"https://db.sp.netkeiba.com/horse/result/{horse_id}/",
-            ]:
-                try:
-                    await asyncio.sleep(0.1)
-                    async with session.get(_sp_url) as _sp_resp:
-                        if _sp_resp.status == 200:
-                            _sp_html_raw = (await _sp_resp.read()).decode("euc-jp", errors="replace")
-                            _sp_soup = BeautifulSoup(_sp_html_raw, "lxml", parse_only=HTML_STRAINER)
-                            coat = extract_coat_color(_sp_soup, _sp_html_raw)
-                            if coat:
-                                _nar_result["horse_coat_color"] = coat
-                                logger.info(f"NAR馬 毛色取得成功: {horse_id} coat={coat}")
-                                _sp_html_parsed = _sp_soup
-                                break
-                except Exception:
-                    pass
-
         if not quick_mode and _sp_html_parsed is None:
             try:
                 await asyncio.sleep(0.1)
@@ -385,8 +322,6 @@ async def scrape_horse_detail(
             val = td.get_text(strip=True)
             if "生年月日" in key:
                 result["horse_birth_date"] = val
-            elif "毛色" in key:
-                result["horse_coat_color"] = val
             elif "馬主" in key and "horse_owner" not in result:
                 result["horse_owner"] = val
             elif "生産者" in key and "horse_breeder" not in result:
@@ -427,37 +362,12 @@ async def scrape_horse_detail(
                 val = td_tag.get_text(strip=True)
                 if "生年月日" in key:
                     result["horse_birth_date"] = val
-                elif "毛色" in key and "horse_coat_color" not in result:
-                    result["horse_coat_color"] = val
                 elif "馬主" in key and "horse_owner" not in result:
                     result["horse_owner"] = val
                 elif "生産者" in key and "horse_breeder" not in result:
                     result["horse_breeder"] = val
                 elif "産地" in key and "horse_breeding_farm" not in result:
                     result["horse_breeding_farm"] = val
-
-    # ===== 毛色フォールバック =====
-    if not result.get("horse_coat_color"):
-        coat_fb = extract_coat_color(soup, "")
-        if coat_fb:
-            result["horse_coat_color"] = coat_fb
-        elif not quick_mode:
-            for _sp_url in [
-                f"https://db.sp.netkeiba.com/horse/{horse_id}/",
-                f"https://db.sp.netkeiba.com/horse/result/{horse_id}/",
-            ]:
-                try:
-                    await asyncio.sleep(0.1)
-                    async with session.get(_sp_url) as _sp_resp:
-                        if _sp_resp.status == 200:
-                            _sp_html = (await _sp_resp.read()).decode("euc-jp", errors="replace")
-                            coat_fb = extract_coat_color(BeautifulSoup(_sp_html, "lxml", parse_only=HTML_STRAINER), _sp_html)
-                            if coat_fb:
-                                result["horse_coat_color"] = coat_fb
-                                logger.info(f"毛色 sp 取得成功: {horse_id} coat={coat_fb}")
-                                break
-                except Exception:
-                    pass
 
     # ===== 血統 (sire / dam / damsire) =====
     pedigree_cached = False

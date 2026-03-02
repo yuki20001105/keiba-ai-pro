@@ -195,6 +195,18 @@ async def scrape_race_full(
                 break
     if race_class == "OP":
         race_class = "オープン"
+    # 解析不可な場合のフォールバック標注
+    if not race_class:
+        if "特別" in race_name:
+            race_class = "オープン"  # "○○特別"は一般的にオープン認定
+        elif "新馬" in race_name:
+            race_class = "新馬"
+        elif "未勝利" in race_name:
+            race_class = "未勝利"
+        elif "重賞" in race_name:
+            race_class = "重賞"
+        else:
+            race_class = "不明"  # 完全に判定不能な場合は明示的に残す
 
     # ---- 開催回・日目 ----
     kai = None

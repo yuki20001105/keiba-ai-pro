@@ -10,6 +10,10 @@ import sqlite3
 import sys
 from pathlib import Path
 
+# Windows CP932 環境でも出力できるよう UTF-8 に設定
+if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf_8"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+
 BASE_DIR = Path(__file__).parent.parent
 DB_PATH = BASE_DIR / "keiba" / "data" / "keiba_ultimate.db"
 sys.path.insert(0, str(BASE_DIR / "python-api"))
@@ -54,7 +58,7 @@ def check_db_quality():
     res_rows = conn.execute("SELECT race_id, data FROM race_results_ultimate").fetchall()
     res_fields = ["horse_name", "horse_id", "jockey_name", "jockey_id", "trainer_name",
                   "finish_position", "odds", "popularity", "weight_kg", "last_3f",
-                  "sire", "horse_coat_color", "horse_birth_date"]
+                  "sire", "horse_birth_date"]
     res_missing = {f: 0 for f in res_fields}
     for _, raw in res_rows:
         d = json.loads(raw)
