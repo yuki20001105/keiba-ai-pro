@@ -148,6 +148,14 @@ class SupabaseJWTMiddleware(BaseHTTPMiddleware):
         if path in self.exempt_paths or not path.startswith("/api/"):
             return await call_next(request)
 
+        # ローカル開発: SUPABASE_URL 未設定 → auth スキップ（admin として扱う）
+        if not SUPABASE_URL:
+            request.state.user_id = "local-dev"
+            request.state.user_role = "admin"
+            request.state.subscription_tier = "premium"
+            request.state.jwt_payload = {}
+            return await call_next(request)
+
         # Authorization ヘッダー確認
         auth_header = request.headers.get("Authorization", "")
         if not auth_header.startswith("Bearer "):

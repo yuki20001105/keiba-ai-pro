@@ -114,13 +114,18 @@ async def scrape_race_full(
             date_str = (
                 f"{body_date_m.group(1)}{int(body_date_m.group(2)):02d}{int(body_date_m.group(3)):02d}"
             )
+    # NOTE: race_id[:8] は YEAR+VENUE_CODE+KAI であり日付ではないため使用禁止。
+    # date_hint が渡されない場合（手動呼び出し等）は空のままとし、
+    # DB repair スクリプトで後処理する。
     if not date_str:
-        candidate = race_id[:8]
-        try:
-            datetime.strptime(candidate, "%Y%m%d")
-            date_str = candidate
-        except ValueError:
-            date_str = ""
+        # タイトルタグや他の要素からも試みる
+        title_tag = soup.find("title")
+        if title_tag:
+            tdm = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})日", title_tag.get_text())
+            if tdm:
+                date_str = f"{tdm.group(1)}{int(tdm.group(2)):02d}{int(tdm.group(3)):02d}"
+    if not date_str:
+        logger.warning(f"race_id={race_id}: 日付を取得できませんでした (date_hint={date_hint!r})")
     logger.debug(f"race_id={race_id} 日付={date_str}")
 
     # ---- 発走時刻 ----

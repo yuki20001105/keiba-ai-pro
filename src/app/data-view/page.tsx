@@ -1,7 +1,7 @@
 'use client'
 import { useState } from 'react'
 import { supabase } from '@/lib/supabase'
-import Logo from '@/components/Logo'
+import { Logo } from '@/components/Logo'
 
 type RawData = {
   race_id: string
