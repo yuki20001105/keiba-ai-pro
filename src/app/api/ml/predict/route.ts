@@ -18,11 +18,13 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    const authHeader = request.headers.get('Authorization') || ''
     // FastAPI機械学習サーバーにリクエスト
     const response = await fetch(`${ML_API_URL}/api/predict`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        ...(authHeader ? { Authorization: authHeader } : {}),
       },
       body: JSON.stringify({
         model_id: modelId || null,

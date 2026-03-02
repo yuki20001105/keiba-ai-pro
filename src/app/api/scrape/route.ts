@@ -6,9 +6,10 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
 
+    const authHeader = request.headers.get('Authorization') || ''
     const response = await fetch(`${ML_API_URL}/api/scrape/start`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(authHeader ? { Authorization: authHeader } : {}) },
       body: JSON.stringify(body),
     })
 

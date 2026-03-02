@@ -8,8 +8,10 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params
+    const authHeader = request.headers.get('Authorization') || ''
     const response = await fetch(`${ML_API_URL}/api/models/${id}`, {
       method: 'DELETE',
+      headers: authHeader ? { Authorization: authHeader } : {},
     })
     const data = await response.json()
     return NextResponse.json(data, { status: response.status })

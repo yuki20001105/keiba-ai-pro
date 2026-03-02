@@ -8,7 +8,10 @@ export async function GET(
 ) {
   try {
     const { jobId } = await params
-    const response = await fetch(`${ML_API_URL}/api/scrape/status/${jobId}`)
+    const authHeader = request.headers.get('Authorization') || ''
+    const response = await fetch(`${ML_API_URL}/api/scrape/status/${jobId}`, {
+      headers: authHeader ? { Authorization: authHeader } : {},
+    })
     const data = await response.json()
     return NextResponse.json(data, { status: response.status })
   } catch (error) {
