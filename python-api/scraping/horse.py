@@ -4,6 +4,8 @@
 
 import asyncio
 import re
+import sqlite3
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from bs4 import BeautifulSoup
@@ -12,6 +14,72 @@ from scraping.constants import COAT_COLORS, COAT_RE, HTML_STRAINER
 
 if TYPE_CHECKING:
     pass
+
+# ---------------------------------------------------------------------------
+# SQLite ローカル血統キャッシュ（SUPABASE_ENABLED=False 時のフォールバック）
+# ---------------------------------------------------------------------------
+
+_PEDIGREE_DB_PATH: Path = (
+    Path(__file__).parent.parent.parent / "keiba" / "data" / "pedigree_cache.db"
+)
+
+
+def _init_pedigree_table() -> None:
+    """血統キャッシュテーブルを初期化する（なければ作成）"""
+    try:
+        _PEDIGREE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(_PEDIGREE_DB_PATH))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS pedigree_cache (
+                horse_id TEXT PRIMARY KEY,
+                sire TEXT DEFAULT '',
+                dam TEXT DEFAULT '',
+                damsire TEXT DEFAULT '',
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass  # DB作成失敗は無視（ログスパム防止）
+
+
+def _get_pedigree_sqlite(horse_id: str) -> dict | None:
+    """SQLite 血統キャッシュを検索する。"""
+    try:
+        conn = sqlite3.connect(str(_PEDIGREE_DB_PATH))
+        row = conn.execute(
+            "SELECT sire, dam, damsire FROM pedigree_cache WHERE horse_id = ?", (horse_id,)
+        ).fetchone()
+        conn.close()
+        if row and row[0]:
+            return {"sire": row[0], "dam": row[1], "damsire": row[2]}
+    except Exception:
+        pass
+    return None
+
+
+def _save_pedigree_sqlite(horse_id: str, sire: str, dam: str, damsire: str) -> None:
+    """SQLite 血統キャッシュに保存する。"""
+    if not sire:
+        return
+    try:
+        conn = sqlite3.connect(str(_PEDIGREE_DB_PATH))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            """INSERT OR REPLACE INTO pedigree_cache (horse_id, sire, dam, damsire)
+               VALUES (?, ?, ?, ?)""",
+            (horse_id, sire, dam, damsire),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+# テーブル起動時初期化
+_init_pedigree_table()
 
 # ---------------------------------------------------------------------------
 # Supabase ヘルパー（オプション依存）
@@ -161,6 +229,9 @@ async def scrape_horse_detail(
                 cached_b = await asyncio.to_thread(get_pedigree_cache, horse_id)
             except Exception as _e:
                 logger.debug(f"NAR馬 血統キャッシュ確認失敗: {_e}")
+        elif cached_b is None and not SUPABASE_ENABLED:
+            # Supabase 無効時は SQLite ローカルキャッシュを確認
+            cached_b = _get_pedigree_sqlite(horse_id)
         if cached_b and cached_b.get("sire") and cached_b["sire"] not in ("", "unknown_local"):
             logger.debug(f"NAR馬 血統キャッシュヒット: {horse_id} sire={cached_b['sire']}")
             _nar_result = {k: cached_b.get(k, "") for k in ("sire", "dam", "damsire")}
@@ -175,7 +246,7 @@ async def scrape_horse_detail(
                     async with session.get(ped_url_b) as ped_resp_b:
                         if ped_resp_b.status == 200:
                             ped_content_b = await ped_resp_b.read()
-                            ped_html_b = ped_content_b.decode("euc-jp", errors="ignore")
+                            ped_html_b = ped_content_b.decode("euc-jp", errors="replace")
                             ped_soup_b = BeautifulSoup(ped_html_b, "lxml", parse_only=HTML_STRAINER)
                             blood_table_b = ped_soup_b.find("table", class_="blood_table")
                             if blood_table_b:
@@ -185,6 +256,13 @@ async def scrape_horse_detail(
                                 if SUPABASE_ENABLED:
                                     await asyncio.to_thread(
                                         save_pedigree_cache,
+                                        horse_id,
+                                        pedigree_result_b.get("sire", ""),
+                                        pedigree_result_b.get("dam", ""),
+                                        pedigree_result_b.get("damsire", ""),
+                                    )
+                                else:
+                                    _save_pedigree_sqlite(
                                         horse_id,
                                         pedigree_result_b.get("sire", ""),
                                         pedigree_result_b.get("dam", ""),
@@ -219,7 +297,7 @@ async def scrape_horse_detail(
                     await asyncio.sleep(0.1)
                     async with session.get(_sp_url) as _sp_resp:
                         if _sp_resp.status == 200:
-                            _sp_html_raw = (await _sp_resp.read()).decode("euc-jp", errors="ignore")
+                            _sp_html_raw = (await _sp_resp.read()).decode("euc-jp", errors="replace")
                             _sp_soup = BeautifulSoup(_sp_html_raw, "lxml", parse_only=HTML_STRAINER)
                             coat = extract_coat_color(_sp_soup, _sp_html_raw)
                             if coat:
@@ -236,7 +314,7 @@ async def scrape_horse_detail(
                 async with session.get(f"https://db.sp.netkeiba.com/horse/{horse_id}/") as _sp_resp2:
                     if _sp_resp2.status == 200:
                         _sp_html_parsed = BeautifulSoup(
-                            (await _sp_resp2.read()).decode("euc-jp", errors="ignore"),
+                            (await _sp_resp2.read()).decode("euc-jp", errors="replace"),
                             "lxml",
                             parse_only=HTML_STRAINER,
                         )
@@ -273,7 +351,7 @@ async def scrape_horse_detail(
             async with session.get(u) as r:
                 if r.status != 200:
                     return None
-                return (await r.read()).decode("euc-jp", errors="ignore")
+                return (await r.read()).decode("euc-jp", errors="replace")
         except Exception:
             return None
 
@@ -372,7 +450,7 @@ async def scrape_horse_detail(
                     await asyncio.sleep(0.1)
                     async with session.get(_sp_url) as _sp_resp:
                         if _sp_resp.status == 200:
-                            _sp_html = (await _sp_resp.read()).decode("euc-jp", errors="ignore")
+                            _sp_html = (await _sp_resp.read()).decode("euc-jp", errors="replace")
                             coat_fb = extract_coat_color(BeautifulSoup(_sp_html, "lxml", parse_only=HTML_STRAINER), _sp_html)
                             if coat_fb:
                                 result["horse_coat_color"] = coat_fb
@@ -391,6 +469,9 @@ async def scrape_horse_detail(
                 cached = await asyncio.to_thread(get_pedigree_cache, horse_id)
             except Exception as _e:
                 logger.debug(f"血統キャッシュ確認失敗: {_e}")
+        elif cached is None and not SUPABASE_ENABLED:
+            # Supabase 無効時は SQLite ローカルキャッシュを確認
+            cached = _get_pedigree_sqlite(horse_id)
         if cached:
             result["sire"] = cached.get("sire") or ""
             result["dam"] = cached.get("dam") or ""
@@ -420,7 +501,7 @@ async def scrape_horse_detail(
                     async with session.get(ped_url) as ped_resp:
                         if ped_resp.status == 200:
                             ped_content = await ped_resp.read()
-                            ped_html_retry = ped_content.decode("euc-jp", errors="ignore")
+                            ped_html_retry = ped_content.decode("euc-jp", errors="replace")
                             ped_soup = BeautifulSoup(ped_html_retry, "lxml", parse_only=HTML_STRAINER)
                             blood_table = ped_soup.find("table", class_="blood_table")
                             if blood_table:
@@ -437,6 +518,14 @@ async def scrape_horse_detail(
         if SUPABASE_ENABLED and horse_id:
             await asyncio.to_thread(
                 save_pedigree_cache,
+                horse_id,
+                result.get("sire", ""),
+                result.get("dam", ""),
+                result.get("damsire", ""),
+            )
+        elif horse_id and not SUPABASE_ENABLED:
+            # Supabase 無効時は SQLite ローカルキャッシュに保存
+            _save_pedigree_sqlite(
                 horse_id,
                 result.get("sire", ""),
                 result.get("dam", ""),

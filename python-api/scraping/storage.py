@@ -9,6 +9,17 @@ from pathlib import Path
 
 from app_config import logger  # type: ignore
 
+# ── Supabase 依存をトップレベルで解決（循環 import 回避） ──────────
+try:
+    from app_config import SUPABASE_ENABLED, save_race_to_supabase  # type: ignore
+    _STORAGE_SUPABASE_OK = True
+except ImportError:
+    SUPABASE_ENABLED = False
+    _STORAGE_SUPABASE_OK = False
+
+    def save_race_to_supabase(*a, **kw):  # type: ignore
+        return False
+
 
 def _init_sqlite_db(db_path: Path) -> None:
     """WALモード設定 + テーブル事前作成（毎レースのDDL重複を削減）"""
@@ -84,9 +95,6 @@ def _save_race_sqlite_only(race_data: dict, db_path: Path, overwrite: bool = Tru
 
 def _save_race_to_ultimate_db(race_data: dict, db_path: Path, overwrite: bool = True) -> bool:
     """スクレイピング結果を keiba_ultimate.db と Supabase の両方に保存"""
-    # ローカル import で循環依存回避
-    from app_config import SUPABASE_ENABLED, save_race_to_supabase  # type: ignore
-
     race_info = race_data["race_info"]
     horses = race_data["horses"]
     race_id = race_info["race_id"]

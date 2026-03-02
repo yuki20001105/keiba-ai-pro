@@ -22,7 +22,7 @@ from app_config import ULTIMATE_DB, logger  # type: ignore
 from deps.auth import require_admin  # type: ignore
 from models import ScrapeRequest, ScrapeResponse, RescrapeResponse  # type: ignore
 from scraping.constants import SCRAPE_HEADERS  # type: ignore
-from scraping.jobs import _scrape_jobs, _purge_old_jobs, _run_scrape_job  # type: ignore
+from scraping.jobs import _scrape_jobs, _purge_old_jobs, _run_scrape_job, get_job  # type: ignore
 from scraping.race import scrape_race_full  # type: ignore
 from scraping.storage import _save_race_to_ultimate_db  # type: ignore
 
@@ -69,8 +69,8 @@ async def scrape_start(request: ScrapeRequest, _: dict = Depends(require_admin))
 
 @router.get("/api/scrape/status/{job_id}")
 async def scrape_status(job_id: str):
-    """スクレイピングジョブの進捗・結果を返す"""
-    job = _scrape_jobs.get(job_id)
+    """スクレイピングジョブの進捗・結果を返す（メモリ → SQLite の順で検索）"""
+    job = get_job(job_id)
     if not job:
         return {
             "job_id": job_id,
@@ -110,7 +110,11 @@ async def scrape_data(request: ScrapeRequest):
     dates = []
     cur = start
     while cur <= end:
-        if cur.weekday() in [5, 6]:   # 土日のみ（JRA向け。NAR含む場合は scrape/start を使用）
+        # 土日 + 月曜祝日（成人の日等）を対象とする
+        # NOTE: /api/scrape/start を使えば全日処理可能（こちらは短期間向け）
+        if cur.weekday() in [5, 6]:
+            dates.append(cur.strftime("%Y%m%d"))
+        elif cur.weekday() == 0:  # 月曜日 — 祝日の可能性があるので含める
             dates.append(cur.strftime("%Y%m%d"))
         cur += timedelta(days=1)
 
@@ -172,6 +176,17 @@ async def rescrape_incomplete(limit: int = 50) -> RescrapeResponse:
     rows = conn.execute("SELECT DISTINCT race_id FROM race_results_ultimate").fetchall()
     all_race_ids = [r[0] for r in rows]
 
+    # races_ultimate から既存の date を取得（date_hint として再利用）
+    date_map: dict[str, str] = {}
+    for row in conn.execute("SELECT race_id, data FROM races_ultimate").fetchall():
+        try:
+            import json as _json
+            _d = _json.loads(row[1] or "{}").get("date", "")
+            if _d:
+                date_map[row[0]] = _d
+        except Exception:
+            pass
+
     incomplete_ids = []
     for rid in all_race_ids:
         sample = conn.execute(
@@ -194,7 +209,8 @@ async def rescrape_incomplete(limit: int = 50) -> RescrapeResponse:
 
     async with aiohttp.ClientSession(headers=SCRAPE_HEADERS, timeout=timeout, connector=connector) as session:
         for race_id in to_process:
-            race_data = await scrape_race_full(session, race_id)
+            _date_hint = date_map.get(race_id, "")
+            race_data = await scrape_race_full(session, race_id, date_hint=_date_hint)
             if race_data and race_data["horses"]:
                 _save_race_to_ultimate_db(race_data, ULTIMATE_DB, overwrite=True)
                 updated_races += 1

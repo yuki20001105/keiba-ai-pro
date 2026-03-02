@@ -3,9 +3,26 @@
 """
 from __future__ import annotations
 
+import os
 import re
 
 from bs4 import SoupStrainer
+
+# ── プロキシ設定（環境変数 SCRAPE_PROXY_URL で指定） ─────────────────
+#   例: SCRAPE_PROXY_URL=http://user:pass@proxy.example.com:8080
+SCRAPE_PROXY_URL: str | None = os.environ.get("SCRAPE_PROXY_URL") or None
+
+# ── Cloudflare ブロック検知 ────────────────────────────────────────
+#   netkeiba が CF Bot-Management を返す場合、39 バイト前後の極小 HTML になる
+_CF_BLOCK_MAX_BYTES = 512
+
+
+def is_cloudflare_block(content: bytes) -> bool:
+    """レスポンスが Cloudflare/ボット判定ブロックか確認する。"""
+    if len(content) < _CF_BLOCK_MAX_BYTES:
+        text = content.decode("utf-8", errors="ignore").lower()
+        return "cloudflare" in text or "cf-ray" in text or len(content) < 100
+    return False
 
 # ── HTMLパース最適化: 不要タグを除外してメモリ削減（60〜70%削減） ──────
 HTML_STRAINER = SoupStrainer(

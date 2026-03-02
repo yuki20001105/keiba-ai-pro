@@ -10,7 +10,7 @@ from typing import Optional
 
 from bs4 import BeautifulSoup
 
-from scraping.constants import HTML_STRAINER, VENUE_MAP
+from scraping.constants import HTML_STRAINER, VENUE_MAP, SCRAPE_PROXY_URL, is_cloudflare_block
 from scraping.horse import scrape_horse_detail
 
 try:
@@ -42,15 +42,41 @@ async def scrape_race_full(
     _quick_mode = quick_mode
 
     url = f"https://db.netkeiba.com/race/{race_id}/"
-    try:
-        async with session.get(url) as resp:
-            if resp.status != 200:
-                logger.warning(f"HTTP {resp.status}: {url}")
-                return None
-            content = await resp.read()
-            html = content.decode("euc-jp", errors="ignore")
-    except Exception as e:
-        logger.error(f"取得エラー {race_id}: {e}")
+    html: str | None = None
+    # ── リトライ付きフェッチ（最大3回、指数バックオフ） ──
+    for _attempt in range(3):
+        try:
+            if _attempt > 0:
+                await asyncio.sleep(2.0 ** _attempt)
+            _get_kwargs: dict = {}
+            if SCRAPE_PROXY_URL:
+                _get_kwargs["proxy"] = SCRAPE_PROXY_URL
+            async with session.get(url, **_get_kwargs) as resp:
+                if resp.status == 429:
+                    logger.warning(f"429 Too Many Requests: {url} (試行{_attempt+1}/3)")
+                    await asyncio.sleep(10.0 + _attempt * 5.0)
+                    continue
+                if resp.status != 200:
+                    logger.warning(f"HTTP {resp.status}: {url}")
+                    return None
+                content = await resp.read()
+                if is_cloudflare_block(content):
+                    logger.error(
+                        f"Cloudflare ブロック検知 ({len(content)}B): {url} — "
+                        f"SCRAPE_PROXY_URL 環境変数でプロキシを設定してください"
+                    )
+                    return None
+                raw = content.decode("euc-jp", errors="replace")
+                if "\ufffd" in raw[:500]:
+                    logger.debug(f"EUC-JP 変換警告 (先頭500文字に置換文字あり): {race_id}")
+                html = raw
+                break
+        except asyncio.TimeoutError:
+            logger.warning(f"タイムアウト {race_id} 試行{_attempt+1}/3")
+        except Exception as e:
+            logger.error(f"取得エラー {race_id} 試行{_attempt+1}/3: {e}")
+    if html is None:
+        logger.error(f"最大リトライ到達、取得失敗: {race_id}")
         return None
 
     soup = BeautifulSoup(html, "lxml", parse_only=HTML_STRAINER)
@@ -210,23 +236,36 @@ async def scrape_race_full(
     IDX_JOCKEY = col_idx(["騎手"], 6)
     IDX_TIME = col_idx(["タイム"], 7)
     IDX_MARGIN = col_idx(["着差"], 8)
-    IDX_CORNER = col_idx(["通過", "コーナー"], 10)
-    IDX_LAST3F = col_idx(["上り"], 11)
-    IDX_ODDS = col_idx(["単勝"], 9)
-    IDX_POP = col_idx(["人気"], 10)
-    IDX_WEIGHT = col_idx(["馬体重"], 13)
-    IDX_TRAINER = col_idx(["調教師"], 14)
-    IDX_PRIZE = col_idx(["賞金"], 15)
+    IDX_CORNER = col_idx(["通過", "コーナー"], -1)
+    IDX_LAST3F = col_idx(["上り"], -1)
+    IDX_ODDS = col_idx(["単勝"], -1)
+    IDX_POP = col_idx(["人気"], -1)
+    IDX_WEIGHT = col_idx(["馬体重"], -1)
+    IDX_TRAINER = col_idx(["調教師"], -1)
+    IDX_PRIZE = col_idx(["賞金"], -1)
 
+    # タイム指数列がある場合の追加確認（デフォルト位置補正）
     has_time_index = any("ﾀｲﾑ指数" in h or "タイム指数" in h for h in header_texts)
     if has_time_index:
-        IDX_CORNER = col_idx(["通過", "コーナー"], 10)
-        IDX_LAST3F = col_idx(["上り"], 11)
-        IDX_ODDS = col_idx(["単勝"], 12)
-        IDX_POP = col_idx(["人気"], 13)
-        IDX_WEIGHT = col_idx(["馬体重"], 14)
-        IDX_TRAINER = col_idx(["調教師"], 18)
-        IDX_PRIZE = col_idx(["賞金"], 20)
+        # col_idx で名前解決できなかった場合のみ位置フォールバックを適用
+        if IDX_ODDS == -1:
+            IDX_ODDS = 13
+        if IDX_POP == -1:
+            IDX_POP = 14
+        if IDX_WEIGHT == -1:
+            IDX_WEIGHT = 15
+    else:
+        if IDX_ODDS == -1:
+            IDX_ODDS = 9
+        if IDX_POP == -1:
+            IDX_POP = 10
+        if IDX_WEIGHT == -1:
+            IDX_WEIGHT = 13
+
+    # 必須列が取得できなかった場合は警告を出す（サイレント欠損防止）
+    for _col_name, _col_idx in [("馬名", IDX_HORSE), ("騎手", IDX_JOCKEY), ("タイム", IDX_TIME)]:
+        if _col_idx < 0 or _col_idx >= len(header_texts):
+            logger.warning(f"必須列 [{_col_name}] が検出できませんでした: {race_id} headers={header_texts}")
 
     logger.debug(f"テーブルヘッダー({race_id}): {header_texts}")
 
@@ -455,7 +494,9 @@ async def scrape_race_full(
     for _ci in range(0, len(unique_horses), 4):
         _chunk = unique_horses[_ci : _ci + 4]
         await asyncio.gather(*[_fetch_detail(h) for h in _chunk])
-    gc.collect()
+        if _ci + 4 < len(unique_horses):
+            await asyncio.sleep(0.5)  # 4頭ごとにインターバル（IP ブロック抑制）
+        gc.collect()
 
     return {
         "race_info": {

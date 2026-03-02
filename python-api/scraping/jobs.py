@@ -4,12 +4,14 @@
 
 import asyncio
 import gc
+import json
 import re
+import sqlite3
 from pathlib import Path
 
 import aiohttp
 
-from scraping.constants import SCRAPE_HEADERS
+from scraping.constants import SCRAPE_HEADERS, SCRAPE_PROXY_URL
 from scraping.race import scrape_race_full
 from scraping.storage import _init_sqlite_db, _save_race_sqlite_only
 
@@ -34,7 +36,79 @@ except ImportError:
 
 
 # ============================================================
-# ジョブストア（メモリ上、Render 再起動でリセット）
+# ジョブ永続化（SQLite）
+# ============================================================
+_JOBS_DB_PATH: Path = Path(__file__).parent.parent.parent / "keiba" / "data" / "scrape_jobs.db"
+
+
+def _init_jobs_db() -> None:
+    try:
+        _JOBS_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(_JOBS_DB_PATH))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS scrape_jobs (
+                job_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL DEFAULT 'queued',
+                progress TEXT DEFAULT '{}',
+                result TEXT DEFAULT 'null',
+                error TEXT DEFAULT 'null',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.warning(f"ジョブDB初期化失敗: {e}")
+
+
+def _persist_job(job_id: str, job: dict) -> None:
+    """ジョブ状態を SQLite に永続化する（失敗は握り潰す）"""
+    try:
+        conn = sqlite3.connect(str(_JOBS_DB_PATH))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("""
+            INSERT OR REPLACE INTO scrape_jobs (job_id, status, progress, result, error, updated_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """, (
+            job_id,
+            job.get("status", "unknown"),
+            json.dumps(job.get("progress", {}), ensure_ascii=False),
+            json.dumps(job.get("result"), ensure_ascii=False),
+            json.dumps(job.get("error"), ensure_ascii=False),
+        ))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass  # ログスパム防止
+
+
+def _load_job_from_db(job_id: str) -> dict | None:
+    """SQLite からジョブ状態を復元する"""
+    try:
+        conn = sqlite3.connect(str(_JOBS_DB_PATH))
+        row = conn.execute(
+            "SELECT status, progress, result, error FROM scrape_jobs WHERE job_id = ?", (job_id,)
+        ).fetchone()
+        conn.close()
+        if row:
+            return {
+                "status": row[0],
+                "progress": json.loads(row[1] or "{}"),
+                "result": json.loads(row[2] or "null"),
+                "error": json.loads(row[3] or "null"),
+            }
+    except Exception:
+        pass
+    return None
+
+
+_init_jobs_db()
+
+
+# ============================================================
+# ジョブストア（メモリ上 + SQLite二重管理）
 # ============================================================
 _scrape_jobs: dict = {}
 _MAX_JOBS = 50
@@ -47,6 +121,13 @@ def _purge_old_jobs(store: dict, max_keep: int = _MAX_JOBS) -> None:
     finished = [k for k, v in store.items() if v.get("status") in ("completed", "error")]
     for key in finished[: len(store) - max_keep]:
         del store[key]
+
+
+def get_job(job_id: str) -> dict | None:
+    """メモリ → SQLite の順でジョブを取得する"""
+    if job_id in _scrape_jobs:
+        return _scrape_jobs[job_id]
+    return _load_job_from_db(job_id)
 
 
 # ============================================================
@@ -97,17 +178,22 @@ async def _run_scrape_job(
                     _sb2 = get_supabase_client()
                     if not _sb2:
                         return {}
+                    # data JSON の date フィールドから正確な日付を取得する
+                    # race_id[:8] = YYYY+venue+kai であり日付ではないため使用禁止
                     _r = (
                         _sb2.table("races_ultimate")
-                        .select("race_id")
-                        .gte("race_id", start_date)
-                        .lte("race_id", end_date + "99")
+                        .select("race_id,data")
                         .execute()
                     )
                     _dc: dict = {}
                     for _row in _r.data or []:
-                        _d = str(_row["race_id"])[:8]
-                        _dc[_d] = _dc.get(_d, 0) + 1
+                        try:
+                            _data = json.loads(_row.get("data") or "{}")
+                            _d = str(_data.get("date") or "")
+                            if len(_d) == 8 and _d.isdigit():
+                                _dc[_d] = _dc.get(_d, 0) + 1
+                        except Exception:
+                            pass
                     return _dc
 
                 _date_count = await asyncio.to_thread(_fetch_scraped_dates)
@@ -128,8 +214,14 @@ async def _run_scrape_job(
         counter = {"races": 0, "horses": 0}
         counter_lock = asyncio.Lock()
 
+        # プロキシ設定（環境変数 SCRAPE_PROXY_URL で指定）
+        _session_kwargs: dict = {}
+        if SCRAPE_PROXY_URL:
+            _session_kwargs["trust_env"] = False
+            logger.info(f"プロキシ使用: {SCRAPE_PROXY_URL}")
+
         async with aiohttp.ClientSession(
-            headers=SCRAPE_HEADERS, timeout=timeout, connector=connector
+            headers=SCRAPE_HEADERS, timeout=timeout, connector=connector, **_session_kwargs
         ) as session:
             for i, date in enumerate(dates):
                 list_url = f"https://db.netkeiba.com/race/list/{date}/"
@@ -214,6 +306,8 @@ async def _run_scrape_job(
                     for ci in range(0, len(race_ids), 2):
                         chunk = race_ids[ci : ci + 2]
                         await asyncio.gather(*[_fetch_and_save(r) for r in chunk])
+                        if ci + 2 < len(race_ids):
+                            await asyncio.sleep(1.0)  # レース間インターバル（IP ブロック抑制）
                         gc.collect()
                     if errors:
                         logger.warning(f"エラー一覧: {errors[:5]}")
@@ -229,6 +323,11 @@ async def _run_scrape_job(
                     "saved_horses": counter["horses"],
                     "last_errors": errors[-3:] if errors else [],
                 }
+                # 進捗を SQLite に永続化（Render スピンダウン対策）
+                _persist_job(job_id, job)
+                # 日付間インターバル（最終日以外）
+                if i < total - 1:
+                    await asyncio.sleep(2.0)
 
         saved_races = counter["races"]
         saved_horses = counter["horses"]
@@ -241,8 +340,10 @@ async def _run_scrape_job(
             "elapsed_time": elapsed,
             "message": f"{saved_races}レース・{saved_horses}頭のデータを収集しました",
         }
+        _persist_job(job_id, job)
     except Exception as e:
         logger.error(f"スクレイピングジョブ失敗 {job_id}: {e}")
         if job_id in _scrape_jobs:
             _scrape_jobs[job_id]["status"] = "error"
             _scrape_jobs[job_id]["error"] = str(e)
+            _persist_job(job_id, _scrape_jobs[job_id])
