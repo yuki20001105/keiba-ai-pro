@@ -66,6 +66,33 @@ def _get_actual_date_to(df: "pd.DataFrame", fallback: "str | None") -> "str | No
     return fallback
 
 
+def _get_date8_from(df: "pd.DataFrame") -> str:  # noqa: F821
+    """学習データ最小日付をYYYYMMDD形式で返す（race_dateカラム優先）"""
+    if "race_date" in df.columns:
+        dates = df["race_date"].dropna().astype(str).str.strip()
+        valid = dates[dates.str.match(r"^\d{8}$")]
+        if len(valid) > 0:
+            return valid.min()
+    # fallback: YYYYMM from race_id → YYYYMM01
+    yms = _extract_ym_from_df(df)
+    if yms:
+        return min(yms) + "01"
+    return datetime.now().strftime("%Y%m%d")
+
+
+def _get_date8_to(df: "pd.DataFrame") -> str:  # noqa: F821
+    """学習データ最大日付をYYYYMMDD形式で返す（race_dateカラム優先）"""
+    if "race_date" in df.columns:
+        dates = df["race_date"].dropna().astype(str).str.strip()
+        valid = dates[dates.str.match(r"^\d{8}$")]
+        if len(valid) > 0:
+            return valid.max()
+    yms = _extract_ym_from_df(df)
+    if yms:
+        return max(yms) + "28"
+    return datetime.now().strftime("%Y%m%d")
+
+
 # ── レース後確定フィールド（学習では除去する）
 TRAIN_POST_RACE_DROP = [
     "finish_time", "time_seconds",
@@ -296,8 +323,10 @@ async def train_model(request: TrainRequest, current_user: dict = Depends(requir
                 detail="use_optimizer=True / model_type='lightgbm' のみサポートされています（87特徴量モード）",
             )
 
-        # モデル保存
-        model_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # モデル保存 — IDはデータ日付範囲 (開始日_終了日)
+        date_from_8 = _get_date8_from(df)
+        date_to_8 = _get_date8_to(df)
+        model_id = f"{date_from_8}_{date_to_8}"
         mode_suffix = "_ultimate"
         model_filename = f"model_{request.target}_{request.model_type}_{model_id}{mode_suffix}.joblib"
         model_path = MODELS_DIR / model_filename

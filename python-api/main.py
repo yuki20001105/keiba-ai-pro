@@ -44,6 +44,7 @@ from middleware.auth import SupabaseJWTMiddleware  # type: ignore
 
 from routers import (  # type: ignore
     backfill,
+    debug_data,
     export,
     internal,
     models_mgmt,
@@ -91,6 +92,7 @@ app.include_router(export.router)
 app.include_router(backfill.router)
 app.include_router(profiling.router)
 app.include_router(internal.router)
+app.include_router(debug_data.router)
 
 
 @app.get("/health")

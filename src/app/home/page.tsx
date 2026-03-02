@@ -6,10 +6,11 @@ import { useUserRole } from '@/hooks/useUserRole'
 import { Logo } from '@/components/Logo'
 
 const NAV_ITEMS = [
-  { href: '/data-collection', label: 'データ取得',  desc: 'レース情報を自動収集',      step: '01' },
-  { href: '/train',           label: 'モデル学習',  desc: 'AIモデルをトレーニング',    step: '02' },
-  { href: '/predict-batch',   label: '予測実行',    desc: 'レース結果を予測・購入推奨', step: '03' },
-  { href: '/dashboard',       label: '履歴・統計',  desc: '購入履歴と成績',            step: '04' },
+  { href: '/data-collection', label: 'データ取得',  desc: 'レース情報を自動収集',        step: '01' },
+  { href: '/train',           label: 'モデル学習',  desc: 'AIモデルをトレーニング',      step: '02' },
+  { href: '/predict-batch',   label: '予測実行',    desc: 'レース結果を予測・購入推奨',   step: '03' },
+  { href: '/dashboard',       label: '履歴・統計',  desc: '購入履歴と成績',              step: '04' },
+  { href: '/data-view',       label: 'データ確認',  desc: '生データ・特徴量を全列表示',   step: 'DBG' },
 ]
 
 export default function HomePage() {
