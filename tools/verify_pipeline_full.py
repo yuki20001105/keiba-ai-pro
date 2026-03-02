@@ -188,8 +188,13 @@ try:
         )
     exclude_meta = {"race_id", "horse_id", "jockey_id", "trainer_id", "owner_id",
                     "finish_position", "finish", "win", "place3"}
-    X_cols = [c for c in df_lgb.columns if c not in exclude_meta
-              and df_lgb[c].dtype != object]
+    # モデルの保存特徴量があれば優先して使う（CSVが100特徴量と一致することを確認）
+    _saved_feats = _pre_bundle.get("feature_columns", []) if _pre_bundle else []
+    if _saved_feats:
+        X_cols = [c for c in _saved_feats if c in df_lgb.columns]
+    else:
+        X_cols = [c for c in df_lgb.columns if c not in exclude_meta
+                  and df_lgb[c].dtype != object]
     print(f"  最適化後カラム数: {len(df_lgb.columns)}")
     print(f"  AI 入力特徴量数  : {len(X_cols)}")
     print(f"  カテゴリカル特徴量 ({len(categorical_features)}件): {categorical_features}")
@@ -346,6 +351,19 @@ if target_race_id and model_path:
                 horse_records.append(hd)
 
             df_pred = pd.DataFrame(horse_records)
+
+            # ── POST_RACE_FIELDS をクリア（予測前には存在しないデータ = リーク防止） ──
+            # 本番の predict.py では POST_RACE_FIELDS で除外しているため、
+            # 検証でも同じ条件で評価するためにここで null 化する
+            POST_RACE_FIELDS = [
+                'finish', 'finish_position', 'time', 'finish_time',
+                'margin', 'corner_1', 'corner_2', 'corner_3', 'corner_4',
+                'corner_positions', 'last_3f', 'last_3f_time', 'last_3f_rank',
+                'prize_money', 'time_seconds',
+            ]
+            for _prf in POST_RACE_FIELDS:
+                if _prf in df_pred.columns:
+                    df_pred[_prf] = None
 
             # カラム名正規化
             col_map = {

@@ -178,11 +178,13 @@ class LightGBMFeatureOptimizer:
             'prev_race_weight',       # 前走馬体重
             'prev2_race_finish',      # 前々走着順
 
-            # 馬の通算成績
-            'horse_total_runs',       # 通算出走回数
-            'horse_total_wins',       # 通算勝利数
-            'horse_total_prize_money',# 通算獲得賞金
-            'horse_win_rate',         # 通算勝率
+            # 馬の通算成績 ─── NOTE: P3 で再スクレイプ後に復活予定
+            # 現在の学習データで全て 0（旧スクレイパーが未取得）→ 予測時との分布乖離大
+            # 再スクレイプ完了後に unnecessary_cols から外して再学習すること
+            # 'horse_total_runs',       # 通算出走回数
+            # 'horse_total_wins',       # 通算勝利数
+            # 'horse_total_prize_money',# 通算獲得賞金
+            # 'horse_win_rate',         # 通算勝率
 
             # 市場分析
             'market_entropy',         # 市場エントロピー（混戦度）
@@ -213,12 +215,13 @@ class LightGBMFeatureOptimizer:
             'damsire_avg_finish',
             'damsire_race_count',
 
-            # コーナー派生特徴
-            'corner_position_avg',
-            'corner_position_variance',
-            'last_corner_position',
-            'position_change',
-            'corner_1', 'corner_2', 'corner_3', 'corner_4',
+            # コーナー派生特徴 ─── NOTE: 当該レース結果（リーク）のため unnecessary_cols で削除
+            # 過去N走平均コーナー位置を UltimateFeatureCalculator で実装予定（P2以降）
+            # 'corner_position_avg',
+            # 'corner_position_variance',
+            # 'last_corner_position',
+            # 'position_change',
+            # 'corner_1', 'corner_2', 'corner_3', 'corner_4',
 
             # ラップタイム（距離別）
             'lap_200m', 'lap_400m', 'lap_600m', 'lap_800m',
@@ -228,11 +231,29 @@ class LightGBMFeatureOptimizer:
             'lap_sect_1000m', 'lap_sect_1200m', 'lap_sect_1400m', 'lap_sect_1600m',
             'lap_sect_1800m', 'lap_sect_2000m', 'lap_sect_2200m', 'lap_sect_2400m',
 
-            # その他派生特徴
-            'last_3f_rank',
-            'last_3f_rank_normalized',
+            # その他派生特徴 ─── NOTE: last_3f系・time_seconds はリーク → unnecessary_cols で削除
+            # 'last_3f_rank',
+            # 'last_3f_rank_normalized',
             'inner_advantage',
-            'time_seconds',
+            # 'time_seconds',           # リーク → unnecessary_cols で削除
+
+            # P2-7: スピード指標（前走タイム÷距離）
+            'prev_speed_index',       # 前走速度指標 (m/s)
+            'prev_speed_zscore',      # 前走速度の同条件zスコア
+
+            # P2-8: 馬場・距離帯適性
+            'horse_surface_win_rate',      # 馬の同馬場勝率
+            'horse_surface_races',         # 馬の同馬場出走数
+            'horse_dist_band_win_rate',    # 馬の距離帯別勝率
+            'horse_dist_band_races',       # 馬の距離帯別出走数
+
+            # P2-9: 枠番バイアス
+            'gate_win_rate',          # (会場×距離帯×馬場)での枠番勝率
+
+            # P3-10: 騎手×調教師コンビ成績
+            'jt_combo_races',         # 騎手×調教師コンビ出走数
+            'jt_combo_win_rate',      # 騎手×調教師コンビ勝率
+            'jt_combo_win_rate_smooth', # ベイズ平滑化後
         ]
         
         available_numeric = [col for col in numeric_features if col in df.columns]
@@ -395,6 +416,16 @@ class LightGBMFeatureOptimizer:
             'last_3f_rank', 'last_3f_rank_normalized', 'last_3f_time',
             # prev_race_surface/prev2_race_surface は _add_feature_transforms 内で
             # is_surface_change を生成した後に削除するため、ここには含めない
+
+            # ──── P0-1: 通算成績（学習データで全て0 → 学習/予測の分布乖離）────
+            # IPブロック解除後の再スクレイプ完了まで除外（P3完了後に外すこと）
+            'horse_total_runs', 'horse_total_wins', 'horse_total_prize_money', 'horse_win_rate',
+            'log_prize',         # horse_total_prize_moneyの対数変換
+            'log_total_runs',    # horse_total_runsの対数変換
+
+            # ──── P1-4: 芝ダ変更フラグ（prev_race_surfaceが未収録 → 常に0）────
+            # 全レコードにprev_race_surfaceが補完されたらここから外して再学習すること
+            'is_surface_change',
         ]
         
         for col in unnecessary_cols:
@@ -531,6 +562,11 @@ class LightGBMFeatureOptimizer:
             # 重複
             'weight_kg', 'weight_change',
             # prev_race_surface/prev2_race_surface は _add_feature_transforms で削除
+            # P0-1: 通算成績（学習データで全て0 → P3再スクレイプ後に復活）
+            'horse_total_runs', 'horse_total_wins', 'horse_total_prize_money', 'horse_win_rate',
+            'log_prize', 'log_total_runs',
+            # P1-4: 芝ダ変更フラグ（prev_race_surface が未収録 → 常に0）
+            'is_surface_change',
         ]
         for col in unnecessary_cols:
             if col in df.columns:
@@ -715,11 +751,14 @@ class LightGBMFeatureOptimizer:
             df['log_odds'] = np.log1p(
                 pd.to_numeric(df['odds'], errors='coerce').fillna(50)
             )
-        if 'horse_total_prize_money' in df.columns:
+        # P0-1: 通算成績は学習データで全て0のため除外中（P3再スクレイプ後に復活）
+        # horse_total_prize_money / horse_total_runs は unnecessary_cols で削除されるため
+        # log変換もスキップ（分布乖離修正まで）
+        if False and 'horse_total_prize_money' in df.columns:
             df['log_prize'] = np.log1p(
                 pd.to_numeric(df['horse_total_prize_money'], errors='coerce').fillna(0)
             )
-        if 'horse_total_runs' in df.columns:
+        if False and 'horse_total_runs' in df.columns:
             df['log_total_runs'] = np.log1p(
                 pd.to_numeric(df['horse_total_runs'], errors='coerce').fillna(0)
             )

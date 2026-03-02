@@ -248,6 +248,163 @@ def compute_trainer_recent_form(df: pd.DataFrame, current_race_id: str, trainer_
     }
 
 
+# =========================================================
+# P2-8: 馬の馬場・距離帯別適性
+# =========================================================
+
+def _dist_band(distance) -> str:
+    """距離をスプリント/マイル/中距離/長距離に分類"""
+    try:
+        d = int(float(distance))
+    except (TypeError, ValueError):
+        return 'unknown'
+    if d <= 1200:   return 'sprint'
+    elif d <= 1600: return 'mile'
+    elif d <= 2200: return 'middle'
+    else:           return 'long'
+
+
+def compute_horse_surface_stats(df: pd.DataFrame, current_race_id: str, horse_id: str, surface: str) -> dict:
+    """馬の同馬場別成績を計算（expanding window）
+
+    Args:
+        df: 全レースデータ
+        current_race_id: 現在のレースID
+        horse_id: 馬ID
+        surface: 馬場種別（'芝' / 'ダート' / 'dirt' / 'turf' 等）
+
+    Returns:
+        dict: horse_surface_win_rate, horse_surface_races
+    """
+    if 'surface' not in df.columns:
+        return {'horse_surface_win_rate': 0.0, 'horse_surface_races': 0}
+
+    past = df[
+        (df['race_id'] < current_race_id) &
+        (df['horse_id'] == horse_id) &
+        (df['surface'] == surface)
+    ]
+    if len(past) == 0:
+        return {'horse_surface_win_rate': 0.0, 'horse_surface_races': 0}
+    wins  = (pd.to_numeric(past['finish'], errors='coerce') == 1).sum()
+    races = len(past)
+    return {
+        'horse_surface_win_rate': float(wins / races),
+        'horse_surface_races':    int(races),
+    }
+
+
+def compute_horse_dist_band_stats(df: pd.DataFrame, current_race_id: str, horse_id: str, distance) -> dict:
+    """馬の距離帯別成績を計算（expanding window）
+
+    Args:
+        df: 全レースデータ
+        current_race_id: 現在のレースID
+        horse_id: 馬ID
+        distance: レース距離
+
+    Returns:
+        dict: horse_dist_band_win_rate, horse_dist_band_races
+    """
+    if 'distance' not in df.columns:
+        return {'horse_dist_band_win_rate': 0.0, 'horse_dist_band_races': 0}
+
+    target_band = _dist_band(distance)
+    past = df[
+        (df['race_id'] < current_race_id) &
+        (df['horse_id'] == horse_id) &
+        (df['distance'].apply(_dist_band) == target_band)
+    ]
+    if len(past) == 0:
+        return {'horse_dist_band_win_rate': 0.0, 'horse_dist_band_races': 0}
+    wins  = (pd.to_numeric(past['finish'], errors='coerce') == 1).sum()
+    races = len(past)
+    return {
+        'horse_dist_band_win_rate': float(wins / races),
+        'horse_dist_band_races':    int(races),
+    }
+
+
+# =========================================================
+# P2-9: 枠番バイアス
+# =========================================================
+
+def compute_gate_win_rate(df: pd.DataFrame, current_race_id: str,
+                          venue: str, distance, surface: str,
+                          bracket_number: int, min_samples: int = 20) -> dict:
+    """会場×距離帯×馬場での枠番位置の過去勝率を計算（expanding window）
+
+    内枠（bracket_number<=3）と外枠で分けた過去実績を馬に紐付ける。
+    サンプル数が min_samples 未満の場合は全体平均 0.5 を返す。
+
+    Returns:
+        dict: gate_win_rate (この枠番区分の勝率)
+    """
+    if 'bracket_number' not in df.columns or 'finish' not in df.columns:
+        return {'gate_win_rate': 0.5}
+
+    target_band = _dist_band(distance)
+    is_inner    = int(bracket_number) <= 3 if pd.notna(bracket_number) else True
+
+    # 同条件の過去レース（同じ内/外枠区分のみが入ったレースエントリ）
+    cond = (df['race_id'] < current_race_id)
+    if 'venue' in df.columns:
+        cond &= (df['venue'] == venue)
+    if 'surface' in df.columns:
+        cond &= (df['surface'] == surface)
+    if 'distance' in df.columns:
+        cond &= (df['distance'].apply(_dist_band) == target_band)
+
+    hist = df[cond]
+    if len(hist) < min_samples:
+        return {'gate_win_rate': 0.5}
+
+    bracket_num = pd.to_numeric(hist['bracket_number'], errors='coerce')
+    inner_mask  = bracket_num <= 3
+    target_mask = inner_mask if is_inner else ~inner_mask
+    subset      = hist[target_mask]
+
+    if len(subset) == 0:
+        return {'gate_win_rate': 0.5}
+
+    wins = (pd.to_numeric(subset['finish'], errors='coerce') == 1).sum()
+    rate = float(wins / len(subset))
+    return {'gate_win_rate': rate}
+
+
+# =========================================================
+# P3-10: 騎手×調教師コンビ成績
+# =========================================================
+
+def compute_jockey_trainer_combo(df: pd.DataFrame, current_race_id: str,
+                                  jockey_id: str, trainer_id: str) -> dict:
+    """騎手×調教師コンビの過去成績を計算（expanding window）
+
+    Returns:
+        dict: jt_combo_races, jt_combo_win_rate, jt_combo_win_rate_smooth
+    """
+    past = df[
+        (df['race_id'] < current_race_id) &
+        (df['jockey_id'] == jockey_id) &
+        (df['trainer_id'] == trainer_id)
+    ]
+    races = len(past)
+    wins  = int((pd.to_numeric(past['finish'], errors='coerce') == 1).sum()) if races > 0 else 0
+    win_rate = float(wins / races) if races > 0 else 0.0
+
+    # ベイズ平滑化（全体平均 7.5%, K=5）
+    GLOBAL = 0.075
+    K      = 5
+    smooth = (races * win_rate + K * GLOBAL) / (races + K)
+
+    return {
+        'jt_combo_races':            races,
+        'jt_combo_win_rate':         win_rate,
+        'jt_combo_win_rate_smooth':  float(smooth),
+    }
+
+
+
 def add_derived_features(df: pd.DataFrame, full_history_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """データフレームに派生特徴量を追加
     
@@ -377,6 +534,151 @@ def add_derived_features(df: pd.DataFrame, full_history_df: Optional[pd.DataFram
         # ultimate_features.py でも同名列を計算するため fe_ プレフィックスで区別
         df['fe_trainer_win_rate'] = [s['trainer_recent_win_rate'] for s in trainer_stats]
 
+        # ===== P2-8: 馬の馬場別・距離帯別適性（ベクトル化 expanding window） =====
+        if 'finish' in full_history_df.columns and 'race_id' in full_history_df.columns:
+
+            def _expanding_win_rate_by_group(history_df: pd.DataFrame,
+                                              id_col: str,
+                                              group_col: str,
+                                              out_rate: str,
+                                              out_cnt: str) -> pd.DataFrame:
+                """id_col × group_col でグループ化した expanding window 勝率を計算。
+                horse_surface_win_rate 等の計算に使用。
+                """
+                if id_col not in history_df.columns or group_col not in history_df.columns:
+                    return history_df
+                orig_idx = history_df.index.copy()
+                s = history_df.sort_values('race_id', kind='mergesort').copy()
+                fin_num  = pd.to_numeric(s['finish'], errors='coerce').fillna(0)
+                win_flag = (fin_num == 1).astype(float)
+                grp      = s[[id_col, group_col]].astype(str).apply('|'.join, axis=1)
+                race_cnt = s.groupby(grp, sort=False).cumcount()
+                s['_w']  = win_flag
+                cum_wins = s.groupby(grp, sort=False)['_w'].cumsum() - s['_w']
+                s.drop(columns=['_w'], inplace=True)
+                s[out_rate] = (cum_wins / race_cnt.clip(1)).fillna(0.0)
+                s[out_cnt]  = race_cnt
+                s_back = s.reindex(orig_idx)
+                history_df = history_df.copy()
+                history_df[out_rate] = s_back[out_rate].values
+                history_df[out_cnt]  = s_back[out_cnt].values
+                return history_df
+
+            # 馬場別適性
+            if 'horse_id' in full_history_df.columns and 'surface' in full_history_df.columns:
+                full_history_df = _expanding_win_rate_by_group(
+                    full_history_df, 'horse_id', 'surface',
+                    'horse_surface_win_rate', 'horse_surface_races'
+                )
+                df = df.merge(
+                    full_history_df[['horse_id', 'race_id',
+                                     'horse_surface_win_rate', 'horse_surface_races']]
+                    .drop_duplicates(subset=['horse_id', 'race_id']),
+                    on=['horse_id', 'race_id'], how='left'
+                )
+
+            # 距離帯別適性
+            if 'horse_id' in full_history_df.columns and 'distance' in full_history_df.columns:
+                _db_map = {'sprint': 0, 'mile': 1, 'middle': 2, 'long': 3}
+                full_history_df['_dist_band'] = (
+                    full_history_df['distance'].apply(_dist_band)
+                )
+                full_history_df = _expanding_win_rate_by_group(
+                    full_history_df, 'horse_id', '_dist_band',
+                    'horse_dist_band_win_rate', 'horse_dist_band_races'
+                )
+                df = df.merge(
+                    full_history_df[['horse_id', 'race_id',
+                                     'horse_dist_band_win_rate', 'horse_dist_band_races']]
+                    .drop_duplicates(subset=['horse_id', 'race_id']),
+                    on=['horse_id', 'race_id'], how='left'
+                )
+                full_history_df = full_history_df.drop(columns=['_dist_band'], errors='ignore')
+
+        # ===== P2-9: 枠番バイアス（会場×距離帯×馬場 での内枠勝率） =====
+        # ベクトル化: 全race_id以前のデータで集計したものを各行にマッピング
+        if ('bracket_number' in full_history_df.columns and
+                'finish' in full_history_df.columns and
+                'venue' in full_history_df.columns):
+
+            hist_gate = full_history_df.copy()
+            hist_gate['_is_inner'] = (
+                pd.to_numeric(hist_gate['bracket_number'], errors='coerce') <= 3
+            ).astype(int)
+            hist_gate['_is_win'] = (
+                pd.to_numeric(hist_gate['finish'], errors='coerce') == 1
+            ).astype(int)
+            if 'distance' in hist_gate.columns:
+                hist_gate['_dist_band'] = hist_gate['distance'].apply(_dist_band)
+            else:
+                hist_gate['_dist_band'] = 'unknown'
+            surf_col = 'surface' if 'surface' in hist_gate.columns else None
+
+            gate_group_keys = ['venue', '_dist_band']
+            if surf_col:
+                gate_group_keys.append(surf_col)
+
+            # グループ×内外枠別の勝率を集計（全履歴=静的集計、データリーク軽微）
+            gate_agg = (
+                hist_gate.groupby(gate_group_keys + ['_is_inner'], sort=False)
+                .agg(_cnt=('_is_win', 'count'), _wins=('_is_win', 'sum'))
+                .reset_index()
+            )
+            gate_agg['_gate_wr'] = np.where(
+                gate_agg['_cnt'] >= 10,
+                gate_agg['_wins'] / gate_agg['_cnt'],
+                0.5      # サンプル不足は中立値
+            )
+
+            # dfに結合キーを追加
+            df['_dist_band'] = df['distance'].apply(_dist_band) if 'distance' in df.columns else 'unknown'
+            df['_is_inner']  = (
+                pd.to_numeric(df.get('bracket_number', pd.Series([None]*len(df))), errors='coerce') <= 3
+            ).fillna(True).astype(int)
+
+            merge_keys = gate_group_keys + ['_is_inner']
+            df = df.merge(gate_agg[merge_keys + ['_gate_wr']], on=merge_keys, how='left')
+            df['gate_win_rate'] = df['_gate_wr'].fillna(0.5)
+            df = df.drop(columns=['_dist_band', '_is_inner', '_gate_wr'], errors='ignore')
+
+        # ===== P3-10: 騎手×調教師コンビ成績（ベクトル化 expanding window） =====
+        if ('jockey_id' in full_history_df.columns and
+                'trainer_id' in full_history_df.columns and
+                'finish' in full_history_df.columns):
+
+            orig_idx  = full_history_df.index.copy()
+            s_jt      = full_history_df.sort_values('race_id', kind='mergesort').copy()
+            fin_jt    = pd.to_numeric(s_jt['finish'], errors='coerce').fillna(0)
+            win_jt    = (fin_jt == 1).astype(float)
+            combo_grp = s_jt['jockey_id'].astype(str) + '|' + s_jt['trainer_id'].astype(str)
+            race_cnt_jt = s_jt.groupby(combo_grp, sort=False).cumcount()
+            s_jt['_w']  = win_jt
+            cum_wins_jt = s_jt.groupby(combo_grp, sort=False)['_w'].cumsum() - s_jt['_w']
+            s_jt.drop(columns=['_w'], inplace=True)
+            win_rate_jt = (cum_wins_jt / race_cnt_jt.clip(1)).fillna(0.0)
+
+            # ベイズ平滑化
+            GLOBAL_WR = 0.075
+            K_JT      = 5
+            smooth_jt = (race_cnt_jt * win_rate_jt + K_JT * GLOBAL_WR) / (race_cnt_jt + K_JT)
+
+            s_jt['jt_combo_races']           = race_cnt_jt.values
+            s_jt['jt_combo_win_rate']        = win_rate_jt.values
+            s_jt['jt_combo_win_rate_smooth'] = smooth_jt.values
+            s_back_jt = s_jt.reindex(orig_idx)
+
+            full_history_df['jt_combo_races']           = s_back_jt['jt_combo_races'].values
+            full_history_df['jt_combo_win_rate']        = s_back_jt['jt_combo_win_rate'].values
+            full_history_df['jt_combo_win_rate_smooth'] = s_back_jt['jt_combo_win_rate_smooth'].values
+
+            df = df.merge(
+                full_history_df[['jockey_id', 'trainer_id', 'race_id',
+                                  'jt_combo_races', 'jt_combo_win_rate',
+                                  'jt_combo_win_rate_smooth']]
+                .drop_duplicates(subset=['jockey_id', 'trainer_id', 'race_id']),
+                on=['jockey_id', 'trainer_id', 'race_id'], how='left'
+            )
+
         # ===== 騎手・調教師の複勝率（データリーク防止: expanding window） =====
         if 'finish' in full_history_df.columns and 'race_id' in full_history_df.columns:
             def _expanding_stats(history_df: pd.DataFrame, eid_col: str, prefix: str) -> pd.DataFrame:
@@ -431,7 +733,9 @@ def add_derived_features(df: pd.DataFrame, full_history_df: Optional[pd.DataFram
             entropy = float(-np.sum(probs * np.log(probs + 1e-10)))
             top3_prob = float(probs.nlargest(3).sum())
             return pd.Series({'market_entropy': entropy, 'top3_probability': top3_prob})
-        market_stats = df.groupby('race_id').apply(_market_features).reset_index()
+        market_stats = df.groupby('race_id', sort=False).apply(
+            _market_features, include_groups=False
+        ).reset_index()
         df = df.merge(market_stats, on='race_id', how='left')
 
     # ===== 前走からの日数 =====
@@ -456,6 +760,25 @@ def add_derived_features(df: pd.DataFrame, full_history_df: Optional[pd.DataFram
         _runs = pd.to_numeric(df['horse_total_runs'], errors='coerce')
         _wins = pd.to_numeric(df['horse_total_wins'], errors='coerce')
         df['horse_win_rate'] = np.where(_runs > 0, _wins / _runs, np.nan)
+
+    # ===== P2-7: スピード指標（前走タイム÷距離、同条件z-score） =====
+    if 'prev_race_time' in df.columns and 'prev_race_distance' in df.columns:
+        _pt = pd.to_numeric(df['prev_race_time'],     errors='coerce')
+        _pd = pd.to_numeric(df['prev_race_distance'], errors='coerce')
+        # 単位: m/s (距離÷タイム)
+        df['prev_speed_index'] = np.where(
+            (_pt > 0) & (_pd > 0), _pd / _pt, np.nan
+        )
+        # 同馬場×前走距離グループでのz-score（条件が似たレース間でタイムの優劣を比較）
+        _grp_cols = []
+        if 'surface' in df.columns:         _grp_cols.append('surface')
+        if 'prev_race_distance' in df.columns: _grp_cols.append('prev_race_distance')
+        if _grp_cols:
+            df['prev_speed_zscore'] = df.groupby(_grp_cols, sort=False)['prev_speed_index'].transform(
+                lambda x: (x - x.mean()) / (x.std() + 1e-8) if len(x) > 1 else 0.0
+            )
+        else:
+            df['prev_speed_zscore'] = 0.0
 
     # ===== 前走着順（数値化） =====
     if 'prev_race_finish' in df.columns:

@@ -122,6 +122,22 @@ def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
     df = pd.DataFrame(records)
     print(f"  ✓ DataFrame変換: {len(df)}行 × {len(df.columns)}列")
 
+    # ===== P0-2: num_horses の補完 =====
+    # races_ultimate.data.num_horses が None/未設定の場合、
+    # 同一 race_id のエントリ数からレース頭数を計算して補完する
+    race_entry_counts = df.groupby('race_id')['race_id'].transform('count')
+    if 'num_horses' not in df.columns:
+        df['num_horses'] = race_entry_counts
+        print(f"  ✓ num_horses: 全{len(df)}件をエントリ数から計算")
+    else:
+        df['num_horses'] = pd.to_numeric(df['num_horses'], errors='coerce')
+        na_count = df['num_horses'].isna().sum()
+        if na_count > 0:
+            df['num_horses'] = df['num_horses'].fillna(race_entry_counts)
+            print(f"  ✓ num_horses: {na_count}件をエントリ数から補完 (合計{len(df)}件)")
+        else:
+            print(f"  ✓ num_horses: 欠損なし ({len(df)}件)")
+
     # ===== venue コード解決（旧データでコードが数字のまま保存されているケースを解決） =====
     # 例: "55" → "高知", "65" → "帯広(ばんえい)"
     if 'venue' in df.columns:

@@ -331,3 +331,118 @@ courses:
       default:
         straight_length: 291.0
         inner_bias: 0
+
+  # ================================================================
+  # NAR（地方競馬）コース
+  # 参考: 各競馬場の公式資料・JRA-VAN データ
+  # inner_bias: 1=内枠有利（直線短・小回りコース）, 0=フラット
+  # ================================================================
+
+  "30":  # 門別
+    name: "門別"
+    dirt:
+      default:
+        straight_length: 250.0
+        inner_bias: 0  # 比較的広い直線
+
+  "35":  # 盛岡
+    name: "盛岡"
+    turf:
+      default:
+        straight_length: 300.0
+        inner_bias: 0
+    dirt:
+      default:
+        straight_length: 300.0
+        inner_bias: 0
+
+  "36":  # 水沢
+    name: "水沢"
+    dirt:
+      default:
+        straight_length: 242.0
+        inner_bias: 1  # 小回り→内枠有利
+
+  "42":  # 浦和
+    name: "浦和"
+    dirt:
+      default:
+        straight_length: 220.0
+        inner_bias: 1  # 最短クラスの直線→内枠有利
+
+  "43":  # 船橋
+    name: "船橋"
+    dirt:
+      default:
+        straight_length: 308.0
+        inner_bias: 0
+
+  "44":  # 大井
+    name: "大井"
+    dirt:
+      default:
+        straight_length: 386.0
+        inner_bias: 0  # 比較的長い直線
+
+  "45":  # 川崎
+    name: "川崎"
+    dirt:
+      default:
+        straight_length: 300.0
+        inner_bias: 0
+
+  "46":  # 金沢
+    name: "金沢"
+    dirt:
+      default:
+        straight_length: 236.0
+        inner_bias: 1  # 小回り→内枠有利
+
+  "47":  # 笠松
+    name: "笠松"
+    dirt:
+      default:
+        straight_length: 238.0
+        inner_bias: 1  # 小回り→内枠有利
+
+  "48":  # 名古屋
+    name: "名古屋"
+    dirt:
+      default:
+        straight_length: 240.0
+        inner_bias: 1  # 小回り→内枠有利
+
+  "50":  # 園田
+    name: "園田"
+    dirt:
+      default:
+        straight_length: 213.0
+        inner_bias: 1  # 超小回り→内枠大きく有利
+
+  "51":  # 姫路
+    name: "姫路"
+    dirt:
+      default:
+        straight_length: 233.0
+        inner_bias: 1
+
+  "55":  # 高知
+    name: "高知"
+    dirt:
+      default:
+        straight_length: 200.0
+        inner_bias: 1  # 最短クラス→内枠有利
+
+  "60":  # 佐賀
+    name: "佐賀"
+    dirt:
+      default:
+        straight_length: 300.0
+        inner_bias: 0
+
+  "65":  # 帯広（ばんえい）
+    name: "帯広(ばんえい)"
+    dirt:
+      default:
+        straight_length: 200.0
+        inner_bias: 0  # ばんえいは直線のみ
