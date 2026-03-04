@@ -178,13 +178,11 @@ class LightGBMFeatureOptimizer:
             'prev_race_weight',       # 前走馬体重
             'prev2_race_finish',      # 前々走着順
 
-            # 馬の通算成績 ─── NOTE: P3 で再スクレイプ後に復活予定
-            # 現在の学習データで全て 0（旧スクレイパーが未取得）→ 予測時との分布乖離大
-            # 再スクレイプ完了後に unnecessary_cols から外して再学習すること
-            # 'horse_total_runs',       # 通算出走回数
-            # 'horse_total_wins',       # 通算勝利数
-            # 'horse_total_prize_money',# 通算獲得賞金
-            # 'horse_win_rate',         # 通算勝率
+            # 馬の通算成績 ─── P3 再スクレイプ完了（2026-03-04）で復活
+            'horse_total_runs',       # 通算出走回数
+            'horse_total_wins',       # 通算勝利数
+            'horse_total_prize_money',# 通算獲得賞金
+            'horse_win_rate',         # 通算勝率
 
             # 市場分析
             'market_entropy',         # 市場エントロピー（混戦度）
@@ -417,12 +415,6 @@ class LightGBMFeatureOptimizer:
             # prev_race_surface/prev2_race_surface は _add_feature_transforms 内で
             # is_surface_change を生成した後に削除するため、ここには含めない
 
-            # ──── P0-1: 通算成績（学習データで全て0 → 学習/予測の分布乖離）────
-            # IPブロック解除後の再スクレイプ完了まで除外（P3完了後に外すこと）
-            'horse_total_runs', 'horse_total_wins', 'horse_total_prize_money', 'horse_win_rate',
-            'log_prize',         # horse_total_prize_moneyの対数変換
-            'log_total_runs',    # horse_total_runsの対数変換
-
             # ──── P1-4: 芝ダ変更フラグ（prev_race_surfaceが未収録 → 常に0）────
             # 全レコードにprev_race_surfaceが補完されたらここから外して再学習すること
             'is_surface_change',
@@ -562,9 +554,6 @@ class LightGBMFeatureOptimizer:
             # 重複
             'weight_kg', 'weight_change',
             # prev_race_surface/prev2_race_surface は _add_feature_transforms で削除
-            # P0-1: 通算成績（学習データで全て0 → P3再スクレイプ後に復活）
-            'horse_total_runs', 'horse_total_wins', 'horse_total_prize_money', 'horse_win_rate',
-            'log_prize', 'log_total_runs',
             # P1-4: 芝ダ変更フラグ（prev_race_surface が未収録 → 常に0）
             'is_surface_change',
         ]
@@ -751,14 +740,12 @@ class LightGBMFeatureOptimizer:
             df['log_odds'] = np.log1p(
                 pd.to_numeric(df['odds'], errors='coerce').fillna(50)
             )
-        # P0-1: 通算成績は学習データで全て0のため除外中（P3再スクレイプ後に復活）
-        # horse_total_prize_money / horse_total_runs は unnecessary_cols で削除されるため
-        # log変換もスキップ（分布乖離修正まで）
-        if False and 'horse_total_prize_money' in df.columns:
+        # P3再スクレイプ完了（2026-03-04）: log_prize / log_total_runs を再有効化
+        if 'horse_total_prize_money' in df.columns:
             df['log_prize'] = np.log1p(
                 pd.to_numeric(df['horse_total_prize_money'], errors='coerce').fillna(0)
             )
-        if False and 'horse_total_runs' in df.columns:
+        if 'horse_total_runs' in df.columns:
             df['log_total_runs'] = np.log1p(
                 pd.to_numeric(df['horse_total_runs'], errors='coerce').fillna(0)
             )
