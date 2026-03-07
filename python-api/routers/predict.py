@@ -145,6 +145,10 @@ async def predict(request: PredictRequest, http_req: Request):
             except Exception:
                 proba = model.predict_proba(X)[:, 1]
 
+        # [A1] p_raw：キャリブレーション前の生スコア（ランキング用・連続値）
+        import numpy as _np
+        p_raw = _np.array(proba, dtype=float)
+
         # [L3-3] 確率キャリブレーション（アイソトニック回帰）
         calibrator = bundle.get("calibrator")
         if calibrator is not None:
@@ -152,6 +156,10 @@ async def predict(request: PredictRequest, http_req: Request):
                 proba = calibrator.predict(proba)
             except Exception as _cal_err:
                 logger.warning(f"[キャリブレーションエラー] {_cal_err} → 未キャリブレースで続行")
+
+        # [A1] p_norm：p_raw をレース内合計1に正規化（買い目設計用）
+        _raw_sum = p_raw.sum()
+        p_norm = (p_raw / _raw_sum) if _raw_sum > 0 else p_raw
 
         predictions = []
         for i, (_, row) in enumerate(df.iterrows()):
@@ -162,10 +170,13 @@ async def predict(request: PredictRequest, http_req: Request):
                 "horse_number": horse_num,
                 "horse_name": str(_hn),
                 "probability": float(proba[i]),
+                "p_raw": float(p_raw[i]),
+                "p_norm": float(p_norm[i]),
                 "odds": float(row.get("odds", row.get("entry_odds", 0.0))),
             })
 
-        predictions.sort(key=lambda x: x["probability"], reverse=True)
+        # [A1] ソートは p_raw ベース（キャリブ量子化によるタイ回避）
+        predictions.sort(key=lambda x: x["p_raw"], reverse=True)
         for rank, pred in enumerate(predictions, start=1):
             pred["predicted_rank"] = rank
 
@@ -369,15 +380,24 @@ async def analyze_race(request: AnalyzeRaceRequest):
             assert_feature_columns(X_pred, bundle)
             X_pred = verify_feature_columns(X_pred, bundle)
 
-            win_probs = model.predict(X_pred)
+            win_probs_raw = model.predict(X_pred)
+
+            # [A1] p_raw：キャリブレーション前の生スコア（ランキング用・連続値）
+            import numpy as _np2
+            _wp_raw = _np2.array(win_probs_raw, dtype=float)
 
             # [L3-3] キャリブレーション適用
             _cal = bundle.get("calibrator")
+            win_probs = _wp_raw.copy()
             if _cal is not None:
                 try:
                     win_probs = _cal.predict(win_probs)
                 except Exception:
                     pass  # キャリブレーター失敗時はそのまま使用
+
+            # [A1] p_norm：p_raw をレース内合計1に正規化（買い目設計用）
+            _wp_sum = _wp_raw.sum()
+            _wp_norm = (_wp_raw / _wp_sum) if _wp_sum > 0 else _wp_raw
 
             predictions = []
             for i, _hr in enumerate(_horse_records):
@@ -396,7 +416,9 @@ async def analyze_race(request: AnalyzeRaceRequest):
                     "horse_weight": _hr.get("weight_kg") or _hr.get("horse_weight"),
                     "odds": _odds_float, "popularity": _hr.get("popularity"),
                     "win_probability": float(win_probs[i]),
-                    "expected_value": float(win_probs[i] * _odds_float),
+                    "p_raw": float(_wp_raw[i]),
+                    "p_norm": float(_wp_norm[i]),
+                    "expected_value": float(_wp_raw[i] * _odds_float),
                 })
 
         recommender = BettingRecommender(

@@ -200,14 +200,21 @@ _regen_drop = {"win", "place", "race_id", "horse_id", "jockey_id", "trainer_id",
 X_pred = X_pred.drop(columns=[c for c in _regen_drop if c in X_pred.columns])
 assert_feature_columns(X_pred, bundle)
 X_pred = verify_feature_columns(X_pred, bundle)
-probs  = model.predict(X_pred)
-# [L3-3] キャリブレーション適用
+import numpy as _np
+_p_raw = _np.array(model.predict(X_pred), dtype=float)
+
+# [L3-3] キャリブレーション適用（量子化注意: IsotonicRegressionはステップ関数）
 _cal = bundle.get("calibrator")
+probs_cal = _p_raw.copy()
 if _cal is not None:
     try:
-        probs = _cal.predict(probs)
+        probs_cal = _cal.predict(_p_raw)
     except Exception:
         pass  # キャリブレーター失敗時はそのまま
+
+# [A1] p_norm：p_raw をレース内合計1に正規化（買い目設計用）
+_raw_sum = _p_raw.sum()
+_p_norm = (_p_raw / _raw_sum) if _raw_sum > 0 else _p_raw
 
 preds = []
 for i, rec in enumerate(horse_records):
@@ -216,9 +223,12 @@ for i, rec in enumerate(horse_records):
         "horse_name"     : str(rec.get("horse_name", f"馬{i+1}")),
         "odds"           : float(rec.get("odds") or 0),
         "actual_finish"  : rec.get("finish_position") or rec.get("finish"),
-        "win_probability": float(probs[i]),
+        "win_probability": float(probs_cal[i]),   # キャリブ後（解釈用）
+        "p_raw"          : float(_p_raw[i]),       # 生スコア（ランキング用・連続値）
+        "p_norm"         : float(_p_norm[i]),      # レース内正規化（買い目設計用）
     })
-preds.sort(key=lambda x: x["win_probability"], reverse=True)
+# [A1] ソートは p_raw ベース（IsotonicReg量子化によるタイ回避）
+preds.sort(key=lambda x: x["p_raw"], reverse=True)
 for rank, p in enumerate(preds, 1):
     p["predicted_rank"] = rank
 
