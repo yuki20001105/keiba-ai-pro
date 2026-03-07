@@ -29,7 +29,7 @@ import pandas as pd
 import numpy as np
 import joblib
 
-from app_config import ULTIMATE_DB, MODELS_DIR, get_latest_model, load_model_bundle
+from app_config import ULTIMATE_DB, MODELS_DIR, get_latest_model, load_model_bundle, verify_feature_columns
 from keiba_ai.db_ultimate_loader import load_ultimate_training_frame
 from keiba_ai.feature_engineering import add_derived_features
 from keiba_ai.ultimate_features import UltimateFeatureCalculator
@@ -180,11 +180,17 @@ df_pred_opt.to_csv(OUT / f"05_prediction_features_{target_race_id}.csv",
 print(f"  → 05_prediction_features_{target_race_id}.csv 保存")
 
 # 特徴量整形 → 予測
+# [A-6] 0-fill 廃止: verify_feature_columns で NaN 補完 + 順序整合
 X_pred = df_pred_opt.copy()
-for mf in [f for f in feat_cols if f not in X_pred.columns]:
-    X_pred[mf] = 0.0
-X_pred  = X_pred[feat_cols]
-probs   = model.predict(X_pred)
+X_pred = verify_feature_columns(X_pred, bundle)
+probs  = model.predict(X_pred)
+# [L3-3] キャリブレーション適用
+_cal = bundle.get("calibrator")
+if _cal is not None:
+    try:
+        probs = _cal.predict(probs)
+    except Exception:
+        pass  # キャリブレーター失敗時はそのまま
 
 preds = []
 for i, rec in enumerate(horse_records):

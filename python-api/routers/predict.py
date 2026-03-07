@@ -322,18 +322,18 @@ async def analyze_race(request: AnalyzeRaceRequest):
             if obj_cols:
                 X_pred = X_pred.drop(columns=obj_cols)
 
-            if hasattr(model, "feature_name"):
-                trained_features = model.feature_name()
-            elif hasattr(model, "booster_"):
-                trained_features = model.booster_.feature_name()
-            else:
-                trained_features = list(X_pred.columns)
-            for _mf in [f for f in trained_features if f not in X_pred.columns]:
-                X_pred[_mf] = 0.0
-            X_pred = X_pred.drop(columns=[c for c in X_pred.columns if c not in trained_features], errors="ignore")
-            X_pred = X_pred[trained_features]
+            # [A-6] verify_feature_columns: NaN 補完 + 順序整合 (0-fill 廃止)
+            X_pred = verify_feature_columns(X_pred, bundle)
 
             win_probs = model.predict(X_pred)
+
+            # [L3-3] キャリブレーション適用
+            _cal = bundle.get("calibrator")
+            if _cal is not None:
+                try:
+                    win_probs = _cal.predict(win_probs)
+                except Exception:
+                    pass  # キャリブレーター失敗時はそのまま使用
 
             predictions = []
             for i, _hr in enumerate(_horse_records):
