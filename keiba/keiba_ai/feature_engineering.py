@@ -719,6 +719,67 @@ def add_derived_features(df: pd.DataFrame, full_history_df: Optional[pd.DataFram
                     on=['trainer_id', 'race_id'], how='left'
                 )
 
+        # ===== L2-1: 馬の近走統計（past 3/5/10走 平均着順・勝率）=====
+        # shift(1).rolling(N) = 直近N走平均（現在のレースを除いた時系列順）
+        if ('finish' in full_history_df.columns and
+                'horse_id' in full_history_df.columns and
+                'race_id' in full_history_df.columns):
+            _orig_idx_h = full_history_df.index.copy()
+            _s_h = full_history_df.sort_values('race_id', kind='mergesort').copy()
+            _fin_h = pd.to_numeric(_s_h['finish'], errors='coerce')
+            _win_h = (_fin_h == 1).astype(float)
+            _s_h['_fin_h'] = _fin_h
+            _s_h['_win_h'] = _win_h
+            for _n, _sfx in [(3, 'past3'), (5, 'past5'), (10, 'past10')]:
+                _s_h[f'{_sfx}_avg_finish'] = (
+                    _s_h.groupby('horse_id')['_fin_h']
+                    .transform(lambda x: x.shift(1).rolling(_n, min_periods=1).mean())
+                )
+            _s_h['past3_win_rate'] = (
+                _s_h.groupby('horse_id')['_win_h']
+                .transform(lambda x: x.shift(1).rolling(3, min_periods=1).mean())
+            )
+            _s_h['past5_win_rate'] = (
+                _s_h.groupby('horse_id')['_win_h']
+                .transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
+            )
+            _s_h.drop(columns=['_fin_h', '_win_h'], inplace=True)
+            _past_cols = ['past3_avg_finish', 'past5_avg_finish', 'past10_avg_finish',
+                          'past3_win_rate', 'past5_win_rate']
+            _s_h_back = _s_h.reindex(_orig_idx_h)
+            for _c in _past_cols:
+                full_history_df[_c] = _s_h_back[_c].values
+            df = df.merge(
+                full_history_df[['horse_id', 'race_id'] + _past_cols]
+                .drop_duplicates(subset=['horse_id', 'race_id']),
+                on=['horse_id', 'race_id'], how='left'
+            )
+
+        # ===== L2-2: 騎手・調教師の近30走勝率（rolling window）=====
+        # 全期間累積統計は新人騎手・昇格馬に不利。近30走は直近の調子を反映。
+        if 'finish' in full_history_df.columns and 'race_id' in full_history_df.columns:
+            for _eid, _pfx in [('jockey_id', 'jockey'), ('trainer_id', 'trainer')]:
+                if _eid not in full_history_df.columns:
+                    continue
+                _orig_idx_e = full_history_df.index.copy()
+                _s_e = full_history_df.sort_values('race_id', kind='mergesort').copy()
+                _fin_e = pd.to_numeric(_s_e['finish'], errors='coerce').fillna(0)
+                _s_e['_win_e'] = (_fin_e == 1).astype(float)
+                _s_e[f'{_pfx}_recent30_win_rate'] = (
+                    _s_e.groupby(_eid)['_win_e']
+                    .transform(lambda x: x.shift(1).rolling(30, min_periods=5).mean())
+                )
+                _s_e.drop(columns=['_win_e'], inplace=True)
+                _rc = f'{_pfx}_recent30_win_rate'
+                _s_e_back = _s_e.reindex(_orig_idx_e)
+                full_history_df[_rc] = _s_e_back[_rc].values
+                if _eid in df.columns:
+                    df = df.merge(
+                        full_history_df[[_eid, 'race_id', _rc]]
+                        .drop_duplicates(subset=[_eid, 'race_id']),
+                        on=[_eid, 'race_id'], how='left'
+                    )
+
     # ===== 市場エントロピー / 上位3頭の暗黙確率和 =====
     if 'odds' in df.columns and 'race_id' in df.columns:
         def _market_features(grp):
@@ -738,14 +799,49 @@ def add_derived_features(df: pd.DataFrame, full_history_df: Optional[pd.DataFram
         ).reset_index()
         df = df.merge(market_stats, on='race_id', how='left')
 
-    # ===== 前走からの日数 =====
+    # ===== A-9: オッズのレース内正規化（市場情報の精緻化） =====
+    # odds は絶対値ではなくレース内相対値として使う方がロバスト
+    if 'odds' in df.columns and 'race_id' in df.columns:
+        _o = pd.to_numeric(df['odds'], errors='coerce')
+        # 暗黙確率（1/odds）
+        df['implied_prob'] = np.where(_o > 0, 1.0 / _o, np.nan)
+        # レース内正規化（控除率込みで各馬の推定勝ち確率）
+        df['implied_prob_norm'] = df.groupby('race_id')['implied_prob'].transform(
+            lambda x: x / x.sum() if x.sum() > 0 else x
+        )
+        # レース内人気順位（1位=最低オッズ）
+        df['odds_rank_in_race'] = df.groupby('race_id')['odds'].rank(
+            method='min', na_option='bottom'
+        )
+        # レース内 z-score（どれだけ平均から外れているか）
+        df['odds_z_in_race'] = df.groupby('race_id')['odds'].transform(
+            lambda x: (x - x.mean()) / (x.std() + 1e-8)
+        )
+
+    # ===== 前走からの日数 (S-1修正: race_date列を優先、fallback は race_id[:8]) =====
     if 'prev_race_date' in df.columns:
-        _race_dt = pd.to_datetime(df['race_id'].str[:8], format='%Y%m%d', errors='coerce')
+        # race_date列が存在する場合は正確な日付を使う（race_id[:8]はJRAコードであり日付ではない）
+        if 'race_date' in df.columns:
+            _race_dt = pd.to_datetime(
+                df['race_date'].astype(str).str.replace('/', '-').str.strip(),
+                format='%Y%m%d', errors='coerce'
+            )
+        else:
+            # fallback: race_id[:8] は年+会場コード等であり不正確。警告を出す
+            import warnings as _w
+            _w.warn(
+                "race_date列が存在しません。race_id[:8]を使用しますが days_since_last_race が"
+                "誤った値になる可能性があります（特に10月以降のレース）",
+                UserWarning, stacklevel=2
+            )
+            _race_dt = pd.to_datetime(df['race_id'].str[:8], format='%Y%m%d', errors='coerce')
         _prev_dt = pd.to_datetime(
             df['prev_race_date'].astype(str).str.replace('/', '-').str.strip(),
             errors='coerce'
         )
-        df['days_since_last_race'] = (_race_dt - _prev_dt).dt.days
+        _days = (_race_dt - _prev_dt).dt.days
+        # 負の値（計算誤り）はNaNに置換
+        df['days_since_last_race'] = _days.where(_days >= 0, np.nan)
 
     # ===== 距離変化 =====
     if 'prev_race_distance' in df.columns and 'distance' in df.columns:
@@ -779,6 +875,19 @@ def add_derived_features(df: pd.DataFrame, full_history_df: Optional[pd.DataFram
             )
         else:
             df['prev_speed_zscore'] = 0.0
+
+    # ===== A-7: 欠損フラグ（0埋めより 欠損 is_missing フラグ + NaN の方が安全） =====
+    # 初出走・履歴なしは 0 ではなく NaN + フラグで表現する
+    for _miss_col in [
+        'prev_race_finish', 'prev_race_time', 'prev_race_distance',
+        'prev2_race_finish', 'days_since_last_race',
+        'prev_race_weight', 'prev_speed_index', 'prev_speed_zscore',
+        'horse_win_rate',   # L1-1: 77.3% 欠損の主要特徴量 → 欠損フラグ化して過学習リスク低減
+    ]:
+        if _miss_col in df.columns:
+            _s = pd.to_numeric(df[_miss_col], errors='coerce')
+            df[f'{_miss_col}_is_missing'] = _s.isna().astype(int)
+            df[_miss_col] = _s  # NaN のまま保持（0埋めしない）
 
     # ===== 前走着順（数値化） =====
     if 'prev_race_finish' in df.columns:

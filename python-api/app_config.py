@@ -105,11 +105,57 @@ except ImportError:
 
 
 def get_latest_model() -> Optional[Path]:
-    """最新のモデルファイルを返す"""
+    """最新の win モデルファイルを返す（rank/no_odds モデルは除外）
+    
+    [L3-2] model_win_* を優先検索。該当なければ全 model_* から最新を返す。
+    """
+    # win モデルを優先（rank/no_odds は推論の保険用モデルのため通常は選ばない）
+    win_models = list(MODELS_DIR.glob("model_win_*_ultimate.joblib"))
+    if win_models:
+        return max(win_models, key=lambda p: p.stat().st_mtime)
+    # フォールバック: 全モデルから最新
     models = list(MODELS_DIR.glob("model_*.joblib"))
     if not models:
         return None
     return max(models, key=lambda p: p.stat().st_mtime)
+
+
+def verify_feature_columns(
+    X: "pd.DataFrame",
+    bundle: dict,
+    fill_value: float = float("nan"),
+) -> "pd.DataFrame":
+    """[L3-2 A-6] 推論時に学習時特徴量と一致しているかアサートし、不一致を補修する。
+
+    - 不足列: fill_value（デフォルト NaN）で補完し、WARNING ログを出す
+    - 余剰列: 無視（model が使う feature_columns で絞るのでスキップ）
+    Returns:
+        feature_columns 順に整列した DataFrame
+    """
+    import numpy as _np
+    import pandas as _pd
+
+    feat_cols = bundle.get("feature_columns")
+    if not feat_cols:
+        return X
+
+    missing_cols = [c for c in feat_cols if c not in X.columns]
+    extra_cols   = [c for c in X.columns  if c not in feat_cols]
+
+    if missing_cols:
+        logger.warning(
+            f"[A-6] 推論 vs 学習 特徴量不一致: "
+            f"{len(missing_cols)} 列が欠損 → NaN 補完: {missing_cols[:8]}"
+            f"{'...' if len(missing_cols) > 8 else ''}"
+        )
+        for c in missing_cols:
+            X[c] = fill_value
+    if extra_cols:
+        logger.debug(
+            f"[A-6] 推論時に学習時にない {len(extra_cols)} 列（無視）: {extra_cols[:5]}"
+        )
+
+    return X[feat_cols]
 
 
 def _ensure_model_local(model_id: str) -> Optional[Path]:

@@ -10,6 +10,44 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import LabelEncoder
 
+# =========================================================
+# L3-1: 未来情報列ブラックリスト（当該レース結果データ）
+# 予測時には存在しない列 → fit_transform / transform の両方で強制除外
+# =========================================================
+FUTURE_INFO_BLACKLIST: frozenset = frozenset({
+    'time_seconds',         # 実際走破タイム（レース結果）
+    'finish_time',          # 走破タイム文字列
+    'last_3f', 'last_3f_time',  # 上がり3F（レース結果）
+    'last_3f_rank', 'last_3f_rank_normalized',  # 上がり3F順位（レース結果）
+    'corner_1', 'corner_2', 'corner_3', 'corner_4',  # コーナー通過順位
+    'corner_position_avg', 'corner_position_variance',  # コーナー派生
+    'last_corner_position', 'position_change',          # コーナー派生
+    'corner_positions_list',  # リスト形式コーナーデータ
+    'margin',               # 着差（レース結果）
+    'prize_money',          # 賞金（レース結果）
+})
+
+# =========================================================
+# L1-3: venue名正規化辞書（表記揺れ→正式名称に統一）
+# VENUE_MAP（constants.py）の値に合わせる
+# =========================================================
+VENUE_NORMALIZE_MAP: dict = {
+    # JRA 「〇〇競馬場」→ 短縮形
+    "\u672d\u5e4c\u7af6\u99ac\u5834": "\u672d\u5e4c",
+    "\u51fd\u9928\u7af6\u99ac\u5834": "\u51fd\u9928",
+    "\u798f\u5cf6\u7af6\u99ac\u5834": "\u798f\u5cf6",
+    "\u65b0\u6f5f\u7af6\u99ac\u5834": "\u65b0\u6f5f",
+    "\u6771\u4eac\u7af6\u99ac\u5834": "\u6771\u4eac",
+    "\u4e2d\u5c71\u7af6\u99ac\u5834": "\u4e2d\u5c71",
+    "\u4e2d\u4eac\u7af6\u99ac\u5834": "\u4e2d\u4eac",
+    "\u4eac\u90fd\u7af6\u99ac\u5834": "\u4eac\u90fd",
+    "\u962a\u795e\u7af6\u99ac\u5834": "\u962a\u795e",
+    "\u5c0f\u5009\u7af6\u99ac\u5834": "\u5c0f\u5009",
+    # 半角カッコ→全角カッコ（帯広）
+    "\u5e2f\u5e83(\u3070)": "\u5e2f\u5e83\uff08\u3070\uff09",
+    "\u5e2f\u5e83(\u3070\u3093\u3048\u3044)": "\u5e2f\u5e83(\u3070\u3093\u3048\u3044)",
+}
+
 
 class LightGBMFeatureOptimizer:
     """LightGBM用の包括的な特徴量最適化クラス
@@ -40,6 +78,12 @@ class LightGBMFeatureOptimizer:
         """
         df = df.copy()
         self.categorical_features = []
+
+        # ===== L3-1: 未来情報列を強制除外（データリーク防止） =====
+        _bl_present = [c for c in FUTURE_INFO_BLACKLIST if c in df.columns]
+        if _bl_present:
+            print(f"  ⚠ [L3-1] 未来情報列を除外 ({len(_bl_present)}列): {_bl_present}")
+            df = df.drop(columns=_bl_present)
 
         # ===== 0. 欠損値補完（学習・推論共通） =====
         df = self._fill_missing_values(df)
@@ -252,6 +296,35 @@ class LightGBMFeatureOptimizer:
             'jt_combo_races',         # 騎手×調教師コンビ出走数
             'jt_combo_win_rate',      # 騎手×調教師コンビ勝率
             'jt_combo_win_rate_smooth', # ベイズ平滑化後
+
+            # A-9: オッズのレース内正規化（市場情報の精緻化）
+            'implied_prob',           # 暗黙確率 (1/odds)
+            'implied_prob_norm',      # レース内正規化暗黙確率
+            'odds_rank_in_race',      # レース内オッズ順位（人気）
+            'odds_z_in_race',         # レース内オッズ z-score
+
+            # A-7: 欠損フラグ（0埋めより NaN+フラグの方が安定）
+            'prev_race_finish_is_missing',
+            'prev_race_time_is_missing',
+            'prev_race_distance_is_missing',
+            'prev2_race_finish_is_missing',
+            'days_since_last_race_is_missing',
+            'prev_race_weight_is_missing',
+            'prev_speed_index_is_missing',
+            'prev_speed_zscore_is_missing',
+            # L1-1: horse_win_rate 欠損フラグ（77.3% 欠損列の過学習リスク軽減）
+            'horse_win_rate_is_missing',
+
+            # L2-1: 馬の近走統計（近 3/5/10 走の平均着順・勝率）
+            'past3_avg_finish',       # 近3走平均着順
+            'past5_avg_finish',       # 近5走平均着順
+            'past10_avg_finish',      # 近10走平均着順
+            'past3_win_rate',         # 近3走勝率
+            'past5_win_rate',         # 近5走勝率
+
+            # L2-2: 騎手・調教師の直近30走勝率（近況パフォーマンス）
+            'jockey_recent30_win_rate',   # 騎手の近30走勝率
+            'trainer_recent30_win_rate',  # 調教師の近30走勝率
         ]
         
         available_numeric = [col for col in numeric_features if col in df.columns]
@@ -453,6 +526,20 @@ class LightGBMFeatureOptimizer:
             print(f"  ⚠️  重複列を除去: {dup_cols}")
             df = df.loc[:, ~df.columns.duplicated()]
 
+        # ===== S-2チェック: track_type_encoded と corner_radius_encoded の独立性検証 =====
+        if 'track_type_encoded' in df.columns and 'corner_radius_encoded' in df.columns:
+            _corr = df['track_type_encoded'].corr(df['corner_radius_encoded'].fillna(-1))
+            if abs(_corr) > 0.95:
+                print(f"  ⚠️  S-2警告: track_type_encoded と corner_radius_encoded の相関が {_corr:.3f}")
+                print(f"       → これらは本来別の意味を持つ特徴量のはずです")
+                print(f"       → track_type: {df['track_type_encoded'].value_counts().to_dict()}")
+                print(f"       → corner_radius: {df['corner_radius_encoded'].value_counts().to_dict()}")
+            else:
+                print(f"  ✓ S-2確認: track_type_encoded と corner_radius_encoded は独立 (corr={_corr:.3f})")
+        # surface_encoded (芝/ダ) の確認
+        if 'surface_encoded' in df.columns:
+            print(f"  ✓ S-2確認: surface_encoded (芝/ダ) = {df['surface_encoded'].value_counts().to_dict()}")
+
         # ===== 最終統計 =====
         print("\n" + "="*80)
         print("【最適化完了】")
@@ -482,6 +569,11 @@ class LightGBMFeatureOptimizer:
         
         df = df.copy()
 
+        # ===== L3-1: 未来情報列を強制除外（データリーク防止） =====
+        _bl_present = [c for c in FUTURE_INFO_BLACKLIST if c in df.columns]
+        if _bl_present:
+            df = df.drop(columns=_bl_present)
+
         # ===== 0. 欠損値補完（学習・推論共通） =====
         df = self._fill_missing_values(df)
 
@@ -504,13 +596,14 @@ class LightGBMFeatureOptimizer:
             ('pace_classification', 'pace_encoded'),
             ('predicted_pace', 'predicted_pace_encoded'),
             ('running_style', 'running_style_encoded'),
-            ('coat_color', 'coat_color_encoded'),   # horse_coat_color → coat_color 変換後
+            ('coat_color', 'coat_color_encoded'),
         ]:
             if original_col in df.columns and original_col in self.label_encoders:
                 le = self.label_encoders[original_col]
-                # 未知のカテゴリは-1にする
+                # A-8: 未知カテゴリは NaN にする（-1 は LightGBM が既知値として扱うため）
+                # NaN → LightGBM が「欠損」として両枝を探索 = 最も安全な未知カテゴリ処理
                 df[encoded_col] = df[original_col].map(
-                    lambda x: le.transform([x])[0] if x in le.classes_ else -1
+                    lambda x, _le=le: float(_le.transform([x])[0]) if x in _le.classes_ else np.nan
                 )
         
         # 高カーディナリティ特徴は統計値で置き換え（学習時の統計を使用）
@@ -651,24 +744,42 @@ class LightGBMFeatureOptimizer:
           - 前走/前々走情報 (prev_race_*): 0埋め + is_first_race フラグ追加
           - コーナー通過 (corner_1~4, 派生): 0埋め（未計測コーナーなし扱い）
           - 血統 (sire, damsire, dam): "Unknown" 埋め（統計変換で処理）
-          - 通算成績 (horse_total_*, horse_win_rate): 0埋め（新馬扱い）
+          - 通算成績 (horse_total_*): 0埋め（新馬扱い）
+          - horse_win_rate: L1-1 NaN のまま保持（_is_missing フラグで処理）
           - 体重・オッズ: LightGBMがNaNを自動処理するため補完不要
         """
+        # ── L1-3: venue名正規化（表記揺れ→VENUE_MAP準拠の正式名に統一）──────
+        if 'venue' in df.columns:
+            df['venue'] = (
+                df['venue'].astype(str).str.strip()
+                .map(lambda v: VENUE_NORMALIZE_MAP.get(v, v))
+            )
+
         # ── 初出走フラグ（前走情報が全欠損の馬）──────────────────────────────
         if 'prev_race_finish' in df.columns:
             df['is_first_race'] = df['prev_race_finish'].isna().astype(int)
         else:
             df['is_first_race'] = 0
 
-        # ── 前走情報: 数値列を 0 埋め ────────────────────────────────────────
-        prev_numeric_cols = [
+        # ── 前走情報: A-7 / L1-1 の _is_missing フラグがある列は NaN のまま ──
+        # _is_missing フラグを持つ列は 0 埋めしない（LightGBM が欠損として両枝探索）
+        _has_missing_flag = {
             'prev_race_finish', 'prev_race_time', 'prev_race_weight', 'prev_race_distance',
-            'prev2_race_finish', 'prev2_race_time', 'prev2_race_weight', 'prev2_race_distance',
-            'days_since_last_race', 'distance_change',
+            'prev2_race_finish', 'days_since_last_race',
+            'prev_speed_index', 'prev_speed_zscore',
+            'horse_win_rate',  # L1-1: 77.3% 欠損 → NaN 保持
+        }
+        prev_numeric_cols = [
+            'prev2_race_time', 'prev2_race_weight', 'prev2_race_distance',
+            'distance_change',
         ]
         for col in prev_numeric_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        # _is_missing フラグがある列は数値変換のみ（NaN を保持）
+        for col in _has_missing_flag:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
 
         # ── コーナー通過: 0 埋め（短距離・通過なし扱い）──────────────────────
         corner_cols = [
@@ -685,11 +796,11 @@ class LightGBMFeatureOptimizer:
             if col in df.columns:
                 df[col] = df[col].fillna('Unknown')
 
-        # ── 通算成績: 0 埋め（新馬・データ未取得馬）─────────────────────────
-        career_cols = [
-            'horse_total_runs', 'horse_total_wins', 'horse_total_prize_money', 'horse_win_rate',
+        # ── 通算成績: 0 埋め（新馬・データ未取得馬）── horse_win_rate は除き NaN 保持
+        career_fill0_cols = [
+            'horse_total_runs', 'horse_total_wins', 'horse_total_prize_money',
         ]
-        for col in career_cols:
+        for col in career_fill0_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 

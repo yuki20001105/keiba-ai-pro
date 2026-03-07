@@ -98,19 +98,44 @@ async def scrape_race_full(
         info_text = smalltxt.get_text(" ") if smalltxt else html[:3000]
 
     # ---- 距離・芝/ダート ----
-    dist_m = re.search(r"(芝|ダ)[右左直外内障]{0,3}\s*(\d+)[mｍ]", info_text)
+    # L1-2: より多くのパターンに対応（全角m、ドット区切り、障害、方向なしなど）
+    dist_m = re.search(r"(芝|ダ(?:ート)?|障(?:害)?)[・右左直外内障]{0,4}\s*(\d{3,4})\s*[mｍ]", info_text)
     if dist_m:
-        track_type = "芝" if dist_m.group(1) == "芝" else "ダート"
+        _tt_raw = dist_m.group(1)
+        track_type = "芝" if _tt_raw == "芝" else ("障害" if _tt_raw.startswith("障") else "ダート")
         distance = int(dist_m.group(2))
     else:
-        _vc_tmp = race_id[4:6]
-        if _vc_tmp == "65":
-            track_type = "ばんえい"
-            banei_m = re.search(r"ばんえい\s*(\d+)", info_text) or re.search(r"(\d{3})\s*m", info_text)
-            distance = int(banei_m.group(1)) if banei_m else 200
+        # Fallback 1: レース名から距離・種別を抽出（mainrace_div が取れなかった場合に有効）
+        _name_m = re.search(r"(芝|ダ(?:ート)?|障(?:害)?).*?(\d{3,4})\s*[mｍ]", race_name)
+        if _name_m:
+            _tt_raw = _name_m.group(1)
+            track_type = "芝" if _tt_raw == "芝" else ("障害" if _tt_raw.startswith("障") else "ダート")
+            distance = int(_name_m.group(2))
         else:
-            track_type = ""
-            distance = 0
+            # Fallback 2: 距離の数字のみ（1200〜3600m の範囲）+ 種別を別途推定
+            _num_m = re.search(r"\b(\d{3,4})\s*[mｍ]", info_text)
+            _tt_only = re.search(r"(芝|ダート|ダ|障害)", info_text[:500])
+            _vc_tmp = race_id[4:6]
+            if _vc_tmp == "65":
+                track_type = "ばんえい"
+                banei_m = re.search(r"ばんえい\s*(\d+)", info_text) or re.search(r"(\d{3})\s*m", info_text)
+                distance = int(banei_m.group(1)) if banei_m else 200
+            elif _num_m and 100 <= int(_num_m.group(1)) <= 3600:
+                distance = int(_num_m.group(1))
+                if _tt_only:
+                    _raw = _tt_only.group(1)
+                    track_type = "芝" if _raw == "芝" else ("障害" if _raw == "障害" else "ダート")
+                else:
+                    track_type = ""
+            else:
+                track_type = ""
+                distance = 0
+                # S-3: distance=0 は後続の特徴量計算（course_features等）が全て壊れるため警告
+                import logging as _log
+                _log.warning(
+                    f"[S-3] distance=0: race_id={race_id} のレース情報からdistance/track_typeを"
+                    f"パースできませんでした。info_text: {info_text[:100]!r}"
+                )
 
     # ---- 天候 ----
     weather_m = re.search(r"天候\s*[:/：]\s*([^\s/]+)", info_text)

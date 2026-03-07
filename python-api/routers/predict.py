@@ -21,6 +21,7 @@ from app_config import (  # type: ignore
     get_latest_model,
     load_model_bundle,
     _ensure_model_local,
+    verify_feature_columns,
     logger,
 )
 from deps.pred_limit import check_and_consume_pred_count  # type: ignore
@@ -86,12 +87,8 @@ async def predict(request: PredictRequest, http_req: Request):
             obj_cols = X.select_dtypes(include=["object"]).columns.tolist()
             if obj_cols:
                 X = X.drop(columns=obj_cols)
-            saved_feature_columns = bundle.get("feature_columns")
-            if saved_feature_columns:
-                for col in saved_feature_columns:
-                    if col not in X.columns:
-                        X[col] = 0.0
-                X = X[saved_feature_columns]
+            # [L3-2] A-6: 学習時特徴量と一致確認（不足列 NaN 補完、余剰列無視）
+            X = verify_feature_columns(X, bundle)
             proba = model.predict(X)
         else:
             # 後方互換: optimizer なし旧バンドル → 87特徴量モードで再エンコード
@@ -102,16 +99,20 @@ async def predict(request: PredictRequest, http_req: Request):
             obj_cols = X.select_dtypes(include=["object"]).columns.tolist()
             if obj_cols:
                 X = X.drop(columns=obj_cols)
-            saved_features = bundle.get("feature_columns")
-            if saved_features:
-                for col in saved_features:
-                    if col not in X.columns:
-                        X[col] = 0.0
-                X = X[[c for c in saved_features if c in X.columns]]
+            # [L3-2] A-6: 特徴量アサート
+            X = verify_feature_columns(X, bundle)
             try:
                 proba = model.predict(X)
             except Exception:
                 proba = model.predict_proba(X)[:, 1]
+
+        # [L3-3] 確率キャリブレーション（アイソトニック回帰）
+        calibrator = bundle.get("calibrator")
+        if calibrator is not None:
+            try:
+                proba = calibrator.predict(proba)
+            except Exception as _cal_err:
+                logger.warning(f"[キャリブレーションエラー] {_cal_err} → 未キャリブレースで続行")
 
         predictions = []
         for i, (_, row) in enumerate(df.iterrows()):
