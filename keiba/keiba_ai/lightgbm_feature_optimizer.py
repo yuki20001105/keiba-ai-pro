@@ -15,16 +15,22 @@ from sklearn.preprocessing import LabelEncoder
 # 予測時には存在しない列 → fit_transform / transform の両方で強制除外
 # =========================================================
 FUTURE_INFO_BLACKLIST: frozenset = frozenset({
+    # ── 走破タイム系（レース結果）─────────────────────────────────────────────
     'time_seconds',         # 実際走破タイム（レース結果）
     'finish_time',          # 走破タイム文字列
+    # ── 上がり3F・コーナー通過（レース結果）─────────────────────────────────
     'last_3f', 'last_3f_time',  # 上がり3F（レース結果）
     'last_3f_rank', 'last_3f_rank_normalized',  # 上がり3F順位（レース結果）
     'corner_1', 'corner_2', 'corner_3', 'corner_4',  # コーナー通過順位
     'corner_position_avg', 'corner_position_variance',  # コーナー派生
     'last_corner_position', 'position_change',          # コーナー派生
     'corner_positions_list',  # リスト形式コーナーデータ
+    # ── 最終結果（着順・着差・賞金）─────────────────────────────────────────
     'margin',               # 着差（レース結果）
     'prize_money',          # 賞金（レース結果）
+    'finish',               # 着順（結果。target_col と同一情報）
+    'finish_position',      # 着順（別名）
+    'actual_finish',        # 評価用の実着順（prediction JSON では同居するが入力禁止）
 })
 
 # =========================================================
@@ -316,6 +322,9 @@ class LightGBMFeatureOptimizer:
             'prev_speed_zscore_is_missing',
             # L1-1: horse_win_rate 欠損フラグ（77.3% 欠損列の過学習リスク軽減）
             'horse_win_rate_is_missing',
+            # A-7: オッズ・人気 欠損フラグ（最重要特徴の欠落を安全に扱う）
+            'odds_is_missing',
+            'popularity_is_missing',
 
             # L2-1: 馬の近走統計（近 3/5/10 走の平均着順・勝率）
             'past3_avg_finish',       # 近3走平均着順
@@ -823,6 +832,15 @@ class LightGBMFeatureOptimizer:
         for col in career_fill0_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+        # ── A-7 フォールバック: odds/popularity 欠損フラグ ────────────────────
+        # feature_engineering.add_derived_features で生成されるが、
+        # 単独で optimizer を呼んだ場合のフォールバックとしてここでも生成する
+        for _miss_col, _src_col in [('odds_is_missing', 'odds'),
+                                     ('popularity_is_missing', 'popularity')]:
+            if _miss_col not in df.columns and _src_col in df.columns:
+                _s = pd.to_numeric(df[_src_col], errors='coerce')
+                df[_miss_col] = _s.isna().astype(int)
 
         # ── コーナー通過列・上がり3F列は unnecessary_cols で削除するため補完不要 ──
         # corner_1~4, corner_position_*, last_corner_position, position_change,

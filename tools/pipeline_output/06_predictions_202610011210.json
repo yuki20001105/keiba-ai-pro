@@ -4,71 +4,71 @@
   "venue": "小倉",
   "date": "20260301",
   "distance": 1200,
-  "model_file": "model_win_lightgbm_20260306_225213_ultimate.joblib",
-  "cv_auc": "0.9048 ± 0.0075",
+  "model_file": "model_win_lightgbm_20260307_232328_ultimate.joblib",
+  "cv_auc": "0.9062 ± 0.0063",
   "predictions": [
     {
       "horse_number": 16,
       "horse_name": "モーデン",
       "odds": 10.1,
       "actual_finish": 1,
-      "win_probability": 0.4582112649594287,
+      "win_probability": 0.6843868126686132,
       "predicted_rank": 1
-    },
-    {
-      "horse_number": 10,
-      "horse_name": "フォティック",
-      "odds": 8.5,
-      "actual_finish": 5,
-      "win_probability": 0.1621846404661817,
-      "predicted_rank": 2
-    },
-    {
-      "horse_number": 18,
-      "horse_name": "ヒーローインチーフ",
-      "odds": 4.4,
-      "actual_finish": 13,
-      "win_probability": 0.08945104457064341,
-      "predicted_rank": 3
     },
     {
       "horse_number": 15,
       "horse_name": "セイウンデセオ",
       "odds": 7.3,
       "actual_finish": 7,
-      "win_probability": 0.07857819024650173,
-      "predicted_rank": 4
-    },
-    {
-      "horse_number": 1,
-      "horse_name": "カウンターセブン",
-      "odds": 5.1,
-      "actual_finish": 4,
-      "win_probability": 0.07519318562077483,
-      "predicted_rank": 5
-    },
-    {
-      "horse_number": 17,
-      "horse_name": "シアター",
-      "odds": 13.0,
-      "actual_finish": 9,
-      "win_probability": 0.07113526875738227,
-      "predicted_rank": 6
+      "win_probability": 0.24074387675871844,
+      "predicted_rank": 2
     },
     {
       "horse_number": 5,
       "horse_name": "ワインクーラー",
       "odds": 12.0,
       "actual_finish": 10,
-      "win_probability": 0.06718280557205607,
-      "predicted_rank": 7
+      "win_probability": 0.21248187062669546,
+      "predicted_rank": 3
+    },
+    {
+      "horse_number": 1,
+      "horse_name": "カウンターセブン",
+      "odds": 5.1,
+      "actual_finish": 4,
+      "win_probability": 0.16774781777633677,
+      "predicted_rank": 4
     },
     {
       "horse_number": 11,
       "horse_name": "ララアヴリル",
       "odds": 15.9,
       "actual_finish": 14,
-      "win_probability": 0.02630343849986336,
+      "win_probability": 0.1673282775024961,
+      "predicted_rank": 5
+    },
+    {
+      "horse_number": 18,
+      "horse_name": "ヒーローインチーフ",
+      "odds": 4.4,
+      "actual_finish": 13,
+      "win_probability": 0.1465603786495966,
+      "predicted_rank": 6
+    },
+    {
+      "horse_number": 10,
+      "horse_name": "フォティック",
+      "odds": 8.5,
+      "actual_finish": 5,
+      "win_probability": 0.11773555379358196,
+      "predicted_rank": 7
+    },
+    {
+      "horse_number": 17,
+      "horse_name": "シアター",
+      "odds": 13.0,
+      "actual_finish": 9,
+      "win_probability": 0.11146287624953773,
       "predicted_rank": 8
     },
     {
@@ -76,71 +76,71 @@
       "horse_name": "ヤマニンレセディ",
       "odds": 23.4,
       "actual_finish": 15,
-      "win_probability": 0.022669612753189225,
+      "win_probability": 0.08643784486462944,
       "predicted_rank": 9
-    },
-    {
-      "horse_number": 14,
-      "horse_name": "イグニション",
-      "odds": 40.2,
-      "actual_finish": 6,
-      "win_probability": 0.015580058561110771,
-      "predicted_rank": 10
     },
     {
       "horse_number": 7,
       "horse_name": "ディアドコス",
       "odds": 26.0,
       "actual_finish": 3,
-      "win_probability": 0.013183731702633698,
-      "predicted_rank": 11
-    },
-    {
-      "horse_number": 9,
-      "horse_name": "マイネルラッシュ",
-      "odds": 51.3,
-      "actual_finish": 11,
-      "win_probability": 0.012200399582915689,
-      "predicted_rank": 12
-    },
-    {
-      "horse_number": 3,
-      "horse_name": "ラブディーヴァ",
-      "odds": 43.1,
-      "actual_finish": 7,
-      "win_probability": 0.011824818692313149,
-      "predicted_rank": 13
+      "win_probability": 0.07539636889615751,
+      "predicted_rank": 10
     },
     {
       "horse_number": 13,
       "horse_name": "シュブロンレーヴル",
       "odds": 16.7,
       "actual_finish": 2,
-      "win_probability": 0.010981584902542495,
-      "predicted_rank": 14
+      "win_probability": 0.06469380583736972,
+      "predicted_rank": 11
+    },
+    {
+      "horse_number": 3,
+      "horse_name": "ラブディーヴァ",
+      "odds": 43.1,
+      "actual_finish": 7,
+      "win_probability": 0.043939992984025435,
+      "predicted_rank": 12
+    },
+    {
+      "horse_number": 14,
+      "horse_name": "イグニション",
+      "odds": 40.2,
+      "actual_finish": 6,
+      "win_probability": 0.025724151309048204,
+      "predicted_rank": 13
     },
     {
       "horse_number": 2,
       "horse_name": "インプロバイザー",
       "odds": 33.0,
       "actual_finish": 17,
-      "win_probability": 0.007574680251236851,
-      "predicted_rank": 15
+      "win_probability": 0.025503269493436544,
+      "predicted_rank": 14
     },
     {
-      "horse_number": 6,
-      "horse_name": "エイヨーアメジスト",
-      "odds": 210.9,
-      "actual_finish": 16,
-      "win_probability": 0.0017844898229476362,
-      "predicted_rank": 16
+      "horse_number": 9,
+      "horse_name": "マイネルラッシュ",
+      "odds": 51.3,
+      "actual_finish": 11,
+      "win_probability": 0.023636018577884107,
+      "predicted_rank": 15
     },
     {
       "horse_number": 4,
       "horse_name": "ゼンダンタカ",
       "odds": 144.3,
       "actual_finish": 18,
-      "win_probability": 0.0013112050963585294,
+      "win_probability": 0.002977141622111557,
+      "predicted_rank": 16
+    },
+    {
+      "horse_number": 6,
+      "horse_name": "エイヨーアメジスト",
+      "odds": 210.9,
+      "actual_finish": 16,
+      "win_probability": 0.0028174923973143797,
       "predicted_rank": 17
     },
     {
@@ -148,7 +148,7 @@
       "horse_name": "ベンガン",
       "odds": 106.8,
       "actual_finish": 12,
-      "win_probability": 0.001102509997620421,
+      "win_probability": 0.0018455683284070113,
       "predicted_rank": 18
     }
   ]

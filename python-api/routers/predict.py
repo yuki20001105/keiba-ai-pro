@@ -41,6 +41,8 @@ POST_RACE_FIELDS = {
     "corner_positions", "corner_positions_list",
     "last_3f", "last_3f_rank", "last_3f_rank_normalized", "last_3f_time",
     "margin", "prize_money",
+    # 評価用フィールド（予測 JSON に同居するが入力に使わない）
+    "actual_finish", "finish",
 }
 
 
@@ -75,6 +77,20 @@ async def predict(request: PredictRequest, http_req: Request):
         # レース後フィールドを除去
         cleaned_horses = [{k: v for k, v in h.items() if k not in POST_RACE_FIELDS} for h in request.horses]
         df = pd.DataFrame(cleaned_horses)
+
+        # ── [Quality Gate] 入力整合チェック ────────────────────────────────
+        try:
+            import sys as _sys, os as _os
+            _sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "keiba"))
+            from keiba_ai.quality_gate import validate_race_entries  # type: ignore
+            _qr = validate_race_entries(df)
+            if _qr.n_bad > 0:
+                logger.warning(f"[Quality Gate] {_qr.n_bad} bad race(s) detected:\n{_qr.summary()}")
+            if _qr.n_warn > 0:
+                logger.info(f"[Quality Gate] {_qr.n_warn} warning(s):\n{_qr.summary()}")
+        except Exception as _qe:
+            logger.debug(f"[Quality Gate] スキップ: {_qe}")
+        # ───────────────────────────────────────────────────────────────────
         # race_id がない場合はダミーを設定 (add_derived_features が必須とするため)
         if "race_id" not in df.columns:
             df["race_id"] = "202500000000"

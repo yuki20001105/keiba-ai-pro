@@ -832,6 +832,22 @@ def add_derived_features(df: pd.DataFrame, full_history_df: Optional[pd.DataFram
         df['odds_z_in_race'] = df.groupby('race_id')['odds'].transform(
             lambda x: (x - x.mean()) / (x.std() + 1e-8)
         )
+        # ── A-7: odds 欠損フラグ（NaN のまま + フラグで安定した欠損処理）──
+        df['odds_is_missing'] = _o.isna().astype(int)
+
+    elif 'odds' in df.columns:
+        # race_id なしケース（単レース予測）
+        _o2 = pd.to_numeric(df['odds'], errors='coerce')
+        df['odds_is_missing'] = _o2.isna().astype(int)
+        df['implied_prob'] = np.where(_o2 > 0, 1.0 / _o2, np.nan)
+        df['implied_prob_norm'] = df['implied_prob']  # 正規化不可 → そのまま
+        df['odds_rank_in_race'] = _o2.rank(method='min', na_option='bottom')
+        df['odds_z_in_race'] = (_o2 - _o2.mean()) / (_o2.std() + 1e-8)
+
+    # ── A-7: popularity 欠損フラグ ──────────────────────────────────────────
+    if 'popularity' in df.columns:
+        _pop = pd.to_numeric(df['popularity'], errors='coerce')
+        df['popularity_is_missing'] = _pop.isna().astype(int)
 
     # ===== 前走からの日数 (S-1修正: race_date列を優先、fallback は race_id[:8]) =====
     if 'prev_race_date' in df.columns:
