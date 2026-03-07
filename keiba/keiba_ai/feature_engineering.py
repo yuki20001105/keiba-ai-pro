@@ -4,13 +4,15 @@
 """
 from pathlib import Path
 from typing import Optional
+import functools
 import yaml
 import pandas as pd
 import numpy as np
 
 
+@functools.lru_cache(maxsize=1)
 def load_course_master(yaml_path: Optional[Path] = None) -> dict:
-    """コース特性マスターデータを読み込む"""
+    """コース特性マスターデータを読み込む（初回のみファイル読み込み、以降はキャッシュ）"""
     if yaml_path is None:
         yaml_path = Path(__file__).parent / "course_master.yaml"
     

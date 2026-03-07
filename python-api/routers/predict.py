@@ -124,10 +124,11 @@ async def predict(request: PredictRequest, http_req: Request):
         predictions = []
         for i, (_, row) in enumerate(df.iterrows()):
             horse_num = int(row.get("horse_number", row.get("horse_no", i + 1)))
+            _hn = row.get("horse_name") or row.get("horse_id") or f"Horse {horse_num}"
             predictions.append({
                 "index": i,
                 "horse_number": horse_num,
-                "horse_name": str(row.get("horse_name", f"Horse {horse_num}")),
+                "horse_name": str(_hn),
                 "probability": float(proba[i]),
                 "odds": float(row.get("odds", row.get("entry_odds", 0.0))),
             })
@@ -323,7 +324,7 @@ async def analyze_race(request: AnalyzeRaceRequest):
                 _horse_num = _hr.get("horse_number") or _hr.get("horse_no") or (i + 1)
                 predictions.append({
                     "horse_number": _horse_num, "horse_no": _horse_num,
-                    "horse_name": _hr.get("horse_name", ""),
+                    "horse_name": _hr.get("horse_name") or f'[{_hr.get("horse_id","") or _horse_num}]',
                     "jockey_name": _hr.get("jockey_name", ""),
                     "trainer_name": _hr.get("trainer_name", ""),
                     "sex": _hr.get("sex", ""), "age": _hr.get("age"),

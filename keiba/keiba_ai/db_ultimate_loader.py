@@ -137,6 +137,28 @@ def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
     df = pd.DataFrame(records)
     print(f"  ✓ DataFrame変換: {len(df)}行 × {len(df.columns)}列")
 
+    # ===== horse_name 空欄チェック・仮補完 =====
+    # horse_name 空 = <a>タグのテキスト取得失敗。horse_id (href から取得) は有効なので
+    # 結合キーおよび統計計算には影響しないが、表示・名前検索に支障が出るため警告する。
+    if 'horse_name' in df.columns:
+        _empty_name_mask = (
+            df['horse_name'].isna() |
+            df['horse_name'].astype(str).str.strip().isin(['', 'None', 'nan'])
+        )
+        n_empty = int(_empty_name_mask.sum())
+        if n_empty > 0:
+            if 'horse_id' in df.columns:
+                df.loc[_empty_name_mask, 'horse_name'] = (
+                    df.loc[_empty_name_mask, 'horse_id']
+                    .astype(str)
+                    .apply(lambda x: f'[{x}]' if x not in ('', 'None', 'nan') else '[不明馬]')
+                )
+            print(
+                f"  ⚠ horse_name が空のエントリ: {n_empty} 件"
+                f" → horse_id で仮補完 [horse_id]"
+                f" (tools/patch_horse_names.py で正式修正可能)"
+            )
+
     # ===== P0-2: num_horses の補完 =====
     # races_ultimate.data.num_horses が None/未設定の場合、
     # 同一 race_id のエントリ数からレース頭数を計算して補完する

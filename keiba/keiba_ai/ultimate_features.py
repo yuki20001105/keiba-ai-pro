@@ -51,8 +51,9 @@ class UltimateFeatureCalculator:
         for race_id, data_json in rows:
             try:
                 data = json.loads(data_json)
-                # horse_idまたはhorse_nameで一致判定
-                if data.get('horse_id') == horse_id or data.get('horse_name') == horse_id:
+                # horse_id で一致判定（horse_name は表示用であり結合キーではない）
+                # ※ data.get('horse_name') == horse_id は常に False なので除去
+                if data.get('horse_id') == horse_id:
                     records.append(data)
                     if len(records) >= 10:
                         break

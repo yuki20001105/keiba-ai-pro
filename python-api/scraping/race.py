@@ -339,8 +339,25 @@ async def scrape_race_full(
                 return href
 
             def link_text(i, _cols=cols):
-                a = _cols[i].find("a") if i < len(_cols) else None
-                return a.get_text(strip=True) if a else txt(i)
+                """セル内の<a>テキストを返す。<a>が空の場合はセル全体テキストにフォールバック。"""
+                if i >= len(_cols):
+                    return ""
+                a = _cols[i].find("a")
+                if a:
+                    txt_a = a.get_text(strip=True)
+                    if txt_a:  # <a>にテキストあり
+                        return txt_a
+                    # <a>が空 (例: <a href="..."><img/></a>) → セル全体テキストを試みる
+                    cell_txt = _cols[i].get_text(strip=True)
+                    if cell_txt:
+                        return cell_txt
+                    # <a>のsiblingからも探す
+                    cell_txt2 = " ".join(
+                        t.get_text(strip=True)
+                        for t in _cols[i].find_all(["span", "b", "strong"])
+                    ).strip()
+                    return cell_txt2 if cell_txt2 else ""
+                return _cols[i].get_text(strip=True)
 
             finish_pos = txt(IDX_FINISH)
             try:
@@ -358,6 +375,12 @@ async def scrape_race_full(
             horse_url = link_href(IDX_HORSE)
             horse_id_m = re.search(r"/horse/([A-Za-z0-9]+)", horse_url)
             horse_id = horse_id_m.group(1) if horse_id_m else ""
+            # horse_name が空の場合は警告（horse_id は href から取得済みなので結合キーは維持される）
+            if not horse_name:
+                logger.warning(
+                    f"[horse_name空] race_id={race_id} horse_id={horse_id}"
+                    f" IDX_HORSE={IDX_HORSE} cell_html={str(cols[IDX_HORSE])[:120]!r}"
+                )
 
             sex_age = txt(IDX_SEX_AGE)
             sex = sex_age[0] if sex_age else ""
