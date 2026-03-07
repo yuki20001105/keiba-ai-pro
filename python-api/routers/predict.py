@@ -78,7 +78,14 @@ async def predict(request: PredictRequest, http_req: Request):
         # race_id がない場合はダミーを設定 (add_derived_features が必須とするため)
         if "race_id" not in df.columns:
             df["race_id"] = "202500000000"
-        df = add_derived_features(df, full_history_df=None)
+        # [fix] full_history_df に DB 全履歴を渡し rolling stats（past_N_avg_finish 等）を正しく計算
+        try:
+            from keiba_ai.db_ultimate_loader import load_ultimate_training_frame as _ltf  # type: ignore
+            _hist_df = _ltf(ULTIMATE_DB)
+            _full_hist = pd.concat([_hist_df, df], ignore_index=True)
+        except Exception:
+            _full_hist = df
+        df = add_derived_features(df, full_history_df=_full_hist)
 
         if use_optimizer and optimizer is not None:
             df_optimized = optimizer.transform(df)
@@ -265,7 +272,14 @@ async def analyze_race(request: AnalyzeRaceRequest):
                         return []
                 df_pred["corner_positions_list"] = df_pred["corner_positions"].apply(_parse_cp)
 
-            df_pred = _add_df(df_pred, full_history_df=df_pred)
+            # [fix] full_history_df に DB 全履歴を渡し rolling stats を正しく計算
+            try:
+                from keiba_ai.db_ultimate_loader import load_ultimate_training_frame as _ltf2  # type: ignore
+                _hist_df2 = _ltf2(ULTIMATE_DB)
+                _full_hist2 = pd.concat([_hist_df2, df_pred], ignore_index=True)
+            except Exception:
+                _full_hist2 = df_pred
+            df_pred = _add_df(df_pred, full_history_df=_full_hist2)
             calculator = UltimateFeatureCalculator(str(db_path))
             df_pred = calculator.add_ultimate_features(df_pred)
             df_pred = df_pred.loc[:, ~df_pred.columns.duplicated()]
