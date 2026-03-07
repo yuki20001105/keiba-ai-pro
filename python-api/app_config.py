@@ -158,6 +158,34 @@ def verify_feature_columns(
     return X[feat_cols]
 
 
+def assert_feature_columns(
+    X: "pd.DataFrame",
+    bundle: dict,
+    missing_error_threshold: float = 0.20,
+) -> None:
+    """[S] 推論時に学習特徴量との一致を厳格チェック。
+
+    欠損列が全特徴量の missing_error_threshold を超えたら RuntimeError を raise する。
+    verify_feature_columns（NaN補完）の前に呼ぶことを想定。
+    """
+    import pandas as _pd
+
+    feat_cols = bundle.get("feature_columns")
+    if not feat_cols:
+        return
+    missing_cols = [c for c in feat_cols if c not in X.columns]
+    missing_rate = len(missing_cols) / max(len(feat_cols), 1)
+    if missing_rate > missing_error_threshold:
+        raise RuntimeError(
+            f"[A-6 ASSERT] 特徴量不一致が重大: {len(missing_cols)}/{len(feat_cols)} 列欠損 "
+            f"({missing_rate:.0%} > 閾値{missing_error_threshold:.0%}): {missing_cols[:15]}"
+        )
+    if missing_cols:
+        logger.warning(
+            f"[A-6 ASSERT] {len(missing_cols)} 列欠損（閾値以下のため続行）: {missing_cols[:8]}"
+        )
+
+
 def _ensure_model_local(model_id: str) -> Optional[Path]:
     """モデルをローカルで探し、なければ Supabase からダウンロード"""
     local_files = list(MODELS_DIR.glob(f"*{model_id}*.joblib"))

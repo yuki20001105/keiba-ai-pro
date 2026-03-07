@@ -22,6 +22,7 @@ from app_config import (  # type: ignore
     load_model_bundle,
     _ensure_model_local,
     verify_feature_columns,
+    assert_feature_columns,
     logger,
 )
 from deps.pred_limit import check_and_consume_pred_count  # type: ignore
@@ -78,16 +79,25 @@ async def predict(request: PredictRequest, http_req: Request):
         cleaned_horses = [{k: v for k, v in h.items() if k not in POST_RACE_FIELDS} for h in request.horses]
         df = pd.DataFrame(cleaned_horses)
 
-        # ── [Quality Gate] 入力整合チェック ────────────────────────────────
+        # ── [S: Quality Gate] 入力整合チェック → 不正レースを除外 ──────────
         try:
-            import sys as _sys, os as _os
+            import sys as _sys
             _sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "keiba"))
-            from keiba_ai.quality_gate import validate_race_entries  # type: ignore
-            _qr = validate_race_entries(df)
-            if _qr.n_bad > 0:
-                logger.warning(f"[Quality Gate] {_qr.n_bad} bad race(s) detected:\n{_qr.summary()}")
-            if _qr.n_warn > 0:
-                logger.info(f"[Quality Gate] {_qr.n_warn} warning(s):\n{_qr.summary()}")
+            from keiba_ai.quality_gate import filter_valid_races as _fvr  # type: ignore
+            if "race_id" not in df.columns:
+                df["race_id"] = "202500000000"
+            _n_before = len(df)
+            df = _fvr(df, verbose=False)
+            if len(df) == 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="入力データに不正なレースが含まれています（distance=0, odds欠損など）。"
+                           "再スクレイプしてください。",
+                )
+            if len(df) < _n_before:
+                logger.warning(f"[Quality Gate] {_n_before - len(df)} 件の不正エントリを除外")
+        except HTTPException:
+            raise
         except Exception as _qe:
             logger.debug(f"[Quality Gate] スキップ: {_qe}")
         # ───────────────────────────────────────────────────────────────────
@@ -105,24 +115,30 @@ async def predict(request: PredictRequest, http_req: Request):
 
         if use_optimizer and optimizer is not None:
             df_optimized = optimizer.transform(df)
-            exclude_cols = ["race_id", "horse_id", "jockey_id", "trainer_id", "owner_id", "finish_position"]
+            # [S] 未来情報・識別子を推論入力から強制除外
+            _post_drop = set(POST_RACE_FIELDS) | {"race_id", "horse_id", "jockey_id", "trainer_id", "owner_id", "finish_position"}
+            exclude_cols = list(_post_drop)
             X = df_optimized.drop([c for c in exclude_cols if c in df_optimized.columns], axis=1)
             obj_cols = X.select_dtypes(include=["object"]).columns.tolist()
             if obj_cols:
                 X = X.drop(columns=obj_cols)
-            # [L3-2] A-6: 学習時特徴量と一致確認（不足列 NaN 補完、余剰列無視）
+            # [S] A-6 厳格アサート → verify（NaN補完）
+            assert_feature_columns(X, bundle)
             X = verify_feature_columns(X, bundle)
             proba = model.predict(X)
         else:
             # 後方互換: optimizer なし旧バンドル → 87特徴量モードで再エンコード
             from keiba_ai.lightgbm_feature_optimizer import prepare_for_lightgbm_ultimate  # type: ignore
             df_fb, _, _ = prepare_for_lightgbm_ultimate(df, is_training=False)
-            exclude_cols = ["race_id", "horse_id", "jockey_id", "trainer_id", "owner_id", "finish_position"]
+            # [S] 未来情報・識別子を推論入力から強制除外
+            _post_drop2 = set(POST_RACE_FIELDS) | {"race_id", "horse_id", "jockey_id", "trainer_id", "owner_id", "finish_position"}
+            exclude_cols = list(_post_drop2)
             X = df_fb.drop([c for c in exclude_cols if c in df_fb.columns], axis=1)
             obj_cols = X.select_dtypes(include=["object"]).columns.tolist()
             if obj_cols:
                 X = X.drop(columns=obj_cols)
-            # [L3-2] A-6: 特徴量アサート
+            # [S] A-6 厳格アサート → verify（NaN補完）
+            assert_feature_columns(X, bundle)
             X = verify_feature_columns(X, bundle)
             try:
                 proba = model.predict(X)
@@ -243,6 +259,13 @@ async def analyze_race(request: AnalyzeRaceRequest):
                 _horse_records.append(_hd)
 
             df_pred = pd.DataFrame(_horse_records)
+
+            # [S] 未来情報ブラックリスト列を推論入力から強制除外
+            _drop_future = [c for c in POST_RACE_FIELDS if c in df_pred.columns]
+            if _drop_future:
+                df_pred = df_pred.drop(columns=_drop_future)
+                logger.debug(f"[S] 未来情報列を除外: {_drop_future}")
+
             _col_map = {
                 "finish_position": "finish", "finish_time": "time",
                 "track_type": "surface", "last_3f": "last_3f_time", "weight_kg": "horse_weight",
@@ -294,6 +317,22 @@ async def analyze_race(request: AnalyzeRaceRequest):
                         return []
                 df_pred["corner_positions_list"] = df_pred["corner_positions"].apply(_parse_cp)
 
+            # [S: Quality Gate] /analyze 入力データ品質チェック
+            try:
+                from keiba_ai.quality_gate import validate_race_entries as _vqr  # type: ignore
+                _qr_a = _vqr(df_pred)
+                if _qr_a.n_bad > 0:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"[Quality Gate] レース {request.race_id} の入力データに問題があります:\n{_qr_a.summary()}",
+                    )
+                if _qr_a.n_warn > 0:
+                    logger.warning(f"[Quality Gate warn] /analyze {request.race_id}:\n{_qr_a.summary()}")
+            except HTTPException:
+                raise
+            except Exception as _qe_a:
+                logger.debug(f"[Quality Gate /analyze] スキップ: {_qe_a}")
+
             # [fix] full_history_df に DB 全履歴を渡し rolling stats を正しく計算
             try:
                 from keiba_ai.db_ultimate_loader import load_ultimate_training_frame as _ltf2  # type: ignore
@@ -316,13 +355,18 @@ async def analyze_race(request: AnalyzeRaceRequest):
                     df_pred, is_training=False, optimizer=None
                 )
 
-            exclude_cols = ["win", "place", "race_id", "horse_id", "jockey_id", "trainer_id", "owner_id", "finish_position", "finish"]
-            X_pred = df_pred_opt.drop([c for c in exclude_cols if c in df_pred_opt.columns], axis=1)
+            # [S] 識別子 + 未来情報を推論入力から強制除外
+            _analyze_drop = (
+                {"win", "place", "race_id", "horse_id", "jockey_id", "trainer_id", "owner_id"}
+                | POST_RACE_FIELDS
+            )
+            X_pred = df_pred_opt.drop([c for c in _analyze_drop if c in df_pred_opt.columns], axis=1)
             obj_cols = X_pred.select_dtypes(include=["object"]).columns.tolist()
             if obj_cols:
                 X_pred = X_pred.drop(columns=obj_cols)
 
-            # [A-6] verify_feature_columns: NaN 補完 + 順序整合 (0-fill 廃止)
+            # [S] A-6 厳格アサート → verify（NaN補完）
+            assert_feature_columns(X_pred, bundle)
             X_pred = verify_feature_columns(X_pred, bundle)
 
             win_probs = model.predict(X_pred)

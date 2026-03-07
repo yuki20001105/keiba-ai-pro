@@ -29,7 +29,8 @@ import pandas as pd
 import numpy as np
 import joblib
 
-from app_config import ULTIMATE_DB, MODELS_DIR, get_latest_model, load_model_bundle, verify_feature_columns
+from app_config import ULTIMATE_DB, MODELS_DIR, get_latest_model, load_model_bundle, verify_feature_columns, assert_feature_columns
+from keiba_ai.quality_gate import filter_valid_races
 from keiba_ai.db_ultimate_loader import load_ultimate_training_frame
 from keiba_ai.feature_engineering import add_derived_features
 from keiba_ai.ultimate_features import UltimateFeatureCalculator
@@ -62,6 +63,14 @@ print(f"Feats : {len(feat_cols)}")
 print("\n[Step1] DB 読み込み...")
 df_raw = load_ultimate_training_frame(ULTIMATE_DB)
 print(f"  {len(df_raw):,} 行 × {len(df_raw.columns)} 列 / {df_raw['race_id'].nunique()} レース")
+# [S] Quality Gate: 不正レース（distance=0, odds欠損など）を除外
+_n_races_before = df_raw['race_id'].nunique()
+df_raw = filter_valid_races(df_raw, verbose=True)
+_n_races_after = df_raw['race_id'].nunique()
+if _n_races_before != _n_races_after:
+    print(f"  [Quality Gate] {_n_races_before - _n_races_after} 不正レース除外 → {_n_races_after} レース残存")
+else:
+    print(f"  [Quality Gate] 全 {_n_races_after} レース合格")
 df_raw.head(200).to_csv(OUT / "01_raw_data.csv", index=False, encoding="utf-8-sig")
 print(f"  → 01_raw_data.csv 保存")
 
@@ -180,8 +189,16 @@ df_pred_opt.to_csv(OUT / f"05_prediction_features_{target_race_id}.csv",
 print(f"  → 05_prediction_features_{target_race_id}.csv 保存")
 
 # 特徴量整形 → 予測
-# [A-6] 0-fill 廃止: verify_feature_columns で NaN 補完 + 順序整合
+# [S/A-6] Quality Gate → assert → verify_feature_columns（NaN補完）
 X_pred = df_pred_opt.copy()
+# 識別子・未来情報列を除外
+_regen_drop = {"win", "place", "race_id", "horse_id", "jockey_id", "trainer_id", "owner_id",
+               "finish_position", "finish", "finish_time", "time_seconds",
+               "corner_1", "corner_2", "corner_3", "corner_4", "corner_positions",
+               "last_3f", "last_3f_rank", "last_3f_rank_normalized", "last_3f_time",
+               "margin", "prize_money", "actual_finish"}
+X_pred = X_pred.drop(columns=[c for c in _regen_drop if c in X_pred.columns])
+assert_feature_columns(X_pred, bundle)
 X_pred = verify_feature_columns(X_pred, bundle)
 probs  = model.predict(X_pred)
 # [L3-3] キャリブレーション適用
