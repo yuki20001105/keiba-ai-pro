@@ -526,6 +526,20 @@ class LightGBMFeatureOptimizer:
             print(f"  ⚠️  重複列を除去: {dup_cols}")
             df = df.loc[:, ~df.columns.duplicated()]
 
+        # ===== fix-D: ゼロ分散列の除去（死に特徴 = モデルノイズになる）=====
+        _exclude_from_var_check = {'race_id', 'horse_id', 'jockey_id', 'trainer_id',
+                                   'win', 'place', 'finish', 'finish_position'}
+        _num_cols = df.select_dtypes(include='number').columns
+        _var_cols = [c for c in _num_cols if c not in _exclude_from_var_check]
+        if _var_cols:
+            _std = df[_var_cols].std(ddof=0)
+            _zero_var = _std[_std < 1e-6].index.tolist()
+            if _zero_var:
+                print(f"  ⚠️  [fix-D] ゼロ分散列を除去 ({len(_zero_var)}列): {_zero_var}")
+                df = df.drop(columns=_zero_var, errors='ignore')
+                # 学習済みモデルのバンドルに記録しておく
+                self._zero_var_cols = getattr(self, '_zero_var_cols', []) + _zero_var
+
         # ===== S-2チェック: track_type_encoded と corner_radius_encoded の独立性検証 =====
         if 'track_type_encoded' in df.columns and 'corner_radius_encoded' in df.columns:
             _corr = df['track_type_encoded'].corr(df['corner_radius_encoded'].fillna(-1))
@@ -809,6 +823,25 @@ class LightGBMFeatureOptimizer:
         # last_3f_rank, last_3f_rank_normalized, last_3f_time
         # → 当該レースの結果データ（予測前には存在しない）= リーク → 削除
 
+        # ── fix-A: distance=0/NaN の安全網 ─────────────────────────────────────
+        # 本来は tools/fix_distance_zero.py で DB を修正し
+        # db_ultimate_loader が _invalid_distance レースをスキップするので
+        # ここに到達する件数はゼロが理想。残った場合のみ中央値で補完。
+        if 'distance' in df.columns:
+            _dist = pd.to_numeric(df['distance'], errors='coerce')
+            _invalid = _dist.isna() | (_dist <= 0)
+            if _invalid.any():
+                _med = _dist[~_invalid].median()
+                if np.isnan(_med):
+                    _med = 1600.0  # データが全滅した場合の最終フォールバック
+                n_inv = _invalid.sum()
+                print(
+                    f"  ⚠ [fix-A][要調査] distance=0/NaN が残存: {n_inv} 件"
+                    f" → 中央値 {_med:.0f}m で緊急補完（本来はスキップ対象）"
+                    f"\n     tools/fix_distance_zero.py --dry-run で原因を確認してください"
+                )
+                df['distance'] = _dist.where(~_invalid, _med)
+
         # ── 馬場変更フラグ（ここで生成→ track_type/surfaceはラベルエンコード後に削除されるため）──
         _surf_map = {'苝': 'turf', 'ダート': 'dirt', '花嵐': 'dirt', 'dirt': 'dirt', 'turf': 'turf'}
         if 'prev_race_surface' in df.columns:
@@ -881,12 +914,14 @@ class LightGBMFeatureOptimizer:
 
         # ── D. 休養区分 ──────────────────────────────────────────────────────
         if 'days_since_last_race' in df.columns:
-            d = pd.to_numeric(df['days_since_last_race'], errors='coerce').fillna(0)
+            # fix-C: NaN を fillna(0) せず、LightGBM が NaN を欠損枝として扱えるよう保持
+            # 初出走(NaN) と 短期休養(0-1日) を誤同一視しない
+            d = pd.to_numeric(df['days_since_last_race'], errors='coerce')  # NaN 保持
             df['rest_category'] = pd.cut(
                 d,
                 bins=[-1, 0, 21, 90, float('inf')],
                 labels=[0, 1, 2, 3]
-            ).astype(float).fillna(0)
+            ).astype('Float64')  # nullable float → NaN がそのまま NaN で残る
 
         # ── E. 马場変更フラグ ───────────────────────────────────────────────
         # prev_race_surface: 山・ダート など の日本語文字列

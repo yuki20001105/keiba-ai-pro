@@ -822,9 +822,11 @@ def add_derived_features(df: pd.DataFrame, full_history_df: Optional[pd.DataFram
     if 'prev_race_date' in df.columns:
         # race_date列が存在する場合は正確な日付を使う（race_id[:8]はJRAコードであり日付ではない）
         if 'race_date' in df.columns:
+            # fix-B: "20260301" / "2026/03/01" / "2026-03-01" の混在に対応
+            # format='%Y%m%d' はスラッシュ形式で NaT になるため、infer_datetime_format を使用
             _race_dt = pd.to_datetime(
-                df['race_date'].astype(str).str.replace('/', '-').str.strip(),
-                format='%Y%m%d', errors='coerce'
+                df['race_date'].astype(str).str.strip(),
+                infer_datetime_format=True, errors='coerce'
             )
         else:
             # fallback: race_id[:8] は年+会場コード等であり不正確。警告を出す

@@ -67,11 +67,16 @@ def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
     
     # races_ultimate から distance/track_type/date/num_horses を取得
     race_meta = {}
+    _invalid_race_ids: set = set()  # _invalid_distance フラグが立っているレース
     if has_races_ultimate:
         cursor.execute("SELECT race_id, data FROM races_ultimate")
         for race_id, data_json in cursor.fetchall():
             try:
                 data = json.loads(data_json)
+                # fix-distance-zero: スクレイピングで距離が取れなかったレースは除外
+                if data.get('_invalid_distance'):
+                    _invalid_race_ids.add(race_id)
+                    continue
                 race_meta[race_id] = {
                     'distance': data.get('distance'),
                     'track_type': data.get('track_type'),
@@ -93,6 +98,9 @@ def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
                 }
             except:
                 pass
+    if _invalid_race_ids:
+        print(f"  ⚠ _invalid_distance レースをスキップ: {len(_invalid_race_ids)} レース")
+        print(f"    (tools/fix_distance_zero.py を実行すると修正・再登録できます)")
     
     conn.close()
     
@@ -104,7 +112,12 @@ def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
     
     # JSON → DataFrame
     records = []
+    skipped_invalid = 0
     for race_id, data_json in rows:
+        # _invalid_distance フラグのあるレースは学習・推論ともにスキップ
+        if race_id in _invalid_race_ids:
+            skipped_invalid += 1
+            continue
         try:
             data = json.loads(data_json)
             if 'race_id' not in data:
@@ -118,6 +131,8 @@ def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
         except json.JSONDecodeError:
             print(f"  ⚠ JSON解析エラー: race_id={race_id}")
             continue
+    if skipped_invalid:
+        print(f"  ⚠ _invalid_distance エントリをスキップ: {skipped_invalid} 件")
     
     df = pd.DataFrame(records)
     print(f"  ✓ DataFrame変換: {len(df)}行 × {len(df.columns)}列")

@@ -130,11 +130,13 @@ async def scrape_race_full(
             else:
                 track_type = ""
                 distance = 0
-                # S-3: distance=0 は後続の特徴量計算（course_features等）が全て壊れるため警告
+                # S-3: distance=0 → パース失敗。race_info に _invalid_distance フラグを付与して
+                # DB に保存し、ローダー側でスキップさせる。中央値補完はしない。
                 import logging as _log
-                _log.warning(
-                    f"[S-3] distance=0: race_id={race_id} のレース情報からdistance/track_typeを"
-                    f"パースできませんでした。info_text: {info_text[:100]!r}"
+                _log.error(
+                    f"[S-3][INVALID] distance=0: race_id={race_id} HTMLから距離/種別を取得できませんでした。"
+                    f" このレースは _invalid_distance=True で保存され学習・推論から除外されます。"
+                    f" info_text: {info_text[:120]!r}"
                 )
 
     # ---- 天候 ----
@@ -546,6 +548,9 @@ async def scrape_race_full(
             await asyncio.sleep(0.5)  # 4頭ごとにインターバル（IP ブロック抑制）
         gc.collect()
 
+    # distance=0 のレースは _invalid_distance フラグを付与（ローダーが除外する）
+    _invalid_dist_flag = (distance == 0 or distance is None)
+
     return {
         "race_info": {
             "race_id": race_id,
@@ -565,6 +570,10 @@ async def scrape_race_full(
             "surface": None,
             "lap_cumulative": lap_cumulative,
             "lap_sectional": lap_sectional,
+            # distance が取れなかった場合はこのレースをスキップ対象としてマーク
+            **({"_invalid_distance": True,
+                "_skip_reason": "distance=0: HTMLからの距離パース失敗"}
+               if _invalid_dist_flag else {}),
         },
         "horses": horses,
     }
