@@ -145,6 +145,18 @@ for hr in horse_rows:
 
 df_pred = pd.DataFrame(horse_records)
 
+# カラム名統一（predict.py と同じマッピング）
+# races_ultimate.data は track_type='芝'/'ダート' で保存、surface=None のため fillna で補完する
+_pred_col_map = {
+    "track_type": "surface", "last_3f": "last_3f_time", "weight_kg": "horse_weight",
+}
+for _old, _new in _pred_col_map.items():
+    if _old in df_pred.columns:
+        if _new not in df_pred.columns:
+            df_pred[_new] = df_pred[_old]
+        else:
+            df_pred[_new] = df_pred[_new].fillna(df_pred[_old])
+
 # レース後フィールドをクリア（リーク防止）
 for c in ['finish','finish_position','time','finish_time','margin',
           'corner_1','corner_2','corner_3','corner_4','corner_positions',

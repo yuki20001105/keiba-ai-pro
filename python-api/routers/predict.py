@@ -248,8 +248,13 @@ async def analyze_race(request: AnalyzeRaceRequest):
                 "track_type": "surface", "last_3f": "last_3f_time", "weight_kg": "horse_weight",
             }
             for _old, _new in _col_map.items():
-                if _old in df_pred.columns and _new not in df_pred.columns:
-                    df_pred[_new] = df_pred[_old]
+                if _old in df_pred.columns:
+                    if _new not in df_pred.columns:
+                        df_pred[_new] = df_pred[_old]
+                    else:
+                        # 列が存在するが全 NaN のケース（races_ultimate.data の surface=None など）
+                        # → track_type の値で NaN を補完する
+                        df_pred[_new] = df_pred[_new].fillna(df_pred[_old])
 
             for _url_col, _id_col, _name_col in [
                 ("jockey_url", "jockey_id", "jockey_name"),

@@ -418,7 +418,50 @@ def add_derived_features(df: pd.DataFrame, full_history_df: Optional[pd.DataFram
         pd.DataFrame: 派生特徴量が追加されたデータフレーム
     """
     df = df.copy()
-    
+
+    # ===== [P3-1] DB全履歴から days_since_last_race を事前計算（高精度版）=====
+    # prev_race_date はスクレイプ時の最新レース日を保存するため
+    # 過去レース行では race_date < prev_race_date（負）になるケースがある。
+    # full_history_df が提供された場合、horse別・time順ソートで正確に計算する。
+    # この計算は rest_category / is_missing フラグより先に実行する必要がある。
+    if (
+        full_history_df is not None
+        and 'horse_id'  in full_history_df.columns
+        and 'race_date' in full_history_df.columns
+        and 'race_id'   in full_history_df.columns
+        and 'horse_id'  in df.columns
+        and 'race_id'   in df.columns
+    ):
+        _hist = full_history_df[['horse_id', 'race_id', 'race_date']].copy()
+        _hist['_rdt'] = pd.to_datetime(
+            _hist['race_date'].astype(str).str.strip(),
+            format='%Y%m%d', errors='coerce'
+        )
+        if _hist['_rdt'].isna().all():
+            # format='%Y%m%d' で全NaT の場合は infer フォールバック
+            _hist['_rdt'] = pd.to_datetime(
+                _hist['race_date'].astype(str).str.strip(), errors='coerce'
+            )
+        _hist = (_hist
+                 .sort_values(['horse_id', '_rdt'])
+                 .drop_duplicates(subset=['horse_id', 'race_id']))
+        _hist['_prev_rdt'] = _hist.groupby('horse_id', sort=False)['_rdt'].shift(1)
+        _hist['_days_db'] = (_hist['_rdt'] - _hist['_prev_rdt']).dt.days
+        # _days_db > 0 のみ有効（=0 は同日別会場の horse_id 重複などノイズ）
+        _hist = _hist[['horse_id', 'race_id', '_days_db']].dropna(subset=['_days_db'])
+        _hist = _hist[_hist['_days_db'] > 0]
+
+        df = df.merge(_hist, on=['horse_id', 'race_id'], how='left')
+        if 'days_since_last_race' not in df.columns:
+            df['days_since_last_race'] = df['_days_db'].where(df['_days_db'] >= 0)
+        else:
+            # 既存値が欠損 or 負の場合は DB 計算値で補完
+            _bad = df['days_since_last_race'].isna() | (df['days_since_last_race'] < 0)
+            df.loc[_bad, 'days_since_last_race'] = (
+                df.loc[_bad, '_days_db'].where(df.loc[_bad, '_days_db'] >= 0, np.nan)
+            )
+        df = df.drop(columns=['_days_db'])
+
     # ===== 新機能: 性齢パース =====
     if 'sex' in df.columns and 'age' in df.columns:
         # 性別ダミー変数化
@@ -849,18 +892,22 @@ def add_derived_features(df: pd.DataFrame, full_history_df: Optional[pd.DataFram
         _pop = pd.to_numeric(df['popularity'], errors='coerce')
         df['popularity_is_missing'] = _pop.isna().astype(int)
 
-    # ===== 前走からの日数 (S-1修正: race_date列を優先、fallback は race_id[:8]) =====
+    # ===== 前走からの日数（scraped prev_race_date による補完）=====
+    # DB全履歴による計算値（上の P3-1 ブロック）が優先。ここでは残った NaN を補完する。
+    # ※ prev_race_date はスクレイプ時点の最新レース日のため負になるケースがあるが
+    #   full_history_df があれば上で処理済みなので通常は少数の補完のみ発生する
     if 'prev_race_date' in df.columns:
-        # race_date列が存在する場合は正確な日付を使う（race_id[:8]はJRAコードであり日付ではない）
         if 'race_date' in df.columns:
-            # fix-B: "20260301" / "2026/03/01" / "2026-03-01" の混在に対応
-            # format='%Y%m%d' はスラッシュ形式で NaT になるため、infer_datetime_format を使用
             _race_dt = pd.to_datetime(
                 df['race_date'].astype(str).str.strip(),
-                infer_datetime_format=True, errors='coerce'
+                format='%Y%m%d', errors='coerce'
             )
+            # format='%Y%m%d' で NaT が多い場合は "YYYY/MM/DD" 等混在 → infer フォールバック
+            if _race_dt.isna().mean() > 0.5:
+                _race_dt = pd.to_datetime(
+                    df['race_date'].astype(str).str.strip(), errors='coerce'
+                )
         else:
-            # fallback: race_id[:8] は年+会場コード等であり不正確。警告を出す
             import warnings as _w
             _w.warn(
                 "race_date列が存在しません。race_id[:8]を使用しますが days_since_last_race が"
@@ -873,8 +920,14 @@ def add_derived_features(df: pd.DataFrame, full_history_df: Optional[pd.DataFram
             errors='coerce'
         )
         _days = (_race_dt - _prev_dt).dt.days
-        # 負の値（計算誤り）はNaNに置換
-        df['days_since_last_race'] = _days.where(_days >= 0, np.nan)
+        # days=0 は prev_race_date が当日レースを指しているケース（スクレイプタイミングの問題）→ NaN
+        # days<0 は race_date < prev_race_date （将来日付） → NaN
+        _scraped_days = _days.where(_days >= 1, np.nan)
+        if 'days_since_last_race' not in df.columns:
+            df['days_since_last_race'] = _scraped_days
+        else:
+            # DB計算値では見つからなかった馬（例: 推論時の新racce）を scraping 値で補完
+            df['days_since_last_race'] = df['days_since_last_race'].fillna(_scraped_days)
 
     # ===== 距離変化 =====
     if 'prev_race_distance' in df.columns and 'distance' in df.columns:
@@ -903,7 +956,8 @@ def add_derived_features(df: pd.DataFrame, full_history_df: Optional[pd.DataFram
         if 'surface' in df.columns:         _grp_cols.append('surface')
         if 'prev_race_distance' in df.columns: _grp_cols.append('prev_race_distance')
         if _grp_cols:
-            df['prev_speed_zscore'] = df.groupby(_grp_cols, sort=False)['prev_speed_index'].transform(
+            # dropna=False: surface=NaN の行も同一グループとして計算（旧バージョンでは除外されていた）
+            df['prev_speed_zscore'] = df.groupby(_grp_cols, sort=False, dropna=False)['prev_speed_index'].transform(
                 lambda x: (x - x.mean()) / (x.std() + 1e-8) if len(x) > 1 else 0.0
             )
         else:

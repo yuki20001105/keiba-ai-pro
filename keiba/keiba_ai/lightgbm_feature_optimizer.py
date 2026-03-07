@@ -866,6 +866,14 @@ class LightGBMFeatureOptimizer:
                 )
                 df['distance'] = _dist.where(~_invalid, _med)
 
+        # ── track_type → surface フォールバック（二重安全網）────────────────────────────
+        # races_ultimate JSON は track_type='芝'/'ダート' で保存, surface=None のため
+        # predict.py / regen_pipeline_output.py で fillna するが、optimizer でも保証する
+        if 'surface' in df.columns and 'track_type' in df.columns:
+            df['surface'] = df['surface'].fillna(df['track_type'])
+        elif 'track_type' in df.columns and 'surface' not in df.columns:
+            df['surface'] = df['track_type']
+
         # ── 馬場変更フラグ（ここで生成→ track_type/surfaceはラベルエンコード後に削除されるため）──
         _surf_map = {'苝': 'turf', 'ダート': 'dirt', '花嵐': 'dirt', 'dirt': 'dirt', 'turf': 'turf'}
         if 'prev_race_surface' in df.columns:
