@@ -198,7 +198,7 @@ class BettingCombinationGenerator:
             candidates.append({
                 'combination': str(horse['horse_no']),
                 'expected_value': horse['expected_value'],
-                'probability': horse['win_probability'],
+                'probability': horse.get('p_norm', horse.get('win_probability', 0)),
                 'odds': horse['odds']
             })
         
@@ -215,7 +215,7 @@ class BettingCombinationGenerator:
             combo = f"{h1['horse_no']}-{h2['horse_no']}"
             # 期待値は積形式（簡易計算）
             ev = (h1['expected_value'] + h2['expected_value']) / 2
-            prob = h1['win_probability'] * h2['win_probability']
+            prob = h1.get('p_norm', h1.get('win_probability', 0)) * h2.get('p_norm', h2.get('win_probability', 0))
             
             candidates.append({
                 'combination': combo,
@@ -240,7 +240,7 @@ class BettingCombinationGenerator:
         for h1, h2, h3 in combinations(top_horses, 3):
             combo = f"{h1['horse_no']}-{h2['horse_no']}-{h3['horse_no']}"
             ev = (h1['expected_value'] + h2['expected_value'] + h3['expected_value']) / 3
-            prob = h1['win_probability'] * h2['win_probability'] * h3['win_probability']
+            prob = h1.get('p_norm', h1.get('win_probability', 0)) * h2.get('p_norm', h2.get('win_probability', 0)) * h3.get('p_norm', h3.get('win_probability', 0))
             
             candidates.append({
                 'combination': combo,
@@ -260,7 +260,7 @@ class BettingCombinationGenerator:
         for h1, h2 in permutations(top_horses, 2):
             combo = f"{h1['horse_no']}→{h2['horse_no']}"
             ev = (h1['expected_value'] + h2['expected_value']) / 2
-            prob = h1['win_probability'] * h2['win_probability'] * 0.5  # 順序考慮
+            prob = h1.get('p_norm', h1.get('win_probability', 0)) * h2.get('p_norm', h2.get('win_probability', 0)) * 0.5  # 順序考慮
             
             candidates.append({
                 'combination': combo,
@@ -280,7 +280,7 @@ class BettingCombinationGenerator:
         for h1, h2, h3 in permutations(top_horses, 3):
             combo = f"{h1['horse_no']}→{h2['horse_no']}→{h3['horse_no']}"
             ev = (h1['expected_value'] + h2['expected_value'] + h3['expected_value']) / 3
-            prob = h1['win_probability'] * h2['win_probability'] * h3['win_probability'] * 0.3
+            prob = h1.get('p_norm', h1.get('win_probability', 0)) * h2.get('p_norm', h2.get('win_probability', 0)) * h3.get('p_norm', h3.get('win_probability', 0)) * 0.3
             
             candidates.append({
                 'combination': combo,
@@ -308,7 +308,8 @@ class RaceAnalyzer:
         if not predictions:
             return 0.0
         
-        probs = [p['win_probability'] for p in predictions]
+        # [A1] p_raw（連続値）があれば優先使用: win_probability は量子化されており std が潰れる
+        probs = [p.get('p_raw', p.get('win_probability', 0)) for p in predictions]
         
         # 標準偏差ベース（高いほど偏りが大きい = 予測しやすい）
         std_dev = np.std(probs)
@@ -499,9 +500,10 @@ class BettingRecommender:
         Returns:
             推奨情報辞書
         """
-        # 期待値計算
+        # [A1] 期待値計算: p_norm（確率として正規化済み）があれば優先使用、なければ win_probability でフォールバック
         for pred in predictions:
-            pred['expected_value'] = pred['win_probability'] * pred['odds']
+            _p = pred.get('p_norm') or pred.get('p_raw') or pred.get('win_probability', 0)
+            pred['expected_value'] = _p * pred['odds']
         
         # プロ戦略評価
         pro_eval = self.analyzer.evaluate_pro_strategy(predictions, race_info)
@@ -530,8 +532,10 @@ class BettingRecommender:
         kelly_amount = None
         if self.use_kelly:
             top_horse = max(predictions, key=lambda x: x['expected_value'])
+            # [A1] Kelly基準の確率には p_norm（レース内正規化済み）を使用
+            _kelly_prob = top_horse.get('p_norm') or top_horse.get('p_raw') or top_horse.get('win_probability', 0)
             kelly_amount = self.strategy.calculate_kelly_bet(
-                top_horse['win_probability'],
+                _kelly_prob,
                 top_horse['odds']
             )
         
@@ -543,7 +547,7 @@ class BettingRecommender:
         return {
             'race_info': race_info,
             'pro_evaluation': pro_eval,
-            'predictions': sorted(predictions, key=lambda x: x['expected_value'], reverse=True),
+            'predictions': sorted(predictions, key=lambda x: x.get('p_raw', x.get('expected_value', 0)), reverse=True),
             'bet_types': bet_types,
             'best_bet_type': best_bet_type,
             'best_bet_info': best_bet_info,

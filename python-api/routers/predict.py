@@ -99,7 +99,7 @@ async def predict(request: PredictRequest, http_req: Request):
         except HTTPException:
             raise
         except Exception as _qe:
-            logger.debug(f"[Quality Gate] スキップ: {_qe}")
+            logger.warning(f"[Quality Gate] スキップ: {_qe}")
         # ───────────────────────────────────────────────────────────────────
         # race_id がない場合はダミーを設定 (add_derived_features が必須とするため)
         if "race_id" not in df.columns:
@@ -211,16 +211,14 @@ async def analyze_race(request: AnalyzeRaceRequest):
             if not model_path:
                 raise HTTPException(status_code=404, detail=f"モデル {request.model_id} が見つかりません")
         else:
-            if SUPABASE_ENABLED and get_supabase_client():
-                sb_models = list_models_from_supabase()
-                model_path = _ensure_model_local(sb_models[0]["model_id"]) if sb_models else None
-            else:
-                model_path = None
-            if not model_path:
-                um = sorted(MODELS_DIR.glob("model_*_ultimate.joblib"), key=lambda p: p.stat().st_mtime, reverse=True)
-                model_path = um[0] if um else get_latest_model()
-            if not model_path:
-                raise HTTPException(status_code=404, detail="訓練済みモデルが見つかりません")
+            model_path = get_latest_model()
+            if model_path is None:
+                if SUPABASE_ENABLED and get_supabase_client():
+                    sb_models = list_models_from_supabase()
+                    if sb_models:
+                        model_path = _ensure_model_local(sb_models[0]["model_id"])
+                if model_path is None:
+                    raise HTTPException(status_code=404, detail="訓練済みモデルが見つかりません")
 
         bundle = load_model_bundle(model_path)
         model = bundle["model"]
@@ -342,7 +340,7 @@ async def analyze_race(request: AnalyzeRaceRequest):
             except HTTPException:
                 raise
             except Exception as _qe_a:
-                logger.debug(f"[Quality Gate /analyze] スキップ: {_qe_a}")
+                logger.warning(f"[Quality Gate /analyze] スキップ: {_qe_a}")
 
             # [fix] full_history_df に DB 全履歴を渡し rolling stats を正しく計算
             try:
@@ -418,8 +416,13 @@ async def analyze_race(request: AnalyzeRaceRequest):
                     "win_probability": float(win_probs[i]),
                     "p_raw": float(_wp_raw[i]),
                     "p_norm": float(_wp_norm[i]),
-                    "expected_value": float(_wp_raw[i] * _odds_float),
+                    "expected_value": float(_wp_norm[i] * _odds_float),  # [A1] p_norm×odds（出走内正規化済み確率）
                 })
+
+            # [A1] ソートは p_raw 降順、predicted_rank 割り当て
+            predictions.sort(key=lambda x: x.get("p_raw", 0), reverse=True)
+            for _rank, _pred in enumerate(predictions, 1):
+                _pred["predicted_rank"] = _rank
 
         recommender = BettingRecommender(
             bankroll=request.bankroll, risk_mode=request.risk_mode,

@@ -161,12 +161,13 @@ def verify_feature_columns(
 def assert_feature_columns(
     X: "pd.DataFrame",
     bundle: dict,
-    missing_error_threshold: float = 0.20,
+    missing_error_threshold: float = 0.10,
 ) -> None:
     """[S] 推論時に学習特徴量との一致を厳格チェック。
 
     欠損列が全特徴量の missing_error_threshold を超えたら RuntimeError を raise する。
     verify_feature_columns（NaN補完）の前に呼ぶことを想定。
+    閾値: 10%（110特徴量なら11列超過でエラー）
     """
     import pandas as _pd
 
