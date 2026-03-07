@@ -131,21 +131,28 @@ export default function PredictBatchPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-[#1e1e1e]">
-                  {['馬番', '馬名', '騎手', '勝率', 'オッズ'].map(h => (
+                  {['順位', '馬番', '馬名', '騎手', '確率(p_norm)', '期待値', 'オッズ'].map(h => (
                     <th key={h} className="px-4 py-3 text-left text-xs text-[#555] font-normal first:pl-5">{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {predictions.map((p, i) => (
-                  <tr key={i} className="border-b border-[#1a1a1a] hover:bg-[#161616] transition-colors">
-                    <td className="px-4 py-3 pl-5 font-bold">{p.horse_no}</td>
-                    <td className="px-4 py-3">{p.horse_name}</td>
-                    <td className="px-4 py-3 text-[#888]">{p.jockey_name}</td>
-                    <td className="px-4 py-3 text-[#4ade80] font-medium">{((p.win_probability ?? p.probability ?? 0) * 100).toFixed(1)}%</td>
-                    <td className="px-4 py-3 text-[#888]">{p.odds}</td>
-                  </tr>
-                ))}
+                {predictions.map((p, i) => {
+                  const pNorm = p.p_norm ?? p.win_probability ?? p.probability ?? 0
+                  const ev = p.expected_value ?? (pNorm * (p.odds ?? 0))
+                  const evColor = ev >= 1.2 ? 'text-[#4ade80]' : ev >= 1.0 ? 'text-[#facc15]' : 'text-[#888]'
+                  return (
+                    <tr key={i} className="border-b border-[#1a1a1a] hover:bg-[#161616] transition-colors">
+                      <td className="px-4 py-3 pl-5 text-[#888] font-medium">{p.predicted_rank ?? i + 1}位</td>
+                      <td className="px-4 py-3 font-bold">{p.horse_no}</td>
+                      <td className="px-4 py-3">{p.horse_name}</td>
+                      <td className="px-4 py-3 text-[#888]">{p.jockey_name}</td>
+                      <td className="px-4 py-3 text-[#4ade80] font-medium">{(pNorm * 100).toFixed(1)}%</td>
+                      <td className={`px-4 py-3 font-medium ${evColor}`}>{ev.toFixed(2)}</td>
+                      <td className="px-4 py-3 text-[#888]">{p.odds}</td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
