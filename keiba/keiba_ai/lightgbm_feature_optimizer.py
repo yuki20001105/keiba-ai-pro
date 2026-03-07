@@ -288,6 +288,8 @@ class LightGBMFeatureOptimizer:
             'horse_surface_races',         # 馬の同馬場出走数
             'horse_dist_band_win_rate',    # 馬の距離帯別勝率
             'horse_dist_band_races',       # 馬の距離帯別出走数
+            'horse_venue_win_rate',        # 馬の競馬場別勝率
+            'horse_venue_races',           # 馬の競馬場別出走数
 
             # P2-9: 枠番バイアス
             'gate_win_rate',          # (会場×距離帯×馬場)での枠番勝率
@@ -325,6 +327,10 @@ class LightGBMFeatureOptimizer:
             # L2-2: 騎手・調教師の直近30走勝率（近況パフォーマンス）
             'jockey_recent30_win_rate',   # 騎手の近30走勝率
             'trainer_recent30_win_rate',  # 調教師の近30走勝率
+
+            # L3-1: 馬体重トレンド（過去5走の体重変化 slope / 平均変化量）
+            'past_5_weight_slope',        # 体重の増減トレンド (kg/走、正=増加傾向)
+            'past_5_weight_avg_change',   # 平均体重変化量 (kg)
         ]
         
         available_numeric = [col for col in numeric_features if col in df.columns]

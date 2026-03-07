@@ -597,6 +597,19 @@ def add_derived_features(df: pd.DataFrame, full_history_df: Optional[pd.DataFram
                 )
                 full_history_df = full_history_df.drop(columns=['_dist_band'], errors='ignore')
 
+            # 競馬場別適性
+            if 'horse_id' in full_history_df.columns and 'venue' in full_history_df.columns:
+                full_history_df = _expanding_win_rate_by_group(
+                    full_history_df, 'horse_id', 'venue',
+                    'horse_venue_win_rate', 'horse_venue_races'
+                )
+                df = df.merge(
+                    full_history_df[['horse_id', 'race_id',
+                                     'horse_venue_win_rate', 'horse_venue_races']]
+                    .drop_duplicates(subset=['horse_id', 'race_id']),
+                    on=['horse_id', 'race_id'], how='left'
+                )
+
         # ===== P2-9: 枠番バイアス（会場×距離帯×馬場 での内枠勝率） =====
         # ベクトル化: 全race_id以前のデータで集計したものを各行にマッピング
         if ('bracket_number' in full_history_df.columns and

@@ -108,7 +108,28 @@ class UltimateFeatureCalculator:
             # 最近の調子（直近3走の平均着順が良いほど高スコア）
             'recent_form_score': max(0, 10 - df.head(3)['finish'].mean()) / 10 if len(df) >= 3 else 0.0,
         }
-        
+
+        # 体重トレンド（過去最大5走の馬体重変化）
+        # weight_kg: 実測体重(kg)  weight_change: 前走比増減量(kg)
+        wkg_col = next((c for c in ('weight_kg', 'horse_weight', 'weight') if c in df.columns), None)
+        wc_col  = next((c for c in ('weight_change',) if c in df.columns), None)
+        if wkg_col:
+            wkg = pd.to_numeric(df.head(5)[wkg_col], errors='coerce').dropna()
+            if len(wkg) >= 3:
+                x = np.arange(len(wkg))
+                slope = float(np.polyfit(x, wkg.values, 1)[0])  # kg/走（正=増加傾向）
+                stats['past_5_weight_slope'] = slope
+            else:
+                stats['past_5_weight_slope'] = 0.0
+        else:
+            stats['past_5_weight_slope'] = 0.0
+
+        if wc_col:
+            wchg = pd.to_numeric(df.head(5)[wc_col], errors='coerce').dropna()
+            stats['past_5_weight_avg_change'] = float(wchg.mean()) if len(wchg) >= 2 else 0.0
+        else:
+            stats['past_5_weight_avg_change'] = 0.0
+
         return stats
     
     def calculate_jockey_stats(self, jockey_id: str, current_race_id: str, days: int = 180) -> Dict:
@@ -328,6 +349,9 @@ class UltimateFeatureCalculator:
             'past_7_avg_finish': 0.0,
             'finish_consistency': 0.0,
             'recent_form_score': 0.0,
+            # 体重トレンド（デフォルト=変化なし）
+            'past_5_weight_slope': 0.0,
+            'past_5_weight_avg_change': 0.0,
         }
 
 
