@@ -17,6 +17,8 @@ e2e_verify_timesplit.py
   2. 検証 AUC / LogLoss / 単勝的中率
   3. フロントエンド互換 JSON（p_raw / p_norm / EV / predicted_rank）
      → tools/pipeline_output/e2e_verify_predictions_<date>.json
+  4. 処理時間ログ
+     → tools/pipeline_output/e2e_verify_log_<date>.txt
 
 Usage:
     python-api\\.venv\\Scripts\\python.exe tools/e2e_verify_timesplit.py
@@ -28,6 +30,7 @@ import logging
 import os
 import sys
 import tempfile
+import time
 import warnings
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
@@ -66,8 +69,47 @@ OUT.mkdir(exist_ok=True)
 JST = timezone(timedelta(hours=9))
 
 SEP = "=" * 60
-def section(title: str) -> None:
-    print(f"\n{SEP}\n  {title}\n{SEP}")
+
+# ── ログ管理 ─────────────────────────────────────────────────────────
+_LOG_LINES: list[str] = []
+_STEP_TIMES: dict[str, float] = {}
+_STEP_START: float = 0.0
+_SESSION_START: float = 0.0
+
+def _log(msg: str) -> None:
+    """stdout + ログバッファに追記"""
+    ts = datetime.now(JST).strftime("%H:%M:%S")
+    line = f"[{ts}] {msg}"
+    print(line)
+    _LOG_LINES.append(line)
+
+def section(title: str, step_key: str = "") -> None:
+    global _STEP_START
+    now = time.perf_counter()
+    # 前のステップの経過時間を記録
+    if step_key and _STEP_START:
+        _log(f"  ⏱ 前ステップ処理時間: {now - _STEP_START:.1f}秒")
+    _STEP_START = now
+    bar = f"\n{SEP}\n  {title}\n{SEP}"
+    print(bar)
+    _LOG_LINES.append(bar)
+
+def timer_start() -> float:
+    return time.perf_counter()
+
+def timer_str(t0: float) -> str:
+    elapsed = time.perf_counter() - t0
+    if elapsed < 60:
+        return f"{elapsed:.1f}秒"
+    return f"{elapsed/60:.1f}分 ({elapsed:.0f}秒)"
+
+def save_log(out_path: Path) -> None:
+    """ログをファイルに保存"""
+    total = time.perf_counter() - _SESSION_START
+    _LOG_LINES.append(f"\n総処理時間: {total/60:.1f}分 ({total:.0f}秒)")
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(_LOG_LINES))
+    print(f"\n  ログ保存先: {out_path.name}")
 
 
 def race_id_to_year_month(race_id: str) -> tuple[int, int]:
@@ -83,32 +125,40 @@ def race_id_to_year_month(race_id: str) -> tuple[int, int]:
 
 
 def main(train_months: int = 12, holdout_months: int = 2) -> None:
+    global _SESSION_START
+    _SESSION_START = time.perf_counter()
+
     section("Step 0: 設定確認")
-    print(f"  DB           : {ULTIMATE_DB}")
-    print(f"  学習期間     : 直近 {train_months}ヶ月分（race_id 時系列ウィンドウ）")
-    print(f"  検証期間     : 直近 {holdout_months}ヶ月分（holdout）")
-    print(f"  プロダクション: 汚染なし（tempdir にモデル保存）")
+    _log(f"  DB           : {ULTIMATE_DB}")
+    _log(f"  学習期間     : {train_months}ヶ月分（race_id 時系列ウィンドウ）")
+    _log(f"  検証期間     : {holdout_months}ヶ月分（holdout）")
+    _log(f"  プロダクション: 汚染なし（tempdir にモデル保存）")
+    _log(f"  開始時刻     : {datetime.now(JST).strftime('%Y-%m-%d %H:%M:%S')}")
 
     # ── Step 1: DB 全データ読み込み ─────────────────────────────────
     section("Step 1: DB データ読み込み（全期間）")
+    t1 = timer_start()
     df_all = load_ultimate_training_frame(ULTIMATE_DB)
-    print(f"  全データ: {len(df_all):,}行 × {len(df_all.columns)}列")
+    _log(f"  全データ: {len(df_all):,}行 × {len(df_all.columns)}列")
     if "race_id" not in df_all.columns:
-        print("  ✗ race_id 列が見つかりません")
+        _log("  ✗ race_id 列が見つかりません")
         sys.exit(1)
 
     # Quality Gate（distance=0 など除外）
     df_all = filter_valid_races(df_all, verbose=False)
     all_race_ids = sorted(df_all["race_id"].unique())
     n_total = len(all_race_ids)
-    print(f"  有効レース数 : {n_total:,}")
+    _log(f"  有効レース数 : {n_total:,}")
+    _elapsed_step1 = timer_str(t1)
+    _log(f"  ⏱ Step1 完了: {_elapsed_step1}")
 
     if n_total < 50:
-        print("  ✗ 有効レースが少なすぎます（最低50レース必要）")
+        _log("  ✗ 有効レースが少なすぎます（最低50レース必要）")
         sys.exit(1)
 
     # ── Step 2: 時系列分割 ──────────────────────────────────────────
-    section("Step 2: 時系列分割（1年学習 + 2ヶ月 holdout）")
+    section(f"Step 2: 時系列分割（{train_months}ヶ月学習 + {holdout_months}ヶ月 holdout）")
+    t2 = timer_start()
 
     # race_id の年を取得（先頭4桁）
     def get_year(rid: str) -> int:
@@ -133,34 +183,43 @@ def main(train_months: int = 12, holdout_months: int = 2) -> None:
     before_holdout = [r for r in all_race_ids if r not in holdout_ids]
     train_ids = set(before_holdout[-train_n:])
 
-    print(f"  全レース数       : {n_total:,}")
-    print(f"  学習用レース数   : {len(train_ids):,}  ({before_holdout[-train_n]} ～ {before_holdout[-1]})")
-    print(f"  holdout レース数 : {len(holdout_ids):,}  ({all_race_ids[-holdout_n]} ～ {all_race_ids[-1]})")
+    _log(f"  月平均レース数   : {races_per_month:.1f}")
+    _log(f"  全レース数       : {n_total:,}")
+    _log(f"  学習用レース数   : {len(train_ids):,}  ({before_holdout[-train_n]} ～ {before_holdout[-1]})")
+    _log(f"  holdout レース数 : {len(holdout_ids):,}  ({all_race_ids[-holdout_n]} ～ {all_race_ids[-1]})")
 
     if len(train_ids) < 20:
-        print("  ⚠ 学習データが少なすぎます")
+        _log("  ⚠ 学習データが少なすぎます")
         sys.exit(1)
 
     df_train = df_all[df_all["race_id"].isin(train_ids)].copy()
     df_hold  = df_all[df_all["race_id"].isin(holdout_ids)].copy()
 
-    print(f"\n  学習データ : {len(df_train):,}行")
-    print(f"  検証データ : {len(df_hold):,}行")
+    _log(f"  学習データ : {len(df_train):,}行")
+    _log(f"  検証データ : {len(df_hold):,}行")
+    _elapsed_step2 = timer_str(t2)
+    _log(f"  ⏱ Step2 完了: {_elapsed_step2}")
 
     # ── Step 3: 特徴量エンジニアリング（全データで計算して分割） ──
     section("Step 3: 特徴量エンジニアリング")
-    print("  add_derived_features（全データ）...")
+    t3 = timer_start()
+    _log("  add_derived_features（全データ）...")
+    t3a = timer_start()
     df_fe = add_derived_features(df_all.copy(), full_history_df=df_all.copy())
-    print(f"  → {df_fe.shape[1]} 列")
+    _log(f"  → {df_fe.shape[1]} 列  ⏱ {timer_str(t3a)}")
 
-    print("  UltimateFeatureCalculator（全データ）...")
+    _log("  UltimateFeatureCalculator（全データ）...")
+    t3b = timer_start()
     calc = UltimateFeatureCalculator(str(ULTIMATE_DB))
     df_fe = calc.add_ultimate_features(df_fe)
     df_fe = df_fe.loc[:, ~df_fe.columns.duplicated()]
-    print(f"  → {df_fe.shape[1]} 列")
+    _log(f"  → {df_fe.shape[1]} 列  ⏱ {timer_str(t3b)}")
+    _elapsed_step3 = timer_str(t3)
+    _log(f"  ⏱ Step3 合計: {_elapsed_step3}")
 
     # ── Step 4: LightGBM Optimizer (学習データのみでfit) ──────────
     section("Step 4: LightGBM Feature Optimizer fit（学習データのみ）")
+    t4 = timer_start()
     fin_col = "finish" if "finish" in df_fe.columns else "finish_position"
     if fin_col in df_fe.columns:
         fin_num = pd.to_numeric(df_fe[fin_col], errors="coerce")
@@ -172,35 +231,39 @@ def main(train_months: int = 12, holdout_months: int = 2) -> None:
     # fit は学習データのみ、transform は全データ
     df_train_fe = df_fe[df_fe["race_id"].isin(train_ids)].copy()
     df_opt_train, cat_features = optimizer.fit_transform(df_train_fe, target_col="win")
-    print(f"  最適化後（学習）: {df_opt_train.shape}")
-    print(f"  カテゴリカル: {cat_features[:5]}...")
+    _log(f"  最適化後（学習）: {df_opt_train.shape}  ⏱ {timer_str(t4)}")
+    _log(f"  カテゴリカル: {cat_features[:5]}...")
 
     # holdout も同じ optimizer で transform（データ漏洩なし）
+    t4b = timer_start()
     df_hold_fe = df_fe[df_fe["race_id"].isin(holdout_ids)].copy()
     df_opt_hold = optimizer.transform(df_hold_fe)
-    print(f"  最適化後（holdout）: {df_opt_hold.shape}")
+    _log(f"  最適化後（holdout）: {df_opt_hold.shape}  ⏱ {timer_str(t4b)}")
 
     # 特徴量カラム決定
     EXCLUDE = {"race_id", "horse_id", "jockey_id", "trainer_id", "owner_id",
                "win", "place3", "finish", "finish_position"}
     feat_cols = [c for c in df_opt_train.columns
                  if c not in EXCLUDE and df_opt_train[c].dtype != object]
-    print(f"  特徴量数: {len(feat_cols)}")
+    _log(f"  特徴量数: {len(feat_cols)}")
 
     # 学習データ準備
     X_train = df_opt_train[feat_cols].copy()
     y_train = df_opt_train["win"].copy() if "win" in df_opt_train.columns else None
     if y_train is None:
-        print("  ✗ win列が見つかりません")
+        _log("  ✗ win列が見つかりません")
         sys.exit(1)
 
     valid_mask = y_train.notna()
     X_train, y_train = X_train[valid_mask], y_train[valid_mask]
     groups_train = df_opt_train.loc[valid_mask, "race_id"] if "race_id" in df_opt_train.columns else pd.Series(range(len(X_train)))
-    print(f"  学習行数: {len(X_train):,}  正例: {y_train.sum():.0f} ({y_train.mean()*100:.1f}%)")
+    _log(f"  学習行数: {len(X_train):,}  正例: {y_train.sum():.0f} ({y_train.mean()*100:.1f}%)")
+    _elapsed_step4 = timer_str(t4)
+    _log(f"  ⏱ Step4 合計: {_elapsed_step4}")
 
     # ── Step 5: LightGBM 学習 ────────────────────────────────────────
     section("Step 5: モデル学習（GroupKFold CV × 3）")
+    t5 = timer_start()
     params = {
         "objective": "binary", "metric": "auc",
         "learning_rate": 0.05, "num_leaves": 31, "max_depth": -1,
@@ -214,6 +277,7 @@ def main(train_months: int = 12, holdout_months: int = 2) -> None:
     oof_preds = np.zeros(len(X_train))
 
     for fold, (tr_idx, va_idx) in enumerate(gkf.split(X_train, y_train, groups_train), 1):
+        t_fold = timer_start()
         X_tr, X_va = X_train.iloc[tr_idx], X_train.iloc[va_idx]
         y_tr, y_va = y_train.iloc[tr_idx], y_train.iloc[va_idx]
         ds_tr = lgb.Dataset(X_tr, y_tr, categorical_feature=cat_features)
@@ -227,17 +291,20 @@ def main(train_months: int = 12, holdout_months: int = 2) -> None:
         auc = roc_auc_score(y_va, preds)
         cv_aucs.append(auc)
         oof_preds[va_idx] = preds
-        print(f"  Fold{fold} AUC = {auc:.4f}")
+        _log(f"  Fold{fold} AUC = {auc:.4f}  ⏱ {timer_str(t_fold)}")
 
     cv_mean = float(np.mean(cv_aucs))
     cv_std  = float(np.std(cv_aucs))
-    print(f"  CV AUC: {cv_mean:.4f} ± {cv_std:.4f}")
+    _log(f"  CV AUC: {cv_mean:.4f} ± {cv_std:.4f}")
 
     # キャリブレーション
+    t5b = timer_start()
     calibrator = IsotonicRegression(out_of_bounds="clip")
     calibrator.fit(oof_preds, y_train.values)
+    _log(f"  キャリブレーション完了  ⏱ {timer_str(t5b)}")
 
     # 全学習データで最終モデル
+    t5c = timer_start()
     ds_all_train = lgb.Dataset(X_train, y_train, categorical_feature=cat_features)
     final_model = lgb.train(
         params, ds_all_train, num_boost_round=200,
@@ -245,10 +312,13 @@ def main(train_months: int = 12, holdout_months: int = 2) -> None:
     )
     full_preds = final_model.predict(X_train)
     full_auc = roc_auc_score(y_train, full_preds)
-    print(f"  全データAUC (過学習確認): {full_auc:.4f}")
+    _log(f"  全データAUC (過学習確認): {full_auc:.4f}  ⏱ {timer_str(t5c)}")
+    _elapsed_step5 = timer_str(t5)
+    _log(f"  ⏱ Step5 合計: {_elapsed_step5}")
 
     # ── Step 6: temp ディレクトリにモデル保存（本番汚染なし） ───────
     section("Step 6: モデル保存（tempdir / 本番への影響なし）")
+    t6 = timer_start()
     ts = datetime.now(JST).strftime("%Y%m%d_%H%M%S")
     tmp_dir = Path(tempfile.mkdtemp(prefix="keiba_e2e_"))
     tmp_model_path = tmp_dir / f"model_e2e_verify_{ts}.joblib"
@@ -273,14 +343,19 @@ def main(train_months: int = 12, holdout_months: int = 2) -> None:
         "note": "e2e_verify_timesplit - NOT PRODUCTION",
     }
     joblib.dump(bundle_tmp, tmp_model_path)
-    print(f"  → {tmp_model_path}")
-    print(f"  ※ このモデルは本番 python-api/models/ に保存されていません")
+    _log(f"  → {tmp_model_path}")
+    _log(f"  ※ このモデルは本番 python-api/models/ に保存されていません")
+    _elapsed_step6 = timer_str(t6)
+    _log(f"  ⏱ Step6 完了: {_elapsed_step6}")
 
     # ── Step 7: Holdout 評価 ─────────────────────────────────────────
-    section("Step 7: Holdout 評価（直近2ヶ月相当）")
+    section(f"Step 7: Holdout 評価（直近{holdout_months}ヶ月相当）")
+    t7 = timer_start()
 
     # holdout の特徴量列を学習と揃える
     missing_cols = [c for c in feat_cols if c not in df_opt_hold.columns]
+    if missing_cols:
+        _log(f"  ⚠ holdoutに欠損特徴量 {len(missing_cols)}列 → 0補完: {missing_cols[:5]}")
     for c in missing_cols:
         df_opt_hold[c] = 0.0
     X_hold = df_opt_hold[feat_cols].copy()
@@ -299,19 +374,21 @@ def main(train_months: int = 12, holdout_months: int = 2) -> None:
     y_hold_v  = y_hold[valid_hold]
 
     if len(X_hold_v) == 0:
-        print("  ✗ holdout データが0件（finish列が取れていない可能性）")
+        _log("  ✗ holdout データが0件（finish列が取れていない可能性）")
         sys.exit(1)
 
     # p_raw（生スコア）
+    t7b = timer_start()
     p_raw_arr = final_model.predict(X_hold_v)
     # win_probability（キャリブ後）
     wp_arr = calibrator.predict(p_raw_arr)
+    _log(f"  予測完了  ⏱ {timer_str(t7b)}")
 
     hold_auc = roc_auc_score(y_hold_v, p_raw_arr)
     hold_ll  = log_loss(y_hold_v, np.clip(p_raw_arr, 1e-7, 1 - 1e-7))
-    print(f"  Holdout AUC     : {hold_auc:.4f}")
-    print(f"  Holdout LogLoss : {hold_ll:.4f}")
-    print(f"  Holdout 件数    : {len(X_hold_v):,}行")
+    _log(f"  Holdout AUC     : {hold_auc:.4f}")
+    _log(f"  Holdout LogLoss : {hold_ll:.4f}")
+    _log(f"  Holdout 件数    : {len(X_hold_v):,}行  ({int(valid_hold.sum())}/{len(valid_hold)}件有効)")
 
     # 単勝的中率
     hold_meta = df_opt_hold[valid_hold][["race_id"]].copy() if "race_id" in df_opt_hold.columns else pd.DataFrame()
@@ -334,10 +411,13 @@ def main(train_months: int = 12, holdout_months: int = 2) -> None:
             hits += 1
 
     win_acc = hits / total_races_hold if total_races_hold > 0 else 0.0
-    print(f"  単勝的中率      : {hits}/{total_races_hold} = {win_acc:.1%}")
+    _log(f"  単勝的中率      : {hits}/{total_races_hold} = {win_acc:.1%}")
+    _elapsed_step7 = timer_str(t7)
+    _log(f"  ⏱ Step7 合計: {_elapsed_step7}")
 
     # ── Step 8: フロントエンド互換 JSON 出力 ─────────────────────────
     section("Step 8: フロントエンド互換 JSON 出力（p_raw/p_norm/EV/predicted_rank）")
+    t8 = timer_start()
 
     # レースごとに p_norm 計算 + predicted_rank 付与
     hold_meta["wp"] = wp_arr
@@ -415,6 +495,15 @@ def main(train_months: int = 12, holdout_months: int = 2) -> None:
     # JSONファイル出力
     today_str = datetime.now(JST).strftime("%Y%m%d%H%M")
     out_json = OUT / f"e2e_verify_predictions_{today_str}.json"
+    total_elapsed = time.perf_counter() - _SESSION_START
+    step_timing = {
+        "step1_db_load": f"{time.perf_counter() - t1:.1f}s" if 't1' in dir() else "?",
+        "step3_feature_eng": timer_str(t3),
+        "step4_optimizer": timer_str(t4),
+        "step5_training": timer_str(t5),
+        "step7_holdout_eval": timer_str(t7),
+        "total_elapsed": f"{total_elapsed/60:.1f}min ({total_elapsed:.0f}s)",
+    }
     output_summary = {
         "generated_at": datetime.now(JST).isoformat(),
         "note": "e2e_verify_timesplit - NOT PRODUCTION MODEL",
@@ -428,62 +517,81 @@ def main(train_months: int = 12, holdout_months: int = 2) -> None:
         "model_metrics": {
             "cv_auc_mean": round(cv_mean, 4),
             "cv_auc_std": round(cv_std, 4),
+            "cv_fold_aucs": [round(a, 4) for a in cv_aucs],
             "holdout_auc": round(hold_auc, 4),
             "holdout_logloss": round(hold_ll, 4),
             "win_accuracy": round(win_acc, 4),
             "win_hits": hits,
             "win_total_races": total_races_hold,
         },
+        "timing": step_timing,
         "temp_model_path": str(tmp_model_path),
         "sample_races": sample_races_json,
     }
     with open(out_json, "w", encoding="utf-8") as f:
         json.dump(output_summary, f, ensure_ascii=False, indent=2)
-    print(f"  → {out_json.name}")
+    _log(f"  → {out_json.name}")
+    _elapsed_step8 = timer_str(t8)
+    _log(f"  ⏱ Step8 完了: {_elapsed_step8}")
 
     # ── 最終サマリ ────────────────────────────────────────────────────
     section("E2E 検証サマリ")
-    print(f"  学習データ   : {len(train_ids):,}レース  ({df_train.shape[0]:,}行)")
-    print(f"  holdout      : {len(holdout_ids):,}レース  ({len(X_hold_v):,}行)")
-    print(f"  特徴量数     : {len(feat_cols)}")
-    print()
-    print(f"  CV AUC       : {cv_mean:.4f} ± {cv_std:.4f}")
-    print(f"  Holdout AUC  : {hold_auc:.4f}")
-    print(f"  Holdout LL   : {hold_ll:.4f}")
-    print(f"  単勝的中率   : {hits}/{total_races_hold} = {win_acc:.1%}")
-    print()
-    print(f"  サンプル JSON: {out_json.name}")
-    print(f"  tempモデル   : {tmp_model_path}")
-    print()
+    total_elapsed = time.perf_counter() - _SESSION_START
+
+    _log(f"  学習データ   : {len(train_ids):,}レース  ({df_train.shape[0]:,}行)")
+    _log(f"  holdout      : {len(holdout_ids):,}レース  ({len(X_hold_v):,}行)")
+    _log(f"  特徴量数     : {len(feat_cols)}")
+    _log("")
+    _log(f"  CV AUC       : {cv_mean:.4f} ± {cv_std:.4f}  (folds: {[round(a,4) for a in cv_aucs]})")
+    _log(f"  Holdout AUC  : {hold_auc:.4f}")
+    _log(f"  Holdout LL   : {hold_ll:.4f}")
+    _log(f"  単勝的中率   : {hits}/{total_races_hold} = {win_acc:.1%}")
+    _log("")
+    _log("  ── 処理時間内訳 ──")
+    _log(f"  Step1 DB読込   : {_elapsed_step1}")
+    _log(f"  Step3 特徴量FE : {_elapsed_step3}")
+    _log(f"  Step4 Optimizer: {_elapsed_step4}")
+    _log(f"  Step5 学習     : {_elapsed_step5}")
+    _log(f"  Step7 評価     : {_elapsed_step7}")
+    _log(f"  ════════════════")
+    _log(f"  総処理時間     : {total_elapsed/60:.1f}分 ({total_elapsed:.0f}秒)")
+    _log("")
+    _log(f"  サンプル JSON: {out_json.name}")
+    _log(f"  tempモデル   : {tmp_model_path}")
+    _log("")
 
     # p_norm 整合性確認
     p_norm_ok = all(abs(r["p_norm_sum"] - 1.0) < 0.001 for r in sample_races_json)
-    print(f"  p_norm 合計≒1: {'✓ ALL OK' if p_norm_ok else '✗ 異常あり'}")
+    _log(f"  p_norm 合計≒1: {'✓ ALL OK' if p_norm_ok else '✗ 異常あり'}")
 
     # サンプルレース表示
-    print()
-    print("  ── サンプル1レースの予測 ──")
+    _log("")
+    _log("  ── サンプル1レースの予測 ──")
     if sample_races_json:
         r = sample_races_json[0]
-        print(f"  race_id: {r['race_id']}  ({r['n_horses']}頭)  p_norm合計={r['p_norm_sum']}")
-        print(f"  {'rank':>4} {'#':>3} {'p_raw':>12} {'p_norm':>10} {'wp(cal)':>10} {'EV':>7} {'actual':>7}")
-        print(f"  {'-'*60}")
+        _log(f"  race_id: {r['race_id']}  ({r['n_horses']}頭)  p_norm合計={r['p_norm_sum']}")
+        _log(f"  {'rank':>4} {'#':>3} {'p_raw':>12} {'p_norm':>10} {'wp(cal)':>10} {'EV':>7} {'actual':>7}")
+        _log(f"  {'-'*60}")
         for h in r["horses"]:
             ev_str = f"{h.get('expected_value', 0) or 0:.2f}" if h.get("expected_value") is not None else "  N/A"
             fin_str = str(h.get("actual_finish", "?")) if h.get("actual_finish") else "?"
-            print(f"  {h['predicted_rank']:>4}  {h.get('horse_number') or '?':>3}  "
-                  f"{h['p_raw']:>12.8f} {h['p_norm']:>10.6f} "
-                  f"{h['win_probability']:>10.6f} {ev_str:>7} {fin_str:>7}")
+            _log(f"  {h['predicted_rank']:>4}  {h.get('horse_number') or '?':>3}  "
+                 f"{h['p_raw']:>12.8f} {h['p_norm']:>10.6f} "
+                 f"{h['win_probability']:>10.6f} {ev_str:>7} {fin_str:>7}")
 
-    print()
-    print(f"  ✓ E2E 検証完了（プロダクション環境への影響: なし）")
-    print()
-    print("  【スクレイピング運用まとめ】")
-    print("  - netkeiba はローカルPCのIPでスクレイプ（住宅IP = Cloudflareブロック低）")
-    print("  - 毎週末：python tools/scrape_and_validate.py --date <週末日付>")
-    print("  - データ蓄積後：python tools/retrain_local.py → モデル更新")
-    print("  - git push → Railway は新モデルを自動デプロイ（スクレイプしない）")
-    print("  - 緊急時はSCRAPE_PROXY_URL 環境変数で住宅型プロキシ経由に切替可能")
+    _log("")
+    _log(f"  ✓ E2E 検証完了（プロダクション環境への影響: なし）")
+    _log("")
+    _log("  【スクレイピング運用まとめ】")
+    _log("  - netkeiba はローカルPCのIPでスクレイプ（住宅IP = Cloudflareブロック低）")
+    _log("  - 毎週末：python tools/scrape_and_validate.py --date <週末日付>")
+    _log("  - データ蓄積後：python tools/retrain_local.py → モデル更新")
+    _log("  - git push → Railway は新モデルを自動デプロイ（スクレイプしない）")
+    _log("  - 緊急時はSCRAPE_PROXY_URL 環境変数で住宅型プロキシ経由に切替可能")
+
+    # ── ログファイル保存 ──────────────────────────────────────────────
+    out_log = OUT / f"e2e_verify_log_{today_str}.txt"
+    save_log(out_log)
 
 
 if __name__ == "__main__":
