@@ -10,10 +10,49 @@ from typing import TYPE_CHECKING
 
 from bs4 import BeautifulSoup
 
-from scraping.constants import HTML_STRAINER
+from scraping.constants import HTML_STRAINER, COAT_COLORS, COAT_RE
 
 if TYPE_CHECKING:
     pass
+
+
+def extract_coat_color(soup: "BeautifulSoup", html: str = "") -> str:
+    """HTMLから毛色文字列を抽出する（複数手法フォールバック）。"""
+    # 1) db_prof_table: <th>毛色</th>
+    prof = soup.find("table", class_=lambda c: c and "db_prof_table" in c)
+    if prof:
+        for tr in prof.find_all("tr"):
+            th, td = tr.find("th"), tr.find("td")
+            if th and td and "毛色" in th.get_text(strip=True):
+                v = td.get_text(strip=True)
+                if v:
+                    return v
+    # 2) 全テーブル: <th>毛色</th> または 性齢/性別フィールドから抽出
+    for tbl in soup.find_all("table"):
+        for tr in tbl.find_all("tr"):
+            th, td = tr.find("th"), tr.find("td")
+            if not th or not td:
+                continue
+            label = th.get_text(strip=True)
+            if "毛色" in label:
+                v = td.get_text(strip=True)
+                if v:
+                    return v
+            if "性齢" in label or "性別" in label:
+                v = td.get_text(strip=True)
+                m = COAT_RE.search(v)
+                if m:
+                    return m.group(0)
+    # 3) ページ先頭3000文字から「牡/牝/セン + 毛色」パターンを探す
+    if html:
+        target = html[:3000]
+        sex_coat = re.search(
+            r"(?:牡|牝|セン?)\s*(" + "|".join(re.escape(c) for c in COAT_COLORS) + r")",
+            target,
+        )
+        if sex_coat:
+            return sex_coat.group(1)
+    return ""
 
 # ---------------------------------------------------------------------------
 # SQLite ローカル血統キャッシュ（SUPABASE_ENABLED=False 時のフォールバック）
