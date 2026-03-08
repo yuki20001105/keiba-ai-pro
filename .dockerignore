@@ -1,0 +1,44 @@
+# Node.js / Next.js (Railway は Python API のみビルド)
+node_modules/
+.next/
+src/
+public/
+*.ts
+*.tsx
+*.js
+!python-api/**/*.js
+package.json
+package-lock.json
+tsconfig.json
+next.config.js
+tailwind.config.ts
+postcss.config.js
+
+# Git / CI
+.git/
+.github/
+.gitignore
+
+# ローカル開発用
+.venv/
+python-api/.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# ログ・一時ファイル
+tools/
+validation/
+docs/
+scripts/
+*.html
+*.csv
+# ルート直下の txt のみ除外（python-api/requirements.txt は除外しない）
+/*.txt
+
+# その他
+supabase/
+keiba/Lib/
+keiba/Scripts/
+keiba/Include/
+keiba/share/
