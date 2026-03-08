@@ -15,8 +15,5 @@ services:
         value: https://grfwkutcsavqicaimssn.supabase.co
       - key: SUPABASE_SERVICE_KEY
         sync: false
-        # ↑ Supabase > Settings > API > service_role キー（RLS バイパス用）
       - key: PYTHONUNBUFFERED
-        # NOTE: SUPABASE_JWT_SECRET は削除済み（JWKS 公開鍵検証に移行）
-        # NOTE: INTERNAL_SECRET は削除済み（GitHub Actions が直接 Supabase 書き込みに移行）
         value: "1"
