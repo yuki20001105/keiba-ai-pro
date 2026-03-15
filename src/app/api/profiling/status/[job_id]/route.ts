@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-const ML_API_URL = process.env.ML_API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+// プロファイリングもローカルFastAPIのみ対応
+const ML_API_URL = process.env.SCRAPE_API_URL || 'http://localhost:8000'
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ job_id: string }> }) {
   try {

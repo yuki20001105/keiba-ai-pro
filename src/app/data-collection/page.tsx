@@ -36,8 +36,23 @@ export default function DataCollectionPage() {
   const [profilingProgress, setProfilingProgress] = useState(0)
   const [useOptimized, setUseOptimized] = useState(true)
 
+  // ローカルAPI稼働チェック
+  const [localApiStatus, setLocalApiStatus] = useState<'checking' | 'online' | 'offline'>('checking')
+
+  const checkLocalApi = async () => {
+    setLocalApiStatus('checking')
+    try {
+      const res = await fetch('/api/scrape/status/__health_check__', { method: 'GET', signal: AbortSignal.timeout(3000) })
+      // 200 or 422/404 はサーバーが起動している証拠
+      setLocalApiStatus(res.status < 500 ? 'online' : 'offline')
+    } catch {
+      setLocalApiStatus('offline')
+    }
+  }
+
   useEffect(() => {
     loadStats()
+    checkLocalApi()
   }, [])
 
   const loadStats = async () => {
@@ -281,7 +296,52 @@ export default function DataCollectionPage() {
       </header>
 
       <main className="max-w-3xl mx-auto px-6 py-10 space-y-6">
-        {/* 期間指定一括取得 */}
+        {/* ローカル専用バナー */}
+        <div className="bg-[#0d1117] border border-[#30363d] rounded-lg p-4 flex items-start gap-3">
+          <span className="text-lg mt-0.5">🖥️</span>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-[#e6edf3] mb-1">
+              このページはローカル環境専用です
+            </p>
+            <p className="text-xs text-[#8b949e] leading-relaxed">
+              netkeiba.comのIPブロック・Renderのタイムアウト回避のため、スクレイピングはローカルFastAPIのみ対応。<br />
+              使用前に <code className="bg-[#161b22] px-1.5 py-0.5 rounded text-[#79c0ff] font-mono">python-api\main.py</code> を起動してください（ポート8000）。
+            </p>
+          </div>
+          <div className="flex flex-col items-end gap-1.5 shrink-0">
+            <div className="flex items-center gap-1.5">
+              {localApiStatus === 'checking' && (
+                <><svg className="animate-spin h-3.5 w-3.5 text-[#8b949e]" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg><span className="text-xs text-[#8b949e]">確認中...</span></>
+              )}
+              {localApiStatus === 'online' && (
+                <><span className="w-2 h-2 rounded-full bg-[#3fb950] inline-block"></span><span className="text-xs text-[#3fb950] font-medium">起動中</span></>
+              )}
+              {localApiStatus === 'offline' && (
+                <><span className="w-2 h-2 rounded-full bg-[#f85149] inline-block"></span><span className="text-xs text-[#f85149] font-medium">停止中</span></>
+              )}
+            </div>
+            <button
+              onClick={checkLocalApi}
+              className="text-[10px] text-[#8b949e] hover:text-[#e6edf3] transition-colors underline underline-offset-2"
+            >
+              再確認
+            </button>
+          </div>
+        </div>
+
+        {/* 停止中の場合の警告 */}
+        {localApiStatus === 'offline' && (
+          <div className="bg-[#1a0a0a] border border-[#6e1c1c] rounded-lg p-4 flex items-center gap-3">
+            <span className="text-yellow-400 text-lg shrink-0">⚠️</span>
+            <div>
+              <p className="text-sm text-[#f85149] font-medium mb-0.5">ローカルFastAPIが停止しています</p>
+              <p className="text-xs text-[#8b949e]">
+                VS Codeのタスク「Start FastAPI」を実行するか、<br/>
+                <code className="bg-[#161b22] px-1 py-0.5 rounded text-[#79c0ff] font-mono text-[11px]">cd python-api; python main.py</code> を実行してください。
+              </p>
+            </div>
+          </div>
+        )}
         <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-6 mb-6">
           <h2 className="text-sm font-medium text-[#888] mb-4">
             期間指定一括取得
@@ -359,9 +419,9 @@ export default function DataCollectionPage() {
           {/* 実行ボタン */}
           <button
             onClick={handlePeriodBatchScrape}
-            disabled={batchLoading}
+            disabled={batchLoading || localApiStatus === 'offline'}
             className={`w-full py-4 rounded-lg font-medium transition-colors ${
-              batchLoading
+              batchLoading || localApiStatus === 'offline'
                 ? 'bg-[#222] text-[#555] cursor-not-allowed'
                 : 'bg-white text-black hover:bg-[#eee]'
             }`}
@@ -374,7 +434,7 @@ export default function DataCollectionPage() {
                 </svg>
                 取得中...
               </span>
-            ) : 'データ取得開始'}
+            ) : localApiStatus === 'offline' ? 'ローカルAPI停止中（起動が必要）' : 'データ取得開始'}
           </button>
 
           {/* 進捗バー */}
