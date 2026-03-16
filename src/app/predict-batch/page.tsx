@@ -316,7 +316,7 @@ export default function PredictBatchPage() {
               FastAPI（localhost:8000）が起動している必要があります。
             </p>
             <button
-              onClick={triggerScrape}
+              onClick={() => triggerScrape(false)}
               className="px-5 py-2.5 bg-[#1a3a5a] text-[#60a5fa] text-sm rounded-lg hover:bg-[#1e4a6a] transition-colors border border-[#2a5a8a]"
             >
               この日付をスクレイプして取得
