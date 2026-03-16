@@ -64,6 +64,8 @@ export default function PredictBatchPage() {
   const [predicting, setPredicting] = useState(false)
   const [results, setResults] = useState<Record<string, RaceResult>>({})
   const [expandedRace, setExpandedRace] = useState<string | null>(null)
+  const [scrapeStatus, setScrapeStatus] = useState<'idle' | 'scraping' | 'done' | 'error'>('idle')
+  const [scrapeMessage, setScrapeMessage] = useState('')
 
   useEffect(() => { loadModels() }, [])
 
@@ -83,18 +85,71 @@ export default function PredictBatchPage() {
     setRaces([])
     setSelectedIds(new Set())
     setResults({})
+    setScrapeStatus('idle')
     try {
       const res = await fetch(`/api/races/by-date?date=${date}`)
       const data = await res.json()
       if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`)
       setRaces(data.races || [])
-      if ((data.races || []).length === 0) setRacesError('該当日のデータがDBに見つかりません。先にデータ取得を実行してください。')
+      if ((data.races || []).length === 0) setRacesError('該当日のデータがDBに見つかりません。')
     } catch (e: any) {
       setRacesError(e.message)
     } finally {
       setRacesLoading(false)
     }
   }, [date])
+
+  const triggerScrape = async () => {
+    setScrapeStatus('scraping')
+    setScrapeMessage('スクレイプ開始中...')
+
+    const { data: { session } } = await supabase.auth.getSession()
+    const authHeaders: Record<string, string> = session?.access_token
+      ? { Authorization: `Bearer ${session.access_token}` }
+      : {}
+
+    try {
+      // ジョブ開始
+      const startRes = await fetch('/api/scrape', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ start_date: date, end_date: date, force_rescrape: false }),
+      })
+      if (!startRes.ok) {
+        const e = await startRes.json()
+        throw new Error(e.detail || `HTTP ${startRes.status}`)
+      }
+      const { job_id } = await startRes.json()
+      setScrapeMessage(`ジョブ開始 (${job_id}) — データ収集中...`)
+
+      // ポーリング（3秒間隔）
+      let failCount = 0
+      while (true) {
+        await new Promise(r => setTimeout(r, 3000))
+        const statusRes = await fetch(`/api/scrape/status/${job_id}`, { headers: authHeaders })
+        if (!statusRes.ok) {
+          if (++failCount >= 10) throw new Error('サーバーが応答しません')
+          continue
+        }
+        failCount = 0
+        const s = await statusRes.json()
+        const prog = s.progress || {}
+        if (prog.message) setScrapeMessage(prog.message)
+        if (s.status === 'completed') {
+          setScrapeStatus('done')
+          setScrapeMessage(`スクレイプ完了 — ${prog.message || ''}`)
+          // 自動でレース一覧を再取得
+          await loadRaces()
+          return
+        }
+        if (s.status === 'error') throw new Error(s.error || 'スクレイプ失敗')
+        if (s.status === 'not_found' && ++failCount >= 10) throw new Error('ジョブが見つかりません')
+      }
+    } catch (e: any) {
+      setScrapeStatus('error')
+      setScrapeMessage(e.message)
+    }
+  }
 
   // 場所フィルター適用後のレース一覧
   const filteredRaces = venueFilter.size === 0
@@ -234,9 +289,38 @@ export default function PredictBatchPage() {
         </div>
 
         {/* ── Layer 2: レース一覧 ── */}
-        {racesError && (
+        {/* スクレイプ進捗 */}
+        {scrapeStatus === 'scraping' && (
+          <div className="bg-[#0a1a2a] border border-[#1a3a5a] rounded-lg p-4 flex items-center gap-3">
+            <div className="w-4 h-4 border-2 border-[#60a5fa] border-t-transparent rounded-full animate-spin shrink-0" />
+            <span className="text-sm text-[#60a5fa]">{scrapeMessage || 'スクレイプ中...'}</span>
+          </div>
+        )}
+        {scrapeStatus === 'error' && (
           <div className="bg-[#1a0a0a] border border-[#3a1a1a] rounded-lg p-4 text-sm text-[#f87171]">
-            {racesError}
+            スクレイプエラー: {scrapeMessage}
+          </div>
+        )}
+        {scrapeStatus === 'done' && (
+          <div className="bg-[#052e10] border border-[#0a5a20] rounded-lg p-4 text-sm text-[#4ade80]">
+            ✓ {scrapeMessage}
+          </div>
+        )}
+
+        {/* データなし + スクレイプ誘導 */}
+        {racesError && scrapeStatus === 'idle' && (
+          <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-5 space-y-3">
+            <p className="text-sm text-[#f87171]">{racesError}</p>
+            <p className="text-xs text-[#666]">
+              この日付のデータをローカルサーバーからスクレイプして取得できます。
+              FastAPI（localhost:8000）が起動している必要があります。
+            </p>
+            <button
+              onClick={triggerScrape}
+              className="px-5 py-2.5 bg-[#1a3a5a] text-[#60a5fa] text-sm rounded-lg hover:bg-[#1e4a6a] transition-colors border border-[#2a5a8a]"
+            >
+              この日付をスクレイプして取得
+            </button>
           </div>
         )}
 
