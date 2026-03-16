@@ -31,6 +31,7 @@ from models import (  # type: ignore
     PredictResponse,
     AnalyzeRaceRequest,
     AnalyzeRaceResponse,
+    BatchAnalyzeRequest,
 )
 
 router = APIRouter()
@@ -447,3 +448,32 @@ async def analyze_race(request: AnalyzeRaceRequest):
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"レース分析に失敗: {str(e)}")
+
+
+@router.post("/api/analyze_races_batch")
+async def analyze_races_batch(request: BatchAnalyzeRequest, http_req: Request):
+    """複数レースを一括分析（一括予測）"""
+    await check_and_consume_pred_count(http_req)
+    results: dict = {}
+    for race_id in request.race_ids:
+        req = AnalyzeRaceRequest(
+            race_id=race_id,
+            model_id=request.model_id,
+            bankroll=request.bankroll,
+            risk_mode=request.risk_mode,
+            use_kelly=request.use_kelly,
+            dynamic_unit=request.dynamic_unit,
+            min_ev=request.min_ev,
+        )
+        try:
+            resp = await analyze_race(req)
+            results[race_id] = {"success": True, "data": resp.dict()}
+        except HTTPException as e:
+            results[race_id] = {"success": False, "error": e.detail}
+        except Exception as e:
+            results[race_id] = {"success": False, "error": str(e)}
+    return {
+        "results": results,
+        "total": len(request.race_ids),
+        "success_count": sum(1 for v in results.values() if v["success"]),
+    }

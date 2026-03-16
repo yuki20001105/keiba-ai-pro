@@ -51,6 +51,7 @@ from routers import (  # type: ignore
     predict,
     profiling,
     purchase,
+    races,
     scrape,
     stats,
     train,
@@ -91,6 +92,7 @@ app.include_router(scrape.router)
 app.include_router(export.router)
 app.include_router(backfill.router)
 app.include_router(profiling.router)
+app.include_router(races.router)
 app.include_router(internal.router)
 app.include_router(debug_data.router)
 

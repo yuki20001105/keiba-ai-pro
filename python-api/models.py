@@ -104,6 +104,19 @@ class AnalyzeRaceResponse(BaseModel):
     recommendation: Dict[str, Any]
 
 
+class BatchAnalyzeRequest(BaseModel):
+    """一括レース分析リクエスト"""
+    model_config = {"protected_namespaces": ()}
+
+    race_ids: List[str]
+    model_id: Optional[str] = None
+    bankroll: int = 10000
+    risk_mode: str = "balanced"
+    use_kelly: bool = True
+    dynamic_unit: bool = True
+    min_ev: float = 1.2
+
+
 class PurchaseHistoryRequest(BaseModel):
     """購入履歴保存リクエスト"""
     model_config = {"protected_namespaces": ()}
