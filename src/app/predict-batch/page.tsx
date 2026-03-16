@@ -99,9 +99,9 @@ export default function PredictBatchPage() {
     }
   }, [date])
 
-  const triggerScrape = async () => {
+  const triggerScrape = async (force = false) => {
     setScrapeStatus('scraping')
-    setScrapeMessage('スクレイプ開始中...')
+    setScrapeMessage(force ? 'オッズ更新中（強制再スクレイプ）...' : 'スクレイプ開始中...')
 
     const { data: { session } } = await supabase.auth.getSession()
     const authHeaders: Record<string, string> = session?.access_token
@@ -113,7 +113,7 @@ export default function PredictBatchPage() {
       const startRes = await fetch('/api/scrape', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders },
-        body: JSON.stringify({ start_date: date, end_date: date, force_rescrape: false }),
+        body: JSON.stringify({ start_date: date, end_date: date, force_rescrape: force }),
       })
       if (!startRes.ok) {
         const e = await startRes.json()
@@ -332,6 +332,17 @@ export default function PredictBatchPage() {
                 <span className="text-xs text-[#555]">{selectedIds.size} / {filteredRaces.length} 選択</span>
                 <button onClick={selectAll} className="text-xs text-[#888] hover:text-white transition-colors">全選択</button>
                 <button onClick={deselectAll} className="text-xs text-[#888] hover:text-white transition-colors">全解除</button>
+                <button
+                  onClick={() => triggerScrape(true)}
+                  disabled={scrapeStatus === 'scraping'}
+                  title="DBのデータを強制上書きして最新オッズを取得"
+                  className="flex items-center gap-1 text-xs text-[#60a5fa] hover:text-[#93c5fd] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  オッズ更新
+                </button>
               </div>
             </div>
 
