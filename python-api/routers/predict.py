@@ -237,7 +237,39 @@ async def analyze_race(request: AnalyzeRaceRequest):
             _rrow = _cur.fetchone()
             if not _rrow:
                 _conn.close()
-                raise HTTPException(status_code=404, detail=f"レース {request.race_id} が races_ultimate に見つかりません")
+                # DBにない場合 → オンデマンドスクレイプして保存してから再試行
+                logger.info(f"[analyze] レース {request.race_id} がDBに未登録 → オンデマンドスクレイプ開始")
+                try:
+                    import aiohttp as _aiohttp
+                    from scraping.race import scrape_race_full as _scrape_race_full  # type: ignore
+                    from scraping.storage import _save_race_to_ultimate_db  # type: ignore
+                    from scraping.constants import SCRAPE_HEADERS  # type: ignore
+                    _date_hint = request.race_id[0:4] + request.race_id[4:6] + request.race_id[6:8]
+                    _timeout = _aiohttp.ClientTimeout(total=60)
+                    async with _aiohttp.ClientSession(headers=SCRAPE_HEADERS, timeout=_timeout) as _sess:
+                        _scraped = await _scrape_race_full(_sess, request.race_id, date_hint=_date_hint)
+                    if not _scraped or not _scraped.get("horses"):
+                        raise HTTPException(
+                            status_code=404,
+                            detail=f"レース {request.race_id} のスクレイプに失敗しました（データなし）",
+                        )
+                    _save_race_to_ultimate_db(_scraped, ULTIMATE_DB, overwrite=True)
+                    logger.info(f"[analyze] レース {request.race_id} をDBに保存完了 ({len(_scraped['horses'])}頭)")
+                except HTTPException:
+                    raise
+                except Exception as _se:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"レース {request.race_id} がDBに未登録で、スクレイプにも失敗しました: {_se}",
+                    )
+                # 保存後に再取得
+                _conn = _sq3.connect(str(db_path))
+                _cur = _conn.cursor()
+                _cur.execute("SELECT data FROM races_ultimate WHERE race_id = ?", (request.race_id,))
+                _rrow = _cur.fetchone()
+                if not _rrow:
+                    _conn.close()
+                    raise HTTPException(status_code=500, detail=f"レース {request.race_id} の保存後読み込みに失敗しました")
             _race_data = json.loads(_rrow[0])
             race_info = {
                 "race_id": request.race_id,
@@ -328,15 +360,23 @@ async def analyze_race(request: AnalyzeRaceRequest):
                 df_pred["corner_positions_list"] = df_pred["corner_positions"].apply(_parse_cp)
 
             # [S: Quality Gate] /analyze 入力データ品質チェック
+            # Q2 (odds 欠損) はレース前・オッズ未公開時に発生するため WARNING 扱い。
+            # Q1 (distance=0) / Q3 (同一レース内の揺れ) のみ致命的エラーとする。
             try:
                 from keiba_ai.quality_gate import validate_race_entries as _vqr  # type: ignore
                 _qr_a = _vqr(df_pred)
-                if _qr_a.n_bad > 0:
+                # Q2 (odds 欠損) / Q5 (popularity 欠損) はレース前のオッズ未公開時に発生 → WARNING 扱い
+                # Q1 (distance=0) / Q3 (同一レース内の揺れ) のみ致命的エラーとする
+                _fatal_ids = {
+                    i.race_id for i in _qr_a.issues
+                    if i.severity == "ERROR" and i.issue_code not in ("Q2", "Q5")
+                }
+                if _fatal_ids:
                     raise HTTPException(
                         status_code=400,
                         detail=f"[Quality Gate] レース {request.race_id} の入力データに問題があります:\n{_qr_a.summary()}",
                     )
-                if _qr_a.n_warn > 0:
+                if _qr_a.n_bad > 0 or _qr_a.n_warn > 0:
                     logger.warning(f"[Quality Gate warn] /analyze {request.race_id}:\n{_qr_a.summary()}")
             except HTTPException:
                 raise
@@ -375,8 +415,13 @@ async def analyze_race(request: AnalyzeRaceRequest):
             if obj_cols:
                 X_pred = X_pred.drop(columns=obj_cols)
 
-            # [S] A-6 厳格アサート → verify（NaN補完）
-            assert_feature_columns(X_pred, bundle)
+            # [S] A-6 特徴量整合チェック → verify（NaN補完）
+            # 当日レースは出馬表データのみのため欠損特徴が発生しやすい。
+            # assert が閾値超過で RuntimeError を返した場合も verify で NaN 補完して続行。
+            try:
+                assert_feature_columns(X_pred, bundle)
+            except RuntimeError as _ae:
+                logger.warning(f"[A-6 ASSERT warn] {_ae} → NaN補完で続行")
             X_pred = verify_feature_columns(X_pred, bundle)
 
             win_probs_raw = model.predict(X_pred)
