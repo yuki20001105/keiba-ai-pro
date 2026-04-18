@@ -237,13 +237,7 @@ export default function DataCollectionPage() {
             if (!sy || !ey) return null
             const months = (ey - sy) * 12 + (em - sm) + 1
             if (months <= 2) return null
-            const days = Math.ceil((new Date(ey, em, 0).getTime() - new Date(sy, sm - 1, 1).getTime()) / 86400000)
-            return (
-              <div className={`text-xs px-3 py-2 rounded border ${days > 90 ? 'text-yellow-400 bg-[#1a1500] border-[#5a4200]' : 'text-[#60a5fa] bg-[#001433] border-[#1e3a5f]'}`}>
-                {days > 90 ? '⚠ ' : ''}{days}日分（{months}ヶ月）を月単位で順次取得します。
-                {days > 90 ? '  長期間取得はIPブロック対策のため段階的に実行されます。' : ''}
-              </div>
-            )
+            return null
           })()}
 
           <div className="flex items-center justify-between pt-1">

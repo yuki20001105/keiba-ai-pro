@@ -10,7 +10,7 @@ import { useJobPoller } from '@/hooks/useJobPoller'
 
 export default function TrainPage() {
   const [loading, setLoading] = useState(false)
-  const [target, setTarget] = useState<'win' | 'place3' | 'win_tie'>('win')
+  const [target, setTarget] = useState<'win' | 'place3' | 'win_tie' | 'speed_deviation'>('win')
   const [modelType, setModelType] = useState<'logistic_regression' | 'lightgbm'>('lightgbm')
   const [testSize, setTestSize] = useState(0.2)
   const [cvFolds, setCvFolds] = useState(5)
@@ -156,6 +156,7 @@ export default function TrainPage() {
                 <option value="win">単勝（1着予測）</option>
                 <option value="place3">複勝（3着以内）</option>
                 <option value="win_tie">タイム同着（1着+同タイム馬）</option>
+                <option value="speed_deviation">速度偏差（回帰）</option>
               </select>
             </div>
             <div>
