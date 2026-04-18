@@ -381,7 +381,7 @@ export default function FeatureLabPage() {
                     </div>
                     <div className="px-5 py-3">
                       <div className="flex flex-wrap gap-2">
-                        {coverage.missing_from_model.map(f => (
+                        {coverage.missing_from_model.filter(f => f?.name).map(f => (
                           <div key={f.name} className="relative group inline-block">
                             <span className={`px-2 py-0.5 bg-yellow-900/20 border border-yellow-900/40 rounded text-xs font-mono cursor-default ${f.description ? 'text-yellow-300 underline decoration-dotted decoration-yellow-700' : 'text-yellow-300'}`}>
                               {f.name}
@@ -407,7 +407,7 @@ export default function FeatureLabPage() {
                     </div>
                     <div className="px-5 py-3">
                       <div className="flex flex-wrap gap-2">
-                        {coverage.extra_in_model.map(f => (
+                        {coverage.extra_in_model.filter(f => f?.name).map(f => (
                           <div key={f.name} className="relative group inline-block">
                             <span className={`px-2 py-0.5 bg-[#1a1a1a] border border-[#2a2a2a] rounded text-xs font-mono cursor-default ${f.description ? 'text-[#888] underline decoration-dotted decoration-[#444]' : 'text-[#666]'}`}>
                               {f.name}
