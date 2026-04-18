@@ -92,6 +92,7 @@ DB読み込み → 特徴量生成 → POST_RACE_FIELDS除外 → LightGBM予測
 | データリーク / leakage / FUTURE_FIELDS / 未来情報混入 | `.github/skills/model-leakage-check/SKILL.md` |
 | プロファイリング解析 / 相関分析 / 欠損率 / 冗長特徴量 / 反復最適化 / ydata-profiling | `.github/skills/feature-profiling-analysis/SKILL.md` |
 | 予測スクレイプエラー / analyze_race エラー / 特徴量変更後の予測適応 / optimizer.transform 失敗 / IPブロック以外の予測エラー / get_random_headers | `.github/skills/predict-scrape-feature-adaptation/SKILL.md` |
+| git / コミット / ブランチ / リリース / タグ / ワークフロー / develop / main / release | `.github/skills/git-workflow/SKILL.md` |
 
 ### 反復最適化パイプラインの実行手順（10 イテレーション）
 
