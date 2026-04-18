@@ -110,9 +110,10 @@ def _get_date8_to(df: "pd.DataFrame") -> str:  # noqa: F821
 # レース後確定フィールド（keiba_ai.constants.FUTURE_FIELDS を参照）
 
 
-@router.post("/api/train", response_model=TrainResponse)
-async def train_model(request: TrainRequest, current_user: dict = Depends(require_premium)):
-    """モデル学習エンドポイント"""
+async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None) -> TrainResponse:
+    """モデル学習内部実装（progress_cb は任意のコールバック = (msg: str, pct: int | None) -> None）"""
+    if progress_cb is None:
+        def progress_cb(msg: str, pct: int = None): pass  # noqa: F811
     try:
         import pandas as pd
         from keiba_ai.db_ultimate_loader import load_ultimate_training_frame  # type: ignore
@@ -147,6 +148,8 @@ async def train_model(request: TrainRequest, current_user: dict = Depends(requir
         # 常に ultimate DB を使用（87特徴量モード固定）
         db_path = ULTIMATE_DB
 
+        progress_cb("データベース接続中...", 3)
+
         # Supabase → SQLite 同期（ブロッキング呼び出しを to_thread で分離）
         if SUPABASE_ENABLED and get_supabase_client():
             from app_config import sync_supabase_to_sqlite  # type: ignore
@@ -163,9 +166,11 @@ async def train_model(request: TrainRequest, current_user: dict = Depends(requir
                     logger.info(f"初回同期: {synced} レース")
 
         # データ読み辿み（常に ultimate モード）
+        progress_cb("学習データ読み込み中...", 8)
         df = load_ultimate_training_frame(db_path)
 
         print(f"DEBUG: Loaded {len(df)} rows from database")
+        progress_cb(f"データ読み込み完了 ({len(df):,} 行)", 15)
 
         # 学習期間フィルタ
         # race_date(YYYYMMDD, 100%充填)を優先。一致しない場合は race_id[:6] にフォールバック
@@ -200,7 +205,9 @@ async def train_model(request: TrainRequest, current_user: dict = Depends(requir
         y = _make_target(df, request.target)
 
         if request.target != "speed_deviation" and len(y.unique()) < 2:
-            raise HTTPException(status_code=400, detail="2クラス以上が必要です")        # 特徴量エンジニアリング（finish等を使うのでdrop前に実施）
+            raise HTTPException(status_code=400, detail="2クラス以上が必要です")
+        # 特徴量エンジニアリング（finish等を使うのでdrop前に実施）
+        progress_cb("特徴量エンジニアリング中...", 20)
         df = add_derived_features(df, full_history_df=df)
         # NOTE: UltimateFeatureCalculator は feature_engineering.py で同等の特徴量を
         # ベクトル化计算済みのため除去（zero-variance 問題も解消）
@@ -223,6 +230,7 @@ async def train_model(request: TrainRequest, current_user: dict = Depends(requir
         if request.use_optimizer and request.model_type == "lightgbm":
             try:
                 print("\n=== LightGBM最適化モード ===")
+                progress_cb("特徴量選択・最適化中...", 28)
                 df_optimized, optimizer, categorical_features = prepare_for_lightgbm_ultimate(
                     df, target_col=request.target, is_training=True
                 )
@@ -369,6 +377,7 @@ async def train_model(request: TrainRequest, current_user: dict = Depends(requir
 
                 if not _is_ranking:
                     # CV で最適ラウンド探索
+                    progress_cb(f"CV学習中 ({request.cv_folds}折)...", 35)
                     cv_result = lgb.cv(
                         params, train_data,
                         num_boost_round=1000, nfold=request.cv_folds,
@@ -392,6 +401,7 @@ async def train_model(request: TrainRequest, current_user: dict = Depends(requir
                         cv_auc_std  = cv_logloss_std
                     best_round_final = int(best_round_cv * request.cv_folds / (request.cv_folds - 1))
 
+                    progress_cb("最終モデル学習中...", 60)
                     full_train_data = lgb.Dataset(X_train, y_train, categorical_feature=categorical_indices)
                     model = lgb.train(params, full_train_data, num_boost_round=best_round_final)
 
@@ -417,6 +427,7 @@ async def train_model(request: TrainRequest, current_user: dict = Depends(requir
                 optuna_executed = True
                 try:
                     print("\n=== Optunaハイパーパラメータ最適化 ===")
+                    progress_cb(f"Optuna最適化中 ({request.optuna_trials}試行)...", 65)
                     if request.model_type == "lightgbm":
                         categorical_indices = [X.columns.get_loc(c) for c in categorical_features if c in X.columns]
                         optuna_optimizer = OptunaLightGBMOptimizer(
@@ -458,6 +469,7 @@ async def train_model(request: TrainRequest, current_user: dict = Depends(requir
                             cv_auc_std = 0.0
                             best_round_opt = optuna_num_rounds
                         best_round_opt_final = int(best_round_opt * request.cv_folds / (request.cv_folds - 1))
+                        progress_cb("Optunaパラメータでモデル再学習中...", 82)
                         model = lgb.train(optimized_params, train_data_opt, num_boost_round=best_round_opt_final)
                         y_pred_proba = model.predict(X_test)
                         if _is_regression:
@@ -495,6 +507,7 @@ async def train_model(request: TrainRequest, current_user: dict = Depends(requir
 
         # 確率キャリブレーション（BetaCalibration優先、IsotonicRegressionにフォールバック）
         # speed_deviation（回帰）/ rank（ランキング）の場合はキャリブレーション不要
+        progress_cb("確率キャリブレーション中...", 88)
         calibrator = None
         logloss_calibrated = logloss
         if request.target not in ("speed_deviation", "rank"):
@@ -520,10 +533,12 @@ async def train_model(request: TrainRequest, current_user: dict = Depends(requir
             except Exception as _cal_err:
                 logger.warning(f"キャリブレーション学習失敗: {_cal_err}")
 
-        # モデル保存 — IDはデータ日付範囲 (開始日_終了日)
+        # モデル保存 — IDはデータ日付範囲 + 作成日時（一意性を保証）
+        progress_cb("モデルを保存中...", 93)
         date_from_8 = _get_date8_from(df)
         date_to_8 = _get_date8_to(df)
-        model_id = f"{date_from_8}_{date_to_8}"
+        saved_at = datetime.now().strftime("%Y%m%d_%H%M")
+        model_id = f"{date_from_8}_{date_to_8}_{saved_at}"
         mode_suffix = "_ultimate"
         model_filename = f"model_{request.target}_{request.model_type}_{model_id}{mode_suffix}.joblib"
         model_path = MODELS_DIR / model_filename
@@ -547,7 +562,7 @@ async def train_model(request: TrainRequest, current_user: dict = Depends(requir
             },
             "data_count": len(df),
             "race_count": df["race_id"].nunique() if "race_id" in df.columns else 0,
-            "created_at": model_id,
+            "created_at": saved_at,
             "training_date_from": _get_actual_date_from(df, request.training_date_from),
             "training_date_to": _get_actual_date_to(df, request.training_date_to),
         }
@@ -574,12 +589,13 @@ async def train_model(request: TrainRequest, current_user: dict = Depends(requir
                     "cv_auc_mean": float(cv_auc_mean),
                     "data_count": len(df),
                     "race_count": int(df["race_id"].nunique()) if "race_id" in df.columns else 0,
-                    "created_at": model_id,
+                    "created_at": saved_at,
                     "training_date_from": _get_actual_date_from(df, request.training_date_from),
                     "training_date_to": _get_actual_date_to(df, request.training_date_to),
                 },
             )
 
+        progress_cb("学習完了", 98)
         training_time = (datetime.now() - start_time).total_seconds()
         return TrainResponse(
             success=True,
@@ -607,18 +623,31 @@ async def train_model(request: TrainRequest, current_user: dict = Depends(requir
         raise HTTPException(status_code=500, detail=f"学習中にエラーが発生: {str(e)}")
 
 
+@router.post("/api/train", response_model=TrainResponse)
+async def train_model(request: TrainRequest, current_user: dict = Depends(require_premium)):
+    """モデル学習エンドポイント"""
+    return await _do_train(request, current_user)
+
+
 # ── 非同期ジョブ管理 ──────────────────────────────────────
 
 
 async def _run_train_job(job_id: str, request: TrainRequest) -> None:
     job = _train_jobs[job_id]
     job["status"] = "running"
+    job["pct"] = 0
+
+    def _cb(msg: str, pct: int = None) -> None:
+        job["progress"] = msg
+        if pct is not None:
+            job["pct"] = pct
+
     try:
-        job["progress"] = "学習データ読み込み中..."
-        train_result = await train_model(request, current_user={"user_id": "background-job"})
+        train_result = await _do_train(request, {"user_id": "background-job"}, progress_cb=_cb)
         job["status"] = "completed"
         job["result"] = train_result.dict()
         job["progress"] = "完了"
+        job["pct"] = 100
     except HTTPException as e:
         job["status"] = "error"
         job["error"] = e.detail
@@ -635,7 +664,7 @@ async def train_start(request: TrainRequest):
     """非同期学習ジョブを起動してすぐに job_id を返す"""
     _purge_old_jobs(_train_jobs)
     job_id = str(uuid.uuid4())
-    _train_jobs[job_id] = {"status": "queued", "progress": "キュー待ち", "result": None, "error": None}
+    _train_jobs[job_id] = {"status": "queued", "progress": "キュー待ち", "pct": 0, "result": None, "error": None}
     try:
         import threading
         def _bg() -> None:
@@ -657,6 +686,7 @@ async def train_job_status(job_id: str):
             "job_id": job_id,
             "status": "not_found",
             "progress": "",
+            "pct": 0,
             "result": None,
             "error": f"学習ジョブ {job_id} が見つかりません（サーバー再起動の可能性）",
         }
@@ -664,6 +694,7 @@ async def train_job_status(job_id: str):
         "job_id": job_id,
         "status": job["status"],
         "progress": job["progress"],
+        "pct": job.get("pct", 0),
         "result": job.get("result"),
         "error": job.get("error"),
     }

@@ -27,7 +27,7 @@ export default function TrainPage() {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [showAdvanced, setShowAdvanced] = useState(false)
 
-  const { status: jobStatus, progress: jobProgress } = useJobPoller({
+  const { status: jobStatus, progress: jobProgress, pct: jobPct } = useJobPoller({
     jobId,
     getStatusUrl: id => `/api/ml/train/status/${id}`,
     onCompleted: statusData => {
@@ -248,10 +248,20 @@ export default function TrainPage() {
           </button>
 
           {loading && jobId && (
-            <div className="p-4 bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg space-y-1.5">
-              <div className="flex items-center gap-2">
-                <span className="inline-block w-2 h-2 rounded-full bg-yellow-400 animate-pulse" />
-                <span className="text-xs text-[#888]">学習中 — 完了まで1〜3分かかります</span>
+            <div className="p-4 bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="inline-block w-2 h-2 rounded-full bg-yellow-400 animate-pulse" />
+                  <span className="text-xs text-[#888]">学習中</span>
+                </div>
+                <span className="text-xs text-[#555] tabular-nums">{jobPct}%</span>
+              </div>
+              {/* Progress bar */}
+              <div className="h-1 bg-[#1e1e1e] rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-white rounded-full transition-all duration-700 ease-out"
+                  style={{ width: `${jobPct}%` }}
+                />
               </div>
               <div className="text-xs text-[#555]">{jobProgress}</div>
             </div>

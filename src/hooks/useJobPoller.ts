@@ -19,6 +19,7 @@ export interface JobPollerOptions {
 export interface JobPollerResult {
   status: JobStatus
   progress: string
+  pct: number
   /** ポーリングを強制停止して idle にリセット */
   reset: () => void
 }
@@ -48,6 +49,7 @@ export function useJobPoller({
 }: JobPollerOptions): JobPollerResult {
   const [status, setStatus] = useState<JobStatus>('idle')
   const [progress, setProgress] = useState('')
+  const [pct, setPct] = useState(0)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const startRef = useRef(0)
   // stableな参照でコールバックを保持（re-render のたびに setInterval が再生成されないように）
@@ -67,6 +69,7 @@ export function useJobPoller({
     stop()
     setStatus('idle')
     setProgress('')
+    setPct(0)
   }, [stop])
 
   useEffect(() => {
@@ -91,6 +94,7 @@ export function useJobPoller({
 
         const msg: string = data.progress || data.message || ''
         if (msg) setProgress(msg)
+        if (typeof data.pct === 'number') setPct(data.pct)
 
         if (data.status === 'completed') {
           stop()
@@ -117,5 +121,5 @@ export function useJobPoller({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId])
 
-  return { status, progress, reset }
+  return { status, progress, pct, reset }
 }

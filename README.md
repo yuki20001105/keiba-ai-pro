@@ -16,6 +16,7 @@
 8. [フロントエンド画面構成](#8-フロントエンド画面構成)
 9. [APIエンドポイント一覧](#9-apiエンドポイント一覧)
 10. [起動方法](#10-起動方法)
+11. [Gitブランチ戦略](#11-gitブランチ戦略)
 
 ---
 
@@ -330,7 +331,9 @@ margin, prize_money, actual_finish
 | target | 形式 | 意味 |
 |--------|------|------|
 | `win` | 0/1 | 1着 = 1（デフォルト） |
-| `place` | 0/1 | 2着以内 = 1 |
+| `place3` | 0/1 | 3着以内 = 1 |
+| `win_tie` | 0/1 | 複勝（3着以内タイ扱い） = 1 |
+| `speed_deviation` | float | タイム偏差（回帰問題）→ softmax で確率変換 |
 
 ### LightGBM ハイパーパラメータ（デフォルト）
 
@@ -353,9 +356,9 @@ margin, prize_money, actual_finish
 ### Optuna 最適化（オプション）
 
 ```
-n_trials:  100
+n_trials:  30  (--optuna-trials オプションで変更可)
 cv_folds:  5
-timeout:   300秒
+timeout:   min(n_trials × 60, 1800) 秒
 目標:      CV AUC 最大化
 
 探索範囲:
@@ -518,10 +521,11 @@ Kelly % = (p × odds - 1) / (odds - 1)
 ### レースレベル判定
 
 ```
-難易度スコア × 最大EV → アクション判定:
-  難易度 >= 0.7 かつ max_EV >= 3.0  → "勝負"  (予算の 80% を使用)
-  難易度 >= 0.4 かつ max_EV >= 1.5  → "通常"  (予算の 40% を使用)
-  それ以外                           → "見送り" (0% = 購入しない)
+アクション判定（以下いずれかを満たすと "勝負"）:
+  難易度スコア >= 0.7                           → "勝負"  (予算の 80% を使用)
+  max_EV >= 4.0 かつ max_prob >= 0.25          → "勝負"
+  max_EV >= 6.0                               → "勝負"
+  それ以外                                    → "通常"  (予算の 40% を使用)
 ```
 
 ### 動的単価
@@ -551,6 +555,17 @@ Kelly % = (p × odds - 1) / (odds - 1)
 7. 購入 → POST /api/purchase
 ```
 
+### レース分析画面 (`/race-analysis`)
+
+```
+1. 日付選択 → GET /api/races/by-date?date=YYYYMMDD
+2. レース選択 → POST /api/analyze_race（ML予測）
+   └─ 予測失敗時フォールバック → GET /api/races/{race_id}/horses（出走表のみ表示）
+3. 予測結果タブ: 馬別確率・EV・推奨馬券
+4. 特徴量分析タブ → GET /api/debug/race/{race_id}/features
+5. キャッシュ済み結果は再計算ボタンで強制リフレッシュ可能
+```
+
 ### データ収集画面 (`/data-collection`)
 
 ```
@@ -565,18 +580,54 @@ Kelly % = (p × odds - 1) / (odds - 1)
 ### 学習画面 (`/train`)
 
 ```
-1. 条件設定 (target / 期間 / Optuna試行数 / CV分割数)
+1. 条件設定 (target: win / place3 / win_tie / speed_deviation / 期間 / Optuna試行数 / CV分割数)
 2. [学習開始] → POST /api/train/start
 3. GET /api/train/status/{job_id} ポーリング
 4. 完了 → AUC / LogLoss / CV統計 表示
+5. 特徴量ラボへのリンク → /feature-lab
+```
+
+### 特徴量ラボ画面 (`/feature-lab`)
+
+```
+1. ターゲット選択 (win / place3 / speed_deviation)
+2. サマリータブ → GET /api/features/summary
+   - 未来フィールド数・スクレイプ列数・FE特徴量数・除外列数・ステージ別内訳
+3. 重要度タブ → GET /api/features/importance?target=***&top_n=**&importance_type=gain|split
+   - 上位N件の特徴量重要度バー表示・ツールチップで説明
+4. カバレッジタブ → GET /api/features/coverage?target=***
+   - カタログ有効特徴量のモデル内一致率確認
+   - 不足特徴量・余剰特徴量をバッジ表示
+```
+
+### データ閲覧画面 (`/data-view`)
+
+```
+1. 日付範囲・会場フィルタでレース検索
+2. レース一覧表示 → クリックで出走馬詳細
+3. GET /api/races/{race_id}/horses（ML推論なし）
+```
+
+### ダッシュボード画面 (`/dashboard`)
+
+```
+1. 購入履歴の集計・回収率サマリー表示
+2. GET /api/purchase_history, GET /api/statistics
+```
+
+### 管理画面 (`/admin`)
+
+```
+1. モデル管理・スクレイプ実行（管理者専用）
+2. GET /api/models, POST /api/scrape/start
 ```
 
 ### 認証・権限
 
-| 種別 | 月間予測回数 | 学習 | モデル選択 |
-|------|-----------|------|---------|
-| Free | 10回 | 不可 | 最新のみ |
-| Premium | 無制限 | 可 | 全モデル選択可 |
+| ロール | 権限 |
+|-------|------|
+| `user` | 一般ユーザー（予測・閲覧） |
+| `admin` | 管理者（スクレイプ開始・モデル管理含む全機能）|
 
 ---
 
@@ -584,8 +635,8 @@ Kelly % = (p × odds - 1) / (odds - 1)
 
 | Method | Path | 説明 |
 |--------|------|------|
-| POST | `/api/scrape` | バッチスクレイプ（ジョブ即時返却） |
-| POST | `/api/scrape/start` | Admin用スクレイプ開始 |
+| POST | `/api/scrape` | スクレイプ同期実行（結果を直接返却、土日月のみ対応） |
+| POST | `/api/scrape/start` | Admin用スクレイプ開始（非同期ジョブ） |
 | GET | `/api/scrape/status/{job_id}` | スクレイプ進捗取得 |
 | GET | `/api/races/by_date?date=YYYYMMDD` | 指定日のレース一覧 |
 | GET | `/api/races/recent?limit=50` | 最近取得したレース一覧（軽量） |
@@ -598,8 +649,22 @@ Kelly % = (p × odds - 1) / (odds - 1)
 | GET | `/api/data_stats?ultimate=true` | DB統計（レース数・馬数・最終取得日） |
 | POST | `/api/purchase` | 購入推奨の保存 |
 | GET | `/api/purchase_history` | 購入履歴取得 |
+| GET | `/api/statistics` | 購入統計・回収率サマリー |
 | GET | `/api/debug/race/{race_id}` | 生データ確認（Premium） |
 | GET | `/api/debug/race/{race_id}/features` | 特徴量確認（Premium） |
+| GET | `/api/features/catalog` | 特徴量カタログ全件取得 |
+| GET | `/api/features/summary` | 特徴量カタログ統計（カウント・ステージ別） |
+| GET | `/api/features/importance` | モデル特徴量重要度（gain/split） |
+| GET | `/api/features/coverage` | カタログ特徴量のモデル内カバレッジ検証 |
+| GET | `/api/realtime-odds/{race_id}` | リアルタイムオッズ取得（キャッシュ） |
+| POST | `/api/realtime-odds/refresh` | オッズ強制再取得（Playwright） |
+| POST | `/api/export/bet-list` | 馬券購入リスト出力（JSON） |
+| POST | `/api/export/bet-list/csv` | 馬券購入リスト出力（CSV） |
+| POST | `/api/profiling/start` | ydata-profiling レポート生成ジョブ開始 |
+| GET | `/api/profiling/status/{job_id}` | プロファイリングジョブ進捗 |
+| GET | `/api/profiling/html/{job_id}` | プロファイリング HTML レポート取得 |
+| POST | `/api/backfill/nar-pedigree` | NAR血統情報バックフィル |
+| POST | `/api/backfill/coat-color` | 毛色情報バックフィル |
 | GET | `/health` | サーバー死活確認 |
 
 ---
@@ -799,3 +864,71 @@ Start-Process .venv\Scripts\python.exe -ArgumentList "patch_missing_data.py" `
 | [docs/deployment/](docs/deployment/) | デプロイガイド (Vercel + Railway) |
 | [docs/development/](docs/development/) | 開発者向けドキュメント |
 | [docs/features/](docs/features/) | 機能・API仕様 |
+
+---
+
+## 16. Gitブランチ戦略
+
+```
+develop  ← 日常開発ブランチ（デフォルト作業場所）
+   │
+   │ git merge develop --ff-only
+   ▼
+main     ← 安定版（PR・マージ後の状態）
+   │
+   │ git merge main --ff-only
+   ▼
+release  ← 本番ブランチ（デプロイ済み）
+   │
+   │ git tag vN && git push origin vN
+   ▼
+GitHub Release（release.yml が自動作成）
+```
+
+### ブランチの役割
+
+| ブランチ | 役割 |
+|---------|------|
+| `develop` | 日常的な開発・実験 |
+| `main` | レビュー済み・テスト通過の安定コード |
+| `release` | デプロイ済み本番コード（タグ `v1`, `v2`, … が打たれる） |
+
+### よく使うコマンド
+
+```powershell
+# develop で作業してコミット
+git checkout develop
+git add .
+git commit -m "feat: ○○機能を追加"
+git push origin develop
+
+# main にマージ
+git checkout main
+git merge develop --ff-only
+git push origin main
+
+# release にマージしてタグ
+git checkout release
+git merge main --ff-only
+git push origin release
+git tag v4
+git push origin v4
+
+# feature ブランチを作成
+git checkout develop
+git checkout -b feature/my-feature
+```
+
+### コミットメッセージ規約
+
+| プレフィックス | 用途 |
+|-------------|------|
+| `feat:` | 新機能 |
+| `fix:` | バグ修正 |
+| `refactor:` | リファクタリング |
+| `chore:` | 設定・依存関係変更 |
+| `docs:` | ドキュメント更新 |
+| `ci:` | GitHub Actions 変更 |
+| `test:` | テスト追加・修正 |
+
+詳細は `.github/skills/git-workflow/SKILL.md` を参照。

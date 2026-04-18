@@ -22,6 +22,10 @@ export default function RaceAnalysisPage() {
   const [error, setError] = useState('')
   const [fromCache, setFromCache] = useState(false)
   const [cachedAt, setCachedAt] = useState<number | null>(null)
+  const [fallbackHorses, setFallbackHorses] = useState<{
+    race_name: string; venue: string; date: string; distance: number; track_type: string
+    horses: { horse_number: number; bracket_number: number; horse_name: string; sex_age: string; jockey_name: string; odds: number | null; popularity: number | null; trainer_name: string }[]
+  } | null>(null)
 
   const raceCache = useRaceCache()
 
@@ -31,6 +35,7 @@ export default function RaceAnalysisPage() {
     setSelectedRaceId('')
     setPredictResult(null)
     setFeatData(null)
+    setFallbackHorses(null)
     setFromCache(false)
     setCachedAt(null)
     setError('')
@@ -70,6 +75,7 @@ export default function RaceAnalysisPage() {
     setCachedAt(null)
     setPredictResult(null)
     setFeatData(null)
+    setFallbackHorses(null)
     try {
       const [predRes, featRes] = await Promise.all([
         fetch('/api/analyze-race', {
@@ -92,6 +98,14 @@ export default function RaceAnalysisPage() {
       setCachedAt(now)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'エラーが発生しました')
+      // 予測失敗時でもDBの出走馬データを取得して表示する
+      try {
+        const fbRes = await fetch(`/api/races/${raceId}/horses`)
+        if (fbRes.ok) {
+          const fb = await fbRes.json()
+          if (fb.horses?.length > 0) setFallbackHorses(fb)
+        }
+      } catch { }
     } finally { setDataLoading(false) }
   }, [raceCache])
 
@@ -193,6 +207,50 @@ export default function RaceAnalysisPage() {
           )}
           {error && (
             <div className="m-4 p-3 bg-[#1a0000] border border-[#f87171] rounded text-[#f87171] text-sm">{error}</div>
+          )}
+
+          {/* 予測失敗時のフォールバック: DBの出走馬データ表示 */}
+          {error && fallbackHorses && !dataLoading && (
+            <div className="m-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-[#666]">{fallbackHorses.venue}</span>
+                <span className="text-xs text-[#555]">·</span>
+                <span className="text-xs text-[#666]">{fallbackHorses.date}</span>
+                <span className="text-xs text-[#555]">·</span>
+                <span className="text-xs text-[#666]">{fallbackHorses.track_type}{fallbackHorses.distance ? ` ${fallbackHorses.distance}m` : ''}</span>
+                <span className="ml-auto text-[10px] text-[#555] bg-[#1a1a1a] border border-[#2a2a2a] rounded px-2 py-0.5">ML予測なし ・ 出走表のみ</span>
+              </div>
+              <div className="bg-[#111] border border-[#1e1e1e] rounded overflow-hidden">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-[#1a1a1a]">
+                      <th className="px-3 py-2 text-left text-[#555] font-normal w-8">湧</th>
+                      <th className="px-3 py-2 text-left text-[#555] font-normal w-6">番</th>
+                      <th className="px-3 py-2 text-left text-[#555] font-normal">馬名</th>
+                      <th className="px-3 py-2 text-left text-[#555] font-normal">性齢</th>
+                      <th className="px-3 py-2 text-left text-[#555] font-normal">騎手</th>
+                      <th className="px-3 py-2 text-left text-[#555] font-normal">調教師</th>
+                      <th className="px-3 py-2 text-right text-[#555] font-normal">人気</th>
+                      <th className="px-3 py-2 text-right text-[#555] font-normal">オッズ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {fallbackHorses.horses.map(h => (
+                      <tr key={h.horse_number} className="border-b border-[#0d0d0d] hover:bg-[#141414]">
+                        <td className="px-3 py-2 text-[#555]">{h.bracket_number}</td>
+                        <td className="px-3 py-2 font-bold">{h.horse_number}</td>
+                        <td className="px-3 py-2 text-white">{h.horse_name}</td>
+                        <td className="px-3 py-2 text-[#888]">{h.sex_age}</td>
+                        <td className="px-3 py-2 text-[#aaa]">{h.jockey_name}</td>
+                        <td className="px-3 py-2 text-[#666]">{h.trainer_name}</td>
+                        <td className="px-3 py-2 text-right text-[#888]">{h.popularity ?? '—'}</td>
+                        <td className="px-3 py-2 text-right font-mono">{h.odds != null ? h.odds.toFixed(1) : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           )}
 
           {predictResult && !dataLoading && (
