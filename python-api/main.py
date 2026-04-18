@@ -35,6 +35,8 @@ for _s in (sys.stdout, sys.stderr):
         except Exception:
             pass
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler  # type: ignore
@@ -44,26 +46,39 @@ from middleware.auth import SupabaseJWTMiddleware  # type: ignore
 
 from routers import (  # type: ignore
     backfill,
+    bet_export,
     debug_data,
     export,
+    feature_analysis,
     internal,
     models_mgmt,
     predict,
     profiling,
     purchase,
     races,
+    realtime_odds,
     scrape,
     stats,
     train,
 )
+from scheduler import start_scheduler, stop_scheduler  # type: ignore
 
 # ── Rate Limiter（インメモリ・Redis不要） ──────────────────────────────
 limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    start_scheduler()
+    yield
+    stop_scheduler()
+
 
 app = FastAPI(
     title="Keiba AI - Machine Learning API",
     description="競馬予測AIのための機械学習API",
     version="1.0.0",
+    lifespan=lifespan,
 )
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -89,12 +104,17 @@ app.include_router(predict.router)
 app.include_router(models_mgmt.router)
 app.include_router(purchase.router)
 app.include_router(scrape.router)
-app.include_router(export.router)
+
+
+
 app.include_router(backfill.router)
 app.include_router(profiling.router)
 app.include_router(races.router)
 app.include_router(internal.router)
 app.include_router(debug_data.router)
+app.include_router(realtime_odds.router)
+app.include_router(bet_export.router)
+app.include_router(feature_analysis.router)
 
 
 @app.get("/health")
@@ -105,4 +125,4 @@ async def health():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)

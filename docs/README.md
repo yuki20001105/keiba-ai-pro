@@ -14,9 +14,7 @@
 
 ### 🚢 [deployment/](deployment/)
 デプロイ関連のドキュメント
-- **DEPLOYMENT_COMPLETE_GUIDE.md** - 完全版デプロイガイド（推奨）
-- **DEPLOYMENT_GUIDE.md** - デプロイガイド
-- **DEPLOY_GUIDE.md** - デプロイ手順
+- **DEPLOYMENT_COMPLETE_GUIDE.md** - 完全版デプロイガイド（Vercel + Railway）⭐
 
 ### ⚡ [features/](features/)
 機能・API仕様のドキュメント

@@ -1,11 +1,11 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
-import { useUserRole } from '@/hooks/useUserRole'
+import { useAuth } from '@/contexts/AuthContext'
 import { useEffect } from 'react'
 
 export function AdminOnly({ children }: { children: React.ReactNode }) {
-  const { isAdmin, loading } = useUserRole()
+  const { isAdmin, loading } = useAuth()
   const router = useRouter()
 
   useEffect(() => {

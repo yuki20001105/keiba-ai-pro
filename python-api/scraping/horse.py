@@ -1,6 +1,7 @@
 """
 馬詳細スクレイピング: 血統・プロフィール・過去成績を取得する。
 """
+from __future__ import annotations
 
 import asyncio
 import re
@@ -55,7 +56,7 @@ def extract_coat_color(soup: "BeautifulSoup", html: str = "") -> str:
     return ""
 
 # ---------------------------------------------------------------------------
-# SQLite ローカル血統キャッシュ（SUPABASE_ENABLED=False 時のフォールバック）
+# SQLite ローカル血統キャッシュ
 # ---------------------------------------------------------------------------
 
 _PEDIGREE_DB_PATH: Path = (
@@ -124,26 +125,9 @@ _init_pedigree_table()
 # Supabase ヘルパー（オプション依存）
 # ---------------------------------------------------------------------------
 try:
-    from supabase_client import (  # type: ignore
-        get_pedigree_cache,
-        save_pedigree_cache,
-    )
-    _SUPABASE_HORSE_OK = True
-except ImportError:
-    _SUPABASE_HORSE_OK = False
-
-    def get_pedigree_cache(horse_id):  # type: ignore
-        return None
-
-    def save_pedigree_cache(horse_id, sire, dam, damsire):  # type: ignore
-        pass
-
-
-try:
-    from app_config import SUPABASE_ENABLED, logger  # type: ignore
+    from app_config import logger  # type: ignore
 except ImportError:
     import logging
-    SUPABASE_ENABLED = False
     logger = logging.getLogger(__name__)
 
 
@@ -218,15 +202,9 @@ async def scrape_horse_detail(
     if horse_id and re.match(r"^B", str(horse_id)):
         _nar_result: dict = {}
 
-        # 1) Supabase 血統キャッシュ確認
+        # 1) SQLite 血統キャッシュ確認
         cached_b = (pedigree_cache or {}).get(horse_id) if pedigree_cache is not None else None
-        if cached_b is None and SUPABASE_ENABLED:
-            try:
-                cached_b = await asyncio.to_thread(get_pedigree_cache, horse_id)
-            except Exception as _e:
-                logger.debug(f"NAR馬 血統キャッシュ確認失敗: {_e}")
-        elif cached_b is None and not SUPABASE_ENABLED:
-            # Supabase 無効時は SQLite ローカルキャッシュを確認
+        if cached_b is None:
             cached_b = _get_pedigree_sqlite(horse_id)
         if cached_b and cached_b.get("sire") and cached_b["sire"] not in ("", "unknown_local"):
             logger.debug(f"NAR馬 血統キャッシュヒット: {horse_id} sire={cached_b['sire']}")
@@ -249,21 +227,12 @@ async def scrape_horse_detail(
                                 _parse_blood_table(blood_table_b, pedigree_result_b)
                             if pedigree_result_b.get("sire"):
                                 logger.info(f"NAR馬 /ped/ 血統取得成功: {horse_id} sire={pedigree_result_b['sire']}")
-                                if SUPABASE_ENABLED:
-                                    await asyncio.to_thread(
-                                        save_pedigree_cache,
-                                        horse_id,
-                                        pedigree_result_b.get("sire", ""),
-                                        pedigree_result_b.get("dam", ""),
-                                        pedigree_result_b.get("damsire", ""),
-                                    )
-                                else:
-                                    _save_pedigree_sqlite(
-                                        horse_id,
-                                        pedigree_result_b.get("sire", ""),
-                                        pedigree_result_b.get("dam", ""),
-                                        pedigree_result_b.get("damsire", ""),
-                                    )
+                                _save_pedigree_sqlite(
+                                    horse_id,
+                                    pedigree_result_b.get("sire", ""),
+                                    pedigree_result_b.get("dam", ""),
+                                    pedigree_result_b.get("damsire", ""),
+                                )
                                 _nar_result = pedigree_result_b
                                 break
                             logger.debug(f"NAR馬 /ped/ 200 だが blood_table 未検出: {horse_id}")
@@ -286,7 +255,7 @@ async def scrape_horse_detail(
         _sp_html_parsed = None
         if not quick_mode and _sp_html_parsed is None:
             try:
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(1.0)
                 async with session.get(f"https://db.sp.netkeiba.com/horse/{horse_id}/") as _sp_resp2:
                     if _sp_resp2.status == 200:
                         _sp_html_parsed = BeautifulSoup(
@@ -317,9 +286,14 @@ async def scrape_horse_detail(
         return _nar_result
 
     # ── JRA馬
-    url = horse_url if horse_url.startswith("http") else f"https://db.netkeiba.com/horse/{horse_id}/"
-    if url and not url.endswith("/"):
-        url = url + "/"
+    # 2025/8以降: netkeiba の馬詳細は /horse/{id}/ から /horse/result/{id}/ へ移行
+    # horse_url が渡された場合はそのURLを使用し、/horse/result/{id}/ 方式にも対応
+    if horse_url.startswith("http"):
+        url = horse_url
+        if not url.endswith("/"):
+            url = url + "/"
+    else:
+        url = f"https://db.netkeiba.com/horse/result/{horse_id}/"
     result = {}
 
     async def _safe_get_horse(u: str):
@@ -337,14 +311,24 @@ async def scrape_horse_detail(
     async def _noop_fetch():
         return None
 
-    html, _pre_result_html, _pre_ped_html = await asyncio.gather(
+    # 新URLと血統ページを並列取得（旧URLリクエストは廃止して1リクエスト削減）
+    html, _pre_ped_html = await asyncio.gather(
         _safe_get_horse(url),
-        _safe_get_horse(f"https://db.netkeiba.com/horse/result/{horse_id}/"),
         _noop_fetch() if _has_ped_cache else _safe_get_horse(f"https://db.netkeiba.com/horse/ped/{horse_id}/"),
     )
+
+    # フォールバック: /horse/result/{id}/ が失敗した場合は旧 /horse/{id}/ を試みる
+    if html is None and not horse_url.startswith("http"):
+        _old_url = f"https://db.netkeiba.com/horse/{horse_id}/"
+        logger.debug(f"新URL失敗 → 旧URLでフォールバック: {horse_id}")
+        html = await _safe_get_horse(_old_url)
+
     if html is None:
         logger.debug(f"馬詳細取得失敗 {horse_id}")
         return result
+
+    # /horse/result/{id}/ は成績と馬プロフィールを含む → 同じHTMLを両方に使用
+    _pre_result_html = html
 
     soup = BeautifulSoup(html, "lxml", parse_only=HTML_STRAINER)
     del html
@@ -413,13 +397,7 @@ async def scrape_horse_detail(
 
     if horse_id:
         cached = (pedigree_cache or {}).get(horse_id) if pedigree_cache is not None else None
-        if cached is None and SUPABASE_ENABLED:
-            try:
-                cached = await asyncio.to_thread(get_pedigree_cache, horse_id)
-            except Exception as _e:
-                logger.debug(f"血統キャッシュ確認失敗: {_e}")
-        elif cached is None and not SUPABASE_ENABLED:
-            # Supabase 無効時は SQLite ローカルキャッシュを確認
+        if cached is None:
             cached = _get_pedigree_sqlite(horse_id)
         if cached:
             result["sire"] = cached.get("sire") or ""
@@ -446,7 +424,7 @@ async def scrape_horse_detail(
             if not result.get("sire"):
                 ped_url = f"https://db.netkeiba.com/horse/ped/{horse_id}/"
                 try:
-                    await asyncio.sleep(0.2)
+                    await asyncio.sleep(1.0)
                     async with session.get(ped_url) as ped_resp:
                         if ped_resp.status == 200:
                             ped_content = await ped_resp.read()
@@ -464,16 +442,7 @@ async def scrape_horse_detail(
             if _pre_ped_html is not None:
                 del _pre_ped_html
 
-        if SUPABASE_ENABLED and horse_id:
-            await asyncio.to_thread(
-                save_pedigree_cache,
-                horse_id,
-                result.get("sire", ""),
-                result.get("dam", ""),
-                result.get("damsire", ""),
-            )
-        elif horse_id and not SUPABASE_ENABLED:
-            # Supabase 無効時は SQLite ローカルキャッシュに保存
+        if horse_id:
             _save_pedigree_sqlite(
                 horse_id,
                 result.get("sire", ""),

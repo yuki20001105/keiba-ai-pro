@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-
-const ML_API_URL = process.env.ML_API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+import { ML_API_URL } from '@/lib/backend-url'
 
 export async function POST(request: NextRequest) {
   try {
@@ -14,6 +13,7 @@ export async function POST(request: NextRequest) {
         ...(authHeader ? { Authorization: authHeader } : {}),
       },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(300_000),
     })
 
     const data = await response.json()

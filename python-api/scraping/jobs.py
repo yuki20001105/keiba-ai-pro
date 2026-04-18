@@ -1,38 +1,34 @@
 """
 スクレイピングジョブ管理: バックグラウンドジョブの開始・進捗管理。
 """
+from __future__ import annotations
 
 import asyncio
 import gc
 import json
 import re
 import sqlite3
+import threading
 from pathlib import Path
 
 import aiohttp
+import httpx
+from bs4 import BeautifulSoup
 
-from scraping.constants import SCRAPE_HEADERS, SCRAPE_PROXY_URL
+from scraping.constants import SCRAPE_HEADERS, SCRAPE_PROXY_URL, get_random_headers
 from scraping.race import scrape_race_full
-from scraping.storage import _init_sqlite_db, _save_race_sqlite_only
+from scraping.storage import (
+    _init_sqlite_db,
+    _save_race_sqlite_only,
+    _get_scraped_dates_sqlite,
+    _save_scraped_date_sqlite,
+)
 
 try:
-    from app_config import SUPABASE_ENABLED, logger  # type: ignore
+    from app_config import logger  # type: ignore
 except ImportError:
     import logging
-    SUPABASE_ENABLED = False
     logger = logging.getLogger(__name__)
-
-try:
-    from supabase_client import (  # type: ignore
-        get_client as get_supabase_client,
-        save_race_to_supabase,
-    )
-except ImportError:
-    def get_supabase_client():  # type: ignore
-        return None
-
-    def save_race_to_supabase(data):  # type: ignore
-        pass
 
 
 # ============================================================
@@ -108,19 +104,104 @@ _init_jobs_db()
 
 
 # ============================================================
+# カレンダーから開催日を取得するヘルパー
+# ============================================================
+
+async def _fetch_race_days_for_month(year: int, month: int, timeout_sec: float = 15.0) -> list[str]:
+    """race.netkeiba.com のカレンダーから指定年月の開催日一覧を取得する。
+
+    返り値: ['YYYYMMDD', ...] のリスト（開催日のみ）。取得失敗時は空リスト。
+    参照実装に倣い kaisai_date リンクからレース開催日を抽出する。
+    """
+    url = f"https://race.netkeiba.com/top/calendar.html?year={year}&month={month:02d}"
+    try:
+        async with httpx.AsyncClient(
+            timeout=timeout_sec,
+            follow_redirects=True,
+            headers=get_random_headers(),
+        ) as hx:
+            resp = await hx.get(url)
+        if resp.status_code != 200:
+            logger.debug(f"カレンダー HTTP {resp.status_code}: {year}/{month:02d}")
+            return []
+        html = resp.content.decode("euc-jp", errors="replace")
+        # href="/top/race_list.html?kaisai_date=20240105" 形式のリンクから日付を抽出
+        dates = list(dict.fromkeys(re.findall(r"kaisai_date=(\d{8})", html)))
+        logger.info(f"カレンダー取得: {year}/{month:02d} → {len(dates)}日 {dates[:3]}")
+        return dates
+    except Exception as e:
+        logger.debug(f"カレンダー取得失敗 {year}/{month:02d}: {e}")
+        return []
+
+
+async def _build_race_dates_from_calendar(
+    start_date: str, end_date: str
+) -> list[str] | None:
+    """開始〜終了日の範囲内でカレンダーから実際の開催日だけを収集する。
+
+    カレンダー取得に失敗した月がある場合は None を返し、呼び出し元が全日付フォールバックを行う。
+    取得成功の場合は開催日のみのリストを返す（大幅な無駄リクエスト削減）。
+    """
+    from datetime import datetime as _dt, timedelta as _td
+
+    def _parse(s):
+        for fmt in ("%Y%m%d", "%Y/%m/%d", "%Y-%m-%d"):
+            try:
+                return _dt.strptime(s, fmt)
+            except ValueError:
+                pass
+        raise ValueError(f"日付フォーマット不正: {s}")
+
+    s_dt = _parse(start_date)
+    e_dt = _parse(end_date)
+
+    # 対象年月の一覧（重複なし）
+    months: list[tuple[int, int]] = []
+    cur = s_dt.replace(day=1)
+    while cur <= e_dt:
+        months.append((cur.year, cur.month))
+        # 翌月へ
+        if cur.month == 12:
+            cur = cur.replace(year=cur.year + 1, month=1)
+        else:
+            cur = cur.replace(month=cur.month + 1)
+
+    all_dates: list[str] = []
+    for year, month in months:
+        days = await _fetch_race_days_for_month(year, month)
+        if days is None:
+            # 取得失敗 → 全日フォールバック
+            return None
+        all_dates.extend(days)
+        await asyncio.sleep(1.0)  # カレンダーリクエスト間インターバル
+
+    # 指定範囲でフィルタ
+    s_str = s_dt.strftime("%Y%m%d")
+    e_str = e_dt.strftime("%Y%m%d")
+    filtered = [d for d in all_dates if s_str <= d <= e_str]
+    return sorted(set(filtered))
+
+
+# ============================================================
 # ジョブストア（メモリ上 + SQLite二重管理）
 # ============================================================
 _scrape_jobs: dict = {}
 _MAX_JOBS = 50
+# スレッドセーフな _scrape_jobs アクセスのためのロック
+# （FastAPI メインスレッドと scrape バックグラウンドスレッドが同時にアクセスするため）
+# RLock（再入可能ロック）を使用: scrape_start が _JOBS_LOCK を保持したまま
+# _purge_old_jobs を呼び出すとデッドロックする問題を防ぐ
+_JOBS_LOCK = threading.RLock()
 
 
 def _purge_old_jobs(store: dict, max_keep: int = _MAX_JOBS) -> None:
     """completed/error ジョブを古い順に削除してメモリリークを防ぐ"""
-    if len(store) <= max_keep:
-        return
-    finished = [k for k, v in store.items() if v.get("status") in ("completed", "error")]
-    for key in finished[: len(store) - max_keep]:
-        del store[key]
+    with _JOBS_LOCK:
+        if len(store) <= max_keep:
+            return
+        finished = [k for k, v in store.items() if v.get("status") in ("completed", "error")]
+        for key in finished[: len(store) - max_keep]:
+            del store[key]
 
 
 def get_job(job_id: str) -> dict | None:
@@ -166,51 +247,44 @@ async def _run_scrape_job(
             dates.append(cur.strftime("%Y%m%d"))
             cur += _td(days=1)
 
+        _MIN_RACES_PER_DAY = 6
+
+        # ── ① 前処理A: カレンダーから実際の開催日のみに絞り込み（歴史データ高速化）──
+        # 30日以上前のデータが含まれる場合はカレンダーAPIで開催日を事前取得し
+        # 開催なし日のリクエストをゼロにする（最大70%以上の削減効果）
+        from datetime import date as _date_cls
+        _oldest = min(dates)
+        _oldest_days_ago = (_date_cls.today() - _date_cls(int(_oldest[:4]), int(_oldest[4:6]), int(_oldest[6:8]))).days
+        if _oldest_days_ago > 30 and not force_rescrape:
+            job["progress"] = {"done": 0, "total": len(dates), "message": "カレンダー取得中..."}
+            logger.info(f"カレンダー取得開始: {start_date}〜{end_date} ({len(dates)}日 → 開催日のみに絞り込み)")
+            _calendar_dates = await _build_race_dates_from_calendar(start_date, end_date)
+            if _calendar_dates is not None:
+                _original_count = len(dates)
+                dates = sorted(set(dates) & set(_calendar_dates))
+                logger.info(f"カレンダー絞り込み完了: {_original_count}日 → {len(dates)}日（開催日のみ）")
+            else:
+                logger.warning("カレンダー取得失敗 → 全日付で処理（フォールバック）")
+
         total = len(dates)
         job["progress"] = {"done": 0, "total": total, "message": f"0/{total}日処理済み"}
 
-        # --- 取得済み日付を事前チェック（レジューム対応）---
+        # ── ② 前処理B: 取得済み日付を SQLite から読み込み（レジューム）──
         scraped_dates: set = set()
-        _MIN_RACES_PER_DAY = 6
-        if SUPABASE_ENABLED and not force_rescrape:
+        if not force_rescrape:
             try:
-                def _fetch_scraped_dates():
-                    _sb2 = get_supabase_client()
-                    if not _sb2:
-                        return {}
-                    # data JSON の date フィールドから正確な日付を取得する
-                    # race_id[:8] = YYYY+venue+kai であり日付ではないため使用禁止
-                    _r = (
-                        _sb2.table("races_ultimate")
-                        .select("race_id,data")
-                        .execute()
-                    )
-                    _dc: dict = {}
-                    for _row in _r.data or []:
-                        try:
-                            _data = json.loads(_row.get("data") or "{}")
-                            _d = str(_data.get("date") or "")
-                            if len(_d) == 8 and _d.isdigit():
-                                _dc[_d] = _dc.get(_d, 0) + 1
-                        except Exception:
-                            pass
-                    return _dc
-
-                _date_count = await asyncio.to_thread(_fetch_scraped_dates)
-                for _d, _cnt in _date_count.items():
-                    if _cnt >= _MIN_RACES_PER_DAY:
-                        scraped_dates.add(_d)
-                if scraped_dates:
-                    logger.info(f"取得済み日付: {len(scraped_dates)}日分をスキップ（各{_MIN_RACES_PER_DAY}件以上確認）")
-                    job["progress"]["message"] = f"{len(scraped_dates)}日分は取得済み、スキップします"
-                _partial = {d: c for d, c in _date_count.items() if c < _MIN_RACES_PER_DAY}
-                if _partial:
-                    logger.info(f"部分取得日（再スクレイピング対象）: {list(_partial.items())[:5]}")
+                _local_scraped = await asyncio.to_thread(
+                    _get_scraped_dates_sqlite, ULTIMATE_DB, _MIN_RACES_PER_DAY
+                )
+                scraped_dates.update(_local_scraped)
+                if _local_scraped:
+                    logger.info(f"SQLite取得済み日付: {len(_local_scraped)}日分をスキップ")
+                    job["progress"]["message"] = f"{len(_local_scraped)}日分は取得済み、スキップします"
             except Exception as _e:
-                logger.warning(f"取得済み日付確認失敗（全日付を処理）: {_e}")
+                logger.warning(f"SQLite取得済み確認失敗: {_e}")
 
         timeout = aiohttp.ClientTimeout(total=25, connect=8)
-        connector = aiohttp.TCPConnector(limit=20, limit_per_host=10)
+        connector = aiohttp.TCPConnector(limit=5, limit_per_host=3)
         counter = {"races": 0, "horses": 0}
         counter_lock = asyncio.Lock()
 
@@ -220,15 +294,27 @@ async def _run_scrape_job(
             _session_kwargs["trust_env"] = False
             logger.info(f"プロキシ使用: {SCRAPE_PROXY_URL}")
 
+        # 2024/11以降 netkeiba はランダムUAが必要 → 各ジョブで新規ランダムUA
+        _session_headers = get_random_headers()
+        logger.info(f"セッションUA: {_session_headers['User-Agent'][:60]}...")
+
         async with aiohttp.ClientSession(
-            headers=SCRAPE_HEADERS, timeout=timeout, connector=connector, **_session_kwargs
+            headers=_session_headers, timeout=timeout, connector=connector, **_session_kwargs
         ) as session:
             for i, date in enumerate(dates):
                 list_url = f"https://db.netkeiba.com/race/list/{date}/"
                 errors: list = []
 
+                # 過去30日以内か判定（インターバル・フォールバック制御用）
+                _days_ago = (_date_cls.today() - _date_cls(int(date[:4]), int(date[4:6]), int(date[6:8]))).days
+                _is_recent = _days_ago <= 30
+                # 過去データは db.netkeiba.com のみ → 短いインターバルで高速化
+                _pre_sleep = 2.0 if _is_recent else 1.0
+                _inter_race_sleep = 2.0 if _is_recent else 1.0
+                _post_sleep = 8.0 if _is_recent else 2.0
+
                 if date in scraped_dates:
-                    logger.info(f"{date}: Supabase取得済み → スキップ")
+                    logger.info(f"{date}: 取得済み（SQLite/Supabase）→ スキップ")
                     job["progress"] = {
                         "done": i + 1,
                         "total": total,
@@ -238,24 +324,75 @@ async def _run_scrape_job(
                     }
                     continue
 
+                _day_races_before = counter["races"]  # この日の保存開始前レース数を記録
+                race_ids: list[str] = []  # try ブロック外で初期化（except後にも参照可能）
                 try:
-                    async with session.get(list_url) as resp:
-                        if resp.status != 200:
-                            logger.warning(f"{date}: レース一覧 HTTP {resp.status} → スキップ")
-                            job["progress"] = {
-                                "done": i + 1,
-                                "total": total,
-                                "message": f"{i+1}/{total}日処理済み / {counter['races']}レース保存 (HTTP {resp.status}スキップ)",
-                                "saved_races": counter["races"],
-                                "saved_horses": counter["horses"],
-                            }
-                            continue
-                        content = await resp.read()
-                        html = content.decode("euc-jp", errors="ignore")
-                        del content
+                    await asyncio.sleep(_pre_sleep)  # レース一覧リクエスト間のインターバル
 
-                    race_ids = list(dict.fromkeys(re.findall(r"/race/(\d{12})/", html)))
-                    del html
+                    # ① db.netkeiba.com（過去レース結果ページ）から race ID を取得
+                    race_ids = []
+                    async with session.get(list_url) as resp:
+                        if resp.status == 200:
+                            content = await resp.read()
+                            html = content.decode("euc-jp", errors="ignore")
+                            del content
+                            race_ids = list(dict.fromkeys(re.findall(r"/race/(\d{12})/", html)))
+                            del html
+                        elif resp.status == 400:
+                            logger.info(f"{date}: db.netkeiba.com HTTP 400 → 未開催または削除済み日付")
+                        else:
+                            logger.warning(f"{date}: db.netkeiba.com HTTP {resp.status}")
+
+                    # ② 0件のとき → race.netkeiba.com（race_list_sub）へフォールバック
+                    #    当日・直近未来レースはこちらにしか載っていない
+                    #    ※ 過去日付（30日超）には 400 を返すため使用しない
+                    if not race_ids and _is_recent:
+                        shutuba_url = (
+                            f"https://race.netkeiba.com/top/race_list_sub.html"
+                            f"?kaisai_date={date}"
+                        )
+                        try:
+                            async with httpx.AsyncClient(
+                                timeout=20.0, follow_redirects=True
+                            ) as hx:
+                                resp2 = await hx.get(shutuba_url)
+                            if resp2.status_code == 200:
+                                # Content-Type の charset が空なので EUC-JP で明示的にデコード
+                                html2 = resp2.content.decode("euc-jp", errors="replace")
+                                soup2 = BeautifulSoup(html2, "lxml")
+                                found_ids: list[str] = []
+                                for a in soup2.find_all("a", href=True):
+                                    m = re.search(r"race_id=(\d{12})", a["href"])
+                                    if m:
+                                        found_ids.append(m.group(1))
+                                race_ids = list(dict.fromkeys(found_ids))
+                                logger.info(
+                                    f"{date}: race.netkeiba.com から {len(race_ids)} レースID検出"
+                                    f" (race_list_sub, HTML {len(html2)}chars)"
+                                )
+                                if not race_ids:
+                                    logger.warning(
+                                        f"{date}: race_list_sub.html HTMLサンプル(EUC-JP): "
+                                        f"{html2[:300]!r}"
+                                    )
+                            else:
+                                logger.warning(
+                                    f"{date}: レース一覧 HTTP {resp2.status_code} (db/race 両方失敗) → スキップ"
+                                )
+                                job["progress"] = {
+                                    "done": i + 1,
+                                    "total": total,
+                                    "message": f"{i+1}/{total}日処理済み / {counter['races']}レース保存 (HTTP {resp2.status_code}スキップ)",
+                                    "saved_races": counter["races"],
+                                    "saved_horses": counter["horses"],
+                                }
+                                if resp2.status_code in (403, 429, 503):
+                                    logger.warning(f"{date}: HTTP {resp2.status_code} → 60秒待機（IPブロック回避）")
+                                    await asyncio.sleep(60.0)
+                                continue
+                        except Exception as _fe:
+                            logger.warning(f"{date}: race.netkeiba.com 取得失敗: {_fe}")
+
                     logger.info(f"{date}: {len(race_ids)}レースID検出")
 
                     async def _fetch_and_save(race_id, _date=date, _day_idx=i):
@@ -265,18 +402,8 @@ async def _run_scrape_job(
                             )
                             if race_data and race_data.get("horses"):
                                 n_horses = len(race_data["horses"])
-                                _save_tasks = [
-                                    asyncio.to_thread(_save_race_sqlite_only, race_data, ULTIMATE_DB)
-                                ]
-                                if SUPABASE_ENABLED:
-                                    _save_tasks.append(
-                                        asyncio.to_thread(save_race_to_supabase, race_data)
-                                    )
-                                _save_results = await asyncio.gather(*_save_tasks, return_exceptions=True)
-                                saved = (
-                                    _save_results[0]
-                                    if not isinstance(_save_results[0], Exception)
-                                    else False
+                                saved = await asyncio.to_thread(
+                                    _save_race_sqlite_only, race_data, ULTIMATE_DB
                                 )
                                 del race_data
                                 if saved:
@@ -303,11 +430,11 @@ async def _run_scrape_job(
                             errors.append(err_msg)
                             logger.error(f"_fetch_and_save 失敗 {err_msg}")
 
-                    for ci in range(0, len(race_ids), 2):
-                        chunk = race_ids[ci : ci + 2]
+                    for ci in range(0, len(race_ids), 1):
+                        chunk = race_ids[ci : ci + 1]
                         await asyncio.gather(*[_fetch_and_save(r) for r in chunk])
-                        if ci + 2 < len(race_ids):
-                            await asyncio.sleep(1.0)  # レース間インターバル（IP ブロック抑制）
+                        if ci + 1 < len(race_ids):
+                            await asyncio.sleep(_inter_race_sleep)  # レース間インターバル
                         gc.collect()
                     if errors:
                         logger.warning(f"エラー一覧: {errors[:5]}")
@@ -323,27 +450,39 @@ async def _run_scrape_job(
                     "saved_horses": counter["horses"],
                     "last_errors": errors[-3:] if errors else [],
                 }
+                # この日の取得結果をSQLiteに記録（次回再開時にスキップ可能にする）
+                # ⚠️ race_ids 数（URL候補）ではなく実際に DB 保存したレース数を使う
+                #    Cloudflare ブロック等で保存 0 件の場合に誤スキップを防ぐ
+                try:
+                    _day_saved = counter["races"] - _day_races_before
+                    await asyncio.to_thread(
+                        _save_scraped_date_sqlite, ULTIMATE_DB, date, _day_saved
+                    )
+                except Exception:
+                    pass
                 # 進捗を SQLite に永続化（Render スピンダウン対策）
                 _persist_job(job_id, job)
                 # 日付間インターバル（最終日以外）
                 if i < total - 1:
-                    await asyncio.sleep(2.0)
+                    await asyncio.sleep(_post_sleep)
 
         saved_races = counter["races"]
         saved_horses = counter["horses"]
         elapsed = _time.time() - start_time
-        job["status"] = "completed"
-        job["result"] = {
-            "success": True,
-            "races_collected": saved_races,
-            "saved_horses": saved_horses,
-            "elapsed_time": elapsed,
-            "message": f"{saved_races}レース・{saved_horses}頭のデータを収集しました",
-        }
+        with _JOBS_LOCK:
+            job["status"] = "completed"
+            job["result"] = {
+                "success": True,
+                "races_collected": saved_races,
+                "saved_horses": saved_horses,
+                "elapsed_time": elapsed,
+                "message": f"{saved_races}レース・{saved_horses}頭のデータを収集しました",
+            }
         _persist_job(job_id, job)
     except Exception as e:
         logger.error(f"スクレイピングジョブ失敗 {job_id}: {e}")
-        if job_id in _scrape_jobs:
-            _scrape_jobs[job_id]["status"] = "error"
-            _scrape_jobs[job_id]["error"] = str(e)
-            _persist_job(job_id, _scrape_jobs[job_id])
+        with _JOBS_LOCK:
+            if job_id in _scrape_jobs:
+                _scrape_jobs[job_id]["status"] = "error"
+                _scrape_jobs[job_id]["error"] = str(e)
+        _persist_job(job_id, _scrape_jobs.get(job_id, {}))

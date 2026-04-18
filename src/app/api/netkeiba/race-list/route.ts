@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { SCRAPE_SERVICE_URL } from '@/lib/backend-url'
 
 /**
  * 特定日のレースID一覧を取得
@@ -22,7 +23,7 @@ export async function POST(request: NextRequest) {
 
     // Python APIの/scrape/race_listエンドポイントを呼び出し
     // このAPIはundetected_chromedriverを使用してJavaScript動的生成に対応
-    const response = await fetch('http://localhost:8001/scrape/race_list', {
+    const response = await fetch(`${SCRAPE_SERVICE_URL}/scrape/race_list`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

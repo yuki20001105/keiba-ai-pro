@@ -24,8 +24,8 @@
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "serverReadyAction": {
-        "pattern": "Local:\\s+(https?://\\S+)",
-        "uriFormat": "%s",
+        "pattern": "Local:\\s+https?://\\S+",
+        "uriFormat": "http://localhost:3000",
         "action": "openExternally"
       }
     }

@@ -16,33 +16,16 @@ from app_config import (  # type: ignore
     CONFIG_PATH,
     MODELS_DIR,
     SUPABASE_ENABLED,
+    ULTIMATE_DB,
+    get_supabase_client,
+    get_data_stats_from_supabase,
     load_config,
     logger,
 )
+
 from models import TrainRequest  # type: ignore
-
-try:
-    from supabase_client import (  # type: ignore
-        get_client as get_supabase_client,
-        get_data_stats_from_supabase,
-    )
-except ImportError:
-    def get_supabase_client():  # type: ignore
-        return None
-
-    def get_data_stats_from_supabase():  # type: ignore
-        return {}
-
-try:
-    from scraping.constants import SCRAPE_HEADERS  # type: ignore
-except ImportError:
-    SCRAPE_HEADERS = {}
-
-# ジョブストア参照（test/task エンドポイント用）
-try:
-    from scraping.jobs import _scrape_jobs  # type: ignore
-except ImportError:
-    _scrape_jobs: dict = {}
+from scraping.jobs import _scrape_jobs  # type: ignore
+from scraping.constants import SCRAPE_HEADERS  # type: ignore
 
 router = APIRouter()
 
@@ -119,7 +102,7 @@ async def get_data_stats(ultimate: bool = False):
             return await asyncio.to_thread(get_data_stats_from_supabase)
 
         if ultimate:
-            db_path = Path(__file__).parent.parent.parent / "keiba" / "data" / "keiba_ultimate.db"
+            db_path = ULTIMATE_DB
         else:
             cfg = load_config(CONFIG_PATH)
             db_path = cfg.storage.sqlite_path
@@ -131,27 +114,60 @@ async def get_data_stats(ultimate: bool = False):
                 "total_races": 0,
                 "total_horses": 0,
                 "total_models": 0,
+                "latest_date": None,
                 "db_exists": False,
             }
 
         con = sqlite3.connect(db_path)
         cursor = con.cursor()
 
-        try:
-            cursor.execute("SELECT COUNT(DISTINCT race_id) FROM races")
-            total_races = cursor.fetchone()[0]
-        except Exception:
-            total_races = 0
-
-        try:
-            cursor.execute("SELECT COUNT(DISTINCT horse_id) FROM entries")
-            total_horses = cursor.fetchone()[0]
-        except Exception:
+        if ultimate:
             try:
-                cursor.execute("SELECT COUNT(*) FROM entries")
+                cursor.execute("SELECT COUNT(DISTINCT race_id) FROM races_ultimate")
+                total_races = cursor.fetchone()[0]
+            except Exception:
+                total_races = 0
+            try:
+                cursor.execute("SELECT COUNT(*) FROM race_results_ultimate")
                 total_horses = cursor.fetchone()[0]
             except Exception:
                 total_horses = 0
+            try:
+                # race_id は YYYYVVKKNNRR 形式（会場コード込み）のため race_id DESC では
+                # 最新日付が得られない。JSON の date フィールド(YYYYMMDD)で降順ソートする。
+                cursor.execute(
+                    "SELECT data FROM races_ultimate"
+                    " ORDER BY json_extract(data, '$.date') DESC LIMIT 1"
+                )
+                row = cursor.fetchone()
+                if row:
+                    import json as _json
+                    d = _json.loads(row[0])
+                    raw_date = d.get("date", "")
+                    if raw_date and len(str(raw_date)) == 8:
+                        latest_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}"
+                    else:
+                        latest_date = raw_date or None
+                else:
+                    latest_date = None
+            except Exception:
+                latest_date = None
+        else:
+            try:
+                cursor.execute("SELECT COUNT(DISTINCT race_id) FROM races")
+                total_races = cursor.fetchone()[0]
+            except Exception:
+                total_races = 0
+            try:
+                cursor.execute("SELECT COUNT(DISTINCT horse_id) FROM entries")
+                total_horses = cursor.fetchone()[0]
+            except Exception:
+                try:
+                    cursor.execute("SELECT COUNT(*) FROM entries")
+                    total_horses = cursor.fetchone()[0]
+                except Exception:
+                    total_horses = 0
+            latest_date = None
 
         con.close()
 
@@ -161,6 +177,7 @@ async def get_data_stats(ultimate: bool = False):
             "total_races": total_races,
             "total_horses": total_horses,
             "total_models": total_models,
+            "latest_date": latest_date,
             "db_exists": True,
         }
     except Exception as e:
@@ -217,7 +234,6 @@ async def test_connectivity():
     else:
         result["supabase_write"] = "disabled"
 
-    ULTIMATE_DB = Path(__file__).parent.parent.parent / "keiba" / "data" / "keiba_ultimate.db"
     result["sqlite_path"] = str(ULTIMATE_DB)
     result["sqlite_dir_exists"] = ULTIMATE_DB.parent.exists()
 

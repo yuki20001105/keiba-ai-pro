@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-
-const ML_API_URL = process.env.ML_API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+import { ML_API_URL } from '@/lib/backend-url'
 
 export async function GET(request: NextRequest) {
   try {
@@ -8,7 +7,7 @@ export async function GET(request: NextRequest) {
     const query = searchParams.toString()
     const url = `${ML_API_URL}/api/data_stats${query ? `?${query}` : ''}`
 
-    const response = await fetch(url)
+    const response = await fetch(url, { signal: AbortSignal.timeout(10_000) })
     const data = await response.json()
     return NextResponse.json(data, { status: response.status })
   } catch (error) {

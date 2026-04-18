@@ -13,7 +13,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse
 
-from app_config import SUPABASE_ENABLED, get_supabase_client, logger  # type: ignore
+from app_config import SUPABASE_ENABLED, ULTIMATE_DB, get_supabase_client, logger  # type: ignore
 
 router = APIRouter()
 
@@ -28,7 +28,7 @@ def _run_profiling_sync(job_id: str, use_optimized: bool) -> None:
             logger.info(f"[profiling:{job_id}] {msg}")
 
         _update("データ読み込み中...")
-        db_path = Path(__file__).parent.parent.parent / "keiba" / "data" / "keiba_ultimate.db"
+        db_path = ULTIMATE_DB
 
         if SUPABASE_ENABLED and get_supabase_client() and not db_path.exists():
             _update("Supabase からデータ同期中...")

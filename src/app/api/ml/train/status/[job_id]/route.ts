@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-
-const ML_API_URL = process.env.ML_API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+import { ML_API_URL } from '@/lib/backend-url'
 
 export async function GET(
   request: NextRequest,
@@ -9,15 +8,15 @@ export async function GET(
   try {
     const { job_id } = await params
     const authHeader = request.headers.get('Authorization') || ''
+
     const response = await fetch(`${ML_API_URL}/api/train/status/${job_id}`, {
-      method: 'GET',
       headers: authHeader ? { Authorization: authHeader } : {},
     })
 
     const data = await response.json()
     return NextResponse.json(data, { status: response.status })
   } catch (error) {
-    console.error('Train status API error:', error)
-    return NextResponse.json({ error: '学習ステータス取得中にエラーが発生しました' }, { status: 500 })
+    const message = error instanceof Error ? error.message : 'Unknown error'
+    return NextResponse.json({ detail: message }, { status: 500 })
   }
 }

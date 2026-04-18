@@ -3,9 +3,10 @@ Pydantic リクエスト / レスポンスモデル
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 
 class TrainRequest(BaseModel):
@@ -20,11 +21,20 @@ class TrainRequest(BaseModel):
     ultimate_mode: bool = True  # Phase 0: 常に True（87特徴量モード固定）
     use_optimizer: bool = True
     use_optuna: bool = False
-    optuna_trials: int = 50
-    optuna_timeout: int = 300
+    optuna_trials: int = Field(50, ge=1, le=1000)
+    optuna_timeout: int = Field(300, ge=30, le=3600)
     training_date_from: Optional[str] = None
     training_date_to: Optional[str] = None
     force_sync: bool = True
+
+    @field_validator("training_date_from", "training_date_to", mode="before")
+    @classmethod
+    def _validate_ym(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or v == "":
+            return None
+        if not re.match(r"^\d{4}-\d{2}$", str(v)):
+            raise ValueError("YYYY-MM 形式で入力してください (例: 2025-01)")
+        return v
 
 
 class TrainResponse(BaseModel):
@@ -81,10 +91,10 @@ class AnalyzeRaceRequest(BaseModel):
 
     race_id: str
     bankroll: int = 10000
-    risk_mode: str = "balanced"
+    risk_mode: Literal["aggressive", "balanced", "conservative"] = "balanced"
     use_kelly: bool = True
     dynamic_unit: bool = True
-    min_ev: float = 1.2
+    min_ev: float = Field(1.2, ge=1.0, le=10.0)
     model_id: Optional[str] = None
     ultimate_mode: bool = True  # Phase 0: 常に True（87特徴量モード固定）
 
@@ -110,8 +120,8 @@ class BatchAnalyzeRequest(BaseModel):
 
     race_ids: List[str]
     model_id: Optional[str] = None
-    bankroll: int = 10000
-    risk_mode: str = "balanced"
+    bankroll: int = Field(10000, ge=100, le=10_000_000)
+    risk_mode: Literal["aggressive", "balanced", "conservative"] = "balanced"
     use_kelly: bool = True
     dynamic_unit: bool = True
     min_ev: float = 1.2

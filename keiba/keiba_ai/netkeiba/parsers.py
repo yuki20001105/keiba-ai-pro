@@ -141,7 +141,7 @@ def parse_shutuba_table(html: str) -> pd.DataFrame:
             col_map[c] = "trainer_name"
         elif "馬体重" in cs or "Body Wt" in cs:
             col_map[c] = "body_weight"
-        elif "オッズ" in cs or "Odds" in cs:
+        elif "オッズ" in cs or "Odds" in cs or cs == "単勝":
             col_map[c] = "odds"
         elif "人気" in cs or "Fav" in cs:
             col_map[c] = "popularity"

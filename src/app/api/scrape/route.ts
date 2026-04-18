@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-
-// スクレイピングはローカルFastAPIのみ対応（クラウドIPブロック・タイムアウト回避）
-const ML_API_URL = process.env.SCRAPE_API_URL || 'http://localhost:8000'
+import { SCRAPE_API_URL as ML_API_URL } from '@/lib/backend-url'
 
 export async function POST(request: NextRequest) {
   try {
@@ -12,6 +10,7 @@ export async function POST(request: NextRequest) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(authHeader ? { Authorization: authHeader } : {}) },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(10_000),
     })
 
     const data = await response.json()

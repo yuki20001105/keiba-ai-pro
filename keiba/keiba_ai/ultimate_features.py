@@ -130,6 +130,33 @@ class UltimateFeatureCalculator:
         else:
             stats['past_5_weight_avg_change'] = 0.0
 
+        # ── 上がり3F統計（新スクレイパーで追加された last_3f / last_3f_rank） ──
+        l3f_col  = next((c for c in ('last_3f_time', 'last_3f') if c in df.columns), None)
+        l3fr_col = 'last_3f_rank' if 'last_3f_rank' in df.columns else None
+        if l3f_col:
+            l3f_vals = pd.to_numeric(df[l3f_col], errors='coerce').dropna()
+            stats['past_10_avg_last3f_time'] = float(l3f_vals.mean())   if len(l3f_vals) >= 1 else np.nan
+            stats['past_10_best_last3f_time'] = float(l3f_vals.min())   if len(l3f_vals) >= 1 else np.nan
+            stats['recent_3_avg_last3f_time'] = float(
+                pd.to_numeric(df.head(3)[l3f_col], errors='coerce').mean()
+            ) if len(df) >= 1 else np.nan
+        else:
+            stats['past_10_avg_last3f_time']  = np.nan
+            stats['past_10_best_last3f_time'] = np.nan
+            stats['recent_3_avg_last3f_time'] = np.nan
+
+        if l3fr_col:
+            l3fr_vals = pd.to_numeric(df[l3fr_col], errors='coerce').dropna()
+            # 上がり順位の平均（低いほど末脚が速い）
+            stats['past_10_avg_last3f_rank'] = float(l3fr_vals.mean()) if len(l3fr_vals) >= 1 else np.nan
+            # 上がり1位（最速末脚）の回数比率
+            stats['past_10_last3f_top1_rate'] = float(
+                (l3fr_vals == 1).sum() / len(l3fr_vals)
+            ) if len(l3fr_vals) >= 1 else 0.0
+        else:
+            stats['past_10_avg_last3f_rank']   = np.nan
+            stats['past_10_last3f_top1_rate']  = 0.0
+
         return stats
     
     def calculate_jockey_stats(self, jockey_id: str, current_race_id: str, days: int = 180) -> Dict:
@@ -352,6 +379,12 @@ class UltimateFeatureCalculator:
             # 体重トレンド（デフォルト=変化なし）
             'past_5_weight_slope': 0.0,
             'past_5_weight_avg_change': 0.0,
+            # 上がり3F統計（新スクレイパーで追加）
+            'past_10_avg_last3f_time':  np.nan,
+            'past_10_best_last3f_time': np.nan,
+            'recent_3_avg_last3f_time': np.nan,
+            'past_10_avg_last3f_rank':  np.nan,
+            'past_10_last3f_top1_rate': 0.0,
         }
 
 

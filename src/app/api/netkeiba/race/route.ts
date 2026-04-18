@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { SCRAPE_SERVICE_URL } from '@/lib/backend-url'
 
 // APIルート用のSupabaseクライアント（SERVICE_ROLE_KEYでRLSをバイパス）
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -31,7 +32,7 @@ export async function POST(request: NextRequest) {
     // testOnlyモード: スクレイピングサービスの簡易チェック
     if (testOnly) {
       try {
-        const scrapeResponse = await fetch('http://localhost:8001/scrape/ultimate', {
+        const scrapeResponse = await fetch(`${SCRAPE_SERVICE_URL}/scrape/ultimate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ race_id: raceId, include_details: false }),
@@ -50,7 +51,7 @@ export async function POST(request: NextRequest) {
     }
 
     // フルスクレイピング: Ultimate版スクレイピングサービスを呼び出す
-    const scrapeResponse = await fetch('http://localhost:8001/scrape/ultimate', {
+    const scrapeResponse = await fetch(`${SCRAPE_SERVICE_URL}/scrape/ultimate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ race_id: raceId, include_details: false }),

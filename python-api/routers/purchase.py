@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
 
 from app_config import CONFIG_PATH, SUPABASE_ENABLED, get_supabase_client, logger  # type: ignore
 from models import PurchaseHistoryRequest, PurchaseHistoryResponse  # type: ignore
@@ -120,6 +121,64 @@ def _get_stats_supabase(user_id: str) -> dict:
         for v in ss.values()
     ]
     return {"by_bet_type": bet_type_stats, "by_season": season_stats}
+
+
+class UpdatePurchaseResultRequest(BaseModel):
+    actual_return: int
+    is_hit: bool
+
+
+@router.patch("/api/purchase/{purchase_id}")
+async def update_purchase_result(purchase_id: str, body: UpdatePurchaseResultRequest, req: Request):
+    """購入結果更新（実際の払戻金・的中フラグ）"""
+    try:
+        user_id = _get_user_id(req)
+
+        if SUPABASE_ENABLED and get_supabase_client() and user_id:
+            client = get_supabase_client()
+            res = (
+                client.table("purchase_history")
+                .select("total_cost")
+                .eq("id", purchase_id)
+                .eq("user_id", user_id)
+                .execute()
+            )
+            if not res.data:
+                raise HTTPException(status_code=404, detail="購入記録が見つかりません")
+            total_cost = res.data[0].get("total_cost") or 0
+            rr = round(body.actual_return / total_cost * 100, 1) if total_cost > 0 else 0
+            client.table("purchase_history").update(
+                {"actual_return": body.actual_return, "is_hit": body.is_hit, "recovery_rate": rr}
+            ).eq("id", purchase_id).eq("user_id", user_id).execute()
+        else:
+            path = _tracking_db_path()
+            if not path.exists():
+                raise HTTPException(status_code=404, detail="購入記録が見つかりません")
+            try:
+                int_id = int(purchase_id)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="無効なID形式です")
+            con = sqlite3.connect(str(path))
+            cursor = con.cursor()
+            cursor.execute("SELECT total_cost FROM purchase_history WHERE id = ?", (int_id,))
+            row = cursor.fetchone()
+            if not row:
+                con.close()
+                raise HTTPException(status_code=404, detail="購入記録が見つかりません")
+            total_cost = row[0] or 0
+            rr = round(body.actual_return / total_cost * 100, 1) if total_cost > 0 else 0
+            cursor.execute(
+                "UPDATE purchase_history SET actual_return = ?, is_hit = ?, recovery_rate = ? WHERE id = ?",
+                (body.actual_return, 1 if body.is_hit else 0, rr, int_id),
+            )
+            con.commit()
+            con.close()
+
+        return {"success": True, "message": "結果を更新しました"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"更新に失敗: {str(e)}")
 
 
 @router.post("/api/purchase", response_model=PurchaseHistoryResponse)

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { ML_API_URL } from '@/lib/backend-url'
 
-const ML_API_URL = process.env.ML_API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+// Next.js Route Handler のデフォルト30秒制限を解除（過去レース再スクレイプ対応）
+export const maxDuration = 300
 
 export async function POST(request: NextRequest) {
   try {
@@ -14,6 +16,7 @@ export async function POST(request: NextRequest) {
         ...(authHeader ? { Authorization: authHeader } : {}),
       },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(300_000),  // 300s: 過去レースの再スクレイプ(~60s)含む場合に対応
     })
 
     const data = await response.json()

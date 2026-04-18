@@ -188,7 +188,15 @@ def assert_feature_columns(
 
 
 def _ensure_model_local(model_id: str) -> Optional[Path]:
-    """モデルをローカルで探し、なければ Supabase からダウンロード"""
+    """モデルをローカルで探し、なければ Supabase からダウンロード
+    model_id はファイルステム（model_win_lightgbm_...）で渡すと完全一致する。
+    旧形式（created_at のみ）は partial glob でフォールバック。
+    """
+    # 完全一致: model_id がステムと完全に一致するファイル
+    exact = MODELS_DIR / f"{model_id}.joblib"
+    if exact.exists():
+        return exact
+    # 部分一致（旧形式: created_at 文字列を含むファイル）— 複数あれば先頭
     local_files = list(MODELS_DIR.glob(f"*{model_id}*.joblib"))
     if local_files:
         return local_files[0]

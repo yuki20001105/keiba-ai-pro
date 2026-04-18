@@ -2,6 +2,8 @@ import '@/app/globals.css'
 import type { Metadata, Viewport } from 'next'
 import { Inter } from 'next/font/google'
 import { UltimateModeProvider } from '@/contexts/UltimateModeContext'
+import { AuthProvider } from '@/contexts/AuthContext'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 import Script from 'next/script'
 
 const inter = Inter({ subsets: ['latin'] })
@@ -40,9 +42,13 @@ export default function RootLayout({
         <link rel="apple-touch-icon" href="/icon-192x192.png" />
       </head>
       <body className={inter.className}>
-        <UltimateModeProvider>
-          {children}
-        </UltimateModeProvider>
+        <ErrorBoundary>
+          <AuthProvider>
+            <UltimateModeProvider>
+              {children}
+            </UltimateModeProvider>
+          </AuthProvider>
+        </ErrorBoundary>
         
         {/* Service Worker登録（本番環境のみ） */}
         <Script id="register-sw" strategy="afterInteractive">

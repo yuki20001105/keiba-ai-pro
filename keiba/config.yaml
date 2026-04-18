@@ -28,6 +28,10 @@ storage:
 
 # ---- training ----
 training:
-  target: "win"         # win: fin=1, place3: fin<=3
+  target: "speed_deviation"  # win: fin=1, place3: fin<=3, speed_deviation: 速度偏差(回帰)
   test_split_days: 120  # time-split: last N days for validation (simple baseline)
   random_seed: 42
+  model_type: "lightgbm"             # "lightgbm" or "logistic"（動画#14: Early Stopping付きLightGBM）
+  lgbm_early_stopping_rounds: 100    # 検証スコアが改善しない場合の停止ラウンド数
+  lgbm_num_boost_round: 3000         # 最大ブースティング回数
+  ev_weighted: false                 # EV重み付き学習を有効化（動画: sigmoid重み, 2-stage OOF）

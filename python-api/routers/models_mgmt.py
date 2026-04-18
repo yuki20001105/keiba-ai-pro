@@ -40,7 +40,7 @@ async def list_models(ultimate: bool = False):
                 if not ultimate and is_ultimate:
                     continue
                 models.append({
-                    "model_id": bundle.get("created_at", "unknown"),
+                    "model_id": model_path.stem,  # ファイルステムは必ずユニークなモデルID
                     "model_path": str(model_path),
                     "created_at": bundle.get("created_at", "unknown"),
                     "target": bundle.get("target", "unknown"),
@@ -90,7 +90,7 @@ async def delete_model(model_id: str):
 async def get_model_info(model_id: str):
     """特定のモデル情報を取得"""
     try:
-        model_files = list(MODELS_DIR.glob(f"model_*_{model_id}.joblib"))
+        model_files = list(MODELS_DIR.glob(f"*{model_id}*.joblib"))
         if not model_files:
             raise HTTPException(status_code=404, detail=f"モデル {model_id} が見つかりません")
         bundle = load_model_bundle(model_files[0])

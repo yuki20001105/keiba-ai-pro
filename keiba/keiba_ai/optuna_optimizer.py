@@ -158,6 +158,11 @@ class OptunaLightGBMOptimizer:
             X_train, X_valid = X[train_idx], X[valid_idx]
             y_train, y_valid = y[train_idx], y[valid_idx]
             
+            # dtype が object の場合の念のため変換（optimize()で既に変換済みのはず）
+            if X_train.dtype != np.float64:
+                X_train = X_train.astype(np.float64)
+                X_valid = X_valid.astype(np.float64)
+            
             # LightGBMデータセット作成
             train_data = lgb.Dataset(
                 X_train, y_train,
@@ -225,10 +230,40 @@ class OptunaLightGBMOptimizer:
             最良のスコア
         """
         # DataFrameをndarrayに変換
+        # pd.NA（extension array・object列両方）を np.nan に変換してからfloat64へ
+        # ※ pd.isna() は pd.NA・None・np.nan すべてを True にするので最も安全。
         if isinstance(X, pd.DataFrame):
-            X = X.values
+            _na_mask = X.isna().values
+            _X_obj = X.to_numpy(dtype=object)
+            _X_obj[_na_mask] = np.nan
+            X = _X_obj.astype(np.float64)
+        elif not isinstance(X, np.ndarray):
+            X = np.array(X, dtype=object)
+            X[pd.isna(X)] = np.nan
+            X = X.astype(np.float64)
+        elif X.dtype == object:
+            # numpy object array に pd.NA が混入している場合（X.values による変換後など）
+            _na_mask_arr = pd.isna(X)
+            if _na_mask_arr.any():
+                X = X.copy()
+                X[_na_mask_arr] = np.nan
+            X = X.astype(np.float64)
+
         if isinstance(y, pd.Series):
-            y = y.values
+            _na_mask_y = y.isna().values
+            _y_obj = y.to_numpy(dtype=object)
+            _y_obj[_na_mask_y] = np.nan
+            y = _y_obj.astype(np.float64)
+        elif not isinstance(y, np.ndarray):
+            y = np.array(y, dtype=object)
+            y[pd.isna(y)] = np.nan
+            y = y.astype(np.float64)
+        elif y.dtype == object:
+            _na_mask_y_arr = pd.isna(y)
+            if _na_mask_y_arr.any():
+                y = y.copy()
+                y[_na_mask_y_arr] = np.nan
+            y = y.astype(np.float64)
         
         print(f"\n[OPT-001] optimize()メソッド開始")
         print(f"[OPT-002] X.shape={X.shape}, y.shape={y.shape}")

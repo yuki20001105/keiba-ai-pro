@@ -15,7 +15,6 @@ POST /api/internal/enqueue_scrape
 """
 from __future__ import annotations
 
-import logging
 import os
 import threading
 import uuid
@@ -24,7 +23,7 @@ from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
 
-logger = logging.getLogger(__name__)
+from app_config import logger  # type: ignore
 router = APIRouter()
 
 _INTERNAL_SECRET = os.environ.get("INTERNAL_SECRET", "")

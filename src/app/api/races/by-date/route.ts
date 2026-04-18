@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-
-const ML_API_URL = process.env.ML_API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+import { ML_API_URL } from '@/lib/backend-url'
 
 export async function GET(request: NextRequest) {
   try {
@@ -9,7 +8,7 @@ export async function GET(request: NextRequest) {
     if (!date) {
       return NextResponse.json({ detail: 'date parameter is required' }, { status: 400 })
     }
-    const response = await fetch(`${ML_API_URL}/api/races/by_date?date=${encodeURIComponent(date)}`)
+    const response = await fetch(`${ML_API_URL}/api/races/by_date?date=${encodeURIComponent(date)}`, { signal: AbortSignal.timeout(10_000) })
     const data = await response.json()
     return NextResponse.json(data, { status: response.status })
   } catch (error) {

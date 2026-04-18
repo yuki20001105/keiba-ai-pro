@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from .config import load_config
-from .netkeiba.client import NetkeibaClient, NetkeibaBlockedError
+from .netkeiba.client import NetkeibaClient
 from .netkeiba.parsers import parse_shutuba_table
 
 def predict_race(cfg_path: Path, model_path: Path, race_id: str, topk: int = 5) -> pd.DataFrame:

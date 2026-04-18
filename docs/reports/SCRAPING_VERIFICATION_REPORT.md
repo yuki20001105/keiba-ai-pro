@@ -5,6 +5,7 @@
 
 ## ✅ 検証結果サマリー
 
+
 ### 1. kaisai_date パラメータ
 **✅ 正しく実装済み**
 - URL形式: `https://race.netkeiba.com/top/race_list.html?kaisai_date=YYYYMMDD`

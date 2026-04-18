@@ -1,6 +1,7 @@
 """
 レーススクレイピング: netkeiba.com から単一レースの完全データを取得する。
 """
+from __future__ import annotations
 
 import asyncio
 import gc
@@ -14,20 +15,10 @@ from scraping.constants import HTML_STRAINER, VENUE_MAP, SCRAPE_PROXY_URL, is_cl
 from scraping.horse import scrape_horse_detail
 
 try:
-    from app_config import SUPABASE_ENABLED, logger  # type: ignore
+    from app_config import logger  # type: ignore
 except ImportError:
     import logging
-    SUPABASE_ENABLED = False
     logger = logging.getLogger(__name__)
-
-try:
-    from supabase_client import get_pedigree_cache_batch  # type: ignore
-    _SUPABASE_RACE_OK = True
-except ImportError:
-    _SUPABASE_RACE_OK = False
-
-    def get_pedigree_cache_batch(ids):  # type: ignore
-        return {}
 
 
 async def scrape_race_full(
@@ -98,8 +89,9 @@ async def scrape_race_full(
         info_text = smalltxt.get_text(" ") if smalltxt else html[:3000]
 
     # ---- 距離・芝/ダート ----
-    # L1-2: より多くのパターンに対応（全角m、ドット区切り、障害、方向なしなど）
-    dist_m = re.search(r"(芝|ダ(?:ート)?|障(?:害)?)[・右左直外内障]{0,4}\s*(\d{3,4})\s*[mｍ]", info_text)
+    # L1-2: より多くのパターンに対応（全角m、ドット区切り、障害、方向なし、「右 外」のようにスペース入りなど）
+    # 例: 芝右1200m / 芝右 外1200m / ダート左1600m / 障害3200m
+    dist_m = re.search(r"(芝|ダ(?:ート)?|障(?:害)?)[\s・右左直外内障]{0,8}(\d{3,4})\s*[mｍ]", info_text)
     if dist_m:
         _tt_raw = dist_m.group(1)
         track_type = "芝" if _tt_raw == "芝" else ("障害" if _tt_raw.startswith("障") else "ダート")
@@ -259,8 +251,8 @@ async def scrape_race_full(
     # ---- 結果テーブル ----
     table = soup.find("table", class_="race_table_01")
     if not table:
-        logger.warning(f"race_table_01 not found: {race_id}")
-        return None
+        logger.warning(f"race_table_01 not found: {race_id} → 出馬表ページへフォールバック")
+        return await _scrape_shutuba_fallback(session, race_id, date_hint)
 
     all_rows = table.find_all("tr")
     if not all_rows:
@@ -373,7 +365,8 @@ async def scrape_race_full(
 
             horse_name = link_text(IDX_HORSE)
             horse_url = link_href(IDX_HORSE)
-            horse_id_m = re.search(r"/horse/([A-Za-z0-9]+)", horse_url)
+            # 2025/8以降 netkeiba は /horse/result/{id}/ 形式も使用するため両対応
+            horse_id_m = re.search(r"/horse/(?:result/)?([A-Za-z0-9]+)(?:/|$)", horse_url)
             horse_id = horse_id_m.group(1) if horse_id_m else ""
             # horse_name が空の場合は警告（horse_id は href から取得済みなので結合キーは維持される）
             if not horse_name:
@@ -502,9 +495,7 @@ async def scrape_race_full(
             seen_horse_ids.add(hid)
             unique_horses.append(h)
     all_horse_ids = [h.get("horse_id", "") for h in unique_horses if h.get("horse_id")]
-    _ped_task = None
-    if SUPABASE_ENABLED and all_horse_ids:
-        _ped_task = asyncio.ensure_future(asyncio.to_thread(get_pedigree_cache_batch, all_horse_ids))
+    _ped_task = None  # Supabase バッチ取得は削除済み。SQLite キャッシュは馬単位で確認する。
 
     # ---- ラップタイム解析 ----
     lap_cumulative = {}
@@ -542,6 +533,9 @@ async def scrape_race_full(
                     prev = lap_cumulative[d]
                 break
 
+    # ---- 払い戻し表パース（soupを解放する前に実行） ----
+    return_tables = _parse_return_tables(soup, race_id)
+
     del soup, html
 
     # ---- pedigreeタスク待機 ----
@@ -568,12 +562,120 @@ async def scrape_race_full(
         _chunk = unique_horses[_ci : _ci + 4]
         await asyncio.gather(*[_fetch_detail(h) for h in _chunk])
         if _ci + 4 < len(unique_horses):
-            await asyncio.sleep(0.5)  # 4頭ごとにインターバル（IP ブロック抑制）
+            await asyncio.sleep(1.0)  # 4頭ごとにインターバル（IP ブロック抑制）
         gc.collect()
 
     # distance=0 のレースは _invalid_distance フラグを付与（ローダーが除外する）
     _invalid_dist_flag = (distance == 0 or distance is None)
 
+    return _build_race_result(race_id, race_name, venue, date_str, post_time, race_class,
+                              kai, day, course_direction, distance, track_type, weather,
+                              field_condition, num_horses, lap_cumulative, lap_sectional,
+                              horses, _invalid_dist_flag, return_tables=return_tables)
+
+
+def _parse_return_tables(soup, race_id: str) -> list[dict]:
+    """払い戻し表（単勝・複勝・馬連・三連単など）をパースして返す。
+
+    返り値: [{"bet_type": str, "combinations": str, "payout": int, "popularity": int|None}, ...]
+    複数組合せ（複勝３頭など）はそれぞれ別エントリとして返す。
+    解析失敗時は空リストを返す（サイレント）。
+    """
+    results: list[dict] = []
+
+    # ── 払い戻しブロックを広めに探す ──
+    # netkeiba は class名が "pay_block_w*" または "payout_block" などを用いる
+    pay_tables: list = []
+    for tbl in soup.find_all("table"):
+        cls_str = " ".join(tbl.get("class", []))
+        if "pay_block" in cls_str or "pay_table" in cls_str:
+            pay_tables.append(tbl)
+
+    # クラス名で見つからない場合: 単勝/複勝/馬連キーワードを含む行を持つテーブルを探す
+    if not pay_tables:
+        _pay_keywords = {"単勝", "複勝", "馬連", "馬単", "三連複", "三連単", "枠連", "ワイド"}
+        for tbl in soup.find_all("table"):
+            tbl_text = tbl.get_text()
+            if any(kw in tbl_text for kw in _pay_keywords):
+                pay_tables.append(tbl)
+
+    for tbl in pay_tables:
+        rows = tbl.find_all("tr")
+        for row in rows:
+            # th (賭式名) + td cells (馬番組合せ, 払戻金額, 人気)
+            th = row.find("th")
+            if not th:
+                continue
+            bet_type = th.get_text(strip=True)
+            if not bet_type:
+                continue
+
+            tds = row.find_all("td")
+            if len(tds) < 2:
+                continue
+
+            # 複勝・ワイドなどは同一行に複数の払い戻し組み合わせ (<br> 区切り)
+            combo_cell = tds[0]
+            payout_cell = tds[1]
+            pop_cell = tds[2] if len(tds) >= 3 else None
+
+            # <br> で複数エントリが区切られている場合のテキスト分割
+            def _split_cell(td) -> list[str]:
+                if td is None:
+                    return []
+                # <br> を改行に置換してから分割
+                for br in td.find_all("br"):
+                    br.replace_with("\n")
+                return [s.strip() for s in td.get_text().split("\n") if s.strip()]
+
+            combos = _split_cell(combo_cell)
+            payouts = _split_cell(payout_cell)
+            pops = _split_cell(pop_cell) if pop_cell else []
+
+            # 組合せ数に合わせてエントリを生成
+            n = max(len(combos), 1)
+            for idx in range(n):
+                combo_str = combos[idx] if idx < len(combos) else ""
+                payout_str = payouts[idx] if idx < len(payouts) else ""
+                pop_str = pops[idx] if idx < len(pops) else ""
+
+                # 払戻金額を整数に変換 (例: "1,320円" → 1320)
+                payout_int = 0
+                payout_clean = re.sub(r"[^\d]", "", payout_str)
+                if payout_clean:
+                    try:
+                        payout_int = int(payout_clean)
+                    except ValueError:
+                        pass
+
+                if not combo_str and payout_int == 0:
+                    continue
+
+                # 人気を整数に変換 (例: "5番人気" → 5)
+                pop_int: int | None = None
+                pop_m = re.search(r"(\d+)", pop_str)
+                if pop_m:
+                    try:
+                        pop_int = int(pop_m.group(1))
+                    except ValueError:
+                        pass
+
+                results.append({
+                    "bet_type": bet_type,
+                    "combinations": combo_str,
+                    "payout": payout_int,
+                    "popularity": pop_int,
+                })
+
+    if results:
+        logger.debug(f"払い戻し表パース完了: {race_id} {len(results)}件")
+    return results
+
+
+def _build_race_result(race_id, race_name, venue, date_str, post_time, race_class,
+                       kai, day, course_direction, distance, track_type, weather,
+                       field_condition, num_horses, lap_cumulative, lap_sectional,
+                       horses, _invalid_dist_flag, return_tables=None):
     return {
         "race_info": {
             "race_id": race_id,
@@ -599,4 +701,221 @@ async def scrape_race_full(
                if _invalid_dist_flag else {}),
         },
         "horses": horses,
+        "return_tables": return_tables or [],
     }
+
+
+async def _scrape_shutuba_fallback(
+    session, race_id: str, date_hint: str = ""
+) -> Optional[dict]:
+    """
+    db.netkeiba.com に結果がない（当日・未来レース）場合に
+    race.netkeiba.com/race/shutuba.html から出走馬情報を取得する。
+    """
+    import httpx
+
+    shutuba_url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
+    try:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as hx:
+            resp = await hx.get(shutuba_url)
+        if resp.status_code != 200:
+            logger.warning(f"shutuba HTTP {resp.status_code}: {race_id}")
+            return None
+        html = resp.content.decode("euc-jp", errors="replace")
+    except Exception as e:
+        logger.error(f"shutuba 取得エラー {race_id}: {e}")
+        return None
+
+    soup = BeautifulSoup(html, "lxml")
+
+    # ---- レース名 ----
+    race_name = ""
+    for _cls in ["RaceName", "race_name"]:
+        _h = soup.find(class_=_cls)
+        if _h:
+            race_name = _h.get_text(strip=True)
+            break
+    if not race_name:
+        h1 = soup.find("h1")
+        if h1:
+            race_name = h1.get_text(strip=True)
+
+    # ---- 基本情報 (RaceData01 / RaceData02) ----
+    rd1 = soup.find(class_="RaceData01")
+    rd2 = soup.find(class_="RaceData02")
+    info1 = rd1.get_text(" ") if rd1 else ""
+    info2 = rd2.get_text(" ") if rd2 else ""
+
+    # 距離・種別
+    dist_m = re.search(r"(芝|ダ(?:ート)?|障(?:害)?).*?(\d{3,4})\s*m", info1)
+    if dist_m:
+        _tt = dist_m.group(1)
+        track_type = "芝" if _tt == "芝" else ("障害" if _tt.startswith("障") else "ダート")
+        distance = int(dist_m.group(2))
+    else:
+        track_type = ""
+        distance = 0
+
+    # 天候・馬場
+    weather_m = re.search(r"天候\s*[:/：]?\s*([^\s/]+)", info1)
+    weather = weather_m.group(1).strip() if weather_m else ""
+    cond_m = re.search(r"馬場\s*[:/：]?\s*([^\s/]+)", info1)
+    field_condition = cond_m.group(1).strip() if cond_m else ""
+
+    # 発走時刻
+    pt_m = re.search(r"(\d{1,2}:\d{2})発走", info1)
+    post_time = pt_m.group(1) if pt_m else ""
+
+    # 開催情報
+    venue_code = race_id[4:6]
+    venue = VENUE_MAP.get(venue_code, venue_code)
+    kai_m = re.search(r"(\d+)回", info2)
+    kai = int(kai_m.group(1)) if kai_m else None
+    day_m = re.search(r"(\d+)日目", info2)
+    day = int(day_m.group(1)) if day_m else None
+
+    # レースクラス
+    race_class = ""
+    for pat in [r"(G[1-3])", r"(新馬)", r"(未勝利)", r"([1-3]勝クラス)", r"(オープン|OP)", r"(重賞)"]:
+        cm = re.search(pat, info2 + " " + race_name)
+        if cm:
+            race_class = cm.group(1)
+            break
+    if not race_class:
+        race_class = "不明"
+
+    # 日付
+    date_str = date_hint
+    if not date_str:
+        dm = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})日", html)
+        if dm:
+            date_str = f"{dm.group(1)}{int(dm.group(2)):02d}{int(dm.group(3)):02d}"
+
+    # コース方向
+    dir_m = re.search(r"[（(](右|左|直線)[）)]", info1) or re.search(r"(右|左)", info1)
+    course_direction = dir_m.group(1) if dir_m else ""
+
+    # ---- 出走馬テーブル ----
+    table = soup.find("table", class_="Shutuba_Table")
+    if not table:
+        logger.warning(f"Shutuba_Table not found: {race_id}")
+        return None
+
+    rows = table.find_all("tr")
+    horses: list[dict] = []
+    for row in rows:
+        cells = row.find_all("td")
+        if len(cells) < 7:
+            continue
+
+        def _txt(idx):
+            return cells[idx].get_text(strip=True) if idx < len(cells) else ""
+
+        def _link_id(idx, pattern):
+            a = cells[idx].find("a", href=True) if idx < len(cells) else None
+            if not a:
+                return ""
+            m = re.search(pattern, a["href"])
+            return m.group(1) if m else ""
+
+        bracket = _txt(0)
+        horse_num = _txt(1)
+        horse_name_cell = cells[3] if len(cells) > 3 else None
+        if not horse_name_cell:
+            continue
+        horse_name = horse_name_cell.get_text(strip=True)
+        horse_a = horse_name_cell.find("a", href=re.compile(r"/horse/"))
+        horse_id = ""
+        horse_url = ""
+        if horse_a:
+            horse_url = horse_a["href"]
+            hm = re.search(r"/horse/([\w]+)", horse_url)
+            horse_id = hm.group(1) if hm else ""
+
+        sex_age = _txt(4)
+        jw = _txt(5)  # 斤量
+
+        # 騎手
+        jockey_cell = cells[6] if len(cells) > 6 else None
+        jockey_name = jockey_cell.get_text(strip=True) if jockey_cell else ""
+        jockey_a = jockey_cell.find("a", href=re.compile(r"/jockey/")) if jockey_cell else None
+        jockey_id = ""
+        jockey_url = ""
+        if jockey_a:
+            jockey_url = jockey_a["href"]
+            jm = re.search(r"/jockey/result/recent/([\w]+)", jockey_url)
+            jockey_id = jm.group(1) if jm else ""
+
+        # 厩舎
+        trainer_cell = cells[7] if len(cells) > 7 else None
+        trainer_name = trainer_cell.get_text(strip=True) if trainer_cell else ""
+        trainer_a = trainer_cell.find("a", href=re.compile(r"/trainer/")) if trainer_cell else None
+        trainer_id = ""
+        trainer_url = ""
+        if trainer_a:
+            trainer_url = trainer_a["href"]
+            tm = re.search(r"/trainer/result/recent/([\w]+)", trainer_url)
+            trainer_id = tm.group(1) if tm else ""
+
+        # 馬体重
+        weight_str = _txt(8) if len(cells) > 8 else ""
+        wm = re.match(r"(\d+)\(([+-]?\d+)\)", weight_str)
+        horse_weight = int(wm.group(1)) if wm else None
+        weight_diff = int(wm.group(2)) if wm else None
+
+        # 単勝オッズ（発走当日は公開済み、前日以前は "---" や空欄の場合あり）
+        odds_str = _txt(9) if len(cells) > 9 else ""
+        try:
+            odds = float(odds_str) if odds_str and odds_str not in ("---", "**", "-") else None
+        except (ValueError, TypeError):
+            odds = None
+
+        # 人気（レース前は ** の場合あり）
+        pop_str = _txt(10) if len(cells) > 10 else ""
+        pop_m = re.search(r"\d+", pop_str)
+        popularity = int(pop_m.group()) if pop_m else None
+
+        if not horse_num or not horse_name:
+            continue
+
+        horses.append({
+            "race_id": race_id,
+            "horse_number": int(horse_num) if horse_num.isdigit() else horse_num,
+            "bracket_number": int(bracket) if bracket.isdigit() else bracket,
+            "horse_name": horse_name,
+            "horse_id": horse_id,
+            "horse_url": horse_url,
+            "sex_age": sex_age,
+            "sex": sex_age[0] if sex_age else "",
+            "age": int(sex_age[1:]) if len(sex_age) > 1 and sex_age[1:].isdigit() else None,
+            "jockey_weight": float(jw) if jw else None,
+            "jockey_name": jockey_name,
+            "jockey_id": jockey_id,
+            "jockey_url": jockey_url,
+            "trainer_name": trainer_name,
+            "trainer_id": trainer_id,
+            "trainer_url": trainer_url,
+            "weight_kg": horse_weight,
+            "weight_diff": weight_diff,
+            "popularity": popularity,
+            "odds": odds,          # 出馬表公開済みなら取得、未公開なら None
+            "finish_position": None,
+            "finish_time": None,
+            "date": date_str,
+            "distance": distance,
+            "track_type": track_type,
+            "venue": venue,
+            "_shutuba": True,      # 出馬表から取得したフラグ
+        })
+
+    if not horses:
+        logger.warning(f"shutuba: 出走馬なし {race_id}")
+        return None
+
+    logger.info(f"[shutuba] {race_id}: {len(horses)}頭取得 ({race_name} @ {venue} {distance}m)")
+    return _build_race_result(
+        race_id, race_name, venue, date_str, post_time, race_class,
+        kai, day, course_direction, distance, track_type, weather,
+        field_condition, len(horses), [], [], horses,
+        (distance == 0)
+    )

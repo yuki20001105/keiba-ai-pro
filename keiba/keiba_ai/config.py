@@ -30,6 +30,9 @@ class TrainingConfig:
     target: str
     test_split_days: int
     random_seed: int
+    model_type: str = "lightgbm"            # "lightgbm" or "logistic"
+    lgbm_early_stopping_rounds: int = 100   # Early Stopping の胲ち強り回数
+    lgbm_num_boost_round: int = 3000        # 最大ブースティング回数
 
 @dataclass(frozen=True)
 class AppConfig:
@@ -75,5 +78,8 @@ def load_config(path: str | Path) -> AppConfig:
         target=str(tr["target"]),
         test_split_days=int(tr["test_split_days"]),
         random_seed=int(tr["random_seed"]),
+        model_type=str(tr.get("model_type", "lightgbm")),
+        lgbm_early_stopping_rounds=int(tr.get("lgbm_early_stopping_rounds", 100)),
+        lgbm_num_boost_round=int(tr.get("lgbm_num_boost_round", 3000)),
     )
     return AppConfig(netkeiba=netkeiba, storage=storage, training=training)

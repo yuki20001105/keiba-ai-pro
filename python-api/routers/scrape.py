@@ -22,7 +22,7 @@ from app_config import ULTIMATE_DB, logger  # type: ignore
 from deps.auth import require_admin  # type: ignore
 from models import ScrapeRequest, ScrapeResponse, RescrapeResponse  # type: ignore
 from scraping.constants import SCRAPE_HEADERS  # type: ignore
-from scraping.jobs import _scrape_jobs, _purge_old_jobs, _run_scrape_job, get_job  # type: ignore
+from scraping.jobs import _scrape_jobs, _JOBS_LOCK, _purge_old_jobs, _run_scrape_job, get_job  # type: ignore
 from scraping.race import scrape_race_full  # type: ignore
 from scraping.storage import _save_race_to_ultimate_db  # type: ignore
 
@@ -32,14 +32,15 @@ router = APIRouter()
 @router.post("/api/scrape/start")
 async def scrape_start(request: ScrapeRequest, _: dict = Depends(require_admin)):
     """スクレイピングをバックグラウンドで開始し、即座に job_id を返す（Admin専用）"""
-    _purge_old_jobs(_scrape_jobs)
     job_id = str(uuid.uuid4())[:8]
-    _scrape_jobs[job_id] = {
-        "status": "queued",
-        "progress": {"done": 0, "total": 0, "message": "開始待ち"},
-        "result": None,
-        "error": None,
-    }
+    with _JOBS_LOCK:
+        _purge_old_jobs(_scrape_jobs)
+        _scrape_jobs[job_id] = {
+            "status": "queued",
+            "progress": {"done": 0, "total": 0, "message": "開始待ち"},
+            "result": None,
+            "error": None,
+        }
     try:
         import threading
         def _bg() -> None:
@@ -125,6 +126,7 @@ async def scrape_data(request: ScrapeRequest):
 
     saved_races = 0
     saved_horses = 0
+    error_dates: list[str] = []
 
     async with aiohttp.ClientSession(headers=SCRAPE_HEADERS, timeout=timeout, connector=connector) as session:
         for date in dates:
@@ -134,6 +136,8 @@ async def scrape_data(request: ScrapeRequest):
                 await asyncio.sleep(0.5)
                 async with session.get(list_url) as resp:
                     if resp.status != 200:
+                        logger.warning(f"{date}: レース一覧 HTTP {resp.status} → スキップ")
+                        error_dates.append(date)
                         continue
                     content = await resp.read()
                     html = content.decode("euc-jp", errors="ignore")
@@ -150,13 +154,18 @@ async def scrape_data(request: ScrapeRequest):
                         logger.info(f"  保存: {race_id} {race_data['race_info']['race_name']} ({len(race_data['horses'])}頭)")
             except Exception as e:
                 logger.error(f"{date} エラー: {e}")
+                error_dates.append(date)
 
     elapsed = time.time() - start_time
     logger.info(f"完全スクレイピング完了: {saved_races}レース/{saved_horses}頭, {elapsed:.1f}秒")
 
+    msg = f"{saved_races}レース・{saved_horses}頭のデータを収集しました（完全版）"
+    if error_dates:
+        msg += f" ※{len(error_dates)}日取得失敗: {', '.join(error_dates[:3])}"
+
     return ScrapeResponse(
-        success=True,
-        message=f"{saved_races}レース・{saved_horses}頭のデータを収集しました（完全版）",
+        success=len(error_dates) == 0,
+        message=msg,
         races_collected=saved_races,
         db_path=str(ULTIMATE_DB),
         elapsed_time=elapsed,
@@ -166,7 +175,7 @@ async def scrape_data(request: ScrapeRequest):
 @router.post("/api/rescrape_incomplete")
 async def rescrape_incomplete(limit: int = 50) -> RescrapeResponse:
     """
-    keiba_ultimate.db 内の不完全レコード（trainer_name=NULL 等）を再スクレイプして上書き保存する。
+    keiba_ultimate.db 内の不完全レコード（trainer_name=NULL / distance=0 等）を再スクレイプして上書き保存する。
     """
     import sqlite3 as _sq3
 
@@ -178,17 +187,24 @@ async def rescrape_incomplete(limit: int = 50) -> RescrapeResponse:
 
     # races_ultimate から既存の date を取得（date_hint として再利用）
     date_map: dict[str, str] = {}
+    # distance=0 または _invalid_distance=True のレースを収集
+    invalid_dist_ids: set[str] = set()
     for row in conn.execute("SELECT race_id, data FROM races_ultimate").fetchall():
         try:
             import json as _json
-            _d = _json.loads(row[1] or "{}").get("date", "")
-            if _d:
-                date_map[row[0]] = _d
+            _d = _json.loads(row[1] or "{}")
+            if _d.get("date"):
+                date_map[row[0]] = _d["date"]
+            if _d.get("_invalid_distance") or _d.get("distance", -1) == 0:
+                invalid_dist_ids.add(row[0])
         except Exception:
             pass
 
     incomplete_ids = []
     for rid in all_race_ids:
+        if rid in invalid_dist_ids:
+            incomplete_ids.append(rid)
+            continue
         sample = conn.execute(
             "SELECT data FROM race_results_ultimate WHERE race_id = ? LIMIT 1", (rid,)
         ).fetchone()
@@ -229,3 +245,43 @@ async def rescrape_incomplete(limit: int = 50) -> RescrapeResponse:
         updated_horses=updated_horses,
         elapsed_time=elapsed,
     )
+
+
+@router.post("/api/scrape/repair/{race_id}")
+async def repair_race(race_id: str, _: dict = Depends(require_admin)) -> dict:
+    """
+    指定レース ID を再スクレイプして DB を上書き修復する（distance=0 等の修正用）。
+    """
+    import sqlite3 as _sq3
+
+    if not re.fullmatch(r"\d{12}", race_id):
+        raise HTTPException(status_code=400, detail="race_id は12桁の数字である必要があります")
+
+    # 既存の date_hint を取得
+    date_hint = ""
+    try:
+        conn = _sq3.connect(str(ULTIMATE_DB))
+        row = conn.execute("SELECT data FROM races_ultimate WHERE race_id = ?", (race_id,)).fetchone()
+        conn.close()
+        if row:
+            date_hint = json.loads(row[0] or "{}").get("date", "")
+    except Exception:
+        pass
+
+    timeout = aiohttp.ClientTimeout(total=30)
+    async with aiohttp.ClientSession(headers=SCRAPE_HEADERS, timeout=timeout) as session:
+        race_data = await scrape_race_full(session, race_id, date_hint=date_hint)
+
+    if not race_data or not race_data.get("horses"):
+        raise HTTPException(status_code=502, detail=f"レース {race_id} の再スクレイプに失敗しました")
+
+    _save_race_to_ultimate_db(race_data, ULTIMATE_DB, overwrite=True)
+    ri = race_data["race_info"]
+    return {
+        "success": True,
+        "race_id": race_id,
+        "race_name": ri.get("race_name", ""),
+        "distance": ri.get("distance", 0),
+        "track_type": ri.get("track_type", ""),
+        "horses": len(race_data["horses"]),
+    }

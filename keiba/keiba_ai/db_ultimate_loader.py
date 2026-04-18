@@ -61,16 +61,16 @@ def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='races_ultimate'")
     has_races_ultimate = cursor.fetchone() is not None
     
-    # race_results_ultimate から全データ取得
+    # race_results_ultimate から全データ取得（イテレータでメモリ消費を削減）
     cursor.execute("SELECT race_id, data FROM race_results_ultimate")
-    rows = cursor.fetchall()
+    rows = cursor.fetchall()  # NOTE: 10万行超の場合は cursor.fetchmany() に切り替えの余地あり
     
-    # races_ultimate から distance/track_type/date/num_horses を取得
+    # races_ultimate から distance/track_type/date/num_horses を取得（イテレータで处理）
     race_meta = {}
     _invalid_race_ids: set = set()  # _invalid_distance フラグが立っているレース
     if has_races_ultimate:
         cursor.execute("SELECT race_id, data FROM races_ultimate")
-        for race_id, data_json in cursor.fetchall():
+        for race_id, data_json in cursor:  # fetchall()よりメモリ効率的
             try:
                 data = json.loads(data_json)
                 # fix-distance-zero: スクレイピングで距離が取れなかったレースは除外
@@ -95,13 +95,58 @@ def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
                     'course_direction': data.get('course_direction'),
                     'lap_cumulative': data.get('lap_cumulative'),   # dict: {200: 12.1, ...}
                     'lap_sectional': data.get('lap_sectional'),     # dict: {200: 12.1, ...}
+                    # 配当情報（return_tables_ultimateから後で補完）
+                    'tansho_payout': None,      # 単勝払い戻し (円)
+                    'fukusho_min_payout': None, # 複勝最低払い戻し
+                    'fukusho_max_payout': None, # 複勝最高払い戻し
+                    'sanrentan_payout': None,   # 三連単払い戻し (荒れ度指標)
                 }
             except:
                 pass
     if _invalid_race_ids:
         print(f"  ⚠ _invalid_distance レースをスキップ: {len(_invalid_race_ids)} レース")
         print(f"    (tools/fix_distance_zero.py を実行すると修正・再登録できます)")
-    
+
+    # ===== return_tables_ultimate からレース別配当情報を取得 =====
+    # 単勝/複勝/三連単 配当 → race_meta に追加して全馬のエントリに結合する
+    # 目的: 過去レースの「荒れ度」「市場予測との乖離」特徴量の計算
+    _rt_cursor = conn.cursor()
+    _rt_cursor.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='return_tables_ultimate'"
+    )
+    if _rt_cursor.fetchone():
+        _rt_cursor.execute(
+            "SELECT race_id, bet_type, payout FROM return_tables_ultimate"
+        )
+        for _race_id_rt, _bet_type, _payout in _rt_cursor.fetchall():
+            if _race_id_rt not in race_meta:
+                continue
+            _meta = race_meta[_race_id_rt]
+            _bt = (_bet_type or "").strip()
+            _payout = int(_payout) if _payout else 0
+            if _bt == "単勝":
+                # 単勝は1行のみが基本（最低値を採用：最も妥当な1位への配当）
+                _cur = _meta.get("tansho_payout") or 9999999
+                _meta["tansho_payout"] = min(_cur, _payout) if _payout > 0 else _cur
+            elif _bt == "複勝":
+                # 複勝は3行まで存在 → 最低・最高を記録
+                _cur_min = _meta.get("fukusho_min_payout") or 9999999
+                _cur_max = _meta.get("fukusho_max_payout") or 0
+                if _payout > 0:
+                    _meta["fukusho_min_payout"] = min(_cur_min, _payout)
+                    _meta["fukusho_max_payout"] = max(_cur_max, _payout)
+            elif _bt == "三連単":
+                _cur = _meta.get("sanrentan_payout") or 9999999
+                _meta["sanrentan_payout"] = min(_cur, _payout) if _payout > 0 else _cur
+
+        # 9999999 は未取得フラグなのでNoneに戻す
+        for _m in race_meta.values():
+            for _k in ("tansho_payout", "fukusho_min_payout", "fukusho_max_payout", "sanrentan_payout"):
+                if _m.get(_k) == 9999999:
+                    _m[_k] = None
+        n_rt = sum(1 for m in race_meta.values() if m.get("tansho_payout") is not None)
+        print(f"  ✓ return_tables_ultimate: {n_rt}レースの配当情報をロード")
+
     conn.close()
     
     if len(rows) == 0:
@@ -250,6 +295,8 @@ def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
         'horse_total_runs', 'horse_total_wins', 'horse_total_prize_money',
         'prev_race_distance', 'prev_race_finish', 'prev_race_weight', 'prev_race_time',
         'prev2_race_distance', 'prev2_race_finish', 'prev2_race_weight', 'prev2_race_time',
+        # 配当情報 (return_tables_ultimate)
+        'tansho_payout', 'fukusho_min_payout', 'fukusho_max_payout', 'sanrentan_payout',
     ]
     for col in numeric_cols:
         if col in df.columns:

@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { AdminOnly } from '@/components/AdminOnly'
 
 interface User {
   id: string
@@ -33,6 +34,7 @@ export default function AdminDashboard() {
     totalRaces: 0,
     totalModels: 0
   })
+  const [roleMessage, setRoleMessage] = useState('')
 
   useEffect(() => {
     loadData()
@@ -55,7 +57,6 @@ export default function AdminDashboard() {
       const premiumUsers = usersData?.filter((u: User) => u.subscription_tier === 'premium').length || 0
 
       // レース数を取得
-      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
       const racesResponse = await fetch(`/api/data-stats`)
       let totalRaces = 0
       let totalModels = 0
@@ -88,11 +89,13 @@ export default function AdminDashboard() {
 
       if (error) throw error
 
-      alert(`ユーザーのロールを ${newRole} に変更しました`)
-      loadData() // 再読み込み
+      setRoleMessage(`ユーザーのロールを ${newRole} に変更しました`)
+      setTimeout(() => setRoleMessage(''), 3000)
+      loadData()
     } catch (error) {
       console.error('ロール変更エラー:', error)
-      alert('ロール変更に失敗しました')
+      setRoleMessage('ロール変更に失敗しました')
+      setTimeout(() => setRoleMessage(''), 3000)
     }
   }
 
@@ -105,7 +108,13 @@ export default function AdminDashboard() {
   }
 
   return (
+    <AdminOnly>
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900">
+        {roleMessage && (
+          <div className="fixed top-4 right-4 z-50 bg-slate-800 border border-blue-500/50 text-white px-4 py-2 rounded-lg shadow-lg text-sm">
+            {roleMessage}
+          </div>
+        )}
         {/* Header */}
         <header className="bg-slate-800/50 backdrop-blur-md border-b border-blue-500/20">
           <div className="container mx-auto px-6 py-4 flex justify-between items-center">
@@ -237,6 +246,7 @@ export default function AdminDashboard() {
           </div>
         </div>
       </div>
+    </AdminOnly>
   )
 }
 

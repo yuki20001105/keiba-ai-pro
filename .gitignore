@@ -98,6 +98,27 @@ keiba.db
 *.log
 logs/
 
+# Generated reports & script outputs
+*.html
+*_out.txt
+*_output*.txt
+*_log*.txt
+regen_*.txt
+verify_result.txt
+patch_log*.txt
+dev-server.log
+
+# python-api generated outputs
+python-api/*.log
+python-api/*.jsonl
+python-api/issues.json
+python-api/validation_log.jsonl
+
+# tools/ generated outputs
+tools/**/*.txt
+tools/**/*.csv
+tools/pipeline_output/
+
 # OS
 .DS_Store
 Thumbs.db
@@ -105,3 +126,7 @@ Thumbs.db
 # ChromeDriver
 chromedriver*
 chrome-*
+
+# Playwright test results
+test-results/
+playwright-report/
