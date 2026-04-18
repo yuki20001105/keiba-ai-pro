@@ -6,7 +6,7 @@ on:
     branches:
       - release
     tags:
-      - 'v*.*.*'   # v1.0.0 形式のタグが push されたとき
+      - 'v*'   # v2, v2.0.0 などすべての v プレフィックスタグ
 
 jobs:
   notify:
