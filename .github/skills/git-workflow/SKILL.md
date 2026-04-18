@@ -65,28 +65,84 @@ chore: .gitignore に test-results/ を追加
 
 ---
 
-## リリースフロー（機能完成時）
+## リリースフロー（develop → main → release）
+
+### 全体の流れ
+
+```
+develop  ──[1. merge]──▶  main  ──[2. PR & merge]──▶  release  ──[3. tag]──▶  v3 タグ
+```
+
+---
+
+### Step 1: develop → main にマージ
 
 ```powershell
-# 1. main にマージ
+# develop に未コミットの変更がないことを確認
+git status          # "nothing to commit" であること
+
+# main に切り替えてマージ
 git checkout main
-git merge develop --ff-only
+git merge develop --ff-only   # fast-forward のみ（履歴を汚さない）
 git push origin main
+```
 
-# 2. GitHub PR を作成: main → release
-#    https://github.com/yuki20001105/keiba-ai-pro/compare/release...main
+> `--ff-only` が失敗する場合は develop と main が分岐しています。
+> `git log --oneline main..develop` で差分を確認してください。
 
-# 3. PR マージ後、タグを打つ（releaseブランチで）
+---
+
+### Step 2: GitHub PR を作成（main → release）
+
+ブラウザで以下の URL を開いて PR を作成する：
+
+```
+https://github.com/yuki20001105/keiba-ai-pro/compare/release...main
+```
+
+- タイトル例: `release: v3 - ○○機能追加`
+- CI（`ci.yml`）が自動実行されビルド・importチェックが通ったらマージ
+
+---
+
+### Step 3: タグを打って GitHub Release を作成
+
+PR マージ後、`release` ブランチで作業する：
+
+```powershell
 git checkout release
-git pull origin release
-git tag -a v3 -m "v3: 機能の説明"
-git push origin v3
+git pull origin release          # マージされた最新を取得
 
-# 4. 開発に戻る
+# アノテートタグを作成（"v数字" 形式）
+git tag -a v3 -m "v3: ○○機能追加・△△改善"
+git push origin v3
+```
+
+> タグを push すると `release.yml` が自動で **GitHub Releases ページ**を作成する（コミット履歴からリリースノートも自動生成）。
+
+---
+
+### Step 4: 開発に戻る
+
+```powershell
 git checkout develop
 ```
 
-> タグを push すると GitHub Actions（`release.yml`）が自動で **GitHub Releases ページ**を作成する。
+---
+
+### リリースチェックリスト
+
+```
+[ ] git status → "nothing to commit"
+[ ] git checkout main → git merge develop --ff-only
+[ ] git push origin main
+[ ] GitHub PR 作成 (main → release) → CI グリーン確認
+[ ] PR マージ
+[ ] git checkout release → git pull origin release
+[ ] git tag -a vN -m "vN: ..." → git push origin vN
+[ ] GitHub Releases ページでリリースノート確認
+[ ] git checkout develop
+```
 
 ---
 
