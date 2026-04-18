@@ -2,6 +2,38 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "Kill Port 8000",
+      "type": "shell",
+      "command": "$p = Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; if ($p) { $p | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }; Write-Host \"Killed PID(s): $p\" } else { Write-Host \"Port 8000 is free\" }",
+      "options": {
+        "shell": {
+          "executable": "powershell.exe",
+          "args": ["-NoProfile", "-NonInteractive", "-Command"]
+        }
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "silent",
+        "panel": "shared"
+      }
+    },
+    {
+      "label": "Kill Port 3000",
+      "type": "shell",
+      "command": "$p = Get-NetTCPConnection -LocalPort 3000 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; if ($p) { $p | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }; Write-Host \"Killed PID(s): $p\" } else { Write-Host \"Port 3000 is free\" }",
+      "options": {
+        "shell": {
+          "executable": "powershell.exe",
+          "args": ["-NoProfile", "-NonInteractive", "-Command"]
+        }
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "silent",
+        "panel": "shared"
+      }
+    },
+    {
       "label": "Start FastAPI",
       "type": "shell",
       "command": "${workspaceFolder}/python-api/.venv/Scripts/python.exe",

@@ -189,8 +189,9 @@ async def debug_features(
 ):
     """特徴量エンジニアリング後の全カラム・値を返す"""
     try:
+        import asyncio
         raw = _load_raw_race(race_id)
-        df = _build_feature_df(race_id, raw["race_info"], raw["horses"])
+        df = await asyncio.to_thread(_build_feature_df, race_id, raw["race_info"], raw["horses"])
 
         feature_columns = list(df.columns)
         records = _df_to_records(df)

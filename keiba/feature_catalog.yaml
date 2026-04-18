@@ -218,25 +218,30 @@ engineered_features:
   - name: sex_牡
     stage: horse_category
     type: binary
-    enabled: true
-    description: "性別ダミー: 牡"
+    enabled: false
+    description: "性別ダミー: 牡（廃止: sex_encodedに統合）"
   - name: sex_牝
     stage: horse_category
     type: binary
-    enabled: true
-    description: "性別ダミー: 牝"
+    enabled: false
+    description: "性別ダミー: 牝（廃止: sex_encodedに統合）"
   - name: sex_セ
     stage: horse_category
     type: binary
+    enabled: false
+    description: "性別ダミー: セン馬（廃止: sex_encodedに統合）"
+  - name: rest_category
+    stage: horse_category
+    type: categorical
     enabled: true
-    description: "性別ダミー: セン馬"
+    description: "休み期間カテゴリ (short/normal/long/very_long)"
 
   # -- Stage 3: id_season --------------------------------------------------
   - name: venue_code
     stage: id_season
     type: categorical
-    enabled: true
-    description: "競馬場コード (race_idから抽出)"
+    enabled: false
+    description: "競馬場コード (race_idから抽出, 廃止: venue_code_encodedに統合)"
   - name: race_num
     stage: id_season
     type: numeric
@@ -265,8 +270,8 @@ engineered_features:
   - name: sex_code
     stage: id_season
     type: numeric
-    enabled: true
-    description: "性別数値コード (-1=牡/セン, +1=牝)"
+    enabled: false
+    description: "性別数値コード (-1=牡/セン, +1=牝, 廃止: sex_encodedに統合)"
   - name: seasonal_sex
     stage: id_season
     type: numeric
@@ -577,8 +582,8 @@ engineered_features:
   - name: prev2_speed_zscore_is_missing
     stage: missing_flags
     type: binary
-    enabled: false
-    description: "2走前スピードZスコア欠損フラグ (UNNECESSARY: gain=0%)"
+    enabled: true
+    description: "2走前スピードZスコア欠損フラグ (初出走・データなし馬の識別)"
 
   # -- Stage 10: history (expanding window) --------------------------------
   - name: jockey_course_win_rate
@@ -791,6 +796,100 @@ engineered_features:
     type: numeric
     enabled: true
     description: "近5走脚質標準偏差 (脚質安定性)"
+
+  # -- Stage 11: passthrough (スクレイプ列をそのままモデル入力として使用) --------
+  - name: age
+    stage: passthrough
+    type: numeric
+    enabled: true
+    description: "馬齢 (年, 2歳〜)"
+  - name: distance
+    stage: passthrough
+    type: numeric
+    enabled: true
+    description: "レース距離 (m)"
+  - name: horse_number
+    stage: passthrough
+    type: numeric
+    enabled: true
+    description: "馬番 (ゲート番号, 1〜18)"
+  - name: odds
+    stage: passthrough
+    type: numeric
+    enabled: true
+    description: "単勝オッズ (発走直前確定値)"
+  - name: popularity
+    stage: passthrough
+    type: numeric
+    enabled: true
+    description: "人気順位 (オッズ順: 1=1番人気)"
+  - name: horse_weight
+    stage: passthrough
+    type: numeric
+    enabled: true
+    description: "馬体重 (kg, レース当日計測値)"
+  - name: horse_weight_change
+    stage: passthrough
+    type: numeric
+    enabled: true
+    description: "馬体重変化 (kg, 前走比)"
+  - name: num_horses
+    stage: passthrough
+    type: numeric
+    enabled: true
+    description: "出走頭数"
+  - name: kai
+    stage: passthrough
+    type: numeric
+    enabled: true
+    description: "開催回数 (race_idから抽出)"
+  - name: day
+    stage: passthrough
+    type: numeric
+    enabled: true
+    description: "開催日目 (race_idから抽出)"
+  - name: prev_race_distance
+    stage: passthrough
+    type: numeric
+    enabled: true
+    description: "前走距離 (m)"
+  - name: prev_race_finish
+    stage: passthrough
+    type: numeric
+    enabled: true
+    description: "前走着順"
+  - name: prev2_race_distance
+    stage: passthrough
+    type: numeric
+    enabled: true
+    description: "前々走距離 (m)"
+  - name: prev2_race_finish
+    stage: passthrough
+    type: numeric
+    enabled: true
+    description: "前々走着順"
+
+  # -- Stage 12: encoding (スクレイプ列をラベルエンコード) ---------------------
+  - name: sex_encoded
+    stage: encoding
+    type: numeric
+    enabled: true
+    description: "性別ラベルエンコード (牡/牝/セン → 0/1/2)"
+  - name: venue_code_encoded
+    stage: encoding
+    type: numeric
+    enabled: true
+    description: "競馬場コードエンコード (race_idから抽出した会場コード)"
+  - name: venue_encoded
+    stage: encoding
+    type: numeric
+    enabled: true
+    description: "競馬場名エンコード (東京/中山/阪神等)"
+  - name: field_condition_encoded
+    stage: encoding
+    type: numeric
+    enabled: true
+    description: "馬場状態エンコード (良/稍重/重/不良 → 0/1/2/3)"
 
 # ---------------------------------------------------------------------------
 # 不要列（学習・推論の両フェーズで削除）
@@ -1008,10 +1107,6 @@ unnecessary_columns:
     reason: "gain=0%（venue×distance統計で代替）"
   - name: inner_bias
     reason: "gain=0%（venue×distance統計で代替）"
-
-  # 休養期間カテゴリ文字列（バイナリフラグで代替済み）
-  - name: rest_category
-    reason: "rest_short/normal/long/very_longバイナリで代替済み"
 
   # 対数変換列（LightGBMツリーモデルでは元の列と等価 / 基底列がリークリスクのため削除）
   - name: log_odds

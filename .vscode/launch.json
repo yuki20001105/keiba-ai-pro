@@ -2,23 +2,27 @@
   "version": "0.2.0",
   "configurations": [
     {
+      // F5 でデバッグ起動。ポート8000を先に解放してから起動する
       "name": "FastAPI (python-api)",
       "type": "debugpy",
       "request": "launch",
+      "preLaunchTask": "Kill Port 8000",
       "program": "${workspaceFolder}/python-api/main.py",
       "python": "${workspaceFolder}/python-api/.venv/Scripts/python.exe",
       "cwd": "${workspaceFolder}/python-api",
       "env": {
         "PYTHONIOENCODING": "utf-8",
-        "PYTHONPATH": "${workspaceFolder}/keiba"
+        "PYTHONPATH": "${workspaceFolder}/keiba;${workspaceFolder}/python-api"
       },
       "console": "integratedTerminal",
       "justMyCode": false
     },
     {
+      // F5 でデバッグ起動。ポート3000を先に解放してから起動する
       "name": "Next.js (npm run dev)",
       "type": "node",
       "request": "launch",
+      "preLaunchTask": "Kill Port 3000",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
       "cwd": "${workspaceFolder}",
@@ -32,6 +36,7 @@
   ],
   "compounds": [
     {
+      // 両方同時起動。各設定の preLaunchTask (Kill Port 8000 / 3000) が個別に実行される
       "name": "All Servers (FastAPI + Next.js)",
       "configurations": ["FastAPI (python-api)", "Next.js (npm run dev)"],
       "stopAll": true

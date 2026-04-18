@@ -1030,14 +1030,19 @@ def _feh_recent_form(
     _fin  = pd.to_numeric(_s['finish'], errors='coerce')
     _win  = (_fin == 1).astype(float)
     _s['_fin'], _s['_win'] = _fin, _win
+    # transform(lambda) の代わりに shift + groupby.rolling でベクトル化
+    _fin_sh = _s.groupby('horse_id')['_fin'].shift(1)
+    _win_sh = _s.groupby('horse_id')['_win'].shift(1)
     for _n, _sfx in [(3, 'past3'), (5, 'past5'), (10, 'past10')]:
         _s[f'{_sfx}_avg_finish'] = (
-            _s.groupby('horse_id')['_fin']
-            .transform(lambda x: x.shift(1).rolling(_n, min_periods=1).mean()))
+            _fin_sh.groupby(_s['horse_id'])
+            .rolling(_n, min_periods=1).mean()
+            .droplevel(0).reindex(_s.index))
     for _n, _sfx in [(3, 'past3'), (5, 'past5')]:
         _s[f'{_sfx}_win_rate'] = (
-            _s.groupby('horse_id')['_win']
-            .transform(lambda x: x.shift(1).rolling(_n, min_periods=1).mean()))
+            _win_sh.groupby(_s['horse_id'])
+            .rolling(_n, min_periods=1).mean()
+            .droplevel(0).reindex(_s.index))
     _s.drop(columns=['_fin', '_win'], inplace=True)
     _past_cols = ['past3_avg_finish', 'past5_avg_finish', 'past10_avg_finish',
                   'past3_win_rate', 'past5_win_rate']
@@ -1067,8 +1072,11 @@ def _feh_entity_recent30(
         _fin  = pd.to_numeric(_s['finish'], errors='coerce').fillna(0)
         _s['_win'] = (_fin == 1).astype(float)
         _rc  = f'{_pfx}_recent30_win_rate'
-        _s[_rc] = _s.groupby(_eid)['_win'].transform(
-            lambda x: x.shift(1).rolling(30, min_periods=5).mean())
+        _win_sh = _s.groupby(_eid)['_win'].shift(1)
+        _s[_rc] = (
+            _win_sh.groupby(_s[_eid])
+            .rolling(30, min_periods=5).mean()
+            .droplevel(0).reindex(_s.index))
         _s.drop(columns=['_win'], inplace=True)
         h[_rc] = _s.reindex(_oi)[_rc].values
         df = df.merge(
@@ -1092,9 +1100,12 @@ def _feh_last_3f(
         _s   = h.sort_values('race_id', kind='mergesort').copy()
         _val = pd.to_numeric(_s[_src_col], errors='coerce')
         _s['_val'] = _val
+        _val_sh = _s.groupby('horse_id')['_val'].shift(1)
         for _n, _oc in zip([3, 5] if len(_out_cols) > 1 else [3], _out_cols):
-            _s[_oc] = _s.groupby('horse_id')['_val'].transform(
-                lambda x: x.shift(1).rolling(_n, min_periods=1).mean())
+            _s[_oc] = (
+                _val_sh.groupby(_s['horse_id'])
+                .rolling(_n, min_periods=1).mean()
+                .droplevel(0).reindex(_s.index))
         _s.drop(columns=['_val'], inplace=True)
         _back = _s.reindex(_oi)
         for _oc in _out_cols:
@@ -1117,9 +1128,11 @@ def _feh_payout_history(
     _oi  = h.index.copy()
     _s   = h.sort_values('race_id', kind='mergesort').copy()
     _s['_tpv'] = np.log1p(pd.to_numeric(_s['tansho_payout'], errors='coerce').fillna(0))
+    _tpv_sh = _s.groupby('horse_id')['_tpv'].shift(1)
     _s['past5_avg_tansho_log'] = (
-        _s.groupby('horse_id')['_tpv']
-        .transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean()))
+        _tpv_sh.groupby(_s['horse_id'])
+        .rolling(5, min_periods=1).mean()
+        .droplevel(0).reindex(_s.index))
     _s.drop(columns=['_tpv'], inplace=True)
     h['past5_avg_tansho_log'] = _s.reindex(_oi)['past5_avg_tansho_log'].values
     df = df.merge(
@@ -1141,12 +1154,16 @@ def _feh_running_style(
     _s   = h.sort_values('race_id', kind='mergesort').copy()
     _val = pd.to_numeric(_s['running_style_num'], errors='coerce')
     _s['_rsv'] = _val
+    _rsv_sh = _s.groupby('horse_id')['_rsv'].shift(1)
     _s['running_style_mean_5'] = (
-        _s.groupby('horse_id')['_rsv']
-        .transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean()))
+        _rsv_sh.groupby(_s['horse_id'])
+        .rolling(5, min_periods=1).mean()
+        .droplevel(0).reindex(_s.index))
     _s['running_style_std_5'] = (
-        _s.groupby('horse_id')['_rsv']
-        .transform(lambda x: x.shift(1).rolling(5, min_periods=2).std().fillna(0.0)))
+        _rsv_sh.groupby(_s['horse_id'])
+        .rolling(5, min_periods=2).std()
+        .droplevel(0).reindex(_s.index)
+        .fillna(0.0))
     _s.drop(columns=['_rsv'], inplace=True)
     _back = _s.reindex(_oi)
     for _c in ['running_style_mean_5', 'running_style_std_5']:

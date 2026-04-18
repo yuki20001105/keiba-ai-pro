@@ -53,6 +53,7 @@ from routers import (  # type: ignore
     internal,
     models_mgmt,
     predict,
+    prediction_history,
     profiling,
     purchase,
     races,
@@ -115,6 +116,7 @@ app.include_router(debug_data.router)
 app.include_router(realtime_odds.router)
 app.include_router(bet_export.router)
 app.include_router(feature_analysis.router)
+app.include_router(prediction_history.router)
 
 
 @app.get("/health")

@@ -183,3 +183,48 @@ class FeatureCatalog:
     def raw(self) -> dict[str, Any]:
         """YAML から読み込んだ生データを返す。"""
         return self._data
+
+    # ------------------------------------------------------------------
+    # 自動同期（モデル特徴量 → カタログ）
+    # ------------------------------------------------------------------
+
+    def sync_with_model_features(self, model_feature_names: list[str]) -> list[str]:
+        """モデルの feature_columns をカタログに同期する。
+
+        カタログに未登録の特徴量を ``engineered_features`` の ``auto_synced``
+        ステージに追加し、``enabled: true`` でマークする。
+        すでに登録済みの特徴量は変更しない。
+
+        Returns:
+            新しく追加した特徴量名のリスト。
+        """
+        existing_names: set[str] = {
+            f["name"] for f in self._data.get("engineered_features", [])
+        }
+        new_features: list[dict[str, Any]] = []
+        for name in model_feature_names:
+            if name not in existing_names:
+                new_features.append({
+                    "name": name,
+                    "stage": "auto_synced",
+                    "type": "numeric",
+                    "enabled": True,
+                    "description": f"{name} (学習時に自動検出)",
+                })
+                existing_names.add(name)
+
+        if new_features:
+            self._data.setdefault("engineered_features", []).extend(new_features)
+
+        return [f["name"] for f in new_features]
+
+    def save(self, path: str | Path) -> None:
+        """カタログ内容を YAML ファイルに書き戻す。"""
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.dump(
+                self._data,
+                f,
+                allow_unicode=True,
+                sort_keys=False,
+                default_flow_style=False,
+            )

@@ -57,7 +57,9 @@ async def list_models(ultimate: bool = False):
                 print(f"モデル読み込みエラー {model_path}: {e}")
                 continue
 
-        models.sort(key=lambda x: x.get("auc", 0), reverse=True)
+        # model_id は末尾に YYYYMMDD_HHMMSS を含む形式。
+        # 降順ソートで最新モデルが先頭に来る。
+        models.sort(key=lambda x: x.get("model_id", ""), reverse=True)
         return {"models": models, "count": len(models)}
 
     except Exception as e:

@@ -28,6 +28,7 @@ from app_config import (  # type: ignore
 from deps.auth import require_premium  # type: ignore
 from models import TrainRequest, TrainResponse  # type: ignore
 from keiba_ai.constants import FUTURE_FIELDS  # type: ignore
+from keiba_ai.feature_catalog import FeatureCatalog  # type: ignore
 from scraping.jobs import _purge_old_jobs, _MAX_JOBS  # type: ignore
 
 router = APIRouter()
@@ -378,6 +379,16 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
                 if not _is_ranking:
                     # CV で最適ラウンド探索
                     progress_cb(f"CV学習中 ({request.cv_folds}折)...", 35)
+                    _cv_total_rounds = 1000
+                    def _cv_lgb_cb(env,
+                                   _pcb=progress_cb,
+                                   _folds=request.cv_folds,
+                                   _tot=_cv_total_rounds):
+                        if env.iteration % 20 != 0:
+                            return
+                        pct = 35 + int(22 * env.iteration / _tot)
+                        _pcb(f"CV {_folds}折 — ラウンド {env.iteration}/{_tot}", min(pct, 56))
+                    _cv_lgb_cb.order = 100
                     cv_result = lgb.cv(
                         params, train_data,
                         num_boost_round=1000, nfold=request.cv_folds,
@@ -385,6 +396,7 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
                         callbacks=[
                             lgb.early_stopping(stopping_rounds=50, verbose=False),
                             lgb.log_evaluation(period=0),
+                            _cv_lgb_cb,
                         ],
                     )
                     if _is_regression:
@@ -403,7 +415,17 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
 
                     progress_cb("最終モデル学習中...", 60)
                     full_train_data = lgb.Dataset(X_train, y_train, categorical_feature=categorical_indices)
-                    model = lgb.train(params, full_train_data, num_boost_round=best_round_final)
+                    _final_rounds = best_round_final
+                    def _final_lgb_cb(env,
+                                      _pcb=progress_cb,
+                                      _tot=_final_rounds):
+                        if env.iteration % 20 != 0:
+                            return
+                        pct = 60 + int(5 * env.iteration / max(_tot, 1))
+                        _pcb(f"最終モデル — ラウンド {env.iteration}/{_tot}", min(pct, 64))
+                    _final_lgb_cb.order = 100
+                    model = lgb.train(params, full_train_data, num_boost_round=best_round_final,
+                                      callbacks=[_final_lgb_cb])
 
                     y_pred_proba = model.predict(X_test)
                     if _is_regression:
@@ -440,6 +462,16 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
                         optimized_params = optuna_optimizer.get_best_model_params()
                         optuna_num_rounds = optimized_params.pop("n_estimators", 1000)
                         train_data_opt = lgb.Dataset(X_train, y_train, categorical_feature=categorical_indices)
+                        _opt_num_rounds = optuna_num_rounds
+                        def _opt_cv_lgb_cb(env,
+                                           _pcb=progress_cb,
+                                           _folds=request.cv_folds,
+                                           _tot=_opt_num_rounds):
+                            if env.iteration % 20 != 0:
+                                return
+                            pct = 67 + int(12 * env.iteration / max(_tot, 1))
+                            _pcb(f"Optuna CV {_folds}折 — ラウンド {env.iteration}/{_tot}", min(pct, 78))
+                        _opt_cv_lgb_cb.order = 100
                         cv_result_opt = lgb.cv(
                             optimized_params, train_data_opt,
                             num_boost_round=optuna_num_rounds, nfold=request.cv_folds,
@@ -447,6 +479,7 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
                             callbacks=[
                                 lgb.early_stopping(stopping_rounds=50, verbose=False),
                                 lgb.log_evaluation(period=0),
+                                _opt_cv_lgb_cb,
                             ],
                         )
                         # どちらの評価指標が使われていても対応できるようにフォールバック
@@ -470,7 +503,17 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
                             best_round_opt = optuna_num_rounds
                         best_round_opt_final = int(best_round_opt * request.cv_folds / (request.cv_folds - 1))
                         progress_cb("Optunaパラメータでモデル再学習中...", 82)
-                        model = lgb.train(optimized_params, train_data_opt, num_boost_round=best_round_opt_final)
+                        _opt_final_rounds = best_round_opt_final
+                        def _opt_final_lgb_cb(env,
+                                              _pcb=progress_cb,
+                                              _tot=_opt_final_rounds):
+                            if env.iteration % 20 != 0:
+                                return
+                            pct = 82 + int(5 * env.iteration / max(_tot, 1))
+                            _pcb(f"Optuna最終モデル — ラウンド {env.iteration}/{_tot}", min(pct, 86))
+                        _opt_final_lgb_cb.order = 100
+                        model = lgb.train(optimized_params, train_data_opt, num_boost_round=best_round_opt_final,
+                                          callbacks=[_opt_final_lgb_cb])
                         y_pred_proba = model.predict(X_test)
                         if _is_regression:
                             from scipy.stats import spearmanr as _spearmanr2
@@ -539,8 +582,7 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
         date_to_8 = _get_date8_to(df)
         saved_at = datetime.now().strftime("%Y%m%d_%H%M")
         model_id = f"{date_from_8}_{date_to_8}_{saved_at}"
-        mode_suffix = "_ultimate"
-        model_filename = f"model_{request.target}_{request.model_type}_{model_id}{mode_suffix}.joblib"
+        model_filename = f"model_{request.target}_{request.model_type}_{model_id}.joblib"
         model_path = MODELS_DIR / model_filename
 
         bundle = {
@@ -555,6 +597,17 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
             "model_type": "lightgbm",
             "ultimate_mode": True,
             "use_optimizer": True,
+            "pipeline_config": {
+                "use_feature_engineering": True,
+                "use_optimizer": request.use_optimizer,
+                "optimizer_type": type(optimizer).__name__ if optimizer is not None else None,
+                "requires_full_history": True,
+                "feature_engineering_hash": __import__("hashlib").md5(
+                    __import__("inspect").getsource(
+                        __import__("keiba_ai.feature_engineering", fromlist=["add_derived_features"])
+                    ).encode()
+                ).hexdigest()[:12],
+            },
             "metrics": {
                 "auc": float(auc), "logloss": float(logloss),
                 "logloss_calibrated": float(logloss_calibrated),
@@ -570,6 +623,18 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
         if request.target == "rank" and locals().get("_is_ranker_model"):
             bundle["_is_ranker"] = True
         joblib.dump(bundle, model_path)
+
+        # カタログをモデルの特徴量で自動同期（新規特徴量を auto_synced ステージに追記）
+        try:
+            _catalog_path = Path(__file__).parent.parent.parent / "keiba" / "feature_catalog.yaml"
+            if _catalog_path.exists():
+                _cat = FeatureCatalog.load(_catalog_path)
+                _new = _cat.sync_with_model_features(bundle.get("feature_columns", []))
+                if _new:
+                    _cat.save(_catalog_path)
+                    logger.info(f"feature_catalog.yaml に {len(_new)} 件の新規特徴量を追記: {_new}")
+        except Exception as _e:
+            logger.warning(f"feature_catalog 同期スキップ: {_e}")
 
         # Supabase へモデルアップロード（ブロッキング I/O を to_thread で分離）
         if SUPABASE_ENABLED and get_supabase_client():

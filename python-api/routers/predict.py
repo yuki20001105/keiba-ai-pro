@@ -22,8 +22,6 @@ from app_config import (  # type: ignore
     get_latest_model,
     load_model_bundle,
     _ensure_model_local,
-    verify_feature_columns,
-    assert_feature_columns,
     logger,
 )
 from deps.pred_limit import check_and_consume_pred_count  # type: ignore
@@ -40,6 +38,75 @@ import asyncio
 import time as _time
 
 router = APIRouter()
+
+
+def _save_prediction_log(
+    race_id: str,
+    race_info: dict,
+    predictions: list,
+    model_id: str,
+    db_path: str,
+) -> None:
+    """予測結果を prediction_log テーブルに保存（同期・スレッド呼び出し専用）"""
+    import sqlite3 as _sql
+    conn = _sql.connect(db_path)
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS prediction_log (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                race_id      TEXT    NOT NULL,
+                race_name    TEXT,
+                venue        TEXT,
+                race_date    TEXT,
+                horse_id     TEXT,
+                horse_name   TEXT,
+                horse_number INTEGER,
+                predicted_rank INTEGER,
+                win_probability REAL,
+                p_raw        REAL,
+                odds         REAL,
+                popularity   INTEGER,
+                model_id     TEXT,
+                predicted_at TEXT DEFAULT (datetime('now', 'localtime'))
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_plog_race ON prediction_log(race_id)",
+        )
+        # 同一 race_id + model_id の既存ログを上書き
+        conn.execute(
+            "DELETE FROM prediction_log WHERE race_id = ? AND model_id = ?",
+            (race_id, model_id),
+        )
+        race_name = race_info.get("race_name", "")
+        venue     = race_info.get("venue", "")
+        race_date = race_info.get("date", "")
+        for p in predictions:
+            horse_id = p.get("horse_id", "")
+            # horse_id が空の場合は horse_name から補完しない（JOIN は失敗するが保存は続ける）
+            conn.execute(
+                """INSERT INTO prediction_log
+                   (race_id, race_name, venue, race_date,
+                    horse_id, horse_name, horse_number,
+                    predicted_rank, win_probability, p_raw, odds, popularity, model_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    race_id, race_name, venue, race_date,
+                    horse_id,
+                    p.get("horse_name", ""),
+                    p.get("horse_number"),
+                    p.get("predicted_rank"),
+                    p.get("win_probability"),
+                    p.get("p_raw"),
+                    p.get("odds"),
+                    p.get("popularity"),
+                    model_id,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
 
 # ── インメモリ予測キャッシュ（race_id → (timestamp, response_dict)）
 _ANALYZE_CACHE: dict[str, tuple[float, dict]] = {}
@@ -98,32 +165,30 @@ def _drop_non_features(df: "pd.DataFrame") -> "pd.DataFrame":
         | {"race_id", "horse_id", "jockey_id", "trainer_id", "owner_id", "finish_position",
            "win", "place"}
     )
+    df = df.drop([c for c in _exclude if c in df.columns], axis=1)
+    obj_cols = df.select_dtypes(include=["object"]).columns.tolist()
+    if obj_cols:
+        df = df.drop(columns=obj_cols)
+    return df
 
 
 def _predict_sub_model(
     model_path: "Path",
-    X_pred: "pd.DataFrame",
+    df: "pd.DataFrame",
+    full_hist: "pd.DataFrame | None" = None,
 ) -> "tuple[np.ndarray, np.ndarray] | None":
-    """サブモデル（place3 など）で確率を計算して返す。
-    
+    """サブモデル（place3 など）で確率を計算して返す。ModelPredictor を経由して推論。
+
     Returns:
-        (probs_raw, probs_norm) または None（失敗時）
+        (raw_scores, proba_norm) または None（失敗時）
     """
-    import numpy as _np_sub
     try:
         _bundle = load_model_bundle(model_path)
-        _X = verify_feature_columns(X_pred.copy(), _bundle)
-        _raw = _bundle["model"].predict(_X)
-        _cal = _bundle.get("calibrator")
-        if _cal is not None:
-            try:
-                _raw = _cal.predict(_np_sub.array(_raw, dtype=float))
-            except Exception:
-                pass
-        _probs = _np_sub.clip(_np_sub.array(_raw, dtype=float), 0.0, 1.0)
-        _s = _probs.sum()
-        _norm = (_probs / _s) if _s > 0 else _probs
-        return _probs, _norm
+        _predictor = ModelPredictor(_bundle, model_path)
+        _X = _predictor.build_features(df, full_hist=full_hist)
+        return _predictor.predict_scores(_X)
+    except HTTPException:
+        raise
     except Exception as _e:
         logger.warning(f"[sub_model] {model_path.name} 予測失敗: {_e}")
         return None
@@ -151,11 +216,146 @@ def _compute_ensemble(
         _ens = 0.60 * win_probs + 0.40 * place3_probs
     _s = _ens.sum()
     return (_ens / _s) if _s > 0 else win_probs
-    df = df.drop([c for c in _exclude if c in df.columns], axis=1)
-    obj_cols = df.select_dtypes(include=["object"]).columns.tolist()
-    if obj_cols:
-        df = df.drop(columns=obj_cols)
-    return df
+
+
+class ModelPredictor:
+    """モデルバンドルを基点に推論パイプラインを管理するクラス。
+
+    bundle["pipeline_config"] と bundle["feature_columns"] に基づいて
+    各モデル固有の推論フロー（特徴量エンジニアリング → optimizer → 予測 → スコア変換）を実行する。
+
+    ポリシー:
+    - 特徴量不足は NaN 補間せず HTTP 500 を返す（再学習を促す）
+    - optimizer.transform 失敗は HTTP 500 を返す（フォールバックなし）
+    - スコア変換はターゲット種別（分類/回帰/ランカー）ごとに自動決定
+    """
+
+    def __init__(self, bundle: dict, model_path: "str | Path | None" = None):
+        self.bundle = bundle
+        self.model_name: str = Path(model_path).name if model_path else bundle.get("created_at", "unknown")
+        self.target: str = bundle.get("target", "win")
+        self.model = bundle["model"]
+        self.optimizer = bundle.get("optimizer")
+        self.calibrator = bundle.get("calibrator")
+        self.feature_columns: list[str] = bundle.get("feature_columns", [])
+        self.pipeline_config: dict = bundle.get("pipeline_config", {})
+        self.is_ranker: bool = bool(bundle.get("_is_ranker", False))
+
+    # ── 特徴量構築 ──────────────────────────────────────────────────────────
+
+    def build_features(
+        self,
+        df: "pd.DataFrame",
+        full_hist: "pd.DataFrame | None" = None,
+    ) -> "pd.DataFrame":
+        """推論用特徴量 DataFrame を構築し、feature_columns 順に整列して返す。
+
+        各ステップの失敗時の挙動:
+        - add_derived_features 失敗 → 警告のみ（部分失敗は次の strict check で検出）
+        - optimizer.transform 失敗 → HTTP 500（モデルと特徴量セットの不一致。再学習必要）
+        - feature_columns 不足 → HTTP 500（不足列名を列挙して原因を明示）
+        NaN補間は行わない。
+        """
+        from keiba_ai.feature_engineering import add_derived_features as _adf  # type: ignore
+
+        # Step 1: 派生特徴量エンジニアリング（部分失敗は許容 → strict check で捕捉）
+        try:
+            df = _adf(df, full_history_df=full_hist if full_hist is not None else df)
+        except Exception as _e:
+            logger.warning(f"[ModelPredictor:{self.target}] add_derived_features 部分失敗: {_e}")
+        df = df.loc[:, ~df.columns.duplicated()]
+
+        # Step 2: モデル付属 optimizer による前処理（失敗時は再学習が必要）
+        if self.optimizer is not None:
+            try:
+                df = self.optimizer.transform(df)
+            except Exception as _e:
+                _cfg = self.pipeline_config
+                _fe_hash_trained = _cfg.get("feature_engineering_hash", "不明")
+                try:
+                    import hashlib as _hl, inspect as _ins
+                    import keiba_ai.feature_engineering as _fe_mod  # type: ignore
+                    _fe_hash_now = _hl.md5(_ins.getsource(_fe_mod).encode()).hexdigest()[:12]
+                except Exception:
+                    _fe_hash_now = "不明"
+                _hash_note = (
+                    f"feature_engineering ハッシュ: 学習時={_fe_hash_trained} / 現在={_fe_hash_now}"
+                    + (" ← 変更あり" if _fe_hash_trained != _fe_hash_now and _fe_hash_trained != "不明" else "")
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        f"モデル '{self.model_name}' の optimizer が現在の特徴量セットと互換性がありません。\n"
+                        f"特徴量変更後はモデルを再学習してください。\n"
+                        f"{_hash_note}\n"
+                        f"エラー ({type(_e).__name__}): {_e}"
+                    ),
+                )
+
+        # Step 3: 未来情報・識別子列を除外
+        X = _drop_non_features(df)
+
+        # Step 4: 特徴量チェック（50%超の欠損は再学習を促す HTTP 500、それ以下は NaN 補完で続行）
+        if self.feature_columns:
+            from app_config import assert_feature_columns, verify_feature_columns  # type: ignore
+            missing = [c for c in self.feature_columns if c not in X.columns]
+            if missing:
+                _missing_rate = len(missing) / len(self.feature_columns)
+                if _missing_rate > 0.50:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=(
+                            f"モデル '{self.model_name}' に必要な特徴量が計算されていません。\n"
+                            f"不足特徴量 ({len(missing)}/{len(self.feature_columns)} 件): {missing[:30]}\n"
+                            f"原因: feature_engineering.py またはスクレイプフィールドの変更後に"
+                            f"モデルの再学習が必要です。"
+                        ),
+                    )
+                logger.warning(
+                    f"[ModelPredictor:{self.target}] {len(missing)}/{len(self.feature_columns)} 特徴量が未計算"
+                    f" → NaN 補完で続行: {missing[:15]}"
+                )
+            return verify_feature_columns(X, self.bundle)
+        return X
+
+    # ── 推論・スコア変換 ────────────────────────────────────────────────────
+
+    def predict_scores(
+        self, X: "pd.DataFrame"
+    ) -> "tuple[np.ndarray, np.ndarray]":
+        """モデルの raw スコアとレース内正規化確率を返す。
+
+        ターゲット種別に応じてスコア変換を自動選択:
+        - speed_deviation / rank → softmax（回帰・ランカー）
+        - win / place3 → キャリブレーション + clip [0,1]（分類）
+
+        Returns:
+            (raw_scores, proba_norm) — 両方 shape (n_horses,)
+        """
+        import numpy as _np_p
+        raw = _np_p.array(self.model.predict(X), dtype=float)
+
+        if self.target in ("speed_deviation", "rank"):
+            finite = _np_p.isfinite(raw)
+            _safe = _np_p.where(
+                finite, raw,
+                raw[finite].min() - 1.0 if finite.any() else -5.0,
+            )
+            _exp = _np_p.exp(_safe - _safe.max())
+            proba = _exp / _exp.sum()
+        else:
+            proba = _np_p.clip(raw.copy(), 0.0, 1.0)
+            if self.calibrator is not None:
+                try:
+                    proba = self.calibrator.predict(proba)
+                except Exception as _cal_err:
+                    logger.warning(
+                        f"[ModelPredictor:{self.target}] キャリブレーション失敗: {_cal_err}"
+                    )
+
+        s = proba.sum()
+        proba_norm = (proba / s) if s > 0 else proba
+        return raw, proba_norm
 
 
 @router.post("/api/predict", response_model=PredictResponse)
@@ -163,24 +363,17 @@ async def predict(request: PredictRequest, http_req: Request):
     """学習済みモデルを使用して予測を実行（free=10回/月, premium=無制限）"""
     await check_and_consume_pred_count(http_req)
     try:
-        from keiba_ai.feature_engineering import add_derived_features  # type: ignore
-
-        # モデルロード
+        # モデルロード → ModelPredictor 初期化（モデル固有パイプラインを決定）
         model_path = _resolve_model_path(request.model_id)
-
         bundle = load_model_bundle(model_path)
-        model = bundle["model"]
-        optimizer = bundle.get("optimizer")
-        use_optimizer = bundle.get("use_optimizer", False)
+        predictor = ModelPredictor(bundle, model_path)
 
-        # レース後フィールドを除去
+        # レース後フィールドを除去して DataFrame 化
         cleaned_horses = [{k: v for k, v in h.items() if k not in POST_RACE_FIELDS} for h in request.horses]
         df = pd.DataFrame(cleaned_horses)
 
-        # ── [S: Quality Gate] 入力整合チェック → 不正レースを除外 ──────────
+        # [S: Quality Gate] 不正レースを除外
         try:
-            import sys as _sys
-            _sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "keiba"))
             from keiba_ai.quality_gate import filter_valid_races as _fvr  # type: ignore
             if "race_id" not in df.columns:
                 df["race_id"] = "202500000000"
@@ -189,8 +382,7 @@ async def predict(request: PredictRequest, http_req: Request):
             if len(df) == 0:
                 raise HTTPException(
                     status_code=400,
-                    detail="入力データに不正なレースが含まれています（distance=0, odds欠損など）。"
-                           "再スクレイプしてください。",
+                    detail="入力データに不正なレースが含まれています（distance=0, odds欠損など）。再スクレイプしてください。",
                 )
             if len(df) < _n_before:
                 logger.warning(f"[Quality Gate] {_n_before - len(df)} 件の不正エントリを除外")
@@ -198,67 +390,26 @@ async def predict(request: PredictRequest, http_req: Request):
             raise
         except Exception as _qe:
             logger.warning(f"[Quality Gate] スキップ: {_qe}")
-        # ───────────────────────────────────────────────────────────────────
-        # race_id がない場合はダミーを設定 (add_derived_features が必須とするため)
+
         if "race_id" not in df.columns:
             df["race_id"] = "202500000000"
-        # [INV-01] full_history_df には対象レースの行を含めない（expanding window に確定結果が混入しないよう）
+
+        # [INV-01] 全履歴キャッシュ（expanding window 用、対象レースを除外）
+        # NOTE: _load_hist_cached / build_features は CPU 集中型の同期処理のため
+        #       asyncio.to_thread でスレッドプールに移し、イベントループをブロックしない
         try:
-            _hist_df = _load_hist_cached()
-            if 'race_id' in _hist_df.columns and 'race_id' in df.columns:
-                _current_race_ids = set(df['race_id'].dropna().unique())
-                _hist_df = _hist_df[~_hist_df['race_id'].isin(_current_race_ids)]
+            _hist_df = await asyncio.to_thread(_load_hist_cached)
+            if 'race_id' in _hist_df.columns:
+                _hist_df = _hist_df[~_hist_df['race_id'].isin(set(df['race_id'].dropna()))]
             _full_hist = pd.concat([_hist_df, df], ignore_index=True)
         except Exception:
             _full_hist = df
-        try:
-            df = add_derived_features(df, full_history_df=_full_hist)
-        except Exception as _afe:
-            logger.warning(f"[predict] add_derived_features 部分失敗: {_afe} → 基本特徴量のみで続行")
-        df = df.loc[:, ~df.columns.duplicated()]
 
-        if use_optimizer and optimizer is not None:
-            try:
-                df_optimized = optimizer.transform(df)
-            except Exception as _opt_e:
-                logger.warning(f"[predict] optimizer.transform 失敗({type(_opt_e).__name__}): {_opt_e} → prepare_for_lightgbm_ultimate へフォールバック")
-                from keiba_ai.lightgbm_feature_optimizer import prepare_for_lightgbm_ultimate  # type: ignore
-                df_optimized, _, _ = prepare_for_lightgbm_ultimate(df, is_training=False)
-            # [S] 未来情報・識別子を推論入力から強制除外
-            X = _drop_non_features(df_optimized)
-            # [S] A-6 厳格アサート → verify（NaN補完）
-            assert_feature_columns(X, bundle)
-            X = verify_feature_columns(X, bundle)
-            proba = model.predict(X)
-        else:
-            # 後方互換: optimizer なし旧バンドル → 87特徴量モードで再エンコード
-            from keiba_ai.lightgbm_feature_optimizer import prepare_for_lightgbm_ultimate  # type: ignore
-            df_fb, _, _ = prepare_for_lightgbm_ultimate(df, is_training=False)
-            # [S] 未来情報・識別子を推論入力から強制除外
-            X = _drop_non_features(df_fb)
-            # [S] A-6 厳格アサート → verify（NaN補完）
-            assert_feature_columns(X, bundle)
-            X = verify_feature_columns(X, bundle)
-            try:
-                proba = model.predict(X)
-            except Exception:
-                proba = model.predict_proba(X)[:, 1]
+        # ModelPredictor で特徴量構築（不足時は HTTP 500）
+        X = await asyncio.to_thread(predictor.build_features, df, _full_hist)
 
-        # [A1] p_raw：キャリブレーション前の生スコア（ランキング用・連続値）
-        import numpy as _np
-        p_raw = _np.array(proba, dtype=float)
-
-        # [L3-3] 確率キャリブレーション（アイソトニック回帰）
-        calibrator = bundle.get("calibrator")
-        if calibrator is not None:
-            try:
-                proba = calibrator.predict(proba)
-            except Exception as _cal_err:
-                logger.warning(f"[キャリブレーションエラー] {_cal_err} → 未キャリブレースで続行")
-
-        # [A1] p_norm：p_raw をレース内合計1に正規化（買い目設計用）
-        _raw_sum = p_raw.sum()
-        p_norm = (p_raw / _raw_sum) if _raw_sum > 0 else p_raw
+        # ModelPredictor でスコア計算（ターゲット種別に応じて自動選択）
+        p_raw, p_norm = predictor.predict_scores(X)
 
         predictions = []
         for i, (_, row) in enumerate(df.iterrows()):
@@ -268,13 +419,12 @@ async def predict(request: PredictRequest, http_req: Request):
                 "index": i,
                 "horse_number": horse_num,
                 "horse_name": str(_hn),
-                "probability": float(proba[i]),
+                "probability": float(p_norm[i]),
                 "p_raw": float(p_raw[i]),
                 "p_norm": float(p_norm[i]),
                 "odds": float(row.get("odds", row.get("entry_odds", 0.0))),
             })
 
-        # [A1] ソートは p_raw ベース（キャリブ量子化によるタイ回避）
         predictions.sort(key=lambda x: x["p_raw"], reverse=True)
         for rank, pred in enumerate(predictions, start=1):
             pred["predicted_rank"] = rank
@@ -306,7 +456,6 @@ async def analyze_race(request: AnalyzeRaceRequest):
 
     try:
         from app_config import list_models_from_supabase  # type: ignore
-        from keiba_ai.feature_engineering import add_derived_features  # type: ignore
         from betting.strategy import BettingRecommender  # type: ignore
 
         # Phase 0: 常に ultimate DB を使用（87特徴量モード固定）
@@ -328,13 +477,11 @@ async def analyze_race(request: AnalyzeRaceRequest):
                     raise HTTPException(status_code=404, detail="訓練済みモデルが見つかりません")
 
         bundle = load_model_bundle(model_path)
-        model = bundle["model"]
 
         # Phase 0: 常に ultimate モードでデータを取得（87特徴量固定）
         if True:  # noqa (request.ultimate_mode は常に True)
             # ── Ultimate DB から出走馬データを取得 ──
             import sqlite3 as _sq3
-            from keiba_ai.feature_engineering import add_derived_features as _add_df  # type: ignore
 
             _conn = _sq3.connect(str(db_path))
             _cur = _conn.cursor()
@@ -421,6 +568,7 @@ async def analyze_race(request: AnalyzeRaceRequest):
             _col_map = {
                 "finish_position": "finish", "finish_time": "time",
                 "track_type": "surface", "last_3f": "last_3f_time", "weight_kg": "horse_weight",
+                "weight_change": "horse_weight_change",
             }
             for _old, _new in _col_map.items():
                 if _old in df_pred.columns:
@@ -556,6 +704,15 @@ async def analyze_race(request: AnalyzeRaceRequest):
                     except Exception as _pe:
                         logger.warning(f"[analyze] {request.race_id}: Playwright odds取得失敗: {_pe}")
 
+            # odds が揃っているのに popularity が欠損している場合、odds ランク順から自動計算
+            if (
+                "odds" in df_pred.columns
+                and not df_pred["odds"].isna().all()
+                and ("popularity" not in df_pred.columns or df_pred["popularity"].isna().all())
+            ):
+                df_pred["popularity"] = df_pred["odds"].rank(method="min", na_option="bottom").astype("Int64")
+                logger.info(f"[analyze] {request.race_id}: popularity を odds ランクから自動計算")
+
             if "sex_age" in df_pred.columns:
                 if "sex" not in df_pred.columns or df_pred["sex"].isna().all():
                     df_pred["sex"] = df_pred["sex_age"].str.extract(r"^([牡牝セ])")[0]
@@ -597,9 +754,10 @@ async def analyze_race(request: AnalyzeRaceRequest):
                 logger.warning(f"[Quality Gate /analyze] スキップ: {_qe_a}")
 
             # [INV-01] full_history_df には対象レースの行を含めない（expanding window に確定結果が混入しないよう）
-            # _load_hist_cached() で 10 分 TTL キャッシュを利用し全 DB 再ロードを削減。
+            # NOTE: _load_hist_cached / build_features は CPU 集中型の同期処理のため
+            #       asyncio.to_thread でスレッドプールに移し、イベントループをブロックしない
             try:
-                _hist_df2 = _load_hist_cached()
+                _hist_df2 = await asyncio.to_thread(_load_hist_cached)
                 # 対象レースの確定結果が expanding stats に混入しないよう hist から除外する（INV-01）
                 if 'race_id' in _hist_df2.columns:
                     _hist_df2 = _hist_df2[_hist_df2['race_id'] != request.race_id]
@@ -609,92 +767,30 @@ async def analyze_race(request: AnalyzeRaceRequest):
                 _full_hist2 = pd.concat([_hist_df2_for_concat, _df_pred_for_concat], ignore_index=True)
             except Exception:
                 _full_hist2 = df_pred
-            try:
-                df_pred = _add_df(df_pred, full_history_df=_full_hist2)
-            except Exception as _afe2:
-                logger.warning(f"[analyze] add_derived_features 部分失敗: {_afe2} → 基本特徴量のみで続行")
-            # NOTE: UltimateFeatureCalculator は feature_engineering.py で同等の特徴量を
-            # ベクトル化計算済みのため除去（zero-variance ・遠い問題も解消）
-            df_pred = df_pred.loc[:, ~df_pred.columns.duplicated()]
 
-            bundle_optimizer = bundle.get("optimizer")
-            bundle_cat_features = bundle.get("categorical_features", [])
-            if bundle_optimizer:
-                try:
-                    df_pred_opt = bundle_optimizer.transform(df_pred)
-                except Exception as _opt_err:
-                    logger.warning(
-                        f"[analyze] optimizer.transform 失敗({type(_opt_err).__name__}): {_opt_err}"
-                        f" → prepare_for_lightgbm_ultimate へフォールバック"
-                    )
-                    from keiba_ai.lightgbm_feature_optimizer import prepare_for_lightgbm_ultimate  # type: ignore
-                    df_pred_opt, _, bundle_cat_features = prepare_for_lightgbm_ultimate(
-                        df_pred, is_training=False, optimizer=None
-                    )
-            else:
-                from keiba_ai.lightgbm_feature_optimizer import prepare_for_lightgbm_ultimate  # type: ignore
-                df_pred_opt, _, bundle_cat_features = prepare_for_lightgbm_ultimate(
-                    df_pred, is_training=False, optimizer=None
-                )
+            # ModelPredictor: per-model feature build（strict, NaN補間なし）
+            # NOTE: ModelPredictor.build_features が add_derived_features を内部で呼ぶため
+            #       ここでの手動呼び出しは不要（二重適用防止）。
+            predictor = ModelPredictor(bundle, model_path)
+            X_pred = await asyncio.to_thread(predictor.build_features, df_pred, _full_hist2)
 
-            # [S] 識別子 + 未来情報を推論入力から強制除外
-            X_pred = _drop_non_features(df_pred_opt)
-
-            # [S] A-6 特徴量整合チェック → verify（NaN補完）
-            # 当日レースは出馬表データのみのため欠損特徴が発生しやすい。
-            # assert が閾値超過で RuntimeError を返した場合も verify で NaN 補完して続行。
-            try:
-                assert_feature_columns(X_pred, bundle)
-            except RuntimeError as _ae:
-                logger.warning(f"[A-6 ASSERT warn] {_ae} → NaN補完で続行")
-            X_pred = verify_feature_columns(X_pred, bundle)
-
-            win_probs_raw = model.predict(X_pred)
-
-            # [A1] p_raw：キャリブレーション前の生スコア（ランキング用・連続値）
+            # ModelPredictor: per-model scoring（ターゲット種別に応じて自動選択）
             import numpy as _np2
-            _wp_raw = _np2.array(win_probs_raw, dtype=float)
-
-            # speed_deviation（回帰）/ rank モデル: スコアを softmax で確率変換
-            _bundle_target = bundle.get("target", "win")
-            if _bundle_target == "speed_deviation":
-                # NaN は最低値で補完してから softmax
-                _finite_mask = _np2.isfinite(_wp_raw)
-                _wp_raw = _np2.where(_finite_mask, _wp_raw, _wp_raw[_finite_mask].min() - 1.0 if _finite_mask.any() else -5.0)
-                _exp = _np2.exp(_wp_raw - _wp_raw.max())
-                win_probs = _exp / _exp.sum()
-            elif _bundle_target == "rank":
-                # LambdaRank: predict() はスコア（高いほど上位）→ softmax で確率化
-                _finite_mask = _np2.isfinite(_wp_raw)
-                _wp_raw = _np2.where(_finite_mask, _wp_raw, _wp_raw[_finite_mask].min() - 1.0 if _finite_mask.any() else -5.0)
-                _exp = _np2.exp(_wp_raw - _wp_raw.max())
-                win_probs = _exp / _exp.sum()
-            else:
-                # [L3-3] キャリブレーション適用
-                _cal = bundle.get("calibrator")
-                win_probs = _wp_raw.copy()
-                if _cal is not None:
-                    try:
-                        win_probs = _cal.predict(win_probs)
-                    except Exception:
-                        pass  # キャリブレーター失敗時はそのまま使用
-
-            # [A1] p_norm：win_probs（softmax/キャリブレーション済）をレース内合計1に正規化
-            # _wp_raw（生スコア）は speed_deviation では z 値（負あり）のため使わない
-            _wp_pnorm_base = win_probs  # 必ず calibrated / softmax 変換後を使う
-            _wp_sum = _wp_pnorm_base.sum()
-            _wp_norm = (_wp_pnorm_base / _wp_sum) if _wp_sum > 0 else _wp_pnorm_base
+            _wp_raw, win_probs = predictor.predict_scores(X_pred)
+            _bundle_target = predictor.target
+            _wp_sum = win_probs.sum()
+            _wp_norm = (win_probs / _wp_sum) if _wp_sum > 0 else win_probs
 
             # ── place3 モデルによる複勝圏確率 ──────────────────────────────────
             _place3_probs: "_np2.ndarray | None" = None
             _place3_norm: "_np2.ndarray | None" = None
             try:
                 _place3_model_files = sorted(
-                    MODELS_DIR.glob("model_place3_*_ultimate.joblib"),
+                    MODELS_DIR.glob("model_place3_*.joblib"),
                     key=lambda _p: _p.stat().st_mtime, reverse=True,
                 )
                 if _place3_model_files:
-                    _sub_result = _predict_sub_model(_place3_model_files[0], X_pred)
+                    _sub_result = _predict_sub_model(_place3_model_files[0], df_pred, full_hist=_full_hist2)
                     if _sub_result is not None:
                         _place3_probs, _place3_norm = _sub_result
                         logger.info(
@@ -705,7 +801,8 @@ async def analyze_race(request: AnalyzeRaceRequest):
                 logger.warning(f"[analyze] place3モデルロード失敗: {_p3e}")
 
             # ── アンサンブルスコア（win/speed + place3 の加重平均）──────────────
-            ensemble_probs = _compute_ensemble(win_probs, _place3_probs, _bundle_target)
+            # _place3_norm を使用（正規化済み分布で win_probs と整合）
+            ensemble_probs = _compute_ensemble(win_probs, _place3_norm, _bundle_target)
 
             # [fix] 再スクレイプで df_pred["odds"] が更新された場合、
             # _horse_records には反映されないため、horse_number をキーに逆引きマップを作成
@@ -740,6 +837,7 @@ async def analyze_race(request: AnalyzeRaceRequest):
                 _ev = float(_wp_norm[i] * _odds_float) if _odds_float is not None else None
                 predictions.append({
                     "horse_number": _horse_num, "horse_no": _horse_num,
+                    "horse_id": _hr.get("horse_id", ""),
                     "horse_name": _hr.get("horse_name") or f'[{_hr.get("horse_id","") or _horse_num}]',
                     "jockey_name": _hr.get("jockey_name", ""),
                     "trainer_name": _hr.get("trainer_name", ""),
@@ -776,6 +874,16 @@ async def analyze_race(request: AnalyzeRaceRequest):
             race_level=result["race_level"],
             recommendation=result["recommendation"],
         )
+        # 予測ログをDBに非同期保存（レスポンスをブロックしない）
+        try:
+            _model_id_log = bundle.get("model_id", bundle.get("created_at", "unknown"))
+            asyncio.create_task(asyncio.to_thread(
+                _save_prediction_log,
+                request.race_id, result["race_info"], result["predictions"],
+                _model_id_log, str(ULTIMATE_DB)
+            ))
+        except Exception as _log_err:
+            logger.warning(f"[prediction_log] save failed: {_log_err}")
         # キャッシュに保存（上限超過時は最古エントリを削除）
         if len(_ANALYZE_CACHE) >= _ANALYZE_CACHE_MAX:
             _oldest_keys = sorted(_ANALYZE_CACHE.keys(), key=lambda k: _ANALYZE_CACHE[k][0])

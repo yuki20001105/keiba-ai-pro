@@ -8,13 +8,46 @@ import { useRaceCache } from '@/hooks/useRaceCache'
 import { RacePredictionPanel } from '@/components/RacePredictionPanel'
 import { RaceFeaturePanel } from '@/components/RaceFeaturePanel'
 import type { RacePredictResult, FeatureData } from '@/lib/race-analysis-types'
+import { supabase } from '@/lib/supabase'
+
+// ── 結果照合タブの型 ─────────────────────────────────────────────────
+type PredictionLogEntry = {
+  horse_id: string
+  horse_name: string
+  horse_number: number
+  predicted_rank: number
+  win_probability: number
+  p_raw: number
+  odds: number | null
+  popularity: number | null
+  model_id: string
+  predicted_at: string
+  actual_finish: number | null
+  finish_time: string | null
+  actual_last3f: number | null
+  actual_odds: number | null
+}
+type PredictionHistoryResult = {
+  race_id: string
+  has_prediction: boolean
+  has_result: boolean
+  top1_win: boolean
+  top1_place3: boolean
+  predictions: PredictionLogEntry[]
+}
 
 export default function RaceAnalysisPage() {
   const [date, setDate] = useState(todayStr())
   const [races, setRaces] = useState<RaceItem[]>([])
   const [racesLoading, setRacesLoading] = useState(false)
   const [selectedRaceId, setSelectedRaceId] = useState('')
-  const [tab, setTab] = useState<'predict' | 'features'>('predict')
+  const [selectedModelId, setSelectedModelId] = useState<string>('')
+  const [models, setModels] = useState<{ model_id: string; target: string; cv_auc_mean: number }[]>([])
+  const [tab, setTab] = useState<'predict' | 'features' | 'result'>('predict')
+
+  // 結果照合タブ
+  const [resultData, setResultData] = useState<PredictionHistoryResult | null>(null)
+  const [resultLoading, setResultLoading] = useState(false)
 
   const [predictResult, setPredictResult] = useState<RacePredictResult | null>(null)
   const [featData, setFeatData] = useState<FeatureData | null>(null)
@@ -28,6 +61,38 @@ export default function RaceAnalysisPage() {
   } | null>(null)
 
   const raceCache = useRaceCache()
+
+  // 結果照合データを取得
+  const loadResultData = useCallback(async (raceId: string) => {
+    setResultLoading(true)
+    setResultData(null)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const authHeader = session?.access_token ? `Bearer ${session.access_token}` : ''
+      const res = await fetch(`/api/prediction-history/${raceId}`, {
+        headers: { ...(authHeader ? { Authorization: authHeader } : {}) },
+        signal: AbortSignal.timeout(15_000),
+      })
+      if (res.ok) setResultData(await res.json())
+    } catch { }
+    finally { setResultLoading(false) }
+  }, [])
+
+  // モデル一覧を取得（初回のみ）
+  useEffect(() => {
+    fetch('/api/models?ultimate=true')
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.models?.length) {
+          // no_odds モデルは除外し、model_id 降順（最新が先頭）に並べる
+          const filtered = data.models
+            .filter((m: any) => !m.model_id.includes('no_odds'))
+            .sort((a: any, b: any) => b.model_id.localeCompare(a.model_id))
+          setModels(filtered)
+        }
+      })
+      .catch(() => {})
+  }, [])
 
   const loadRaces = useCallback(async () => {
     setRacesLoading(true)
@@ -49,12 +114,16 @@ export default function RaceAnalysisPage() {
 
   useEffect(() => { loadRaces() }, [loadRaces])
 
-  const loadRaceData = useCallback(async (raceId: string, forceRefresh = false) => {
+  const loadRaceData = useCallback(async (raceId: string, forceRefresh = false, modelId?: string) => {
+    const effectiveModelId = modelId ?? selectedModelId
     setSelectedRaceId(raceId)
     setError('')
+    setResultData(null)  // レース切り替え時に結果照合をリセット
 
+    // キャッシュキーにモデルIDを含めることで、モデル切り替え時は必ず再予測
+    const cacheKey = effectiveModelId ? `${raceId}__${effectiveModelId}` : raceId
     if (!forceRefresh) {
-      const cached = raceCache.get(raceId)
+      const cached = raceCache.get(cacheKey)
       if (cached) {
         setPredictResult(cached.predictResult)
         setFeatData(cached.featData)
@@ -63,7 +132,7 @@ export default function RaceAnalysisPage() {
         if (!cached.featData) {
           fetch(`/api/debug/race/${raceId}/features`)
             .then(r => r.ok ? r.json() : null)
-            .then(feat => { if (feat) { setFeatData(feat); raceCache.updateFeat(raceId, feat) } })
+            .then(feat => { if (feat) { setFeatData(feat); raceCache.updateFeat(cacheKey, feat) } })
             .catch(() => {})
         }
         return
@@ -77,11 +146,13 @@ export default function RaceAnalysisPage() {
     setFeatData(null)
     setFallbackHorses(null)
     try {
+      const body: Record<string, unknown> = { race_id: raceId, bankroll: 10000, risk_mode: 'balanced' }
+      if (effectiveModelId) body.model_id = effectiveModelId
       const [predRes, featRes] = await Promise.all([
         fetch('/api/analyze-race', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ race_id: raceId, bankroll: 10000, risk_mode: 'balanced' }),
+          body: JSON.stringify(body),
         }),
         fetch(`/api/debug/race/${raceId}/features`),
       ])
@@ -91,7 +162,7 @@ export default function RaceAnalysisPage() {
       }
       const [pred, feat] = await Promise.all([predRes.json(), featRes.ok ? featRes.json() : null])
       const now = Date.now()
-      raceCache.set(raceId, { predictResult: pred, featData: feat, cachedAt: now })
+      raceCache.set(cacheKey, { predictResult: pred, featData: feat, cachedAt: now })
       setPredictResult(pred)
       setFeatData(feat)
       setFromCache(false)
@@ -107,7 +178,7 @@ export default function RaceAnalysisPage() {
         }
       } catch { }
     } finally { setDataLoading(false) }
-  }, [raceCache])
+  }, [raceCache, selectedModelId])
 
   const ri = predictResult?.race_info
   const preds = predictResult?.predictions ?? []
@@ -146,14 +217,34 @@ export default function RaceAnalysisPage() {
       <div className="flex flex-1 overflow-hidden">
         {/* 左サイドバー: 日付ピッカー + レース一覧 */}
         <aside className="w-64 shrink-0 border-r border-[#1e1e1e] flex flex-col">
-          <div className="p-4 border-b border-[#1e1e1e]">
-            <label className="text-xs text-[#666] block mb-2">日付</label>
-            <input
-              type="date"
-              value={date}
-              onChange={e => setDate(e.target.value)}
-              className="w-full px-3 py-2 bg-[#111] border border-[#1e1e1e] rounded text-white text-sm focus:outline-none focus:border-[#333]"
-            />
+          <div className="p-4 border-b border-[#1e1e1e] space-y-3">
+            <div>
+              <label className="text-xs text-[#666] block mb-2">日付</label>
+              <input
+                type="date"
+                value={date}
+                onChange={e => setDate(e.target.value)}
+                className="w-full px-3 py-2 bg-[#111] border border-[#1e1e1e] rounded text-white text-sm focus:outline-none focus:border-[#333]"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-[#666] block mb-1.5">モデル</label>
+              <select
+                value={selectedModelId}
+                onChange={e => {
+                  setSelectedModelId(e.target.value)
+                  if (selectedRaceId) loadRaceData(selectedRaceId, true, e.target.value)
+                }}
+                className="w-full px-2 py-1.5 bg-[#111] border border-[#1e1e1e] rounded text-white text-xs focus:outline-none focus:border-[#333] truncate"
+              >
+                <option value="">最新モデル（自動）</option>
+                {models.map(m => (
+                  <option key={m.model_id} value={m.model_id}>
+                    {m.model_id.replace(/_ultimate$/, '').replace(/^model_/, '')}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
           <div className="flex-1 overflow-y-auto">
             {racesLoading && (
@@ -291,10 +382,16 @@ export default function RaceAnalysisPage() {
                 {([
                   { key: 'predict', label: `予測結果（${preds.length}頭）` },
                   { key: 'features', label: `特徴量分析${featData ? `（${featData.feature_count}列）` : ''}` },
+                  { key: 'result', label: '結果照合' },
                 ] as const).map(t => (
                   <button
                     key={t.key}
-                    onClick={() => setTab(t.key)}
+                    onClick={() => {
+                      setTab(t.key)
+                      if (t.key === 'result' && !resultData && !resultLoading) {
+                        loadResultData(selectedRaceId)
+                      }
+                    }}
                     className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition-colors ${tab === t.key ? 'border-white text-white' : 'border-transparent text-[#555] hover:text-[#888]'}`}
                   >
                     {t.label}
@@ -309,10 +406,167 @@ export default function RaceAnalysisPage() {
                   ? <RaceFeaturePanel featData={featData} predictions={preds} />
                   : <div className="flex-1 flex items-center justify-center text-[#555] text-sm">特徴量データがありません</div>
               )}
+              {tab === 'result' && (
+                <div className="flex-1 overflow-y-auto p-6">
+                  <ResultComparePanel
+                    raceId={selectedRaceId}
+                    data={resultData}
+                    loading={resultLoading}
+                    onRefresh={() => loadResultData(selectedRaceId)}
+                  />
+                </div>
+              )}
             </>
           )}
         </main>
       </div>
+    </div>
+  )
+}
+
+// ── 結果照合パネル ────────────────────────────────────────────────────
+function ResultComparePanel({
+  raceId, data, loading, onRefresh,
+}: {
+  raceId: string
+  data: PredictionHistoryResult | null
+  loading: boolean
+  onRefresh: () => void
+}) {
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center gap-2 text-[#555] text-sm py-16">
+        <div className="w-4 h-4 border border-[#555] border-t-transparent rounded-full animate-spin" />
+        照合中...
+      </div>
+    )
+  }
+
+  if (!data) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-3 text-[#555] py-16">
+        <p className="text-sm">まだ読み込まれていません</p>
+        <button onClick={onRefresh}
+          className="text-xs px-3 py-1.5 rounded border border-[#333] text-[#888] hover:text-white hover:border-[#555] transition-colors">
+          照合する
+        </button>
+      </div>
+    )
+  }
+
+  if (!data.has_prediction) {
+    return (
+      <div className="text-center text-[#555] py-16">
+        <p className="text-sm mb-1">このレースはまだ予測していません</p>
+        <p className="text-xs text-[#444]">「予測結果」タブで予測を実行すると自動的に記録されます</p>
+      </div>
+    )
+  }
+
+  const decided = data.has_result
+  const top1 = data.predictions.find(p => p.predicted_rank === 1)
+
+  return (
+    <div className="max-w-2xl space-y-4">
+      {/* サマリーバッジ */}
+      <div className="flex items-center gap-3">
+        {decided ? (
+          data.top1_win ? (
+            <span className="text-sm px-3 py-1 rounded bg-yellow-500/20 text-yellow-400 font-bold">
+              ✓ 予測1位 WIN 的中
+            </span>
+          ) : data.top1_place3 ? (
+            <span className="text-sm px-3 py-1 rounded bg-green-500/20 text-green-400 font-medium">
+              ✓ 予測1位 複勝圏内
+            </span>
+          ) : (
+            <span className="text-sm px-3 py-1 rounded bg-[#1e1e1e] text-[#666]">
+              予測1位は圏外
+            </span>
+          )
+        ) : (
+          <span className="text-xs px-2 py-1 rounded bg-[#1a1a1a] text-[#555] border border-[#222]">
+            結果待ち
+          </span>
+        )}
+        <button onClick={onRefresh}
+          className="ml-auto text-xs text-[#555] hover:text-[#888] transition-colors">
+          更新
+        </button>
+      </div>
+
+      {/* 予測テーブル */}
+      <div className="bg-[#111] border border-[#1e1e1e] rounded-lg overflow-hidden">
+        <div className="px-4 py-2.5 border-b border-[#1a1a1a] flex items-center justify-between">
+          <span className="text-xs font-semibold text-[#888]">予測 vs 実績</span>
+          {top1?.model_id && (
+            <span className="text-[10px] text-[#444]">
+              {top1.model_id.replace(/_ultimate$/, '').replace(/^model_/, '')}
+            </span>
+          )}
+        </div>
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b border-[#1a1a1a] text-[#444]">
+              <th className="px-4 py-2 text-left font-normal w-8">予</th>
+              <th className="px-4 py-2 text-left font-normal">馬名</th>
+              <th className="px-4 py-2 text-right font-normal">勝率</th>
+              <th className="px-4 py-2 text-right font-normal">予オッズ</th>
+              <th className="px-4 py-2 text-right font-normal w-20">実際の着</th>
+              <th className="px-4 py-2 text-right font-normal">タイム</th>
+              <th className="px-4 py-2 text-right font-normal w-16"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.predictions.map(p => {
+              const isTop = p.predicted_rank <= 3
+              const won = p.actual_finish === 1
+              const placed = (p.actual_finish ?? 99) <= 3
+              return (
+                <tr key={p.horse_id || p.horse_number}
+                  className={`border-t border-[#111] ${isTop ? 'text-white' : 'text-[#666]'}`}>
+                  <td className="px-4 py-2 text-[#444]">{p.predicted_rank}</td>
+                  <td className="px-4 py-2">
+                    <span className="text-[#555] mr-1">{p.horse_number}.</span>
+                    <span className={isTop ? 'text-white' : ''}>{p.horse_name}</span>
+                  </td>
+                  <td className="px-4 py-2 text-right font-mono text-[#4a9eff]">
+                    {p.win_probability != null ? `${(p.win_probability * 100).toFixed(1)}%` : '—'}
+                  </td>
+                  <td className="px-4 py-2 text-right text-[#888]">
+                    {p.odds != null ? `${p.odds.toFixed(1)}倍` : '—'}
+                  </td>
+                  <td className={`px-4 py-2 text-right font-semibold ${
+                    won ? 'text-yellow-400' : placed ? 'text-green-400' : p.actual_finish != null ? 'text-[#555]' : 'text-[#333]'
+                  }`}>
+                    {p.actual_finish != null ? `${p.actual_finish}着` : '—'}
+                  </td>
+                  <td className="px-4 py-2 text-right text-[#555] font-mono text-[10px]">
+                    {p.finish_time ?? '—'}
+                  </td>
+                  <td className="px-4 py-2 text-right">
+                    {p.predicted_rank === 1 && won && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-400">WIN</span>
+                    )}
+                    {p.predicted_rank === 1 && !won && placed && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/20 text-green-400">複勝</span>
+                    )}
+                    {p.predicted_rank <= 3 && (p.actual_finish ?? 99) <= 3 && p.predicted_rank !== 1 && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400">圏内</span>
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {!decided && (
+        <p className="text-[11px] text-[#444] text-center">
+          レース後に当日スクレイプ（6:00・9〜21時おき）で結果が反映されます
+        </p>
+      )}
     </div>
   )
 }

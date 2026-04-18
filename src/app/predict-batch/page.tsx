@@ -9,6 +9,7 @@ import { JRA_VENUES, todayStr, toInputDate, fromInputDate } from '@/lib/types'
 import type { RaceItem } from '@/lib/types'
 import { useScrape } from '@/hooks/useScrape'
 import { useJobPoller } from '@/hooks/useJobPoller'
+import { CACHE_TTL_MS } from '@/hooks/useRaceCache'
 
 export default function PredictBatchPage() {
   const [date, setDate] = useState(todayStr())
@@ -63,14 +64,24 @@ export default function PredictBatchPage() {
 
   useEffect(() => {
     loadModels()
-    // 5分超のキャッシュを起動時に削除
-    const TTL = 5 * 60 * 1000
+    // 起動時にキャッシュを精査:
+    //   当日レース → TTL 30分を超えたものを削除
+    //   過去レース → 永続（削除しない）
+    const todayStr = (() => {
+      const t = new Date()
+      return `${t.getFullYear()}${String(t.getMonth() + 1).padStart(2, '0')}${String(t.getDate()).padStart(2, '0')}`
+    })()
     Object.keys(localStorage)
       .filter(k => k.startsWith('ra-cache:'))
       .forEach(k => {
         try {
-          const { cachedAt } = JSON.parse(localStorage.getItem(k) ?? '{}')
-          if (!cachedAt || Date.now() - cachedAt > TTL) localStorage.removeItem(k)
+          const parsed = JSON.parse(localStorage.getItem(k) ?? '{}')
+          const raceDate: string = parsed?.data?.race_info?.date ?? ''
+          const isTodayOrFuture = !raceDate || raceDate >= todayStr
+          // 過去レースは削除しない。当日レースのみ TTL チェック。
+          if (isTodayOrFuture && (!parsed.cachedAt || Date.now() - parsed.cachedAt > CACHE_TTL_MS)) {
+            localStorage.removeItem(k)
+          }
         } catch { localStorage.removeItem(k) }
       })
   }, [])
@@ -80,7 +91,9 @@ export default function PredictBatchPage() {
       const res = await fetch('/api/models?ultimate=true')
       if (res.ok) {
         const data = await res.json()
-        setModels(data.models || [])
+        // model_id 降順（YYYYMMDD_HHMMSS 末尾）で最新モデルを先頭に
+        const sorted = (data.models || []).sort((a: any, b: any) => b.model_id.localeCompare(a.model_id))
+        setModels(sorted)
       }
     } catch {}
   }
@@ -197,7 +210,13 @@ export default function PredictBatchPage() {
             if (result.success && !firstOk) firstOk = raceId
             if (result.success && result.data) {
               try {
-                localStorage.setItem(`ra-cache:${raceId}`, JSON.stringify({ data: result.data, cachedAt: Date.now() }))
+                const cachedAt = Date.now()
+                // モデルIDなしキー（決打）
+                localStorage.setItem(`ra-cache:${raceId}`, JSON.stringify({ data: result.data, cachedAt }))
+                // モデルIDありキー（モデル別予測結果分析ページで即利用）
+                if (modelId) {
+                  localStorage.setItem(`ra-cache:${raceId}__${modelId}`, JSON.stringify({ data: result.data, cachedAt }))
+                }
               } catch {}
             }
             setResults(prev => ({ ...prev, [raceId]: result }))

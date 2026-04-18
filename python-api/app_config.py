@@ -104,20 +104,45 @@ except ImportError:
 # ── モデルヘルパー ──────────────────────────────────────────────────
 
 
+def _model_sort_key(path: "Path") -> "datetime":
+    """ファイル名から学習日時を抽出してソートキーに使う。
+
+    対応フォーマット:
+      model_win_lightgbm_20260308_044017_ultimate.joblib  → 2026-03-08 04:40:17
+      model_win_lightgbm_20160101_20260322_20260418_1923.joblib → 2026-04-18 19:23:00
+
+    ファイル名に日時が含まれない場合は st_mtime にフォールバック。
+    """
+    import re
+    from datetime import datetime as _dt
+    stem = path.stem.replace("_ultimate", "")
+    # ファイル名末尾の YYYYMMDD_HHMMSS または YYYYMMDD_HHMM を探す
+    m = re.search(r"(\d{8})_(\d{4,6})$", stem)
+    if m:
+        date_part = m.group(1)
+        time_part = m.group(2).ljust(6, "0")  # HHMM → HHMMSS 相当に揃える
+        try:
+            return _dt.strptime(date_part + time_part, "%Y%m%d%H%M%S")
+        except ValueError:
+            pass
+    return _dt.fromtimestamp(path.stat().st_mtime)
+
+
 def get_latest_model() -> Optional[Path]:
     """最新の win モデルファイルを返す（rank/no_odds モデルは除外）
-    
+
     [L3-2] model_win_* を優先検索。該当なければ全 model_* から最新を返す。
+    ファイル名内の学習日時（YYYYMMDD_HHMMSS）でソートするため、
+    コピー・移動によるファイルシステムの st_mtime 変化に影響されない。
     """
-    # win モデルを優先（rank/no_odds は推論の保険用モデルのため通常は選ばない）
-    win_models = list(MODELS_DIR.glob("model_win_*_ultimate.joblib"))
+    win_models = list(MODELS_DIR.glob("model_win_*.joblib"))
     if win_models:
-        return max(win_models, key=lambda p: p.stat().st_mtime)
+        return max(win_models, key=_model_sort_key)
     # フォールバック: 全モデルから最新
     models = list(MODELS_DIR.glob("model_*.joblib"))
     if not models:
         return None
-    return max(models, key=lambda p: p.stat().st_mtime)
+    return max(models, key=_model_sort_key)
 
 
 def verify_feature_columns(

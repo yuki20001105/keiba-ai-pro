@@ -457,6 +457,7 @@ class RaceAnalyzer:
         
         return {
             'difficulty_score': round(difficulty_score, 3),
+            'confidence': round(difficulty_score, 3),
             'recommended_action': recommended_action,
             'nakaana_chance': nakaana,
             'season_bonus': season_bonus,

@@ -43,14 +43,9 @@ def _get_catalog() -> FeatureCatalog:
 
 
 def _find_latest_model(target: str) -> Path | None:
-    """指定ターゲットの最新 ultimate モデルを返す。"""
-    pattern = f"model_{target}_*_ultimate.joblib"
-    candidates = sorted(MODELS_DIR.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
-    if candidates:
-        return candidates[0]
-    # ultimate なしでフォールバック
-    fallback = sorted(MODELS_DIR.glob(f"model_{target}_*.joblib"), key=lambda p: p.stat().st_mtime, reverse=True)
-    return fallback[0] if fallback else None
+    """指定ターゲットの最新モデルを返す。"""
+    candidates = sorted(MODELS_DIR.glob(f"model_{target}_*.joblib"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates[0] if candidates else None
 
 
 def _build_desc_map(catalog: FeatureCatalog) -> dict[str, str]:
@@ -126,7 +121,11 @@ def get_importance(
         raise HTTPException(status_code=500, detail=f"モデルロードエラー: {e}")
 
     booster = bundle.get("model")
-    feature_names: list[str] = bundle.get("feature_names", [])
+    feature_names: list[str] = (
+        bundle.get("feature_columns")
+        or bundle.get("feature_names")
+        or []
+    )
 
     if booster is None:
         raise HTTPException(status_code=500, detail="バンドルに 'model' キーがありません")
@@ -186,7 +185,12 @@ def get_coverage(
         try:
             bundle = joblib.load(model_path)
             booster = bundle.get("model")
-            bundle_names: list[str] = bundle.get("feature_names", [])
+            # "feature_columns" は train.py が保存するキー名
+            bundle_names: list[str] = (
+                bundle.get("feature_columns")
+                or bundle.get("feature_names")
+                or []
+            )
             if booster is not None and not bundle_names:
                 if hasattr(booster, "feature_name"):
                     bundle_names = booster.feature_name()
