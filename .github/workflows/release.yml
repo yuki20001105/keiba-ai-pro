@@ -12,6 +12,8 @@ jobs:
   notify:
     name: Release Notification
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # GitHub Release 作成に必要
     steps:
       - uses: actions/checkout@v4
 
