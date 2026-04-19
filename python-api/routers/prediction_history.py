@@ -51,12 +51,16 @@ def _query_history(db_path: str, limit: int, race_date: Optional[str] = None) ->
                 pl.popularity,
                 pl.model_id,
                 pl.predicted_at,
-                r.finish  AS actual_finish,
-                r.time    AS finish_time,
-                r.odds    AS actual_odds
+                CAST(json_extract(rr.value, '$.finish_position') AS INTEGER) AS actual_finish,
+                json_extract(rr.value, '$.finish_time')               AS finish_time,
+                CAST(json_extract(rr.value, '$.odds') AS REAL)         AS actual_odds
             FROM prediction_log pl
-            LEFT JOIN results r
-                   ON pl.race_id = r.race_id AND pl.horse_id = r.horse_id
+            LEFT JOIN (
+                SELECT rru.race_id, jj.value
+                FROM   race_results_ultimate rru, json_each(rru.data) jj
+            ) rr
+                ON  rr.race_id = pl.race_id
+                AND json_extract(rr.value, '$.horse_id') = pl.horse_id
             WHERE 1=1 {date_filter}
             ORDER BY pl.race_date DESC, pl.race_id DESC, pl.predicted_rank ASC
             LIMIT ?
@@ -83,6 +87,12 @@ def _group_by_race(rows: list[dict]) -> list[dict]:
                 "predicted_at": row["predicted_at"],
                 "predictions": [],
             }
+        # EV = win_probability * odds - 1
+        ev: Optional[float] = None
+        wp = row["win_probability"]
+        od = row["odds"]
+        if wp is not None and od is not None and od > 0:
+            ev = round(wp * od - 1, 3)
         races[rid]["predictions"].append({
             "horse_id":        row["horse_id"],
             "horse_name":      row["horse_name"],
@@ -91,6 +101,7 @@ def _group_by_race(rows: list[dict]) -> list[dict]:
             "win_probability": row["win_probability"],
             "p_raw":           row["p_raw"],
             "odds":            row["odds"],
+            "ev":              ev,
             "actual_finish":   row["actual_finish"],
             "finish_time":     row["finish_time"],
             "actual_odds":     row["actual_odds"],
@@ -99,7 +110,7 @@ def _group_by_race(rows: list[dict]) -> list[dict]:
 
 
 def _calc_stats(races: list[dict]) -> dict:
-    """的中率・top3 命中率などの集計"""
+    """的中率・ROI・EV などの集計"""
     total = len(races)
     if total == 0:
         return {"total_races": 0}
@@ -121,11 +132,39 @@ def _calc_stats(races: list[dict]) -> dict:
         1 for r in decided
         if any(p["predicted_rank"] == 1 and (p["actual_finish"] or 99) <= 3 for p in r["predictions"])
     )
+
+    # ROI シミュレーション: predicted_rank=1 の馬に毎回100円賭けた場合
+    top1_preds = [
+        p for r in decided
+        for p in r["predictions"]
+        if p["predicted_rank"] == 1
+    ]
+    n_bets = len(top1_preds)
+    roi: Optional[float] = None
+    avg_ev: Optional[float] = None
+    positive_ev_rate: Optional[float] = None
+    if n_bets > 0:
+        # 実際のオッズ（確定値）を優先、なければ予測時オッズを使用
+        total_return = sum(
+            (p["actual_odds"] or p["odds"] or 0)
+            for p in top1_preds
+            if p["actual_finish"] == 1
+        )
+        roi = round((total_return / n_bets - 1) * 100, 1)
+
+        ev_list = [p["ev"] for p in top1_preds if p["ev"] is not None]
+        if ev_list:
+            avg_ev = round(sum(ev_list) / len(ev_list), 3)
+            positive_ev_rate = round(sum(1 for e in ev_list if e > 0) / len(ev_list) * 100, 1)
+
     return {
-        "total_races":    total,
-        "decided_races":  n,
-        "top1_win_rate":  round(top1_hit / n * 100, 1),
-        "top1_place3_rate": round(top3_hit / n * 100, 1),
+        "total_races":       total,
+        "decided_races":     n,
+        "top1_win_rate":     round(top1_hit / n * 100, 1),
+        "top1_place3_rate":  round(top3_hit / n * 100, 1),
+        "roi":               roi,
+        "avg_ev":            avg_ev,
+        "positive_ev_rate":  positive_ev_rate,
     }
 
 
@@ -174,10 +213,10 @@ async def prediction_history_by_race(
                     pl.popularity,
                     pl.model_id,
                     pl.predicted_at,
-                    r.finish  AS actual_finish,
-                    r.time    AS finish_time,
-                    r.last3f  AS actual_last3f,
-                    r.odds    AS actual_odds
+                    CAST(json_extract(rr.value, '$.finish_position') AS INTEGER) AS actual_finish,
+                    json_extract(rr.value, '$.finish_time')               AS finish_time,
+                    CAST(json_extract(rr.value, '$.last3f') AS REAL)       AS actual_last3f,
+                    CAST(json_extract(rr.value, '$.odds') AS REAL)         AS actual_odds
                 FROM prediction_log pl
                 INNER JOIN (
                     SELECT horse_id, MAX(predicted_at) AS latest_at
@@ -186,8 +225,12 @@ async def prediction_history_by_race(
                     GROUP BY horse_id
                 ) latest ON pl.horse_id = latest.horse_id
                          AND pl.predicted_at = latest.latest_at
-                LEFT JOIN results r
-                       ON pl.race_id = r.race_id AND pl.horse_id = r.horse_id
+                LEFT JOIN (
+                    SELECT rru.race_id, jj.value
+                    FROM   race_results_ultimate rru, json_each(rru.data) jj
+                ) rr
+                    ON  rr.race_id = pl.race_id
+                    AND json_extract(rr.value, '$.horse_id') = pl.horse_id
                 WHERE pl.race_id = ?
                 ORDER BY pl.predicted_rank ASC
                 """,

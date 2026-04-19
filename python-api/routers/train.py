@@ -176,24 +176,31 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
         # 学習期間フィルタ
         # race_date(YYYYMMDD, 100%充填)を優先。一致しない場合は race_id[:6] にフォールバック
         if request.training_date_from or request.training_date_to:
+            # race_date が YYYYMMDD 形式の行はそれを使用、
+            # NULL/不正な行は race_id 先頭6桁（YYYYMM）にフォールバック
+            # NOTE: `astype(str)` すると None → "None" になり "None" > "202603" となるため
+            #       to フィルタで古い行が全て除去されるバグを修正
             if "race_date" in df.columns:
-                _date_ym = df["race_date"].astype(str).str.strip().str[:6]  # YYYYMMDD → YYYYMM
-                if request.training_date_from:
-                    from_ym = request.training_date_from.replace("-", "")
-                    df = df[_date_ym >= from_ym]
-                    _date_ym = df["race_date"].astype(str).str.strip().str[:6]
-                if request.training_date_to:
-                    to_ym = request.training_date_to.replace("-", "")
-                    df = df[_date_ym <= to_ym]
-            elif "race_id" in df.columns:
-                df["_race_ym"] = df["race_id"].astype(str).str[:6]
-                if request.training_date_from:
-                    from_ym = request.training_date_from.replace("-", "")
-                    df = df[df["_race_ym"] >= from_ym]
-                if request.training_date_to:
-                    to_ym = request.training_date_to.replace("-", "")
-                    df = df[df["_race_ym"] <= to_ym]
-                df = df.drop(columns=["_race_ym"])
+                _rd_str = df["race_date"].astype(str).str.strip()
+                _has_valid_date = _rd_str.str.match(r"^\d{8}$")
+            else:
+                _rd_str = pd.Series([""] * len(df), index=df.index)
+                _has_valid_date = pd.Series([False] * len(df), index=df.index)
+
+            if "race_id" in df.columns:
+                _fallback_ym = df["race_id"].astype(str).str[:6]
+            else:
+                _fallback_ym = pd.Series(["000000"] * len(df), index=df.index)
+
+            _date_ym = _rd_str.str[:6].where(_has_valid_date, _fallback_ym)
+
+            if request.training_date_from:
+                from_ym = request.training_date_from.replace("-", "")
+                df = df[_date_ym >= from_ym]
+                _date_ym = _date_ym.loc[df.index]
+            if request.training_date_to:
+                to_ym = request.training_date_to.replace("-", "")
+                df = df[_date_ym <= to_ym]
 
         if df.empty:
             raise HTTPException(
@@ -253,6 +260,26 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
                 # 時系列分割（ランダム分割より汎化性能検証に適切）
                 X = X.reset_index(drop=True)
                 y = y.reset_index(drop=True)
+
+                _is_regression = request.target == "speed_deviation"
+                _is_ranking    = request.target == "rank"
+
+                # regression 前処理: finish_time NaN 行を分割前に除去
+                # race_results_ultimate に出馬表(shutuba)データが混在すると
+                # 時系列分割でテストセットが全 NaN になり model.predict が失敗する
+                if _is_regression:
+                    _pre_valid = y.notna().values
+                    if not _pre_valid.all():
+                        n_removed = int((~_pre_valid).sum())
+                        logger.info(
+                            f"speed_deviation 前処理: finish_time NaN {n_removed} 行を除去 "
+                            f"({int(_pre_valid.sum())} 行が有効)"
+                        )
+                        X = X.loc[_pre_valid].reset_index(drop=True)
+                        y = y.loc[_pre_valid].reset_index(drop=True)
+                        # df のインデックスを同期（race_date が時系列分割に使用される）
+                        df = df.reset_index(drop=True).loc[_pre_valid].reset_index(drop=True)
+
                 _time_split = False
                 if "race_date" in df.columns:
                     _dates = pd.to_datetime(
@@ -269,8 +296,6 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
                         y_test = y.loc[_te_mask]
                         _time_split = True
                         logger.info(f"時系列分割: 学習 {_tr_mask.sum()}行, テスト {_te_mask.sum()}行")
-                _is_regression = request.target == "speed_deviation"
-                _is_ranking    = request.target == "rank"
                 if not _time_split:
                     if _is_regression:
                         X_train, X_test, y_train, y_test = train_test_split(

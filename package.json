@@ -18,7 +18,14 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
-    "test:e2e:report": "playwright show-report e2e-report"
+    "test:e2e:report": "playwright show-report e2e-report",
+    "verify:skills": "tsx scripts/verify-skills.ts",
+    "verify:harvester": "tsx .github/skills/harvester/verify.ts",
+    "verify:trainer": "tsx .github/skills/trainer/verify.ts",
+    "verify:oracle": "tsx .github/skills/oracle/verify.ts",
+    "verify:ledger": "tsx .github/skills/ledger/verify.ts",
+    "verify:sysop": "tsx .github/skills/sysop/verify.ts",
+    "verify:jobs": "tsx .github/skills/jobs/verify.ts"
   },
   "dependencies": {
     "@google-cloud/vision": "^4.1.0",
@@ -53,6 +60,7 @@
     "jsdom": "^29.0.2",
     "postcss": "^8",
     "tailwindcss": "^3.3.0",
+    "tsx": "^4.21.0",
     "typescript": "^5",
     "vitest": "^4.1.4"
   }

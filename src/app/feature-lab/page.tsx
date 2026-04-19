@@ -81,7 +81,7 @@ export default function FeatureLabPage() {
     setError(null)
     try {
       const url = `/api/features/importance?target=${target}&top_n=${topN}&importance_type=${importanceType}`
-      const res = await fetch(url, { signal: AbortSignal.timeout(30000) })
+      const res = await authFetch(url, { signal: AbortSignal.timeout(30000) })
       if (!res.ok) {
         const d = await res.json().catch(() => ({}))
         throw new Error(d.detail || `HTTP ${res.status}`)

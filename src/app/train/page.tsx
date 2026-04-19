@@ -22,6 +22,7 @@ export default function TrainPage() {
   const [trainResult, setTrainResult] = useState<any>(null)
   const [models, setModels] = useState<any[]>([])
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [activatingId, setActivatingId] = useState<string | null>(null)
   const [jobId, setJobId] = useState<string | null>(null)
   const [toast, setToast] = useState({ visible: false, message: '', type: 'success' as 'success' | 'error' })
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
@@ -53,7 +54,7 @@ export default function TrainPage() {
 
   const loadModels = async () => {
     try {
-      const res = await authFetch(`/api/models?ultimate=true`)
+      const res = await authFetch(`/api/models`)
       if (res.ok) { const d = await res.json(); setModels(d.models || []) }
     } catch {}
   }
@@ -69,12 +70,69 @@ export default function TrainPage() {
       const res = await authFetch(`/api/models/${modelId}`, { method: 'DELETE' })
       if (!res.ok) throw new Error('削除失敗')
       loadModels()
-      showToast(`モデル ${modelId.slice(0, 8)}... を削除しました`)
+      showToast(`モデルを削除しました`)
     } catch {
       showToast('削除に失敗しました', 'error')
     } finally {
       setDeletingId(null)
     }
+  }
+
+  const handleActivateModel = async (modelId: string) => {
+    setActivatingId(modelId)
+    try {
+      const res = await authFetch(`/api/models/${modelId}/activate`, { method: 'PUT' })
+      if (!res.ok) throw new Error('切り替え失敗')
+      loadModels()
+      showToast('使用モデルを切り替えました')
+    } catch {
+      showToast('モデルの切り替えに失敗しました', 'error')
+    } finally {
+      setActivatingId(null)
+    }
+  }
+
+  const TARGET_LABELS: Record<string, string> = {
+    win: '単勝（1着予測）',
+    place3: '複勝（3着以内）',
+    speed_deviation: '速度偏差（回帰）',
+    win_tie: 'タイム同着',
+  }
+
+  const MODEL_TYPE_LABELS: Record<string, string> = {
+    lightgbm: 'LightGBM',
+    lightgbm_rank: 'LightGBM Rank',
+    lightgbm_no_odds: 'LightGBM (No Odds)',
+    logistic_regression: 'Logistic Regression',
+  }
+
+  /** model_id の末尾 YYYYMMDD_HHMM を "YYYY/MM/DD HH:MM" に変換 */
+  const parseCreatedDate = (modelId: string, createdAt?: string): string => {
+    if (createdAt && createdAt !== 'unknown') {
+      const d = new Date(createdAt)
+      if (!isNaN(d.getTime())) {
+        return d.toLocaleString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+      }
+    }
+    // model_id 末尾パターン: _YYYYMMDD_HHMM
+    const m = modelId.match(/_(\d{8})_(\d{4})(?:_\d+)?\.?joblib?$/) ||
+              modelId.match(/_(\d{8})_(\d{4})$/)
+    if (m) {
+      const [, d, t] = m
+      return `${d.slice(0,4)}/${d.slice(4,6)}/${d.slice(6,8)} ${t.slice(0,2)}:${t.slice(2,4)}`
+    }
+    return '—'
+  }
+
+  /** 学習期間を "YYYY/MM/DD 〜 YYYY/MM/DD" に整形 */
+  const formatDateRange = (from?: string, to?: string): string => {
+    const fmt = (s?: string) => {
+      if (!s) return '?'
+      if (s.length === 8) return `${s.slice(0,4)}/${s.slice(4,6)}/${s.slice(6,8)}`
+      return s.replace(/-/g, '/')
+    }
+    if (!from && !to) return ''
+    return `${fmt(from)} 〜 ${fmt(to)}`
   }
 
   const handleTrain = async () => {
@@ -292,7 +350,10 @@ export default function TrainPage() {
 
         <div>
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-medium text-[#888]">保存済みモデル</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-medium text-[#888]">保存済みモデル</h2>
+              <span className="text-xs text-[#444]">({models.length}件)</span>
+            </div>
             <Link
               href="/feature-lab"
               className="flex items-center gap-1 text-xs text-[#555] hover:text-[#aaa] transition-colors"
@@ -305,35 +366,77 @@ export default function TrainPage() {
               <div className="p-8 text-center text-[#555] text-sm">モデルがありません</div>
             ) : (
               <div className="divide-y divide-[#1a1a1a]">
-                {models.map((m, i) => (
-                  <div key={i} className="flex items-center justify-between px-5 py-4 hover:bg-[#161616] transition-colors">
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-medium font-mono">{m.model_id}</div>
-                      <div className="text-xs text-[#555] mt-0.5">{m.target} | {m.model_type}</div>
-                      {(m.training_date_from || m.training_date_to) && (
-                        <div className="text-xs text-[#666] mt-1">
-                          期間: {m.training_date_from ?? '?'} 〜 {m.training_date_to ?? '?'}
+                {models.map((m, i) => {
+                  const targetLabel = TARGET_LABELS[m.target] ?? m.target ?? '不明'
+                  const typeLabel = MODEL_TYPE_LABELS[m.model_type] ?? m.model_type ?? '不明'
+                  const createdDate = parseCreatedDate(m.model_id, m.created_at)
+                  const dateRange = formatDateRange(m.training_date_from, m.training_date_to)
+                  const aucVal = m.auc ? m.auc.toFixed(4) : '—'
+                  const cvVal = m.cv_auc_mean && m.cv_auc_mean > 0 ? m.cv_auc_mean.toFixed(4) : '—'
+                  const isActivating = activatingId === m.model_id
+                  const isDeleting = deletingId === m.model_id
+                  return (
+                    <div
+                      key={i}
+                      className={`px-5 py-4 hover:bg-[#161616] transition-colors ${m.is_active ? 'border-l-2 border-[#4ade80]' : ''}`}
+                    >
+                      {/* 1行目: ターゲット名 + アクティブバッジ + AUC */}
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="text-sm font-medium text-white">{targetLabel}</span>
+                          <span className="text-xs text-[#555]">{typeLabel}</span>
+                          {m.is_active && (
+                            <span className="shrink-0 text-xs px-1.5 py-0.5 rounded bg-[#0a2a0a] text-[#4ade80] border border-[#1a4a1a] font-medium">
+                              使用中
+                            </span>
+                          )}
                         </div>
-                      )}
-                      {m.n_rows > 0 && (
-                        <div className="text-xs text-[#444] mt-0.5">{m.n_rows.toLocaleString()} 件</div>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-4 ml-4 shrink-0">
-                      <div className="text-right">
-                        <div className="text-sm text-[#4ade80] font-medium">AUC {m.auc?.toFixed(4)}</div>
-                        <div className="text-xs text-[#555]">CV {m.cv_auc_mean?.toFixed(4)}</div>
+                        <div className="text-right shrink-0">
+                          <div className={`text-sm font-medium tabular-nums ${
+                            !m.auc ? 'text-[#555]' :
+                            m.auc >= 0.80 ? 'text-[#4ade80]' :
+                            m.auc >= 0.70 ? 'text-[#60a5fa]' : 'text-[#facc15]'
+                          }`}>AUC {aucVal}</div>
+                          {cvVal !== '—' && (
+                            <div className="text-xs text-[#555] tabular-nums">CV {cvVal}</div>
+                          )}
+                        </div>
                       </div>
-                      <button
-                        onClick={() => handleDeleteModel(m.model_id)}
-                        disabled={deletingId === m.model_id}
-                        className="text-xs text-[#555] hover:text-red-400 transition-colors disabled:opacity-40 px-2 py-1"
-                      >
-                        {deletingId === m.model_id ? '...' : '削除'}
-                      </button>
+                      {/* 2行目: 作成日時 + 学習期間 */}
+                      <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-[#555]">
+                        <span>作成: {createdDate}</span>
+                        {dateRange && <span>学習期間: {dateRange}</span>}
+                        {m.feature_count > 0 && <span>特徴量: {m.feature_count}個</span>}
+                        {m.n_rows > 0 && <span>{m.n_rows.toLocaleString()}件</span>}
+                      </div>
+                      {/* 3行目: アクション */}
+                      <div className="mt-3 flex items-center gap-2">
+                        {!m.is_active && (
+                          <button
+                            onClick={() => handleActivateModel(m.model_id)}
+                            disabled={isActivating}
+                            className="text-xs px-3 py-1 rounded border border-[#333] text-[#aaa] hover:border-[#555] hover:text-white transition-colors disabled:opacity-40"
+                          >
+                            {isActivating ? '切替中...' : '使用する'}
+                          </button>
+                        )}
+                        <div className="flex-1" />
+                        <button
+                          onClick={() => handleDeleteModel(m.model_id)}
+                          disabled={isDeleting || m.is_active}
+                          title={m.is_active ? '使用中のモデルは削除できません' : '削除'}
+                          className="text-xs text-[#555] hover:text-red-400 transition-colors disabled:opacity-30 px-2 py-1"
+                        >
+                          {isDeleting ? '...' : '削除'}
+                        </button>
+                      </div>
+                      {/* モデルID（折りたたみ用の小さいテキスト） */}
+                      <div className="mt-1 text-[10px] text-[#333] font-mono truncate" title={m.model_id}>
+                        {m.model_id}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             )}
           </div>

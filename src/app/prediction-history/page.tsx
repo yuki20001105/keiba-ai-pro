@@ -14,6 +14,7 @@ type PredictionEntry = {
   win_probability: number
   p_raw: number
   odds: number | null
+  ev: number | null
   actual_finish: number | null
   finish_time: string | null
   actual_odds: number | null
@@ -34,6 +35,9 @@ type Stats = {
   decided_races?: number
   top1_win_rate?: number
   top1_place3_rate?: number
+  roi?: number | null
+  avg_ev?: number | null
+  positive_ev_rate?: number | null
 }
 
 // ── ユーティリティ ───────────────────────────────────────────────────
@@ -59,6 +63,27 @@ function HitBadge({ predicted, actual }: { predicted: number; actual: number | n
   if (predicted <= 3 && actual <= 3)
     return <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 font-medium">圏内</span>
   return null
+}
+
+function EvBadge({ ev }: { ev: number | null }) {
+  if (ev === null) return null
+  if (ev >= 0.2)
+    return (
+      <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-medium">
+        EV+{(ev * 100).toFixed(0)}%
+      </span>
+    )
+  if (ev > 0)
+    return (
+      <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/10 text-yellow-600 font-medium">
+        EV+{(ev * 100).toFixed(0)}%
+      </span>
+    )
+  return (
+    <span className="text-[10px] text-[#444]">
+      EV{(ev * 100).toFixed(0)}%
+    </span>
+  )
 }
 
 // ── 子コンポーネント: レースカード ───────────────────────────────────
@@ -114,6 +139,7 @@ function RaceCard({ race }: { race: RaceHistory }) {
               <th className="text-left py-1 font-normal w-6">予</th>
               <th className="text-left py-1 font-normal">馬名</th>
               <th className="text-right py-1 font-normal">確率</th>
+              <th className="text-right py-1 font-normal">EV</th>
               <th className="text-right py-1 font-normal">オッズ</th>
               <th className="text-right py-1 font-normal">実際</th>
               <th className="text-right py-1 font-normal w-16"></th>
@@ -130,6 +156,9 @@ function RaceCard({ race }: { race: RaceHistory }) {
                 </td>
                 <td className="py-1 text-right text-[#4a9eff]">
                   {p.win_probability != null ? `${(p.win_probability * 100).toFixed(1)}%` : '—'}
+                </td>
+                <td className="py-1 text-right">
+                  <EvBadge ev={p.ev} />
                 </td>
                 <td className="py-1 text-right text-[#888]">
                   {p.odds != null ? `${p.odds.toFixed(1)}倍` : '—'}
@@ -209,18 +238,48 @@ export default function PredictionHistoryPage() {
 
         {/* サマリー統計 */}
         {stats && stats.total_races > 0 && (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
-            {[
-              { label: '予測済みレース', value: `${stats.total_races}レース` },
-              { label: '結果確定', value: stats.decided_races != null ? `${stats.decided_races}レース` : '—' },
-              { label: '予測1位 単勝的中率', value: stats.top1_win_rate != null ? `${stats.top1_win_rate}%` : '—' },
-              { label: '予測1位 複勝的中率', value: stats.top1_place3_rate != null ? `${stats.top1_place3_rate}%` : '—' },
-            ].map(s => (
-              <div key={s.label} className="bg-[#111] border border-[#1e1e1e] rounded-lg px-4 py-3">
-                <div className="text-[10px] text-[#555] mb-1">{s.label}</div>
-                <div className="text-lg font-semibold">{s.value}</div>
+          <div className="mb-6 space-y-3">
+            {/* 基本指標 */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {[
+                { label: '予測済みレース', value: `${stats.total_races}レース` },
+                { label: '結果確定', value: stats.decided_races != null ? `${stats.decided_races}レース` : '—' },
+                { label: '予測1位 単勝的中率', value: stats.top1_win_rate != null ? `${stats.top1_win_rate}%` : '—' },
+                { label: '予測1位 複勝的中率', value: stats.top1_place3_rate != null ? `${stats.top1_place3_rate}%` : '—' },
+              ].map(s => (
+                <div key={s.label} className="bg-[#111] border border-[#1e1e1e] rounded-lg px-4 py-3">
+                  <div className="text-[10px] text-[#555] mb-1">{s.label}</div>
+                  <div className="text-lg font-semibold">{s.value}</div>
+                </div>
+              ))}
+            </div>
+            {/* ROI / EV 指標 */}
+            {stats.roi != null && (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className={`border rounded-lg px-4 py-3 ${
+                  stats.roi >= 0 ? 'bg-emerald-950/30 border-emerald-800/40' : 'bg-red-950/20 border-red-900/30'
+                }`}>
+                  <div className="text-[10px] text-[#555] mb-1">シミュレーションROI（予測1位に一律賭け）</div>
+                  <div className={`text-xl font-bold ${stats.roi >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {stats.roi >= 0 ? '+' : ''}{stats.roi}%
+                  </div>
+                </div>
+                {stats.avg_ev != null && (
+                  <div className="bg-[#111] border border-[#1e1e1e] rounded-lg px-4 py-3">
+                    <div className="text-[10px] text-[#555] mb-1">平均期待値（予測1位）</div>
+                    <div className={`text-lg font-semibold ${stats.avg_ev >= 0 ? 'text-emerald-400' : 'text-[#888]'}`}>
+                      {stats.avg_ev >= 0 ? '+' : ''}{(stats.avg_ev * 100).toFixed(1)}%
+                    </div>
+                  </div>
+                )}
+                {stats.positive_ev_rate != null && (
+                  <div className="bg-[#111] border border-[#1e1e1e] rounded-lg px-4 py-3">
+                    <div className="text-[10px] text-[#555] mb-1">期待値プラス割合</div>
+                    <div className="text-lg font-semibold">{stats.positive_ev_rate}%</div>
+                  </div>
+                )}
               </div>
-            ))}
+            )}
           </div>
         )}
 

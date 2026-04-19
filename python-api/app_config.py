@@ -251,3 +251,34 @@ def load_model_bundle(model_path: Path) -> Dict[str, Any]:
         return joblib.load(model_path)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"モデルのロードに失敗: {str(e)}")
+
+
+# ── アクティブモデル管理 ──────────────────────────────────────────────────
+# python-api/models/.active_model.json に {"model_id": "..."} を保存。
+# 未設定時は get_latest_model() が返すファイルを使用する（後方互換）。
+
+_ACTIVE_MODEL_FILE = MODELS_DIR / ".active_model.json"
+
+
+def get_active_model_id() -> Optional[str]:
+    """アクティブモデル ID を返す。未設定なら None。"""
+    import json as _json
+    try:
+        if _ACTIVE_MODEL_FILE.exists():
+            data = _json.loads(_ACTIVE_MODEL_FILE.read_text(encoding="utf-8"))
+            model_id = data.get("model_id")
+            if model_id and (MODELS_DIR / f"{model_id}.joblib").exists():
+                return model_id
+    except Exception:
+        pass
+    return None
+
+
+def set_active_model_id(model_id: str) -> None:
+    """アクティブモデル ID を永続化する。"""
+    import json as _json
+    _ACTIVE_MODEL_FILE.write_text(
+        _json.dumps({"model_id": model_id}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    logger.info(f"[active_model] 更新: {model_id}")

@@ -1,0 +1,19 @@
+2026-04-19 20:23:07,454 - INFO - ================================================================================
+2026-04-19 20:23:07,454 - INFO - app_config ロード開始
+2026-04-19 20:23:07,455 - INFO - ログファイル: C:\Users\yuki2\Documents\ws\keiba-ai-pro\python-api\optuna_debug.log
+2026-04-19 20:23:07,455 - INFO - ================================================================================
+2026-04-19 20:23:07,469 - INFO - Supabase クライアント読み込み成功
+2026-04-19 20:23:07,470 - INFO - Supabase データ操作: 無効（認証専用モード）
+2026-04-19 20:23:07,821 - DEBUG - Using proactor: IocpProactor
+INFO:     Started server process [4000]
+INFO:     Waiting for application startup.
+2026-04-19 20:23:07,875 - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2026-04-19 20:23:07,876 - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2026-04-19 20:23:07,876 - INFO - Added job "_job_scrape_yesterday" to job store "default"
+2026-04-19 20:23:07,877 - INFO - Added job "_job_scrape_today" to job store "default"
+2026-04-19 20:23:07,877 - INFO - Scheduler started
+2026-04-19 20:23:07,877 - INFO - [scheduler] 起動完了 (tz=Asia/Tokyo)
+2026-04-19 20:23:07,877 - DEBUG - Looking for jobs to run
+2026-04-19 20:23:07,878 - DEBUG - Next wakeup is due at 2026-04-19 21:00:00+09:00 (in 2212.121088 seconds)
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)

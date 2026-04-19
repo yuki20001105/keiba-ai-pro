@@ -2,9 +2,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { ML_API_URL } from '@/lib/backend-url'
 
 // Proxy for /api/features/summary
-export async function GET(_request: NextRequest) {
+export async function GET(request: NextRequest) {
   try {
+    const authHeader = request.headers.get('Authorization') || ''
     const response = await fetch(`${ML_API_URL}/api/features/summary`, {
+      headers: authHeader ? { Authorization: authHeader } : {},
       signal: AbortSignal.timeout(30_000),
     })
     const data = await response.json()

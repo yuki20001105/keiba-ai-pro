@@ -22,6 +22,7 @@ from app_config import (  # type: ignore
     get_latest_model,
     load_model_bundle,
     _ensure_model_local,
+    get_active_model_id,
     logger,
 )
 from deps.pred_limit import check_and_consume_pred_count  # type: ignore
@@ -141,13 +142,20 @@ POST_RACE_FIELDS = FUTURE_FIELDS
 # ── モジュールレベルヘルパー ──────────────────────────────────────────
 
 def _resolve_model_path(model_id: "str | None") -> "Path":
-    """model_id 指定 → ローカル確認 → Supabase フォールバックの順でモデルパスを解決する。"""
+    """model_id 指定 → アクティブモデル → latest の順でモデルパスを解決する。"""
     from app_config import list_models_from_supabase  # type: ignore
     if model_id:
         p = _ensure_model_local(model_id)
         if not p:
             raise HTTPException(status_code=404, detail=f"モデル {model_id} が見つかりません")
         return p
+    # アクティブモデルが設定されていればそれを使う
+    active_id = get_active_model_id()
+    if active_id:
+        p = _ensure_model_local(active_id)
+        if p:
+            return p
+    # フォールバック: 最新 win モデル
     p = get_latest_model()
     if p is None and SUPABASE_DATA_ENABLED and get_supabase_client():
         sb_models = list_models_from_supabase()

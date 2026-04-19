@@ -1,16 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { ML_API_URL } from '@/lib/backend-url'
 
-// Proxy for /api/features/coverage
-export async function GET(request: NextRequest) {
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
   try {
-    const { searchParams } = new URL(request.url)
-    const query = searchParams.toString()
-    const url = `${ML_API_URL}/api/features/coverage${query ? `?${query}` : ''}`
+    const { id } = await params
     const authHeader = request.headers.get('Authorization') || ''
-    const response = await fetch(url, {
+    const response = await fetch(`${ML_API_URL}/api/models/${id}/activate`, {
+      method: 'PUT',
       headers: authHeader ? { Authorization: authHeader } : {},
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(10_000),
     })
     const data = await response.json()
     return NextResponse.json(data, { status: response.status })
