@@ -1,5 +1,6 @@
 'use client'
 import { useState, useEffect, useCallback } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { Logo } from '@/components/Logo'
 import Link from 'next/link'
 import type { RaceItem } from '@/lib/types'
@@ -8,7 +9,6 @@ import { useRaceCache } from '@/hooks/useRaceCache'
 import { RacePredictionPanel } from '@/components/RacePredictionPanel'
 import { RaceFeaturePanel } from '@/components/RaceFeaturePanel'
 import type { RacePredictResult, FeatureData } from '@/lib/race-analysis-types'
-import { supabase } from '@/lib/supabase'
 import { authFetch } from '@/lib/auth-fetch'
 
 // ── 結果照合タブの型 ─────────────────────────────────────────────────
@@ -38,7 +38,11 @@ type PredictionHistoryResult = {
 }
 
 export default function RaceAnalysisPage() {
-  const [date, setDate] = useState(todayStr())
+  const searchParams = useSearchParams()
+  const initialDate = searchParams.get('date') ?? todayStr()
+  const initialRaceId = searchParams.get('race_id') ?? ''
+
+  const [date, setDate] = useState(initialDate)
   const [races, setRaces] = useState<RaceItem[]>([])
   const [racesLoading, setRacesLoading] = useState(false)
   const [selectedRaceId, setSelectedRaceId] = useState('')
@@ -68,10 +72,7 @@ export default function RaceAnalysisPage() {
     setResultLoading(true)
     setResultData(null)
     try {
-      const { data: { session } } = await supabase.auth.getSession()
-      const authHeader = session?.access_token ? `Bearer ${session.access_token}` : ''
-      const res = await fetch(`/api/prediction-history/${raceId}`, {
-        headers: { ...(authHeader ? { Authorization: authHeader } : {}) },
+      const res = await authFetch(`/api/prediction-history/${raceId}`, {
         signal: AbortSignal.timeout(15_000),
       })
       if (res.ok) setResultData(await res.json())
@@ -107,13 +108,30 @@ export default function RaceAnalysisPage() {
     setError('')
     try {
       const d = date.replace(/-/g, '')
-      const res = await fetch(`/api/races/by-date?date=${d}`)
-      if (res.ok) setRaces((await res.json()).races || [])
+      const res = await authFetch(`/api/races/by-date?date=${d}`)
+      if (res.ok) {
+        const fetchedRaces: RaceItem[] = (await res.json()).races || []
+        setRaces(fetchedRaces)
+        if (initialRaceId && fetchedRaces.some(r => r.race_id === initialRaceId)) {
+          // useEffect(レース監視)がロードするのでここでは設定のみ
+          setSelectedRaceId(initialRaceId)
+        }
+      }
     } catch { }
     finally { setRacesLoading(false) }
-  }, [date])
+  }, [date, initialRaceId])
 
   useEffect(() => { loadRaces() }, [loadRaces])
+
+  // URL パラメータで race_id が指定されている場合、レース一覧ロード後に自動選択
+  useEffect(() => {
+    if (initialRaceId && races.length > 0 && !selectedRaceId) {
+      if (races.some(r => r.race_id === initialRaceId)) {
+        loadRaceData(initialRaceId)
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [races])
 
   const loadRaceData = useCallback(async (raceId: string, forceRefresh = false, modelId?: string) => {
     const effectiveModelId = modelId ?? selectedModelId
@@ -131,7 +149,7 @@ export default function RaceAnalysisPage() {
         setFromCache(true)
         setCachedAt(cached.cachedAt)
         if (!cached.featData) {
-          fetch(`/api/debug/race/${raceId}/features`)
+          authFetch(`/api/debug/race/${raceId}/features`)
             .then(r => r.ok ? r.json() : null)
             .then(feat => { if (feat) { setFeatData(feat); raceCache.updateFeat(cacheKey, feat) } })
             .catch(() => {})
@@ -150,12 +168,12 @@ export default function RaceAnalysisPage() {
       const body: Record<string, unknown> = { race_id: raceId, bankroll: 10000, risk_mode: 'balanced' }
       if (effectiveModelId) body.model_id = effectiveModelId
       const [predRes, featRes] = await Promise.all([
-        fetch('/api/analyze-race', {
+        authFetch('/api/analyze-race', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         }),
-        fetch(`/api/debug/race/${raceId}/features`),
+        authFetch(`/api/debug/race/${raceId}/features`),
       ])
       if (!predRes.ok) {
         const e = await predRes.json()
@@ -172,7 +190,7 @@ export default function RaceAnalysisPage() {
       setError(e instanceof Error ? e.message : 'エラーが発生しました')
       // 予測失敗時でもDBの出走馬データを取得して表示する
       try {
-        const fbRes = await fetch(`/api/races/${raceId}/horses`)
+        const fbRes = await authFetch(`/api/races/${raceId}/horses`)
         if (fbRes.ok) {
           const fb = await fbRes.json()
           if (fb.horses?.length > 0) setFallbackHorses(fb)
@@ -238,7 +256,9 @@ export default function RaceAnalysisPage() {
                 }}
                 className="w-full px-2 py-1.5 bg-[#111] border border-[#1e1e1e] rounded text-white text-xs focus:outline-none focus:border-[#333] truncate"
               >
-                <option value="">最新モデル（自動）</option>
+                <option value="">
+                  最新モデル（自動）{models.length > 0 ? ` — ${models[0].model_id.replace(/_ultimate$/, '').replace(/^model_/, '')}` : ''}
+                </option>
                 {models.map(m => (
                   <option key={m.model_id} value={m.model_id}>
                     {m.model_id.replace(/_ultimate$/, '').replace(/^model_/, '')}
@@ -519,12 +539,12 @@ function ResultComparePanel({
             </tr>
           </thead>
           <tbody>
-            {data.predictions.map(p => {
+            {data.predictions.map((p, idx) => {
               const isTop = p.predicted_rank <= 3
               const won = p.actual_finish === 1
               const placed = (p.actual_finish ?? 99) <= 3
               return (
-                <tr key={p.horse_id || p.horse_number}
+                <tr key={`${p.horse_id ?? p.horse_number}-${idx}`}
                   className={`border-t border-[#111] ${isTop ? 'text-white' : 'text-[#666]'}`}>
                   <td className="px-4 py-2 text-[#444]">{p.predicted_rank}</td>
                   <td className="px-4 py-2">

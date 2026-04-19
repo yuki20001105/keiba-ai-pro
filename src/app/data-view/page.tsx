@@ -2,6 +2,7 @@
 import { useState, useEffect } from 'react'
 import { Logo } from '@/components/Logo'
 import Link from 'next/link'
+import { authFetch } from '@/lib/auth-fetch'
 
 type RaceItem = { race_id: string; race_name: string; venue: string; race_no: number; distance: number; track_type: string; num_horses: number }
 type RawData = { race_id: string; race_info_columns: string[]; horse_columns: string[]; race_info: Record<string, unknown>; horses: Record<string, unknown>[] }
@@ -62,7 +63,7 @@ export default function DataViewPage() {
     setError('')
     try {
       const d = date.replace(/-/g, '')
-      const res = await fetch(`/api/races/by-date?date=${d}`)
+      const res = await authFetch(`/api/races/by-date?date=${d}`)
       if (res.ok) {
         const data = await res.json()
         setRaces(data.races || [])
@@ -79,8 +80,8 @@ export default function DataViewPage() {
     setFeatData(null)
     try {
       const [rawRes, featRes] = await Promise.all([
-        fetch(`/api/debug/race/${raceId}`),
-        fetch(`/api/debug/race/${raceId}/features`),
+        authFetch(`/api/debug/race/${raceId}`),
+        authFetch(`/api/debug/race/${raceId}/features`),
       ])
       if (!rawRes.ok) { const e = await rawRes.json(); throw new Error(e.detail || `HTTP ${rawRes.status}`) }
       const [raw, feat] = await Promise.all([rawRes.json(), featRes.ok ? featRes.json() : null])

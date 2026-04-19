@@ -9,11 +9,30 @@ import {
   ResponsiveContainer, ReferenceLine, CartesianGrid, Cell,
 } from 'recharts'
 import { authFetch } from '@/lib/auth-fetch'
+import { JRA_VENUES } from '@/lib/types'
 
 type Bet = {
   id: number | string; race_id: string; purchase_date: string | null; created_at: string
   bet_type: string; strategy_type: string; total_cost: number
-  actual_return: number | null; is_hit: boolean; season: string
+  actual_return: number | null; is_hit: boolean; season: string; venue?: string
+  combinations?: string[]
+}
+
+// race_id (YYYYMMDDVVRR) → { date, venueCode, venueLabel, raceNo }
+function parseRaceId(raceId: string) {
+  const date = raceId.slice(0, 8)   // '20260902'
+  const vc   = raceId.slice(8, 10)  // '08'
+  const rno  = raceId.slice(10, 12) // '03'
+  const venue = JRA_VENUES.find(v => v.code === vc)
+  return {
+    date,
+    venueCode: vc,
+    venueLabel: venue?.name ?? vc,
+    raceNo: rno ? String(parseInt(rno, 10)) : '',
+    dateLabel: date.length === 8
+      ? `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}`
+      : date,
+  }
 }
 type BetTypeStat = {
   bet_type: string; count: number; total_cost: number; total_return: number
@@ -46,18 +65,20 @@ function ResultInputRow({
   onSave: (updated: Bet) => void
   onClose: () => void
 }) {
+  const [result, setResult] = useState<'hit' | 'miss' | null>(null)
   const [returnAmount, setReturnAmount] = useState('')
-  const [isHit, setIsHit] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
   const handleSave = async () => {
-    const amount = parseInt(returnAmount, 10)
-    if (isNaN(amount) || amount < 0) { setError('0以上の整数を入力してください'); return }
+    if (result === null) { setError('的中 / 外れ を選んでください'); return }
+    const isHit = result === 'hit'
+    const amount = isHit ? parseInt(returnAmount, 10) : 0
+    if (isHit && (isNaN(amount) || amount <= 0)) { setError('払戻金額を入力してください'); return }
     setSaving(true)
     setError('')
     try {
-      const res = await fetch(`/api/purchase/${bet.id}`, {
+      const res = await authFetch(`/api/purchase/${bet.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ actual_return: amount, is_hit: isHit }),
@@ -73,33 +94,56 @@ function ResultInputRow({
 
   return (
     <tr className="bg-[#0d0d0d] border-b border-[#1a1a1a]">
-      <td colSpan={8} className="px-5 py-4">
-        <div className="flex flex-wrap items-end gap-4">
-          <div>
-            <label className="text-xs text-[#555] block mb-1.5">払戻金額 (円)</label>
-            <input
-              type="number"
-              min="0"
-              value={returnAmount}
-              onChange={e => { setReturnAmount(e.target.value); if (parseInt(e.target.value, 10) > 0) setIsHit(true) }}
-              placeholder="0"
-              className="w-36 px-3 py-2 text-sm bg-[#111] border border-[#333] rounded text-white focus:outline-none focus:border-[#555] placeholder-[#444]"
-            />
+      <td colSpan={9} className="px-5 py-4">
+        <div className="flex flex-wrap items-center gap-3">
+          {/* 的中 / 外れ ボタン */}
+          <div className="flex gap-2">
+            <button
+              onClick={() => setResult('hit')}
+              className="text-sm px-4 py-2 rounded border font-medium transition-colors"
+              style={result === 'hit'
+                ? { background: '#052e10', color: '#4ade80', borderColor: '#16a34a' }
+                : { background: 'transparent', color: '#555', borderColor: '#222' }
+              }
+            >
+              ✓ 的中
+            </button>
+            <button
+              onClick={() => { setResult('miss'); setReturnAmount('') }}
+              className="text-sm px-4 py-2 rounded border font-medium transition-colors"
+              style={result === 'miss'
+                ? { background: '#1a0505', color: '#f87171', borderColor: '#991b1b' }
+                : { background: 'transparent', color: '#555', borderColor: '#222' }
+              }
+            >
+              ✕ 外れ
+            </button>
           </div>
-          <label className="flex items-center gap-2 cursor-pointer pb-2">
-            <input
-              type="checkbox"
-              checked={isHit}
-              onChange={e => setIsHit(e.target.checked)}
-              className="w-4 h-4 accent-white"
-            />
-            <span className="text-xs text-[#888]">的中</span>
-          </label>
-          <div className="flex items-center gap-2 pb-2">
+
+          {/* 払戻金額入力（的中時のみ） */}
+          {result === 'hit' && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-[#555]">払戻</span>
+              <span className="text-xs text-[#666]">¥</span>
+              <input
+                type="number"
+                min="1"
+                autoFocus
+                value={returnAmount}
+                onChange={e => setReturnAmount(e.target.value)}
+                placeholder="例: 1560"
+                className="w-36 px-3 py-2 text-sm bg-[#111] border border-[#1a3a1a] rounded text-white focus:outline-none focus:border-[#16a34a] placeholder-[#333]"
+              />
+            </div>
+          )}
+
+          {/* 保存 / キャンセル */}
+          <div className="flex items-center gap-2 ml-auto">
+            {error && <span className="text-xs text-[#f87171]">{error}</span>}
             <button
               onClick={handleSave}
-              disabled={saving}
-              className="text-xs px-4 py-2 bg-white text-black rounded font-medium hover:bg-[#eee] disabled:opacity-50 transition-colors"
+              disabled={saving || result === null}
+              className="text-xs px-4 py-2 bg-white text-black rounded font-medium hover:bg-[#eee] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               {saving ? '保存中...' : '保存'}
             </button>
@@ -110,7 +154,6 @@ function ResultInputRow({
               キャンセル
             </button>
           </div>
-          {error && <span className="text-xs text-[#f87171] pb-2">{error}</span>}
         </div>
       </td>
     </tr>
@@ -123,11 +166,37 @@ export default function DashboardPage() {
   const [bets, setBets] = useState<Bet[]>([])
   const [betTypeStats, setBetTypeStats] = useState<BetTypeStat[]>([])
   const [editingBetId, setEditingBetId] = useState<string | null>(null)
+  const [deletingBetId, setDeletingBetId] = useState<string | null>(null)
+  const [resultEnteredIds, setResultEnteredIds] = useState<Set<string>>(new Set())
   const [toast, setToast] = useState({ visible: false, message: '', type: 'success' as 'success' | 'error' })
+  const [sortKey, setSortKey] = useState<'date' | 'venue' | 'raceNo'>('date')
+  const [sortDir, setSortDir] = useState<'desc' | 'asc'>('desc')
+
+  const handleSort = (key: 'date' | 'venue' | 'raceNo') => {
+    if (sortKey === key) {
+      setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortKey(key)
+      setSortDir('asc')
+    }
+  }
 
   const showToast = useCallback((message: string, type: 'success' | 'error' = 'success') => {
     setToast({ visible: true, message, type })
   }, [])
+
+  const deleteBet = async (betId: string) => {
+    try {
+      const res = await authFetch(`/api/purchase/${betId}`, { method: 'DELETE' })
+      if (!res.ok) { const d = await res.json(); throw new Error(d.detail || 'エラー') }
+      setBets(prev => prev.filter(b => String(b.id) !== betId))
+      showToast('削除しました')
+    } catch (e: unknown) {
+      showToast(e instanceof Error ? e.message : '削除に失敗しました', 'error')
+    } finally {
+      setDeletingBetId(null)
+    }
+  }
 
   useEffect(() => {
     Promise.all([loadStats(), loadBets(), loadStatistics()]).finally(() => setLoading(false))
@@ -171,6 +240,27 @@ export default function DashboardPage() {
   const totalPL = totalReturn - totalCost
   const winRate = totalBets > 0 ? (wins / totalBets * 100).toFixed(1) : '-'
   const recoveryRate = totalCost > 0 ? (totalReturn / totalCost * 100).toFixed(1) : '-'
+
+  // ソート済み履歴
+  const sortedBets = [...bets].sort((a, b) => {
+    const rpa = parseRaceId(a.race_id)
+    const rpb = parseRaceId(b.race_id)
+    let cmp = 0
+    if (sortKey === 'date')   cmp = rpa.date.localeCompare(rpb.date)
+    if (sortKey === 'venue')  cmp = (a.venue || rpa.venueLabel).localeCompare(b.venue || rpb.venueLabel)
+    if (sortKey === 'raceNo') cmp = (parseInt(rpa.raceNo || '0') - parseInt(rpb.raceNo || '0'))
+    // 同値の場合は次のキーで追加ソート
+    if (cmp === 0 && sortKey !== 'date')   cmp = rpa.date.localeCompare(rpb.date)
+    if (cmp === 0 && sortKey !== 'raceNo') cmp = (parseInt(rpa.raceNo || '0') - parseInt(rpb.raceNo || '0'))
+    return sortDir === 'asc' ? cmp : -cmp
+  })
+
+  const pendingBets = sortedBets.filter(bet =>
+    !resultEnteredIds.has(String(bet.id)) && !bet.is_hit && (bet.actual_return == null || bet.actual_return === 0)
+  )
+  const completedBets = sortedBets.filter(bet =>
+    resultEnteredIds.has(String(bet.id)) || bet.is_hit || (bet.actual_return != null && bet.actual_return !== 0)
+  )
 
   // ── 累積損益チャートデータ（日付昇順）──────────────────────────────────────
   const cumulChartData = (() => {
@@ -384,84 +474,268 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* ── 購入履歴テーブル ──────────────────────────────────────────────── */}
-        <div>
-          <h2 className="text-sm font-medium text-[#888] mb-3">購入履歴（直近 {Math.min(bets.length, 50)} 件）</h2>
-          <div className="bg-[#111] border border-[#1e1e1e] rounded-lg overflow-hidden">
-            {bets.length === 0 ? (
-              <div className="p-8 text-center space-y-3">
-                <p className="text-[#555] text-sm">購入履歴がまだありません</p>
-                <Link href="/predict-batch" className="inline-flex items-center gap-1 text-xs text-[#7dd3fc] hover:underline">
-                  予測実行ページで購入を記録する →
-                </Link>
+        {/* ── 購入履歴 ─────────────────────────────────────────────────── */}
+        {bets.length === 0 ? (
+          <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-8 text-center space-y-3">
+            <p className="text-[#555] text-sm">購入履歴がまだありません</p>
+            <Link href="/predict-batch" className="inline-flex items-center gap-1 text-xs text-[#7dd3fc] hover:underline">
+              予測実行ページで購入を記録する →
+            </Link>
+          </div>
+        ) : (
+          <div className="space-y-6">
+
+            {/* ── 結果未入力セクション ── */}
+            <div>
+              <div className="flex items-center gap-2 mb-3">
+                <h2 className="text-sm font-medium">結果未入力</h2>
+                {pendingBets.length > 0 && (
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-[#1a1200] text-[#fbbf24] border border-[#3a2800] font-medium">
+                    {pendingBets.length}件
+                  </span>
+                )}
               </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-[#1e1e1e]">
-                      {['日付', 'レースID', '券種', '戦略', '投資額', '回収', 'P&L', '結果'].map(h => (
-                        <th key={h} className="px-4 py-3 text-left text-xs text-[#555] font-normal first:pl-5">
-                          {h}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {bets.slice(0, 50).map((bet, i) => {
-                      const ret = bet.actual_return ?? 0
-                      const pl = ret - (bet.total_cost ?? 0)
-                      const needsResult = !bet.is_hit && (bet.actual_return == null || bet.actual_return === 0)
-                      const isEditing = editingBetId === String(bet.id)
-                      return (
-                        <Fragment key={i}>
-                          <tr className="border-b border-[#1a1a1a] hover:bg-[#161616] transition-colors">
-                            <td className="px-4 py-3 pl-5 text-[#888] text-xs whitespace-nowrap">
-                              {bet.purchase_date ?? bet.created_at?.slice(0, 10)}
-                            </td>
-                            <td className="px-4 py-3 text-[#888] text-xs font-mono">{bet.race_id}</td>
-                            <td className="px-4 py-3 font-medium">{bet.bet_type}</td>
-                            <td className="px-4 py-3 text-[#888] text-xs">{bet.strategy_type}</td>
-                            <td className="px-4 py-3 text-[#888]">¥{bet.total_cost?.toLocaleString()}</td>
-                            <td className={`px-4 py-3 ${bet.is_hit ? 'text-[#4ade80]' : 'text-[#555]'}`}>
-                              {bet.is_hit ? `¥${ret.toLocaleString()}` : '未確定'}
-                            </td>
-                            <td className={`px-4 py-3 font-medium ${bet.is_hit ? (pl >= 0 ? 'text-[#4ade80]' : 'text-[#f87171]') : 'text-[#555]'}`}>
-                              {bet.is_hit ? `${pl >= 0 ? '+' : ''}¥${pl.toLocaleString()}` : '—'}
-                            </td>
-                            <td className="px-4 py-3">
-                              {needsResult ? (
-                                <button
-                                  onClick={() => setEditingBetId(isEditing ? null : String(bet.id))}
-                                  className="text-xs text-[#555] hover:text-[#7dd3fc] border border-[#222] rounded px-2 py-0.5 hover:border-[#444] transition-colors whitespace-nowrap"
-                                >
-                                  {isEditing ? '閉じる' : '結果入力'}
-                                </button>
-                              ) : (
-                                <span className="text-xs text-[#333]">入力済</span>
+              {pendingBets.length === 0 ? (
+                <div className="flex items-center gap-2 px-5 py-4 bg-[#0d130d] border border-[#1a3a1a] rounded-lg text-xs text-[#4ade80]">
+                  <span>✓</span>
+                  <span>すべての購入結果が入力されています</span>
+                </div>
+              ) : (
+                <div className="bg-[#111] border border-[#2a1e00] rounded-lg overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-[#2a1e00]">
+                          {([
+                            { label: '日付', key: 'date' as const },
+                            { label: '開催', key: 'venue' as const },
+                            { label: 'R',    key: 'raceNo' as const },
+                          ] as const).map(({ label, key }) => (
+                            <th key={key} className="px-4 py-3 first:pl-5 text-left">
+                              <button
+                                onClick={() => handleSort(key)}
+                                className="flex items-center gap-1 text-xs font-normal hover:text-white transition-colors"
+                                style={{ color: sortKey === key ? '#fff' : '#555' }}
+                              >
+                                {label}
+                                <span className="text-[10px] opacity-60">
+                                  {sortKey === key ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'}
+                                </span>
+                              </button>
+                            </th>
+                          ))}
+                          {['券種', '馬番', '投資額', '詳細', '結果入力', ''].map(h => (
+                            <th key={h} className="px-4 py-3 text-left text-xs text-[#555] font-normal">{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {pendingBets.map(bet => {
+                          const isEditing = editingBetId === String(bet.id)
+                          const rp = parseRaceId(bet.race_id)
+                          return (
+                            <Fragment key={String(bet.id)}>
+                              <tr className="border-b border-[#1e1600] hover:bg-[#161000] transition-colors">
+                                <td className="px-4 py-3 pl-5 text-[#888] text-xs whitespace-nowrap">
+                                  {bet.purchase_date ?? rp.dateLabel}
+                                </td>
+                                <td className="px-4 py-3 text-white text-xs font-medium whitespace-nowrap">
+                                  {bet.venue || rp.venueLabel}
+                                </td>
+                                <td className="px-4 py-3 text-[#888] text-xs whitespace-nowrap">
+                                  {rp.raceNo ? `${rp.raceNo}R` : '—'}
+                                </td>
+                                <td className="px-4 py-3 font-medium">{bet.bet_type}</td>
+                                <td className="px-4 py-3 text-[#aaa] text-xs whitespace-nowrap">
+                                  {bet.combinations && bet.combinations.length > 0
+                                    ? bet.combinations.map(n => `${n}番`).join(' · ')
+                                    : '—'}
+                                </td>
+                                <td className="px-4 py-3 text-[#888]">¥{bet.total_cost?.toLocaleString()}</td>
+                                <td className="px-4 py-3">
+                                  <Link
+                                    href={`/race-analysis?date=${rp.date}&race_id=${bet.race_id}`}
+                                    className="text-xs text-[#7dd3fc] hover:underline whitespace-nowrap"
+                                  >
+                                    確認
+                                  </Link>
+                                </td>
+                                <td className="px-4 py-3">
+                                  <button
+                                    onClick={() => setEditingBetId(isEditing ? null : String(bet.id))}
+                                    className="text-xs px-3 py-1 rounded font-medium transition-colors whitespace-nowrap"
+                                    style={isEditing
+                                      ? { background: '#1a1a1a', color: '#666', border: '1px solid #2a2a2a' }
+                                      : { background: '#1a1200', color: '#fbbf24', border: '1px solid #3a2800' }
+                                    }
+                                  >
+                                    {isEditing ? '閉じる' : '結果を入力 →'}
+                                  </button>
+                                </td>
+                                <td className="px-4 py-3">
+                                  {deletingBetId === String(bet.id) ? (
+                                    <span className="flex items-center gap-1">
+                                      <button
+                                        onClick={() => deleteBet(String(bet.id))}
+                                        className="text-xs text-[#f87171] hover:text-red-400 border border-[#3a1a1a] rounded px-2 py-0.5 hover:border-[#f87171] transition-colors whitespace-nowrap"
+                                      >
+                                        確認
+                                      </button>
+                                      <button
+                                        onClick={() => setDeletingBetId(null)}
+                                        className="text-xs text-[#555] hover:text-[#888] transition-colors"
+                                      >
+                                        ✕
+                                      </button>
+                                    </span>
+                                  ) : (
+                                    <button
+                                      onClick={() => setDeletingBetId(String(bet.id))}
+                                      className="text-xs text-[#333] hover:text-[#f87171] transition-colors px-1"
+                                      title="削除"
+                                    >
+                                      🗑
+                                    </button>
+                                  )}
+                                </td>
+                              </tr>
+                              {isEditing && (
+                                <ResultInputRow
+                                  bet={bet}
+                                  onClose={() => setEditingBetId(null)}
+                                  onSave={updated => {
+                                    setBets(prev => prev.map(b => String(b.id) === String(updated.id) ? updated : b))
+                                    setResultEnteredIds(prev => new Set(prev).add(String(updated.id)))
+                                    setEditingBetId(null)
+                                    showToast('結果を記録しました')
+                                  }}
+                                />
                               )}
-                            </td>
-                          </tr>
-                          {isEditing && (
-                            <ResultInputRow
-                              bet={bet}
-                              onClose={() => setEditingBetId(null)}
-                              onSave={updated => {
-                                setBets(prev => prev.map(b => String(b.id) === String(updated.id) ? updated : b))
-                                setEditingBetId(null)
-                                showToast('結果を記録しました')
-                              }}
-                            />
-                          )}
-                        </Fragment>
-                      )
-                    })}
-                  </tbody>
-                </table>
+                            </Fragment>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* ── 入力済みセクション ── */}
+            {completedBets.length > 0 && (
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <h2 className="text-sm font-medium text-[#888]">入力済み</h2>
+                  <span className="text-xs text-[#444]">{completedBets.length}件</span>
+                </div>
+                <div className="bg-[#111] border border-[#1e1e1e] rounded-lg overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-[#1e1e1e]">
+                          {([
+                            { label: '日付', key: 'date' as const },
+                            { label: '開催', key: 'venue' as const },
+                            { label: 'R',    key: 'raceNo' as const },
+                          ] as const).map(({ label, key }) => (
+                            <th key={key} className="px-4 py-3 first:pl-5 text-left">
+                              <button
+                                onClick={() => handleSort(key)}
+                                className="flex items-center gap-1 text-xs font-normal hover:text-white transition-colors"
+                                style={{ color: sortKey === key ? '#fff' : '#555' }}
+                              >
+                                {label}
+                                <span className="text-[10px] opacity-60">
+                                  {sortKey === key ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'}
+                                </span>
+                              </button>
+                            </th>
+                          ))}
+                          {['券種', '馬番', '投資額', '回収', 'P&L', '詳細', '結果', ''].map(h => (
+                            <th key={h} className="px-4 py-3 text-left text-xs text-[#555] font-normal">{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {completedBets.slice(0, 50).map(bet => {
+                          const ret = bet.actual_return ?? 0
+                          const pl = ret - (bet.total_cost ?? 0)
+                          const rp = parseRaceId(bet.race_id)
+                          return (
+                            <tr key={String(bet.id)} className="border-b border-[#1a1a1a] hover:bg-[#161616] transition-colors">
+                              <td className="px-4 py-3 pl-5 text-[#888] text-xs whitespace-nowrap">
+                                {bet.purchase_date ?? rp.dateLabel}
+                              </td>
+                              <td className="px-4 py-3 text-white text-xs font-medium whitespace-nowrap">
+                                {bet.venue || rp.venueLabel}
+                              </td>
+                              <td className="px-4 py-3 text-[#888] text-xs whitespace-nowrap">
+                                {rp.raceNo ? `${rp.raceNo}R` : '—'}
+                              </td>
+                              <td className="px-4 py-3 font-medium">{bet.bet_type}</td>
+                              <td className="px-4 py-3 text-[#aaa] text-xs whitespace-nowrap">
+                                {bet.combinations && bet.combinations.length > 0
+                                  ? bet.combinations.map(n => `${n}番`).join(' · ')
+                                  : '—'}
+                              </td>
+                              <td className="px-4 py-3 text-[#888]">¥{bet.total_cost?.toLocaleString()}</td>
+                              <td className={`px-4 py-3 ${bet.is_hit ? 'text-[#4ade80]' : 'text-[#555]'}`}>
+                                {bet.is_hit ? `¥${ret.toLocaleString()}` : '—'}
+                              </td>
+                              <td className={`px-4 py-3 font-medium ${bet.is_hit ? (pl >= 0 ? 'text-[#4ade80]' : 'text-[#f87171]') : 'text-[#555]'}`}>
+                                {bet.is_hit ? `${pl >= 0 ? '+' : ''}¥${pl.toLocaleString()}` : '—'}
+                              </td>
+                              <td className="px-4 py-3">
+                                <Link
+                                  href={`/race-analysis?date=${rp.date}&race_id=${bet.race_id}`}
+                                  className="text-xs text-[#7dd3fc] hover:underline whitespace-nowrap"
+                                >
+                                  確認
+                                </Link>
+                              </td>
+                              <td className="px-4 py-3">
+                                <span className={`text-xs ${bet.is_hit ? 'text-[#4ade80]' : 'text-[#f87171]'}`}>
+                                  {bet.is_hit ? '✓ 的中' : '✕ 外れ'}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3">
+                                {deletingBetId === String(bet.id) ? (
+                                  <span className="flex items-center gap-1">
+                                    <button
+                                      onClick={() => deleteBet(String(bet.id))}
+                                      className="text-xs text-[#f87171] hover:text-red-400 border border-[#3a1a1a] rounded px-2 py-0.5 hover:border-[#f87171] transition-colors whitespace-nowrap"
+                                    >
+                                      確認
+                                    </button>
+                                    <button
+                                      onClick={() => setDeletingBetId(null)}
+                                      className="text-xs text-[#555] hover:text-[#888] transition-colors"
+                                    >
+                                      ✕
+                                    </button>
+                                  </span>
+                                ) : (
+                                  <button
+                                    onClick={() => setDeletingBetId(String(bet.id))}
+                                    className="text-xs text-[#333] hover:text-[#f87171] transition-colors px-1"
+                                    title="削除"
+                                  >
+                                    🗑
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
               </div>
             )}
+
           </div>
-        </div>
+        )}
 
         <Toast
           message={toast.message}

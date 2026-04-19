@@ -5,7 +5,6 @@ import Link from 'next/link'
 import { Logo } from '@/components/Logo'
 import { Toast } from '@/components/Toast'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
-import { supabase } from '@/lib/supabase'
 import { authFetch } from '@/lib/auth-fetch'
 import { useJobPoller } from '@/hooks/useJobPoller'
 
@@ -67,7 +66,7 @@ export default function TrainPage() {
     setConfirmDelete(null)
     setDeletingId(modelId)
     try {
-      const res = await fetch(`/api/models/${modelId}`, { method: 'DELETE' })
+      const res = await authFetch(`/api/models/${modelId}`, { method: 'DELETE' })
       if (!res.ok) throw new Error('削除失敗')
       loadModels()
       showToast(`モデル ${modelId.slice(0, 8)}... を削除しました`)
@@ -83,19 +82,11 @@ export default function TrainPage() {
     setTrainResult(null)
     setJobId(null)
 
-    let authHeaders: Record<string, string> = {}
-    try {
-      if (supabase) {
-        const { data: { session } } = await supabase.auth.getSession()
-        if (session?.access_token) authHeaders = { Authorization: `Bearer ${session.access_token}` }
-      }
-    } catch {}
-
     try {
       // 1. 非同期ジョブ起動（すぐに job_id が返る）
-      const startRes = await fetch(`/api/ml/train/start`, {
+      const startRes = await authFetch(`/api/ml/train/start`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           target, model_type: modelType, test_size: testSize, cv_folds: cvFolds,
           use_sqlite: true, use_optimizer: modelType === 'lightgbm',

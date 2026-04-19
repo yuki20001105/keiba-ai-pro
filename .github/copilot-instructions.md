@@ -86,6 +86,19 @@ DB読み込み → 特徴量生成 → POST_RACE_FIELDS除外 → LightGBM予測
 
 特定タスクが依頼されたら対応するスキルを必ず読み込むこと:
 
+### エージェントスキル（担当領域ごと）
+
+| タスク・キーワード | エージェント | スキル |
+|---|---|---|
+| 全体設計 / ロードマップ / 複数領域にまたがるタスク / どこに頼む / 優先順位 | **Jobs（ジョブズ）** | `.github/skills/jobs/SKILL.md` |
+| スクレイピング / netkeiba / データ取得 / DB保存 / 収集エラー / data-collection / data-view | **Harvester（ハーベスター）** | `.github/skills/harvester/SKILL.md` |
+| モデル学習 / Optuna / 特徴量追加・削除 / AUC / 過学習 / train / feature-lab | **Trainer（トレーナー）** | `.github/skills/trainer/SKILL.md` |
+| 予測実行 / analyze_race / Kelly / 買い目 / オッズ / race-analysis / predict-batch / prediction_log | **Oracle（オラクル）** | `.github/skills/oracle/SKILL.md` |
+| 購入履歴 / 的中・外れ / 回収率 / 損益 / dashboard / prediction-history / Supabase purchase | **Ledger（レジャー）** | `.github/skills/ledger/SKILL.md` |
+| 認証 / Supabase / スケジューラ / デプロイ / git / テスト / 環境変数 / 管理者 / admin | **Sysop（システムオプ）** | `.github/skills/sysop/SKILL.md` |
+
+### 詳細タスクスキル（特定の作業に特化）
+
 | タスク・キーワード | スキル |
 |---|---|
 | 特徴量重要度レポート / feature importance / モデル評価 / AUC レポート | `.github/skills/feature-importance-report/SKILL.md` |

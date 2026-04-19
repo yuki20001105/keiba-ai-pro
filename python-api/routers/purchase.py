@@ -181,6 +181,49 @@ async def update_purchase_result(purchase_id: str, body: UpdatePurchaseResultReq
         raise HTTPException(status_code=500, detail=f"更新に失敗: {str(e)}")
 
 
+@router.delete("/api/purchase/{purchase_id}")
+async def delete_purchase(purchase_id: str, req: Request):
+    """購入履歴削除エンドポイント"""
+    try:
+        user_id = _get_user_id(req)
+
+        if SUPABASE_ENABLED and get_supabase_client() and user_id:
+            client = get_supabase_client()
+            res = (
+                client.table("purchase_history")
+                .select("id")
+                .eq("id", purchase_id)
+                .eq("user_id", user_id)
+                .execute()
+            )
+            if not res.data:
+                raise HTTPException(status_code=404, detail="購入記録が見つかりません")
+            client.table("purchase_history").delete().eq("id", purchase_id).eq("user_id", user_id).execute()
+        else:
+            path = _tracking_db_path()
+            if not path.exists():
+                raise HTTPException(status_code=404, detail="購入記録が見つかりません")
+            try:
+                int_id = int(purchase_id)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="無効なID形式です")
+            con = sqlite3.connect(str(path))
+            cursor = con.cursor()
+            cursor.execute("SELECT id FROM purchase_history WHERE id = ?", (int_id,))
+            if not cursor.fetchone():
+                con.close()
+                raise HTTPException(status_code=404, detail="購入記録が見つかりません")
+            cursor.execute("DELETE FROM purchase_history WHERE id = ?", (int_id,))
+            con.commit()
+            con.close()
+
+        return {"success": True, "message": "削除しました"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"削除に失敗: {str(e)}")
+
+
 @router.post("/api/purchase", response_model=PurchaseHistoryResponse)
 async def save_purchase_history(request: PurchaseHistoryRequest, req: Request):
     """購入履歴保存エンドポイント（Supabase / SQLite 自動選択）"""

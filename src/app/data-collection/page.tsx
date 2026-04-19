@@ -89,7 +89,7 @@ export default function DataCollectionPage() {
 
   const fetchCollectedData = async () => {
     try {
-      const res = await fetch('/api/races/recent?limit=50')
+      const res = await authFetch('/api/races/recent?limit=50')
       if (!res.ok) return
       const data = await res.json()
       setCollectedRaces(data.races || [])
@@ -100,7 +100,7 @@ export default function DataCollectionPage() {
 
   const fetchRaceDetail = async (raceId: string) => {
     try {
-      const res = await fetch(`/api/races/${raceId}/horses`)
+      const res = await authFetch(`/api/races/${raceId}/horses`)
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
         throw new Error(err.error || `HTTP ${res.status}`)
@@ -147,7 +147,7 @@ export default function DataCollectionPage() {
   const handleStartProfiling = async () => {
     setProfilingJobId(null)
     try {
-      const res = await fetch('/api/profiling', {
+      const res = await authFetch('/api/profiling', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ use_optimized: useOptimized }),

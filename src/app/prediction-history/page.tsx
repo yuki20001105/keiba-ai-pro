@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import Link from 'next/link'
 import { Logo } from '@/components/Logo'
-import { supabase } from '@/lib/supabase'
+import { authFetch } from '@/lib/auth-fetch'
 
 // ── 型定義 ────────────────────────────────────────────────────────────
 type PredictionEntry = {
@@ -163,11 +163,7 @@ export default function PredictionHistoryPage() {
     setLoading(true)
     setError('')
     try {
-      const { data: { session } } = await supabase.auth.getSession()
-      const authHeader = session?.access_token ? `Bearer ${session.access_token}` : ''
-
-      const res = await fetch('/api/prediction-history?limit=200', {
-        headers: { ...(authHeader ? { Authorization: authHeader } : {}) },
+      const res = await authFetch('/api/prediction-history?limit=200', {
         signal: AbortSignal.timeout(30_000),
       })
       if (!res.ok) {

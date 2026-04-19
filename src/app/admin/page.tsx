@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
+import { authFetch } from '@/lib/auth-fetch'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { AdminOnly } from '@/components/AdminOnly'
@@ -57,7 +58,7 @@ export default function AdminDashboard() {
       const premiumUsers = usersData?.filter((u: User) => u.subscription_tier === 'premium').length || 0
 
       // レース数を取得
-      const racesResponse = await fetch(`/api/data-stats`)
+      const racesResponse = await authFetch(`/api/data-stats`)
       let totalRaces = 0
       let totalModels = 0
       if (racesResponse.ok) {

@@ -27,3 +27,27 @@ export async function PATCH(
     return NextResponse.json({ detail: message }, { status: 500 })
   }
 }
+
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id } = await params
+    const authHeader = request.headers.get('Authorization') || ''
+
+    const response = await fetch(`${ML_API_URL}/api/purchase/${id}`, {
+      method: 'DELETE',
+      headers: {
+        ...(authHeader ? { Authorization: authHeader } : {}),
+      },
+      signal: AbortSignal.timeout(10_000),
+    })
+
+    const data = await response.json()
+    return NextResponse.json(data, { status: response.status })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error'
+    return NextResponse.json({ detail: message }, { status: 500 })
+  }
+}

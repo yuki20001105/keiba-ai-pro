@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import Link from 'next/link'
 import { Logo } from '@/components/Logo'
+import { authFetch } from '@/lib/auth-fetch'
 
 type Summary = {
   version: string
@@ -65,7 +66,7 @@ export default function FeatureLabPage() {
     setLoadingSummary(true)
     setError(null)
     try {
-      const res = await fetch('/api/features/summary', { signal: AbortSignal.timeout(30000) })
+      const res = await authFetch('/api/features/summary', { signal: AbortSignal.timeout(30000) })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       setSummary(await res.json())
     } catch (e) {
@@ -97,7 +98,7 @@ export default function FeatureLabPage() {
     setLoadingCoverage(true)
     setError(null)
     try {
-      const res = await fetch(`/api/features/coverage?target=${target}`, { signal: AbortSignal.timeout(30000) })
+      const res = await authFetch(`/api/features/coverage?target=${target}`, { signal: AbortSignal.timeout(30000) })
       if (!res.ok) {
         const d = await res.json().catch(() => ({}))
         throw new Error(d.detail || `HTTP ${res.status}`)

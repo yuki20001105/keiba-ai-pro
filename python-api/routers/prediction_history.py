@@ -160,6 +160,7 @@ async def prediction_history_by_race(
             ).fetchone()
             if not exists:
                 return []
+            # 同一 race_id + horse_id の最新予測のみを取得（重複回避）
             rows = conn.execute(
                 """
                 SELECT
@@ -178,12 +179,19 @@ async def prediction_history_by_race(
                     r.last3f  AS actual_last3f,
                     r.odds    AS actual_odds
                 FROM prediction_log pl
+                INNER JOIN (
+                    SELECT horse_id, MAX(predicted_at) AS latest_at
+                    FROM prediction_log
+                    WHERE race_id = ?
+                    GROUP BY horse_id
+                ) latest ON pl.horse_id = latest.horse_id
+                         AND pl.predicted_at = latest.latest_at
                 LEFT JOIN results r
                        ON pl.race_id = r.race_id AND pl.horse_id = r.horse_id
                 WHERE pl.race_id = ?
                 ORDER BY pl.predicted_rank ASC
                 """,
-                (rid,),
+                (rid, rid),
             ).fetchall()
             return [dict(row) for row in rows]
         finally:
