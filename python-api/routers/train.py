@@ -18,7 +18,7 @@ import numpy as np
 from fastapi import APIRouter, Depends, HTTPException
 
 from app_config import (  # type: ignore
-    SUPABASE_ENABLED,
+    SUPABASE_DATA_ENABLED,
     CONFIG_PATH,
     MODELS_DIR,
     ULTIMATE_DB,
@@ -152,7 +152,7 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
         progress_cb("データベース接続中...", 3)
 
         # Supabase → SQLite 同期（ブロッキング呼び出しを to_thread で分離）
-        if SUPABASE_ENABLED and get_supabase_client():
+        if SUPABASE_DATA_ENABLED and get_supabase_client():
             from app_config import sync_supabase_to_sqlite  # type: ignore
             if request.force_sync:
                 logger.info("Supabase からデータを同期中...")
@@ -637,7 +637,7 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
             logger.warning(f"feature_catalog 同期スキップ: {_e}")
 
         # Supabase へモデルアップロード（ブロッキング I/O を to_thread で分離）
-        if SUPABASE_ENABLED and get_supabase_client():
+        if SUPABASE_DATA_ENABLED and get_supabase_client():
             from app_config import upload_model_to_supabase  # type: ignore
             await asyncio.to_thread(
                 upload_model_to_supabase,

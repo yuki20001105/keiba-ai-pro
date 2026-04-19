@@ -1,1213 +1,1121 @@
-# ===========================================================================
-# keiba-ai-pro Feature Catalog  v1.0
-# ===========================================================================
-# 特徴量の単一真実源（Single Source of Truth）
-#
-# 構成:
-#   future_fields         - 当該レース結果として予測前に存在しないフィールド（除外対象）
-#   scraped_fields        - netkeiba からスクレイプするフィールド一覧
-#   engineered_features   - add_derived_features() が生成するフィールド一覧
-#   unnecessary_columns   - 学習・推論の両フェーズで除外する列一覧
-#
-# 変更方法:
-#   1. このファイルを編集する
-#   2. keiba_ai/constants.py の対応するリストを同期する（自動同期化は将来対応）
-#   3. モデルを再学習する
-# ===========================================================================
-
-version: "1.0"
-
-# ---------------------------------------------------------------------------
-# 未来情報フィールド（当該レース結果 → 予測前には存在しない）
-# ---------------------------------------------------------------------------
+version: '1.0'
 future_fields:
-  - time_seconds          # 走破タイム（秒）
-  - finish_time           # 走破タイム文字列
-  - last_3f               # 上がり3F秒（生）
-  - last_3f_time          # 上がり3F秒（エンジニアリング済み）
-  - last_3f_rank          # 上がり3F順位
-  - last_3f_rank_normalized  # 上がり3F順位正規化
-  - corner_1              # コーナー1通過順位
-  - corner_2              # コーナー2通過順位
-  - corner_3              # コーナー3通過順位
-  - corner_4              # コーナー4通過順位
-  - corner_positions      # コーナー通過文字列
-  - corner_positions_list # コーナー通過リスト
-  - corner_position_avg   # コーナー平均通過順位
-  - corner_position_variance  # コーナー通過順位分散
-  - last_corner_position  # 最終コーナー通過順位
-  - position_change       # 通過順位変化
-  - margin                # 着差
-  - prize_money           # 賞金
-  - finish                # 着順
-  - finish_position       # 着順（エイリアス）
-  - actual_finish         # 最終着順
-
-# ---------------------------------------------------------------------------
-# スクレイプフィールド
-# ---------------------------------------------------------------------------
+- time_seconds
+- finish_time
+- last_3f
+- last_3f_time
+- last_3f_rank
+- last_3f_rank_normalized
+- corner_1
+- corner_2
+- corner_3
+- corner_4
+- corner_positions
+- corner_positions_list
+- corner_position_avg
+- corner_position_variance
+- last_corner_position
+- position_change
+- margin
+- prize_money
+- finish
+- finish_position
+- actual_finish
 scraped_fields:
   race:
-    - name: race_id
-      description: "レースID (YYYYMMDDVVRR形式: 年4桁+場所2桁+開催回2桁+日目2桁+レース番号2桁)"
-    - name: race_date
-      description: "レース開催日 (YYYYMMDD形式)"
-    - name: race_name
-      description: "レース名 (例: 東京大賞典、有馬記念)"
-    - name: venue
-      description: "競馬場名 (例: 東京, 中山, 阪神, 京都)"
-    - name: distance
-      description: "レース距離 (m単位, 例: 1600, 2000, 2400)"
-    - name: surface
-      description: "馬場種別 (芝/ダート)"
-    - name: race_class
-      description: "レースクラス文字列 (例: 新馬, 未勝利, 1勝クラス, OP)"
-    - name: going
-      description: "馬場状態文字列 (良/稍重/重/不良, field_conditionの別名)"
-    - name: weather
-      description: "天候 (晴/曇/雨/小雨/雪)"
-    - name: num_horses
-      description: "出走頭数"
-    - name: lap_cumulative
-      description: "累積ラップタイム (JSONリスト: 200m地点からの通過タイム)"
-    - name: lap_sectional
-      description: "区間ラップタイム (JSONリスト: 200m区間ごとの所要タイム)"
-    - name: tansho_payout
-      description: "単勝配当金 (円)"
-    - name: fukusho_min_payout
-      description: "複勝最小配当金 (円, 1着馬の複勝)"
-    - name: fukusho_max_payout
-      description: "複勝最大配当金 (円, 3着馬の複勝)"
-    - name: sanrentan_payout
-      description: "三連単配当金 (円)"
-    - name: post_time
-      description: "発走時刻 (HH:MM形式)"
-    - name: kai
-      description: "開催回数 (race_idの3-4桁目: 例 01=第1回開催)"
-    - name: day
-      description: "開催日目 (race_idの5-6桁目: 例 01=第1日目, 08=第8日目)"
-    - name: field_condition
-      description: "馬場状態 (going別名: 良/稍重/重/不良, LabelEncodeでfield_condition_encodedに変換)"
-
-  horse:
-    - name: horse_id
-      description: "馬固有ID"
-    - name: horse_name
-      description: "馬名"
-    - name: horse_number
-      description: "馬番 (ゲート番号, 1〜18)"
-    - name: bracket
-      description: "枠番 (1〜8)"
-    - name: age
-      description: "馬齢 (年, 2歳〜)"
-    - name: sex
-      description: "性別 (牡/牝/セ)"
-    - name: jockey_id
-      description: "騎手固有ID"
-    - name: jockey_name
-      description: "騎手名"
-    - name: trainer_id
-      description: "調教師固有ID"
-    - name: trainer_name
-      description: "調教師名"
-    - name: owner_id
-      description: "馬主固有ID"
-    - name: owner_name
-      description: "馬主名"
-    - name: horse_weight
-      description: "馬体重 (kg, レース当日計測値)"
-    - name: horse_weight_change
-      description: "馬体重変化 (kg, 前走比)"
-    - name: weight_kg
-      description: "馬体重kg (horse_weightの別名・重複列)"
-    - name: weight_change
-      description: "馬体重変化 (horse_weight_changeの別名・重複列)"
-    - name: burden_weight
-      description: "斤量 (kg, 騎手+装備の負担重量)"
-    - name: odds
-      description: "単勝オッズ (発走直前確定値)"
-    - name: popularity
-      description: "人気順位 (オッズ順: 1=1番人気)"
-    - name: sire
-      description: "父馬名"
-    - name: damsire
-      description: "母父馬名"
-    - name: prev_race_date
-      description: "前走日 (YYYYMMDD)"
-    - name: prev_race_distance
-      description: "前走距離 (m)"
-    - name: prev_race_finish
-      description: "前走着順"
-    - name: prev_race_time
-      description: "前走タイム (秒)"
-    - name: prev2_race_date
-      description: "2走前日付 (YYYYMMDD)"
-    - name: prev2_race_distance
-      description: "2走前距離 (m)"
-    - name: prev2_race_finish
-      description: "2走前着順"
-    - name: prev2_race_time
-      description: "2走前タイム (秒)"
-    - name: prev2_race_weight
-      description: "2走前馬体重 (kg)"
-    - name: prev_race_weight
-      description: "前走馬体重 (kg)"
-    - name: horse_total_wins
-      description: "通算勝利数 (プロフィール現在値: 再スクレイプ時に未来情報混入リスク)"
-    - name: horse_total_runs
-      description: "通算出走数 (プロフィール現在値: 再スクレイプ時に未来情報混入リスク)"
-    - name: horse_total_prize_money
-      description: "通算獲得賞金 (プロフィール現在値: 再スクレイプ時に未来情報混入リスク)"
-    # 結果フィールド（future_fields として扱う）
-    - name: finish
-      description: "着順 (レース結果・未来情報)"
-    - name: time_seconds
-      description: "走破タイム秒 (レース結果・未来情報)"
-    - name: last_3f_time
-      description: "上がり3F秒 (レース結果・未来情報)"
-    - name: corner_positions
-      description: "コーナー通過順位文字列 (レース結果・未来情報)"
-    - name: margin
-      description: "着差 (レース結果・未来情報)"
-    - name: prize_money
-      description: "賞金 (レース結果・未来情報)"
-
-# ---------------------------------------------------------------------------
-# エンジニアリング特徴量（add_derived_features() が生成）
-# ---------------------------------------------------------------------------
-engineered_features:
-
-  # -- Stage 1: days_from_history ------------------------------------------
-  - name: days_since_last_race
-    stage: days_from_history
-    type: numeric
-    enabled: true
-    description: "前走からの経過日数（DB全履歴から正確に計算）"
-
-  # -- Stage 2: horse_category ---------------------------------------------
-  - name: running_style
-    stage: horse_category
-    type: categorical
-    enabled: true
-    description: "脚質分類 (逃げ/先行/差し/追込)"
-  - name: running_style_num
-    stage: horse_category
-    type: numeric
-    enabled: true
-    description: "脚質数値エンコード"
-  - name: rest_short
-    stage: horse_category
-    type: binary
-    enabled: true
-    description: "短期休み (14日以内)"
-  - name: rest_normal
-    stage: horse_category
-    type: binary
-    enabled: true
-    description: "標準休み (15-30日)"
-  - name: rest_long
-    stage: horse_category
-    type: binary
-    enabled: true
-    description: "長期休み (31-60日)"
-  - name: rest_very_long
-    stage: horse_category
-    type: binary
-    enabled: true
-    description: "超長期休み (61日以上)"
-  - name: sex_牡
-    stage: horse_category
-    type: binary
-    enabled: false
-    description: "性別ダミー: 牡（廃止: sex_encodedに統合）"
-  - name: sex_牝
-    stage: horse_category
-    type: binary
-    enabled: false
-    description: "性別ダミー: 牝（廃止: sex_encodedに統合）"
-  - name: sex_セ
-    stage: horse_category
-    type: binary
-    enabled: false
-    description: "性別ダミー: セン馬（廃止: sex_encodedに統合）"
-  - name: rest_category
-    stage: horse_category
-    type: categorical
-    enabled: true
-    description: "休み期間カテゴリ (short/normal/long/very_long)"
-
-  # -- Stage 3: id_season --------------------------------------------------
-  - name: venue_code
-    stage: id_season
-    type: categorical
-    enabled: false
-    description: "競馬場コード (race_idから抽出, 廃止: venue_code_encodedに統合)"
-  - name: race_num
-    stage: id_season
-    type: numeric
-    enabled: true
-    description: "レース番号 (race_idから抽出)"
-  - name: n_horses
-    stage: id_season
-    type: numeric
-    enabled: false
-    description: "出走頭数 (UNNECESSARY: num_horsesと重複)"
-  - name: cos_date
-    stage: id_season
-    type: numeric
-    enabled: true
-    description: "日付のcos変換 (季節性)"
-  - name: sin_date
-    stage: id_season
-    type: numeric
-    enabled: true
-    description: "日付のsin変換 (季節性)"
-  - name: season
-    stage: id_season
-    type: numeric
-    enabled: true
-    description: "季節区分 (0=冬, 1=春, 2=夏, 3=秋)"
-  - name: sex_code
-    stage: id_season
-    type: numeric
-    enabled: false
-    description: "性別数値コード (-1=牡/セン, +1=牝, 廃止: sex_encodedに統合)"
-  - name: seasonal_sex
-    stage: id_season
-    type: numeric
-    enabled: true
-    description: "季節×性別交互作用 (cos_date × sex_code)"
-  - name: frame_race_type
-    stage: id_season
-    type: numeric
-    enabled: true
-    description: "馬場種別×枠番交互作用"
-  - name: race_class_num
-    stage: id_season
-    type: numeric
-    enabled: false
-    description: "レースクラス数値 (UNNECESSARY: race_class_encodedと冗長)"
-  - name: race_class_encoded
-    stage: id_season
-    type: numeric
-    enabled: true
-    description: "レースクラスエンコード (G1〜新馬マッピング)"
-
-  # -- Stage 4: course -----------------------------------------------------
-  - name: straight_length
-    stage: course
-    type: numeric
-    enabled: false
-    description: "直線距離 (UNNECESSARY: gain=0%)"
-  - name: track_type
-    stage: course
-    type: categorical
-    enabled: true
-    description: "コーストラック種別 (コースマスターから)"
-  - name: corner_radius
-    stage: course
-    type: numeric
-    enabled: true
-    description: "コーナー半径"
-  - name: inner_bias
-    stage: course
-    type: numeric
-    enabled: false
-    description: "内枠バイアス値 (UNNECESSARY: gain=0%)"
-  - name: inner_advantage
-    stage: course
-    type: binary
-    enabled: false
-    description: "内枠有利フラグ (UNNECESSARY: gain=0%)"
-
-  # -- Stage 5: market -----------------------------------------------------
-  - name: implied_prob
-    stage: market
-    type: numeric
-    enabled: true
-    description: "オッズからの暗黙勝率 (1/odds)"
-  - name: odds_z_in_race
-    stage: market
-    type: numeric
-    enabled: true
-    description: "レース内オッズZスコア"
-  - name: market_entropy
-    stage: market
-    type: numeric
-    enabled: true
-    description: "市場エントロピー (レース内オッズ分布の不確実性)"
-  - name: top3_probability
-    stage: market
-    type: numeric
-    enabled: true
-    description: "上位3頭の暗黙確率和"
-  - name: popularity_normalized
-    stage: market
-    type: numeric
-    enabled: true
-    description: "出走頭数で正規化した人気順位"
-  - name: implied_prob_norm
-    stage: market
-    type: numeric
-    enabled: false
-    description: "暗黙勝率のレース内正規化 (UNNECESSARY: popularityと高相関)"
-  - name: odds_rank_in_race
-    stage: market
-    type: numeric
-    enabled: false
-    description: "レース内オッズ順位 (UNNECESSARY: popularityと重複)"
-
-  # -- Stage 6: prev_race --------------------------------------------------
-  - name: distance_change
-    stage: prev_race
-    type: numeric
-    enabled: true
-    description: "前走からの距離変化"
-  - name: prev_speed_index
-    stage: prev_race
-    type: numeric
-    enabled: true
-    description: "前走スピード指数 (prev_race_distance / prev_race_time_seconds)"
-  - name: prev_speed_zscore
-    stage: prev_race
-    type: numeric
-    enabled: true
-    description: "前走スピード指数の同条件Zスコア"
-  - name: prev2_speed_index
-    stage: prev_race
-    type: numeric
-    enabled: true
-    description: "前々走スピード指数"
-  - name: prev2_speed_zscore
-    stage: prev_race
-    type: numeric
-    enabled: true
-    description: "前々走スピード指数Zスコア"
-  - name: recent_form_weighted
-    stage: prev_race
-    type: numeric
-    enabled: true
-    description: "近走フォーム加重平均 (0.6×前走 + 0.4×前々走)"
-  - name: form_trend
-    stage: prev_race
-    type: numeric
-    enabled: true
-    description: "フォームトレンド (前走着順 - 前々走着順)"
-  - name: speed_index_change
-    stage: prev_race
-    type: numeric
-    enabled: true
-    description: "スピード指数変化 (prev - prev2)"
-
-  # -- Stage 7: lap --------------------------------------------------------
-  - name: lap_200m
-    stage: lap
-    type: numeric
-    enabled: true
-    description: "200m累積ラップタイム"
-  - name: lap_400m
-    stage: lap
-    type: numeric
-    enabled: true
-    description: "400m累積ラップタイム"
-  - name: lap_600m
-    stage: lap
-    type: numeric
-    enabled: true
-    description: "600m累積ラップタイム"
-  - name: lap_800m
-    stage: lap
-    type: numeric
-    enabled: true
-    description: "800m累積ラップタイム"
-  - name: lap_1000m
-    stage: lap
-    type: numeric
-    enabled: true
-    description: "1000m累積ラップタイム"
-  - name: lap_1200m
-    stage: lap
-    type: numeric
-    enabled: true
-    description: "1200m累積ラップタイム"
-  - name: lap_1400m
-    stage: lap
-    type: numeric
-    enabled: true
-    description: "1400m累積ラップタイム"
-  - name: lap_1600m
-    stage: lap
-    type: numeric
-    enabled: true
-    description: "1600m累積ラップタイム"
-  - name: lap_1800m
-    stage: lap
-    type: numeric
-    enabled: true
-    description: "1800m累積ラップタイム"
-  - name: lap_2000m
-    stage: lap
-    type: numeric
-    enabled: true
-    description: "2000m累積ラップタイム"
-  - name: lap_2200m
-    stage: lap
-    type: numeric
-    enabled: true
-    description: "2200m累積ラップタイム"
-  - name: lap_2400m
-    stage: lap
-    type: numeric
-    enabled: true
-    description: "2400m累積ラップタイム"
-  - name: lap_sect_200m
-    stage: lap
-    type: numeric
-    enabled: true
-    description: "200m区間ラップ"
-  - name: lap_sect_400m
-    stage: lap
-    type: numeric
-    enabled: true
-    description: "400m区間ラップ"
-  - name: lap_sect_600m
-    stage: lap
-    type: numeric
-    enabled: true
-    description: "600m区間ラップ"
-  - name: lap_sect_800m
-    stage: lap
-    type: numeric
-    enabled: true
-    description: "800m区間ラップ"
-  - name: lap_sect_1000m
-    stage: lap
-    type: numeric
-    enabled: true
-    description: "1000m区間ラップ"
-  - name: lap_sect_1200m
-    stage: lap
-    type: numeric
-    enabled: true
-    description: "1200m区間ラップ"
-  - name: lap_sect_1400m
-    stage: lap
-    type: numeric
-    enabled: true
-    description: "1400m区間ラップ"
-  - name: lap_sect_1600m
-    stage: lap
-    type: numeric
-    enabled: true
-    description: "1600m区間ラップ"
-  - name: lap_sect_1800m
-    stage: lap
-    type: numeric
-    enabled: true
-    description: "1800m区間ラップ"
-  - name: lap_sect_2000m
-    stage: lap
-    type: numeric
-    enabled: true
-    description: "2000m区間ラップ"
-  - name: lap_sect_2200m
-    stage: lap
-    type: numeric
-    enabled: true
-    description: "2200m区間ラップ"
-  - name: lap_sect_2400m
-    stage: lap
-    type: numeric
-    enabled: true
-    description: "2400m区間ラップ"
-  - name: race_pace_front
-    stage: lap
-    type: numeric
-    enabled: true
-    description: "前半ペース平均 (前半区間ラップ平均)"
-  - name: race_pace_back
-    stage: lap
-    type: numeric
-    enabled: true
-    description: "後半ペース平均 (後半区間ラップ平均)"
-  - name: race_pace_diff
-    stage: lap
-    type: numeric
-    enabled: true
-    description: "前後半ペース差 (front - back)"
-  - name: race_pace_ratio
-    stage: lap
-    type: numeric
-    enabled: true
-    description: "前後半ペース比 (front / back)"
-
-  # -- Stage 8: payout (mostly disabled) -----------------------------------
-  - name: tansho_payout_log
-    stage: payout
-    type: numeric
-    enabled: false
-    description: "単勝配当log変換 (UNNECESSARY: 78%超欠損)"
-  - name: sanrentan_payout_log
-    stage: payout
-    type: numeric
-    enabled: false
-    description: "三連単配当log変換 (UNNECESSARY: 78%超欠損)"
-  - name: tansho_implied_prob
-    stage: payout
-    type: numeric
-    enabled: false
-    description: "単勝配当からの暗黙確率 (UNNECESSARY: 78%超欠損)"
-
-  # -- Stage 9: missing_flags ---------------------------------------------
-  - name: prev_race_finish_is_missing
-    stage: missing_flags
-    type: binary
-    enabled: false
-    description: "前走着順欠損フラグ (UNNECESSARY: gain=0%)"
-  - name: prev_race_distance_is_missing
-    stage: missing_flags
-    type: binary
-    enabled: false
-    description: "前走距離欠損フラグ (UNNECESSARY: gain=0%)"
-  - name: prev_speed_index_is_missing
-    stage: missing_flags
-    type: binary
-    enabled: false
-    description: "前走スピード指数欠損フラグ (UNNECESSARY: gain=0%)"
-  - name: days_since_last_race_is_missing
-    stage: missing_flags
-    type: binary
-    enabled: false
-    description: "前走経過日数欠損フラグ (UNNECESSARY: gain=0%)"
-  - name: prev2_speed_zscore_is_missing
-    stage: missing_flags
-    type: binary
-    enabled: true
-    description: "2走前スピードZスコア欠損フラグ (初出走・データなし馬の識別)"
-
-  # -- Stage 10: history (expanding window) --------------------------------
-  - name: jockey_course_win_rate
-    stage: history
-    type: numeric
-    enabled: true
-    description: "騎手×コース別勝率 (expanding window)"
-  - name: jockey_course_races
-    stage: history
-    type: numeric
-    enabled: true
-    description: "騎手×コース別出走数"
-  - name: jockey_venue_advantage
-    stage: history
-    type: numeric
-    enabled: true
-    description: "騎手の会場別アドバンテージ (会場での勝率 - 全体平均勝率)"
-  - name: horse_distance_win_rate
-    stage: history
-    type: numeric
-    enabled: false
-    description: "馬の距離別勝率 (UNNECESSARY: データ欠落で疎)"
-  - name: horse_distance_avg_finish
-    stage: history
-    type: numeric
-    enabled: false
-    description: "馬の距離別平均着順 (UNNECESSARY: データ欠落で疎)"
-  - name: horse_distance_races
-    stage: history
-    type: numeric
-    enabled: false
-    description: "馬の距離別出走数 (UNNECESSARY: データ欠落で疎)"
-  - name: horse_surface_win_rate
-    stage: history
-    type: numeric
-    enabled: false
-    description: "馬の馬場別勝率 (UNNECESSARY: データ欠落で疎)"
-  - name: horse_surface_races
-    stage: history
-    type: numeric
-    enabled: false
-    description: "馬の馬場別出走数 (UNNECESSARY: データ欠落で疎)"
-  - name: horse_dist_band_win_rate
-    stage: history
-    type: numeric
-    enabled: false
-    description: "馬の距離帯別勝率 (UNNECESSARY: データ欠落で疎)"
-  - name: horse_dist_band_races
-    stage: history
-    type: numeric
-    enabled: false
-    description: "馬の距離帯別出走数 (UNNECESSARY: データ欠落で疎)"
-  - name: horse_venue_win_rate
-    stage: history
-    type: numeric
-    enabled: false
-    description: "馬の競馬場別勝率 (UNNECESSARY: データ欠落で疎)"
-  - name: horse_venue_races
-    stage: history
-    type: numeric
-    enabled: false
-    description: "馬の競馬場別出走数 (UNNECESSARY: データ欠落で疎)"
-  - name: horse_venue_surface_win_rate
-    stage: history
-    type: numeric
-    enabled: false
-    description: "馬の競馬場×馬場別勝率 (UNNECESSARY: 0%ゲイン)"
-  - name: horse_venue_surface_races
-    stage: history
-    type: numeric
-    enabled: false
-    description: "馬の競馬場×馬場別出走数 (UNNECESSARY: 0%ゲイン)"
-  - name: horse_dist_surface_win_rate
-    stage: history
-    type: numeric
-    enabled: false
-    description: "馬の距離帯×馬場別勝率 (UNNECESSARY: 0%ゲイン)"
-  - name: horse_dist_surface_races
-    stage: history
-    type: numeric
-    enabled: false
-    description: "馬の距離帯×馬場別出走数 (UNNECESSARY: 0%ゲイン)"
-  - name: gate_win_rate
-    stage: history
-    type: numeric
-    enabled: true
-    description: "枠番バイアス勝率 (会場×距離帯×馬場)"
-  - name: jt_combo_win_rate_smooth
-    stage: history
-    type: numeric
-    enabled: true
-    description: "騎手×調教師コンビ勝率 (ベイズ平滑化)"
-  - name: jt_combo_win_rate
-    stage: history
-    type: numeric
-    enabled: false
-    description: "騎手×調教師コンビ勝率 raw (UNNECESSARY: smoothが代替)"
-  - name: jt_combo_races
-    stage: history
-    type: numeric
-    enabled: false
-    description: "騎手×調教師コンビ出走数 (UNNECESSARY: 平滑化に内包済み)"
-  - name: jockey_place_rate_top2
-    stage: history
-    type: numeric
-    enabled: false
-    description: "騎手複勝率上位2 (UNNECESSARY: jockey_show_rateと高相関)"
-  - name: jockey_show_rate
-    stage: history
-    type: numeric
-    enabled: true
-    description: "騎手複勝率3着内 (expanding window)"
-  - name: fe_trainer_win_rate
-    stage: history
-    type: numeric
-    enabled: false
-    description: "調教師勝率 (UNNECESSARY: trainer_recent30_win_rateと相関r=0.945)"
-  - name: trainer_place_rate_top2
-    stage: history
-    type: numeric
-    enabled: false
-    description: "調教師複勝率上位2 (UNNECESSARY: trainer_show_rateと高相関)"
-  - name: trainer_show_rate
-    stage: history
-    type: numeric
-    enabled: true
-    description: "調教師複勝率3着内 (expanding window)"
-  - name: sire_win_rate
-    stage: history
-    type: numeric
-    enabled: true
-    description: "父馬勝率 (expanding window)"
-  - name: sire_show_rate
-    stage: history
-    type: numeric
-    enabled: true
-    description: "父馬複勝率 (expanding window)"
-  - name: damsire_win_rate
-    stage: history
-    type: numeric
-    enabled: true
-    description: "母父馬勝率 (expanding window)"
-  - name: damsire_show_rate
-    stage: history
-    type: numeric
-    enabled: true
-    description: "母父馬複勝率 (expanding window)"
-  - name: past3_avg_finish
-    stage: history
-    type: numeric
-    enabled: true
-    description: "近3走平均着順 (rolling)"
-  - name: past5_avg_finish
-    stage: history
-    type: numeric
-    enabled: false
-    description: "近5走平均着順 (UNNECESSARY: データギャップで疎)"
-  - name: past10_avg_finish
-    stage: history
-    type: numeric
-    enabled: false
-    description: "近10走平均着順 (UNNECESSARY: データギャップで疎)"
-  - name: past3_win_rate
-    stage: history
-    type: numeric
-    enabled: false
-    description: "近3走勝率 (UNNECESSARY: データギャップで疎)"
-  - name: past5_win_rate
-    stage: history
-    type: numeric
-    enabled: false
-    description: "近5走勝率 (UNNECESSARY: データギャップで疎)"
-  - name: jockey_recent30_win_rate
-    stage: history
-    type: numeric
-    enabled: true
-    description: "騎手近30走勝率 (rolling)"
-  - name: trainer_recent30_win_rate
-    stage: history
-    type: numeric
-    enabled: true
-    description: "調教師近30走勝率 (rolling)"
-  - name: past3_avg_last3f_time
-    stage: history
-    type: numeric
-    enabled: false
-    description: "近3走平均上がり3Fタイム (UNNECESSARY: データギャップで疎)"
-  - name: past5_avg_last3f_time
-    stage: history
-    type: numeric
-    enabled: false
-    description: "近5走平均上がり3Fタイム (UNNECESSARY: データギャップで疎)"
-  - name: past3_avg_last3f_rank
-    stage: history
-    type: numeric
-    enabled: false
-    description: "近3走平均上がり3F順位 (UNNECESSARY: データギャップで疎)"
-  - name: past5_avg_tansho_log
-    stage: history
-    type: numeric
-    enabled: true
-    description: "近5走平均単勝配当log (過去のオッズトレンド)"
-  - name: running_style_mean_5
-    stage: history
-    type: numeric
-    enabled: true
-    description: "近5走脚質平均 (rolling)"
-  - name: running_style_std_5
-    stage: history
-    type: numeric
-    enabled: true
-    description: "近5走脚質標準偏差 (脚質安定性)"
-
-  # -- Stage 11: passthrough (スクレイプ列をそのままモデル入力として使用) --------
-  - name: age
-    stage: passthrough
-    type: numeric
-    enabled: true
-    description: "馬齢 (年, 2歳〜)"
-  - name: distance
-    stage: passthrough
-    type: numeric
-    enabled: true
-    description: "レース距離 (m)"
-  - name: horse_number
-    stage: passthrough
-    type: numeric
-    enabled: true
-    description: "馬番 (ゲート番号, 1〜18)"
-  - name: odds
-    stage: passthrough
-    type: numeric
-    enabled: true
-    description: "単勝オッズ (発走直前確定値)"
-  - name: popularity
-    stage: passthrough
-    type: numeric
-    enabled: true
-    description: "人気順位 (オッズ順: 1=1番人気)"
-  - name: horse_weight
-    stage: passthrough
-    type: numeric
-    enabled: true
-    description: "馬体重 (kg, レース当日計測値)"
-  - name: horse_weight_change
-    stage: passthrough
-    type: numeric
-    enabled: true
-    description: "馬体重変化 (kg, 前走比)"
-  - name: num_horses
-    stage: passthrough
-    type: numeric
-    enabled: true
-    description: "出走頭数"
-  - name: kai
-    stage: passthrough
-    type: numeric
-    enabled: true
-    description: "開催回数 (race_idから抽出)"
-  - name: day
-    stage: passthrough
-    type: numeric
-    enabled: true
-    description: "開催日目 (race_idから抽出)"
-  - name: prev_race_distance
-    stage: passthrough
-    type: numeric
-    enabled: true
-    description: "前走距離 (m)"
-  - name: prev_race_finish
-    stage: passthrough
-    type: numeric
-    enabled: true
-    description: "前走着順"
-  - name: prev2_race_distance
-    stage: passthrough
-    type: numeric
-    enabled: true
-    description: "前々走距離 (m)"
-  - name: prev2_race_finish
-    stage: passthrough
-    type: numeric
-    enabled: true
-    description: "前々走着順"
-
-  # -- Stage 12: encoding (スクレイプ列をラベルエンコード) ---------------------
-  - name: sex_encoded
-    stage: encoding
-    type: numeric
-    enabled: true
-    description: "性別ラベルエンコード (牡/牝/セン → 0/1/2)"
-  - name: venue_code_encoded
-    stage: encoding
-    type: numeric
-    enabled: true
-    description: "競馬場コードエンコード (race_idから抽出した会場コード)"
-  - name: venue_encoded
-    stage: encoding
-    type: numeric
-    enabled: true
-    description: "競馬場名エンコード (東京/中山/阪神等)"
-  - name: field_condition_encoded
-    stage: encoding
-    type: numeric
-    enabled: true
-    description: "馬場状態エンコード (良/稍重/重/不良 → 0/1/2/3)"
-
-# ---------------------------------------------------------------------------
-# 不要列（学習・推論の両フェーズで削除）
-# constants.py の UNNECESSARY_COLUMNS と同期
-# ---------------------------------------------------------------------------
-unnecessary_columns:
-  # URL/タイムスタンプ
-  - name: post_time
-    reason: "発走時刻URI"
-  - name: result_url
-    reason: "結果URL"
-  - name: horse_url
-    reason: "馬URL"
-  - name: jockey_url
-    reason: "騎手URL"
-  - name: trainer_url
-    reason: "調教師URL"
-
-  # 走破タイム
-  - name: time
-    reason: "走破タイム文字列（time_secondsはFUTURE_FIELDSと重複）"
-  - name: finish_time
-    reason: "走破タイム文字列"
-
-  # 着差・賞金（FUTURE_FIELDSと重複）
-  - name: margin
-    reason: "FUTURE_FIELDS重複"
-  - name: last_3f
-    reason: "FUTURE_FIELDS重複"
-  - name: prize_money
-    reason: "FUTURE_FIELDS重複"
-  - name: finish
-    reason: "FUTURE_FIELDS重複（ターゲット変数）"
-  - name: finish_position
-    reason: "FUTURE_FIELDS重複"
-
-  # 馬詳細文字列（予測に不要）
-  - name: owner_name
-    reason: "馬主名（高カーディナリティ文字列）"
-  - name: horse_owner
-    reason: "馬主名エイリアス"
-  - name: horse_breeder
-    reason: "生産者名"
-  - name: horse_breeding_farm
-    reason: "牧場名"
-  - name: horse_birth_date
-    reason: "誕生日（ageで代替）"
-  - name: horse_coat_color
-    reason: "毛色"
-  - name: surface_ja
-    reason: "馬場種別日本語（surfaceで統一）"
-  - name: surface_en
-    reason: "馬場種別英語（コース計算用の_tmpとして使用）"
-
-  # 変換済み・不要
-  - name: sex_age
-    reason: "性齢複合文字列（sex/ageに分離済み）"
+  - name: race_id
+    description: 'レースID (YYYYMMDDVVRR形式: 年4桁+場所2桁+開催回2桁+日目2桁+レース番号2桁)'
   - name: race_date
-    reason: "日付（cos/sin変換済み）"
-  - name: created_at
-    reason: "DBタイムスタンプ"
-  - name: weight
-    reason: "元データの体重フィールド（horse_weightで統一）"
-  - name: corner_positions
-    reason: "コーナー通過文字列（FUTURE_FIELDSと重複）"
-  - name: id
-    reason: "DBの内部ID"
-  - name: prev_race_venue
-    reason: "前走場所文字列（venue_codeで代替）"
-  - name: prev2_race_venue
-    reason: "前々走場所文字列"
-  - name: prev_race_date
-    reason: "前走日（days_since_last_raceに変換済み）"
-  - name: prev2_race_date
-    reason: "前々走日"
+    description: レース開催日 (YYYYMMDD形式)
   - name: race_name
-    reason: "レース名文字列（race_class_encodedに変換済み）"
-
-  # リーク（FUTURE_FIELDSと重複）
-  - name: time_seconds
-    reason: "FUTURE_FIELDS重複"
-  - name: corner_1
-    reason: "FUTURE_FIELDS重複"
-  - name: corner_2
-    reason: "FUTURE_FIELDS重複"
-  - name: corner_3
-    reason: "FUTURE_FIELDS重複"
-  - name: corner_4
-    reason: "FUTURE_FIELDS重複"
-  - name: corner_position_avg
-    reason: "FUTURE_FIELDS重複"
-  - name: corner_position_variance
-    reason: "FUTURE_FIELDS重複"
-  - name: last_corner_position
-    reason: "FUTURE_FIELDS重複"
-  - name: position_change
-    reason: "FUTURE_FIELDS重複"
-  - name: last_3f_rank
-    reason: "FUTURE_FIELDS重複"
-  - name: last_3f_rank_normalized
-    reason: "FUTURE_FIELDS重複"
-  - name: last_3f_time
-    reason: "FUTURE_FIELDS重複"
-
-  # 極端クラス不均衡（99%以上が同一値）
-  - name: horse_distance_win_rate
-    reason: "99%+欠損/同一値（データ欠落）"
-  - name: horse_distance_avg_finish
-    reason: "99%+欠損/同一値（データ欠落）"
-  - name: distance_increased
-    reason: "99%+同一値（distance_changeで代替）"
-  - name: distance_decreased
-    reason: "99%+同一値（distance_changeで代替）"
-
-  # 重複列
-  - name: weight_kg
-    reason: "horse_weightと重複"
-  - name: weight_change
-    reason: "horse_weight_changeと重複"
-  - name: jockey_weight
-    reason: "burden_weightと重複"
-  - name: n_horses
-    reason: "num_horsesと重複"
-  - name: prev_race_time
-    reason: "prev_race_time_secondsの元データ（prev_speed_indexに変換済み）"
-  - name: track_type_x
-    reason: "マージ由来の重複列"
-  - name: track_type_y
-    reason: "マージ由来の重複列"
-
-  # 配当情報（78%超欠損）
+    description: 'レース名 (例: 東京大賞典、有馬記念)'
+  - name: venue
+    description: '競馬場名 (例: 東京, 中山, 阪神, 京都)'
+  - name: distance
+    description: 'レース距離 (m単位, 例: 1600, 2000, 2400)'
+  - name: surface
+    description: 馬場種別 (芝/ダート)
+  - name: race_class
+    description: 'レースクラス文字列 (例: 新馬, 未勝利, 1勝クラス, OP)'
+  - name: going
+    description: 馬場状態文字列 (良/稍重/重/不良, field_conditionの別名)
+  - name: weather
+    description: 天候 (晴/曇/雨/小雨/雪)
+  - name: num_horses
+    description: 出走頭数
+  - name: lap_cumulative
+    description: '累積ラップタイム (JSONリスト: 200m地点からの通過タイム)'
+  - name: lap_sectional
+    description: '区間ラップタイム (JSONリスト: 200m区間ごとの所要タイム)'
   - name: tansho_payout
-    reason: "78%超欠損"
-  - name: sanrentan_payout
-    reason: "78%超欠損"
+    description: 単勝配当金 (円)
   - name: fukusho_min_payout
-    reason: "78%超欠損"
+    description: 複勝最小配当金 (円, 1着馬の複勝)
   - name: fukusho_max_payout
-    reason: "78%超欠損"
-  - name: tansho_payout_log
-    reason: "78%超欠損（payout stage由来）"
-  - name: sanrentan_payout_log
-    reason: "78%超欠損（payout stage由来）"
-  - name: sanrentan_z_in_races
-    reason: "78%超欠損（payout stage由来）"
-  - name: tansho_implied_prob
-    reason: "78%超欠損（payout stage由来）"
-  - name: tansho_payout_is_missing
-    reason: "欠損フラグ（削除対象列の付随）"
-  - name: sanrentan_payout_is_missing
-    reason: "欠損フラグ（削除対象列の付随）"
-
-  # 常に0フラグ
-  - name: is_surface_change
-    reason: "prev_race_surface未収録 → 常に0"
-
-  # 冗長オッズ変換
-  - name: implied_prob_norm
-    reason: "popularityと高相関（LightGBM単調変換不変）"
-  - name: odds_rank_in_race
-    reason: "popularityのrank表現（情報重複）"
-
-  # プロフィール由来の通算成績（未来情報混入リスク）
-  - name: horse_win_rate
-    reason: "プロフィール現在値→再スクレイプ時に未来情報混入"
-  - name: horse_win_rate_is_missing
-    reason: "削除対象列の付随フラグ"
-  - name: horse_total_wins
-    reason: "プロフィール現在値（未来情報混入リスク）"
-  - name: horse_total_runs
-    reason: "プロフィール現在値（未来情報混入リスク）"
-  - name: horse_total_prize_money
-    reason: "プロフィール現在値（未来情報混入リスク）"
-
-  # 欠損フラグ系（gain=0%）
-  - name: popularity_is_missing
-    reason: "gain=0%（odds/popularityは常に取得可能）"
-  - name: odds_is_missing
-    reason: "gain=0%"
-  - name: prev_race_finish_is_missing
-    reason: "gain=0%（first_raceフラグで代替）"
-  - name: prev2_race_finish_is_missing
-    reason: "gain=0%"
-  - name: prev_race_distance_is_missing
-    reason: "gain=0%"
-  - name: prev2_race_distance_is_missing
-    reason: "gain=0%"
-  - name: prev_race_time_is_missing
-    reason: "gain=0%"
-  - name: prev2_race_time_is_missing
-    reason: "gain=0%（prev2_race_time削除に伴い不要）"
-  - name: prev2_race_weight_is_missing
-    reason: "gain=0%（prev2_race_weight削除に伴い不要）"
-  - name: prev_race_weight_is_missing
-    reason: "gain=0%（prev_race_weight削除に伴い不要）"
-  - name: prev_speed_index_is_missing
-    reason: "gain=0%"
-  - name: prev_speed_zscore_is_missing
-    reason: "gain=0%"
-  - name: race_class_num_is_missing
-    reason: "gain=0%"
-  - name: days_since_last_race_is_missing
-    reason: "gain=0%"
-
-  # 年齢区分フラグ（gain=0%）
-  - name: is_young
-    reason: "gain=0%（ageで代替可能）"
-  - name: is_prime
-    reason: "gain=0%（ageで代替可能）"
-  - name: is_veteran
-    reason: "gain=0%（ageで代替可能）"
-
-  # コース内枠順バイアス（gain=0%）
-  - name: inner_advantage
-    reason: "gain=0%（venue×distance統計で代替）"
-  - name: inner_bias
-    reason: "gain=0%（venue×distance統計で代替）"
-
-  # 対数変換列（LightGBMツリーモデルでは元の列と等価 / 基底列がリークリスクのため削除）
-  - name: log_odds
-    reason: "LightGBMツリーモデルではoddsと等価（単調変換不変）"
-  - name: log_prize
-    reason: "基底列horse_total_prize_moneyがリークリスク（再スクレイプ時に現在値が混入）"
-  - name: log_total_runs
-    reason: "基底列horse_total_runsがリークリスク（再スクレイプ時に現在値が混入）"
-
-  # 高相関特徴量（Pearson r > 0.90）
-  - name: prev_race_weight
-    reason: "horse_weightと相関r=0.947"
-  - name: prev2_race_weight
-    reason: "horse_weightと相関r=0.948"
-  - name: prev_race_weight_is_missing
-    reason: "prev_race_weight削除に伴い不要"
-  - name: prev2_race_weight_is_missing
-    reason: "prev2_race_weight削除に伴い不要"
+    description: 複勝最大配当金 (円, 3着馬の複勝)
+  - name: sanrentan_payout
+    description: 三連単配当金 (円)
+  - name: post_time
+    description: 発走時刻 (HH:MM形式)
+  - name: kai
+    description: '開催回数 (race_idの3-4桁目: 例 01=第1回開催)'
+  - name: day
+    description: '開催日目 (race_idの5-6桁目: 例 01=第1日目, 08=第8日目)'
+  - name: field_condition
+    description: '馬場状態 (going別名: 良/稍重/重/不良, LabelEncodeでfield_condition_encodedに変換)'
+  horse:
+  - name: horse_id
+    description: 馬固有ID
+  - name: horse_name
+    description: 馬名
+  - name: horse_number
+    description: 馬番 (ゲート番号, 1〜18)
+  - name: bracket
+    description: 枠番 (1〜8)
+  - name: age
+    description: 馬齢 (年, 2歳〜)
+  - name: sex
+    description: 性別 (牡/牝/セ)
+  - name: jockey_id
+    description: 騎手固有ID
+  - name: jockey_name
+    description: 騎手名
+  - name: trainer_id
+    description: 調教師固有ID
+  - name: trainer_name
+    description: 調教師名
+  - name: owner_id
+    description: 馬主固有ID
+  - name: owner_name
+    description: 馬主名
+  - name: horse_weight
+    description: 馬体重 (kg, レース当日計測値)
+  - name: horse_weight_change
+    description: 馬体重変化 (kg, 前走比)
+  - name: weight_kg
+    description: 馬体重kg (horse_weightの別名・重複列)
+  - name: weight_change
+    description: 馬体重変化 (horse_weight_changeの別名・重複列)
   - name: burden_weight
-    reason: "horse_weightと相関r=0.970"
-  - name: prev_race_time_seconds
-    reason: "prev_race_distanceと相関r=0.978（prev_speed_indexで代替済み）"
+    description: 斤量 (kg, 騎手+装備の負担重量)
+  - name: odds
+    description: 単勝オッズ (発走直前確定値)
+  - name: popularity
+    description: '人気順位 (オッズ順: 1=1番人気)'
+  - name: sire
+    description: 父馬名
+  - name: damsire
+    description: 母父馬名
+  - name: prev_race_date
+    description: 前走日 (YYYYMMDD)
+  - name: prev_race_distance
+    description: 前走距離 (m)
+  - name: prev_race_finish
+    description: 前走着順
+  - name: prev_race_time
+    description: 前走タイム (秒)
+  - name: prev2_race_date
+    description: 2走前日付 (YYYYMMDD)
+  - name: prev2_race_distance
+    description: 2走前距離 (m)
+  - name: prev2_race_finish
+    description: 2走前着順
   - name: prev2_race_time
-    reason: "prev2_race_distanceと相関r=0.980（prev2_speed_indexで代替済み）"
-  - name: prev2_race_time_is_missing
-    reason: "prev2_race_time削除に伴い不要"
-
-  # ITR-02: gain=0%特徴量
-  - name: bracket_number
-    reason: "gate_win_rateが枠番バイアスを代替"
-  - name: straight_length
-    reason: "gain=0%（venue×distanceで代替可能）"
-  - name: horse_surface_win_rate
-    reason: "gain=0%（データ欠落で疎）"
-  - name: horse_surface_races
-    reason: "gain=0%（データ欠落で疎）"
-  - name: horse_dist_band_win_rate
-    reason: "gain=0%（データ欠落で疎）"
-  - name: horse_dist_band_races
-    reason: "gain=0%（データ欠落で疎）"
-  - name: horse_venue_win_rate
-    reason: "gain=0%（データ欠落で疎）"
-  - name: horse_venue_races
-    reason: "gain=0%（データ欠落で疎）"
-  - name: horse_venue_surface_win_rate
-    reason: "gain=0%"
-  - name: horse_venue_surface_races
-    reason: "gain=0%"
-  - name: horse_dist_surface_win_rate
-    reason: "gain=0%"
-  - name: horse_dist_surface_races
-    reason: "gain=0%"
-  - name: past5_avg_finish
-    reason: "gain=0%（データギャップで疎）"
-  - name: past10_avg_finish
-    reason: "gain=0%（データギャップで疎）"
-  - name: past3_win_rate
-    reason: "gain=0%（データギャップで疎）"
-  - name: past5_win_rate
-    reason: "gain=0%（データギャップで疎）"
-  - name: past3_avg_last3f_rank
-    reason: "gain=0%（データギャップで疎）"
-  - name: past5_avg_last3f_time
-    reason: "gain=0%（データギャップで疎）"
-  - name: past3_avg_last3f_time
-    reason: "gain=0%（データギャップで疎）"
-  - name: past_5_weight_slope
-    reason: "gain=0%（データギャップ）"
-  - name: past_5_weight_avg_change
-    reason: "gain=0%（データギャップ）"
-  - name: is_first_race
-    reason: "gain=0%（prev_race_finishの欠損でmodelが推測可能）"
-
-  # ITR-04: 高相関ペアの低重要度側
-  - name: fe_trainer_win_rate
-    reason: "trainer_recent30_win_rateと相関r=0.945（低gain側）"
-  - name: jt_combo_win_rate
-    reason: "jt_combo_win_rate_smoothが代替（raw → smooth）"
-  - name: trainer_place_rate_top2
-    reason: "trainer_show_rateと相関r=0.848（低gain側）"
-  - name: jockey_place_rate_top2
-    reason: "jockey_show_rateと相関r=0.881（低gain側: 0.031% vs 0.159%）"
-  - name: trainer_place_rate_top2_is_missing
-    reason: "削除列に伴い不要"
-  - name: jockey_place_rate_top2_is_missing
-    reason: "削除列に伴い不要"
-  - name: surface_encoded
-    reason: "track_type_encodedとほぼ同一、gain=0%"
-  - name: track_type_encoded
-    reason: "surface_encodedと重複、gain=0%"
-  - name: course_direction_encoded
-    reason: "distanceと高相関・gain=0%"
-  - name: corner_radius_encoded
-    reason: "gain=0%（venue_codeで代替可能）"
-  - name: track_type_detailed_encoded
-    reason: "列が存在しない場合が多い"
-  - name: prev2_speed_index_is_missing
-    reason: "prev2_speed_zscore_is_missingと相関r=1.000（完全重複）"
-  - name: jt_combo_races
-    reason: "jt_combo_win_rate_smoothのベイズ平滑に使用済み"
-  - name: weather_encoded
-    reason: "field_condition_encodedで十分"
-  - name: race_class_num
-    reason: "race_class_encodedと冗長（0.83%ゲイン）"
+    description: 2走前タイム (秒)
+  - name: prev2_race_weight
+    description: 2走前馬体重 (kg)
+  - name: prev_race_weight
+    description: 前走馬体重 (kg)
+  - name: horse_total_wins
+    description: '通算勝利数 (プロフィール現在値: 再スクレイプ時に未来情報混入リスク)'
+  - name: horse_total_runs
+    description: '通算出走数 (プロフィール現在値: 再スクレイプ時に未来情報混入リスク)'
+  - name: horse_total_prize_money
+    description: '通算獲得賞金 (プロフィール現在値: 再スクレイプ時に未来情報混入リスク)'
+  - name: finish
+    description: 着順 (レース結果・未来情報)
+  - name: time_seconds
+    description: 走破タイム秒 (レース結果・未来情報)
+  - name: last_3f_time
+    description: 上がり3F秒 (レース結果・未来情報)
+  - name: corner_positions
+    description: コーナー通過順位文字列 (レース結果・未来情報)
+  - name: margin
+    description: 着差 (レース結果・未来情報)
+  - name: prize_money
+    description: 賞金 (レース結果・未来情報)
+engineered_features:
+- name: days_since_last_race
+  stage: days_from_history
+  type: numeric
+  enabled: true
+  description: 前走からの経過日数（DB全履歴から正確に計算）
+- name: running_style
+  stage: horse_category
+  type: categorical
+  enabled: true
+  description: 脚質分類 (逃げ/先行/差し/追込)
+- name: running_style_num
+  stage: horse_category
+  type: numeric
+  enabled: true
+  description: 脚質数値エンコード
+- name: rest_short
+  stage: horse_category
+  type: binary
+  enabled: true
+  description: 短期休み (14日以内)
+- name: rest_normal
+  stage: horse_category
+  type: binary
+  enabled: true
+  description: 標準休み (15-30日)
+- name: rest_long
+  stage: horse_category
+  type: binary
+  enabled: true
+  description: 長期休み (31-60日)
+- name: rest_very_long
+  stage: horse_category
+  type: binary
+  enabled: true
+  description: 超長期休み (61日以上)
+- name: sex_牡
+  stage: horse_category
+  type: binary
+  enabled: false
+  description: '性別ダミー: 牡（廃止: sex_encodedに統合）'
+- name: sex_牝
+  stage: horse_category
+  type: binary
+  enabled: false
+  description: '性別ダミー: 牝（廃止: sex_encodedに統合）'
+- name: sex_セ
+  stage: horse_category
+  type: binary
+  enabled: false
+  description: '性別ダミー: セン馬（廃止: sex_encodedに統合）'
+- name: rest_category
+  stage: horse_category
+  type: categorical
+  enabled: true
+  description: 休み期間カテゴリ (short/normal/long/very_long)
+- name: venue_code
+  stage: id_season
+  type: categorical
+  enabled: false
+  description: '競馬場コード (race_idから抽出, 廃止: venue_code_encodedに統合)'
+- name: race_num
+  stage: id_season
+  type: numeric
+  enabled: true
+  description: レース番号 (race_idから抽出)
+- name: n_horses
+  stage: id_season
+  type: numeric
+  enabled: false
+  description: '出走頭数 (UNNECESSARY: num_horsesと重複)'
+- name: cos_date
+  stage: id_season
+  type: numeric
+  enabled: true
+  description: 日付のcos変換 (季節性)
+- name: sin_date
+  stage: id_season
+  type: numeric
+  enabled: true
+  description: 日付のsin変換 (季節性)
+- name: season
+  stage: id_season
+  type: numeric
+  enabled: true
+  description: 季節区分 (0=冬, 1=春, 2=夏, 3=秋)
+- name: sex_code
+  stage: id_season
+  type: numeric
+  enabled: false
+  description: '性別数値コード (-1=牡/セン, +1=牝, 廃止: sex_encodedに統合)'
+- name: seasonal_sex
+  stage: id_season
+  type: numeric
+  enabled: true
+  description: 季節×性別交互作用 (cos_date × sex_code)
+- name: frame_race_type
+  stage: id_season
+  type: numeric
+  enabled: true
+  description: 馬場種別×枠番交互作用
+- name: race_class_num
+  stage: id_season
+  type: numeric
+  enabled: false
+  description: 'レースクラス数値 (UNNECESSARY: race_class_encodedと冗長)'
+- name: race_class_encoded
+  stage: id_season
+  type: numeric
+  enabled: true
+  description: レースクラスエンコード (G1〜新馬マッピング)
+- name: straight_length
+  stage: course
+  type: numeric
+  enabled: false
+  description: '直線距離 (UNNECESSARY: gain=0%)'
+- name: track_type
+  stage: course
+  type: categorical
+  enabled: true
+  description: コーストラック種別 (コースマスターから)
+- name: corner_radius
+  stage: course
+  type: numeric
+  enabled: true
+  description: コーナー半径
+- name: inner_bias
+  stage: course
+  type: numeric
+  enabled: false
+  description: '内枠バイアス値 (UNNECESSARY: gain=0%)'
+- name: inner_advantage
+  stage: course
+  type: binary
+  enabled: false
+  description: '内枠有利フラグ (UNNECESSARY: gain=0%)'
+- name: implied_prob
+  stage: market
+  type: numeric
+  enabled: true
+  description: オッズからの暗黙勝率 (1/odds)
+- name: odds_z_in_race
+  stage: market
+  type: numeric
+  enabled: true
+  description: レース内オッズZスコア
+- name: market_entropy
+  stage: market
+  type: numeric
+  enabled: true
+  description: 市場エントロピー (レース内オッズ分布の不確実性)
+- name: top3_probability
+  stage: market
+  type: numeric
+  enabled: true
+  description: 上位3頭の暗黙確率和
+- name: popularity_normalized
+  stage: market
+  type: numeric
+  enabled: true
+  description: 出走頭数で正規化した人気順位
+- name: implied_prob_norm
+  stage: market
+  type: numeric
+  enabled: false
+  description: '暗黙勝率のレース内正規化 (UNNECESSARY: popularityと高相関)'
+- name: odds_rank_in_race
+  stage: market
+  type: numeric
+  enabled: false
+  description: 'レース内オッズ順位 (UNNECESSARY: popularityと重複)'
+- name: distance_change
+  stage: prev_race
+  type: numeric
+  enabled: true
+  description: 前走からの距離変化
+- name: prev_speed_index
+  stage: prev_race
+  type: numeric
+  enabled: true
+  description: 前走スピード指数 (prev_race_distance / prev_race_time_seconds)
+- name: prev_speed_zscore
+  stage: prev_race
+  type: numeric
+  enabled: true
+  description: 前走スピード指数の同条件Zスコア
+- name: prev2_speed_index
+  stage: prev_race
+  type: numeric
+  enabled: true
+  description: 前々走スピード指数
+- name: prev2_speed_zscore
+  stage: prev_race
+  type: numeric
+  enabled: true
+  description: 前々走スピード指数Zスコア
+- name: recent_form_weighted
+  stage: prev_race
+  type: numeric
+  enabled: true
+  description: 近走フォーム加重平均 (0.6×前走 + 0.4×前々走)
+- name: form_trend
+  stage: prev_race
+  type: numeric
+  enabled: true
+  description: フォームトレンド (前走着順 - 前々走着順)
+- name: speed_index_change
+  stage: prev_race
+  type: numeric
+  enabled: true
+  description: スピード指数変化 (prev - prev2)
+- name: lap_200m
+  stage: lap
+  type: numeric
+  enabled: true
+  description: 200m累積ラップタイム
+- name: lap_400m
+  stage: lap
+  type: numeric
+  enabled: true
+  description: 400m累積ラップタイム
+- name: lap_600m
+  stage: lap
+  type: numeric
+  enabled: true
+  description: 600m累積ラップタイム
+- name: lap_800m
+  stage: lap
+  type: numeric
+  enabled: true
+  description: 800m累積ラップタイム
+- name: lap_1000m
+  stage: lap
+  type: numeric
+  enabled: true
+  description: 1000m累積ラップタイム
+- name: lap_1200m
+  stage: lap
+  type: numeric
+  enabled: true
+  description: 1200m累積ラップタイム
+- name: lap_1400m
+  stage: lap
+  type: numeric
+  enabled: true
+  description: 1400m累積ラップタイム
+- name: lap_1600m
+  stage: lap
+  type: numeric
+  enabled: true
+  description: 1600m累積ラップタイム
+- name: lap_1800m
+  stage: lap
+  type: numeric
+  enabled: true
+  description: 1800m累積ラップタイム
+- name: lap_2000m
+  stage: lap
+  type: numeric
+  enabled: true
+  description: 2000m累積ラップタイム
+- name: lap_2200m
+  stage: lap
+  type: numeric
+  enabled: true
+  description: 2200m累積ラップタイム
+- name: lap_2400m
+  stage: lap
+  type: numeric
+  enabled: true
+  description: 2400m累積ラップタイム
+- name: lap_sect_200m
+  stage: lap
+  type: numeric
+  enabled: true
+  description: 200m区間ラップ
+- name: lap_sect_400m
+  stage: lap
+  type: numeric
+  enabled: true
+  description: 400m区間ラップ
+- name: lap_sect_600m
+  stage: lap
+  type: numeric
+  enabled: true
+  description: 600m区間ラップ
+- name: lap_sect_800m
+  stage: lap
+  type: numeric
+  enabled: true
+  description: 800m区間ラップ
+- name: lap_sect_1000m
+  stage: lap
+  type: numeric
+  enabled: true
+  description: 1000m区間ラップ
+- name: lap_sect_1200m
+  stage: lap
+  type: numeric
+  enabled: true
+  description: 1200m区間ラップ
+- name: lap_sect_1400m
+  stage: lap
+  type: numeric
+  enabled: true
+  description: 1400m区間ラップ
+- name: lap_sect_1600m
+  stage: lap
+  type: numeric
+  enabled: true
+  description: 1600m区間ラップ
+- name: lap_sect_1800m
+  stage: lap
+  type: numeric
+  enabled: true
+  description: 1800m区間ラップ
+- name: lap_sect_2000m
+  stage: lap
+  type: numeric
+  enabled: true
+  description: 2000m区間ラップ
+- name: lap_sect_2200m
+  stage: lap
+  type: numeric
+  enabled: true
+  description: 2200m区間ラップ
+- name: lap_sect_2400m
+  stage: lap
+  type: numeric
+  enabled: true
+  description: 2400m区間ラップ
+- name: race_pace_front
+  stage: lap
+  type: numeric
+  enabled: true
+  description: 前半ペース平均 (前半区間ラップ平均)
+- name: race_pace_back
+  stage: lap
+  type: numeric
+  enabled: true
+  description: 後半ペース平均 (後半区間ラップ平均)
+- name: race_pace_diff
+  stage: lap
+  type: numeric
+  enabled: true
+  description: 前後半ペース差 (front - back)
+- name: race_pace_ratio
+  stage: lap
+  type: numeric
+  enabled: true
+  description: 前後半ペース比 (front / back)
+- name: tansho_payout_log
+  stage: payout
+  type: numeric
+  enabled: false
+  description: '単勝配当log変換 (UNNECESSARY: 78%超欠損)'
+- name: sanrentan_payout_log
+  stage: payout
+  type: numeric
+  enabled: false
+  description: '三連単配当log変換 (UNNECESSARY: 78%超欠損)'
+- name: tansho_implied_prob
+  stage: payout
+  type: numeric
+  enabled: false
+  description: '単勝配当からの暗黙確率 (UNNECESSARY: 78%超欠損)'
+- name: prev_race_finish_is_missing
+  stage: missing_flags
+  type: binary
+  enabled: false
+  description: '前走着順欠損フラグ (UNNECESSARY: gain=0%)'
+- name: prev_race_distance_is_missing
+  stage: missing_flags
+  type: binary
+  enabled: false
+  description: '前走距離欠損フラグ (UNNECESSARY: gain=0%)'
+- name: prev_speed_index_is_missing
+  stage: missing_flags
+  type: binary
+  enabled: false
+  description: '前走スピード指数欠損フラグ (UNNECESSARY: gain=0%)'
+- name: days_since_last_race_is_missing
+  stage: missing_flags
+  type: binary
+  enabled: false
+  description: '前走経過日数欠損フラグ (UNNECESSARY: gain=0%)'
+- name: prev2_speed_zscore_is_missing
+  stage: missing_flags
+  type: binary
+  enabled: true
+  description: 2走前スピードZスコア欠損フラグ (初出走・データなし馬の識別)
+- name: jockey_course_win_rate
+  stage: history
+  type: numeric
+  enabled: true
+  description: 騎手×コース別勝率 (expanding window)
+- name: jockey_course_races
+  stage: history
+  type: numeric
+  enabled: true
+  description: 騎手×コース別出走数
+- name: jockey_venue_advantage
+  stage: history
+  type: numeric
+  enabled: true
+  description: 騎手の会場別アドバンテージ (会場での勝率 - 全体平均勝率)
+- name: horse_distance_win_rate
+  stage: history
+  type: numeric
+  enabled: false
+  description: '馬の距離別勝率 (UNNECESSARY: データ欠落で疎)'
+- name: horse_distance_avg_finish
+  stage: history
+  type: numeric
+  enabled: false
+  description: '馬の距離別平均着順 (UNNECESSARY: データ欠落で疎)'
+- name: horse_distance_races
+  stage: history
+  type: numeric
+  enabled: false
+  description: '馬の距離別出走数 (UNNECESSARY: データ欠落で疎)'
+- name: horse_surface_win_rate
+  stage: history
+  type: numeric
+  enabled: false
+  description: '馬の馬場別勝率 (UNNECESSARY: データ欠落で疎)'
+- name: horse_surface_races
+  stage: history
+  type: numeric
+  enabled: false
+  description: '馬の馬場別出走数 (UNNECESSARY: データ欠落で疎)'
+- name: horse_dist_band_win_rate
+  stage: history
+  type: numeric
+  enabled: false
+  description: '馬の距離帯別勝率 (UNNECESSARY: データ欠落で疎)'
+- name: horse_dist_band_races
+  stage: history
+  type: numeric
+  enabled: false
+  description: '馬の距離帯別出走数 (UNNECESSARY: データ欠落で疎)'
+- name: horse_venue_win_rate
+  stage: history
+  type: numeric
+  enabled: false
+  description: '馬の競馬場別勝率 (UNNECESSARY: データ欠落で疎)'
+- name: horse_venue_races
+  stage: history
+  type: numeric
+  enabled: false
+  description: '馬の競馬場別出走数 (UNNECESSARY: データ欠落で疎)'
+- name: horse_venue_surface_win_rate
+  stage: history
+  type: numeric
+  enabled: false
+  description: '馬の競馬場×馬場別勝率 (UNNECESSARY: 0%ゲイン)'
+- name: horse_venue_surface_races
+  stage: history
+  type: numeric
+  enabled: false
+  description: '馬の競馬場×馬場別出走数 (UNNECESSARY: 0%ゲイン)'
+- name: horse_dist_surface_win_rate
+  stage: history
+  type: numeric
+  enabled: false
+  description: '馬の距離帯×馬場別勝率 (UNNECESSARY: 0%ゲイン)'
+- name: horse_dist_surface_races
+  stage: history
+  type: numeric
+  enabled: false
+  description: '馬の距離帯×馬場別出走数 (UNNECESSARY: 0%ゲイン)'
+- name: gate_win_rate
+  stage: history
+  type: numeric
+  enabled: true
+  description: 枠番バイアス勝率 (会場×距離帯×馬場)
+- name: jt_combo_win_rate_smooth
+  stage: history
+  type: numeric
+  enabled: true
+  description: 騎手×調教師コンビ勝率 (ベイズ平滑化)
+- name: jt_combo_win_rate
+  stage: history
+  type: numeric
+  enabled: false
+  description: '騎手×調教師コンビ勝率 raw (UNNECESSARY: smoothが代替)'
+- name: jt_combo_races
+  stage: history
+  type: numeric
+  enabled: false
+  description: '騎手×調教師コンビ出走数 (UNNECESSARY: 平滑化に内包済み)'
+- name: jockey_place_rate_top2
+  stage: history
+  type: numeric
+  enabled: false
+  description: '騎手複勝率上位2 (UNNECESSARY: jockey_show_rateと高相関)'
+- name: jockey_show_rate
+  stage: history
+  type: numeric
+  enabled: true
+  description: 騎手複勝率3着内 (expanding window)
+- name: fe_trainer_win_rate
+  stage: history
+  type: numeric
+  enabled: false
+  description: '調教師勝率 (UNNECESSARY: trainer_recent30_win_rateと相関r=0.945)'
+- name: trainer_place_rate_top2
+  stage: history
+  type: numeric
+  enabled: false
+  description: '調教師複勝率上位2 (UNNECESSARY: trainer_show_rateと高相関)'
+- name: trainer_show_rate
+  stage: history
+  type: numeric
+  enabled: true
+  description: 調教師複勝率3着内 (expanding window)
+- name: sire_win_rate
+  stage: history
+  type: numeric
+  enabled: true
+  description: 父馬勝率 (expanding window)
+- name: sire_show_rate
+  stage: history
+  type: numeric
+  enabled: true
+  description: 父馬複勝率 (expanding window)
+- name: damsire_win_rate
+  stage: history
+  type: numeric
+  enabled: true
+  description: 母父馬勝率 (expanding window)
+- name: damsire_show_rate
+  stage: history
+  type: numeric
+  enabled: true
+  description: 母父馬複勝率 (expanding window)
+- name: past3_avg_finish
+  stage: history
+  type: numeric
+  enabled: true
+  description: 近3走平均着順 (rolling)
+- name: past5_avg_finish
+  stage: history
+  type: numeric
+  enabled: false
+  description: '近5走平均着順 (UNNECESSARY: データギャップで疎)'
+- name: past10_avg_finish
+  stage: history
+  type: numeric
+  enabled: false
+  description: '近10走平均着順 (UNNECESSARY: データギャップで疎)'
+- name: past3_win_rate
+  stage: history
+  type: numeric
+  enabled: false
+  description: '近3走勝率 (UNNECESSARY: データギャップで疎)'
+- name: past5_win_rate
+  stage: history
+  type: numeric
+  enabled: false
+  description: '近5走勝率 (UNNECESSARY: データギャップで疎)'
+- name: jockey_recent30_win_rate
+  stage: history
+  type: numeric
+  enabled: true
+  description: 騎手近30走勝率 (rolling)
+- name: trainer_recent30_win_rate
+  stage: history
+  type: numeric
+  enabled: true
+  description: 調教師近30走勝率 (rolling)
+- name: past3_avg_last3f_time
+  stage: history
+  type: numeric
+  enabled: false
+  description: '近3走平均上がり3Fタイム (UNNECESSARY: データギャップで疎)'
+- name: past5_avg_last3f_time
+  stage: history
+  type: numeric
+  enabled: false
+  description: '近5走平均上がり3Fタイム (UNNECESSARY: データギャップで疎)'
+- name: past3_avg_last3f_rank
+  stage: history
+  type: numeric
+  enabled: false
+  description: '近3走平均上がり3F順位 (UNNECESSARY: データギャップで疎)'
+- name: past5_avg_tansho_log
+  stage: history
+  type: numeric
+  enabled: true
+  description: 近5走平均単勝配当log (過去のオッズトレンド)
+- name: running_style_mean_5
+  stage: history
+  type: numeric
+  enabled: true
+  description: 近5走脚質平均 (rolling)
+- name: running_style_std_5
+  stage: history
+  type: numeric
+  enabled: true
+  description: 近5走脚質標準偏差 (脚質安定性)
+- name: age
+  stage: passthrough
+  type: numeric
+  enabled: true
+  description: 馬齢 (年, 2歳〜)
+- name: distance
+  stage: passthrough
+  type: numeric
+  enabled: true
+  description: レース距離 (m)
+- name: horse_number
+  stage: passthrough
+  type: numeric
+  enabled: true
+  description: 馬番 (ゲート番号, 1〜18)
+- name: odds
+  stage: passthrough
+  type: numeric
+  enabled: true
+  description: 単勝オッズ (発走直前確定値)
+- name: popularity
+  stage: passthrough
+  type: numeric
+  enabled: true
+  description: '人気順位 (オッズ順: 1=1番人気)'
+- name: horse_weight
+  stage: passthrough
+  type: numeric
+  enabled: true
+  description: 馬体重 (kg, レース当日計測値)
+- name: horse_weight_change
+  stage: passthrough
+  type: numeric
+  enabled: true
+  description: 馬体重変化 (kg, 前走比)
+- name: num_horses
+  stage: passthrough
+  type: numeric
+  enabled: true
+  description: 出走頭数
+- name: kai
+  stage: passthrough
+  type: numeric
+  enabled: true
+  description: 開催回数 (race_idから抽出)
+- name: day
+  stage: passthrough
+  type: numeric
+  enabled: true
+  description: 開催日目 (race_idから抽出)
+- name: prev_race_distance
+  stage: passthrough
+  type: numeric
+  enabled: true
+  description: 前走距離 (m)
+- name: prev_race_finish
+  stage: passthrough
+  type: numeric
+  enabled: true
+  description: 前走着順
+- name: prev2_race_distance
+  stage: passthrough
+  type: numeric
+  enabled: true
+  description: 前々走距離 (m)
+- name: prev2_race_finish
+  stage: passthrough
+  type: numeric
+  enabled: true
+  description: 前々走着順
+- name: sex_encoded
+  stage: encoding
+  type: numeric
+  enabled: true
+  description: 性別ラベルエンコード (牡/牝/セン → 0/1/2)
+- name: venue_code_encoded
+  stage: encoding
+  type: numeric
+  enabled: true
+  description: 競馬場コードエンコード (race_idから抽出した会場コード)
+- name: venue_encoded
+  stage: encoding
+  type: numeric
+  enabled: true
+  description: 競馬場名エンコード (東京/中山/阪神等)
+- name: field_condition_encoded
+  stage: encoding
+  type: numeric
+  enabled: true
+  description: 馬場状態エンコード (良/稍重/重/不良 → 0/1/2/3)
+- name: weight_diff
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: weight_diff (学習時に自動検出)
+unnecessary_columns:
+- name: post_time
+  reason: 発走時刻URI
+- name: result_url
+  reason: 結果URL
+- name: horse_url
+  reason: 馬URL
+- name: jockey_url
+  reason: 騎手URL
+- name: trainer_url
+  reason: 調教師URL
+- name: time
+  reason: 走破タイム文字列（time_secondsはFUTURE_FIELDSと重複）
+- name: finish_time
+  reason: 走破タイム文字列
+- name: margin
+  reason: FUTURE_FIELDS重複
+- name: last_3f
+  reason: FUTURE_FIELDS重複
+- name: prize_money
+  reason: FUTURE_FIELDS重複
+- name: finish
+  reason: FUTURE_FIELDS重複（ターゲット変数）
+- name: finish_position
+  reason: FUTURE_FIELDS重複
+- name: owner_name
+  reason: 馬主名（高カーディナリティ文字列）
+- name: horse_owner
+  reason: 馬主名エイリアス
+- name: horse_breeder
+  reason: 生産者名
+- name: horse_breeding_farm
+  reason: 牧場名
+- name: horse_birth_date
+  reason: 誕生日（ageで代替）
+- name: horse_coat_color
+  reason: 毛色
+- name: surface_ja
+  reason: 馬場種別日本語（surfaceで統一）
+- name: surface_en
+  reason: 馬場種別英語（コース計算用の_tmpとして使用）
+- name: sex_age
+  reason: 性齢複合文字列（sex/ageに分離済み）
+- name: race_date
+  reason: 日付（cos/sin変換済み）
+- name: created_at
+  reason: DBタイムスタンプ
+- name: weight
+  reason: 元データの体重フィールド（horse_weightで統一）
+- name: corner_positions
+  reason: コーナー通過文字列（FUTURE_FIELDSと重複）
+- name: id
+  reason: DBの内部ID
+- name: prev_race_venue
+  reason: 前走場所文字列（venue_codeで代替）
+- name: prev2_race_venue
+  reason: 前々走場所文字列
+- name: prev_race_date
+  reason: 前走日（days_since_last_raceに変換済み）
+- name: prev2_race_date
+  reason: 前々走日
+- name: race_name
+  reason: レース名文字列（race_class_encodedに変換済み）
+- name: time_seconds
+  reason: FUTURE_FIELDS重複
+- name: corner_1
+  reason: FUTURE_FIELDS重複
+- name: corner_2
+  reason: FUTURE_FIELDS重複
+- name: corner_3
+  reason: FUTURE_FIELDS重複
+- name: corner_4
+  reason: FUTURE_FIELDS重複
+- name: corner_position_avg
+  reason: FUTURE_FIELDS重複
+- name: corner_position_variance
+  reason: FUTURE_FIELDS重複
+- name: last_corner_position
+  reason: FUTURE_FIELDS重複
+- name: position_change
+  reason: FUTURE_FIELDS重複
+- name: last_3f_rank
+  reason: FUTURE_FIELDS重複
+- name: last_3f_rank_normalized
+  reason: FUTURE_FIELDS重複
+- name: last_3f_time
+  reason: FUTURE_FIELDS重複
+- name: horse_distance_win_rate
+  reason: 99%+欠損/同一値（データ欠落）
+- name: horse_distance_avg_finish
+  reason: 99%+欠損/同一値（データ欠落）
+- name: distance_increased
+  reason: 99%+同一値（distance_changeで代替）
+- name: distance_decreased
+  reason: 99%+同一値（distance_changeで代替）
+- name: weight_kg
+  reason: horse_weightと重複
+- name: weight_change
+  reason: horse_weight_changeと重複
+- name: jockey_weight
+  reason: burden_weightと重複
+- name: n_horses
+  reason: num_horsesと重複
+- name: prev_race_time
+  reason: prev_race_time_secondsの元データ（prev_speed_indexに変換済み）
+- name: track_type_x
+  reason: マージ由来の重複列
+- name: track_type_y
+  reason: マージ由来の重複列
+- name: tansho_payout
+  reason: 78%超欠損
+- name: sanrentan_payout
+  reason: 78%超欠損
+- name: fukusho_min_payout
+  reason: 78%超欠損
+- name: fukusho_max_payout
+  reason: 78%超欠損
+- name: tansho_payout_log
+  reason: 78%超欠損（payout stage由来）
+- name: sanrentan_payout_log
+  reason: 78%超欠損（payout stage由来）
+- name: sanrentan_z_in_races
+  reason: 78%超欠損（payout stage由来）
+- name: tansho_implied_prob
+  reason: 78%超欠損（payout stage由来）
+- name: tansho_payout_is_missing
+  reason: 欠損フラグ（削除対象列の付随）
+- name: sanrentan_payout_is_missing
+  reason: 欠損フラグ（削除対象列の付随）
+- name: is_surface_change
+  reason: prev_race_surface未収録 → 常に0
+- name: implied_prob_norm
+  reason: popularityと高相関（LightGBM単調変換不変）
+- name: odds_rank_in_race
+  reason: popularityのrank表現（情報重複）
+- name: horse_win_rate
+  reason: プロフィール現在値→再スクレイプ時に未来情報混入
+- name: horse_win_rate_is_missing
+  reason: 削除対象列の付随フラグ
+- name: horse_total_wins
+  reason: プロフィール現在値（未来情報混入リスク）
+- name: horse_total_runs
+  reason: プロフィール現在値（未来情報混入リスク）
+- name: horse_total_prize_money
+  reason: プロフィール現在値（未来情報混入リスク）
+- name: popularity_is_missing
+  reason: gain=0%（odds/popularityは常に取得可能）
+- name: odds_is_missing
+  reason: gain=0%
+- name: prev_race_finish_is_missing
+  reason: gain=0%（first_raceフラグで代替）
+- name: prev2_race_finish_is_missing
+  reason: gain=0%
+- name: prev_race_distance_is_missing
+  reason: gain=0%
+- name: prev2_race_distance_is_missing
+  reason: gain=0%
+- name: prev_race_time_is_missing
+  reason: gain=0%
+- name: prev2_race_time_is_missing
+  reason: gain=0%（prev2_race_time削除に伴い不要）
+- name: prev2_race_weight_is_missing
+  reason: gain=0%（prev2_race_weight削除に伴い不要）
+- name: prev_race_weight_is_missing
+  reason: gain=0%（prev_race_weight削除に伴い不要）
+- name: prev_speed_index_is_missing
+  reason: gain=0%
+- name: prev_speed_zscore_is_missing
+  reason: gain=0%
+- name: race_class_num_is_missing
+  reason: gain=0%
+- name: days_since_last_race_is_missing
+  reason: gain=0%
+- name: is_young
+  reason: gain=0%（ageで代替可能）
+- name: is_prime
+  reason: gain=0%（ageで代替可能）
+- name: is_veteran
+  reason: gain=0%（ageで代替可能）
+- name: inner_advantage
+  reason: gain=0%（venue×distance統計で代替）
+- name: inner_bias
+  reason: gain=0%（venue×distance統計で代替）
+- name: log_odds
+  reason: LightGBMツリーモデルではoddsと等価（単調変換不変）
+- name: log_prize
+  reason: 基底列horse_total_prize_moneyがリークリスク（再スクレイプ時に現在値が混入）
+- name: log_total_runs
+  reason: 基底列horse_total_runsがリークリスク（再スクレイプ時に現在値が混入）
+- name: prev_race_weight
+  reason: horse_weightと相関r=0.947
+- name: prev2_race_weight
+  reason: horse_weightと相関r=0.948
+- name: prev_race_weight_is_missing
+  reason: prev_race_weight削除に伴い不要
+- name: prev2_race_weight_is_missing
+  reason: prev2_race_weight削除に伴い不要
+- name: burden_weight
+  reason: horse_weightと相関r=0.970
+- name: prev_race_time_seconds
+  reason: prev_race_distanceと相関r=0.978（prev_speed_indexで代替済み）
+- name: prev2_race_time
+  reason: prev2_race_distanceと相関r=0.980（prev2_speed_indexで代替済み）
+- name: prev2_race_time_is_missing
+  reason: prev2_race_time削除に伴い不要
+- name: bracket_number
+  reason: gate_win_rateが枠番バイアスを代替
+- name: straight_length
+  reason: gain=0%（venue×distanceで代替可能）
+- name: horse_surface_win_rate
+  reason: gain=0%（データ欠落で疎）
+- name: horse_surface_races
+  reason: gain=0%（データ欠落で疎）
+- name: horse_dist_band_win_rate
+  reason: gain=0%（データ欠落で疎）
+- name: horse_dist_band_races
+  reason: gain=0%（データ欠落で疎）
+- name: horse_venue_win_rate
+  reason: gain=0%（データ欠落で疎）
+- name: horse_venue_races
+  reason: gain=0%（データ欠落で疎）
+- name: horse_venue_surface_win_rate
+  reason: gain=0%
+- name: horse_venue_surface_races
+  reason: gain=0%
+- name: horse_dist_surface_win_rate
+  reason: gain=0%
+- name: horse_dist_surface_races
+  reason: gain=0%
+- name: past5_avg_finish
+  reason: gain=0%（データギャップで疎）
+- name: past10_avg_finish
+  reason: gain=0%（データギャップで疎）
+- name: past3_win_rate
+  reason: gain=0%（データギャップで疎）
+- name: past5_win_rate
+  reason: gain=0%（データギャップで疎）
+- name: past3_avg_last3f_rank
+  reason: gain=0%（データギャップで疎）
+- name: past5_avg_last3f_time
+  reason: gain=0%（データギャップで疎）
+- name: past3_avg_last3f_time
+  reason: gain=0%（データギャップで疎）
+- name: past_5_weight_slope
+  reason: gain=0%（データギャップ）
+- name: past_5_weight_avg_change
+  reason: gain=0%（データギャップ）
+- name: is_first_race
+  reason: gain=0%（prev_race_finishの欠損でmodelが推測可能）
+- name: fe_trainer_win_rate
+  reason: trainer_recent30_win_rateと相関r=0.945（低gain側）
+- name: jt_combo_win_rate
+  reason: jt_combo_win_rate_smoothが代替（raw → smooth）
+- name: trainer_place_rate_top2
+  reason: trainer_show_rateと相関r=0.848（低gain側）
+- name: jockey_place_rate_top2
+  reason: 'jockey_show_rateと相関r=0.881（低gain側: 0.031% vs 0.159%）'
+- name: trainer_place_rate_top2_is_missing
+  reason: 削除列に伴い不要
+- name: jockey_place_rate_top2_is_missing
+  reason: 削除列に伴い不要
+- name: surface_encoded
+  reason: track_type_encodedとほぼ同一、gain=0%
+- name: track_type_encoded
+  reason: surface_encodedと重複、gain=0%
+- name: course_direction_encoded
+  reason: distanceと高相関・gain=0%
+- name: corner_radius_encoded
+  reason: gain=0%（venue_codeで代替可能）
+- name: track_type_detailed_encoded
+  reason: 列が存在しない場合が多い
+- name: prev2_speed_index_is_missing
+  reason: prev2_speed_zscore_is_missingと相関r=1.000（完全重複）
+- name: jt_combo_races
+  reason: jt_combo_win_rate_smoothのベイズ平滑に使用済み
+- name: weather_encoded
+  reason: field_condition_encodedで十分
+- name: race_class_num
+  reason: race_class_encodedと冗長（0.83%ゲイン）

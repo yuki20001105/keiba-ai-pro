@@ -6,6 +6,7 @@ import { Logo } from '@/components/Logo'
 import { Toast } from '@/components/Toast'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { supabase } from '@/lib/supabase'
+import { authFetch } from '@/lib/auth-fetch'
 import { useJobPoller } from '@/hooks/useJobPoller'
 
 export default function TrainPage() {
@@ -53,7 +54,7 @@ export default function TrainPage() {
 
   const loadModels = async () => {
     try {
-      const res = await fetch(`/api/models?ultimate=true`)
+      const res = await authFetch(`/api/models?ultimate=true`)
       if (res.ok) { const d = await res.json(); setModels(d.models || []) }
     } catch {}
   }

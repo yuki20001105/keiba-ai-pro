@@ -8,7 +8,10 @@ export async function GET(request: NextRequest) {
     if (!date) {
       return NextResponse.json({ detail: 'date parameter is required' }, { status: 400 })
     }
-    const response = await fetch(`${ML_API_URL}/api/races/by_date?date=${encodeURIComponent(date)}`, { signal: AbortSignal.timeout(10_000) })
+    const authHeader = request.headers.get('Authorization')
+    const headers: Record<string, string> = {}
+    if (authHeader) headers['Authorization'] = authHeader
+    const response = await fetch(`${ML_API_URL}/api/races/by_date?date=${encodeURIComponent(date)}`, { headers, signal: AbortSignal.timeout(10_000) })
     const data = await response.json()
     return NextResponse.json(data, { status: response.status })
   } catch (error) {

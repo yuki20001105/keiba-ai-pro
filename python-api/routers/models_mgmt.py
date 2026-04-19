@@ -10,7 +10,7 @@ import joblib
 from fastapi import APIRouter, HTTPException
 
 from app_config import (  # type: ignore
-    SUPABASE_ENABLED,
+    SUPABASE_DATA_ENABLED,
     MODELS_DIR,
     get_supabase_client,
     load_model_bundle,
@@ -24,14 +24,18 @@ router = APIRouter()
 async def list_models(ultimate: bool = False):
     """保存済みモデルの一覧を取得"""
     try:
-        if SUPABASE_ENABLED and get_supabase_client():
+        # ローカルモデルを優先スキャン
+        local_files = list(MODELS_DIR.glob("model_*.joblib"))
+
+        if not local_files and SUPABASE_DATA_ENABLED and get_supabase_client():
+            # ローカルに何もない場合のみ Supabase にフォールバック
             from app_config import list_models_from_supabase  # type: ignore
             sb_models = list_models_from_supabase()
             sb_models = [m for m in sb_models if m.get("ultimate_mode", False) == ultimate]
             return {"models": sb_models, "count": len(sb_models)}
 
         models = []
-        for model_path in MODELS_DIR.glob("model_*.joblib"):
+        for model_path in local_files:
             try:
                 bundle = joblib.load(model_path)
                 is_ultimate = bundle.get("ultimate_mode", False)
@@ -71,7 +75,7 @@ async def delete_model(model_id: str):
     """保存済みモデルを削除"""
     try:
         deleted = []
-        if SUPABASE_ENABLED and get_supabase_client():
+        if SUPABASE_DATA_ENABLED and get_supabase_client():
             from app_config import delete_model_from_supabase  # type: ignore
             # 戻り値を確認: False = モデルが Supabase に存在しない
             if delete_model_from_supabase(model_id):

@@ -1,18 +1,6 @@
-# Node.js / Next.js (Railway は Python API のみビルド)
+# Node.js / Next.js
 node_modules/
 .next/
-src/
-public/
-*.ts
-*.tsx
-*.js
-!python-api/**/*.js
-package.json
-package-lock.json
-tsconfig.json
-next.config.js
-tailwind.config.ts
-postcss.config.js
 
 # Git / CI
 .git/

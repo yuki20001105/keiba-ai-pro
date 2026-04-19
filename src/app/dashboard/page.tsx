@@ -8,6 +8,7 @@ import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, ReferenceLine, CartesianGrid, Cell,
 } from 'recharts'
+import { authFetch } from '@/lib/auth-fetch'
 
 type Bet = {
   id: number | string; race_id: string; purchase_date: string | null; created_at: string
@@ -134,7 +135,7 @@ export default function DashboardPage() {
 
   const loadStats = async () => {
     try {
-      const res = await fetch('/api/data-stats?ultimate=true')
+      const res = await authFetch('/api/data-stats?ultimate=true')
       if (res.ok) {
         const d = await res.json()
         setDataStats({ totalRaces: d.total_races || 0, totalHorses: d.total_horses || 0, totalModels: d.total_models || 0 })
@@ -144,7 +145,7 @@ export default function DashboardPage() {
 
   const loadBets = async () => {
     try {
-      const res = await fetch('/api/purchase-history?limit=200')
+      const res = await authFetch('/api/purchase-history?limit=200')
       if (res.ok) {
         const d = await res.json()
         setBets(d.history || [])
@@ -154,7 +155,7 @@ export default function DashboardPage() {
 
   const loadStatistics = async () => {
     try {
-      const res = await fetch('/api/statistics')
+      const res = await authFetch('/api/statistics')
       if (res.ok) {
         const d = await res.json()
         setBetTypeStats(d.statistics?.by_bet_type || [])

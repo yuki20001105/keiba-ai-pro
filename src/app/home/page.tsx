@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { useAuth } from '@/contexts/AuthContext'
 import { Logo } from '@/components/Logo'
+import { supabase } from '@/lib/supabase'
 
 const FLOW_STEPS = [
   { href: '/data-collection', label: 'データ取得',   desc: 'netkeibaからレース情報を自動収集', step: '01' },
@@ -28,15 +29,21 @@ export default function HomePage() {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 5000)
 
-    Promise.all([
-      fetch('/api/health', { signal: controller.signal }).then(r => r.ok).catch(() => false),
-      fetch('/api/data-stats', { signal: controller.signal }).then(r => r.ok ? r.json() : null).catch(() => null),
-    ]).then(([online, stats]) => {
-      clearTimeout(timeout)
-      setStatus({
-        apiOnline: online as boolean,
-        totalRaces: stats?.total_races ?? null,
-        totalModels: stats?.total_models ?? null,
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      const authHeaders: Record<string, string> = session?.access_token
+        ? { Authorization: `Bearer ${session.access_token}` }
+        : {}
+
+      Promise.all([
+        fetch('/api/health', { signal: controller.signal }).then(r => r.ok).catch(() => false),
+        fetch('/api/data-stats', { headers: authHeaders, signal: controller.signal }).then(r => r.ok ? r.json() : null).catch(() => null),
+      ]).then(([online, stats]) => {
+        clearTimeout(timeout)
+        setStatus({
+          apiOnline: online as boolean,
+          totalRaces: stats?.total_races ?? null,
+          totalModels: stats?.total_models ?? null,
+        })
       })
     })
 
@@ -48,14 +55,22 @@ export default function HomePage() {
       {/* Header */}
       <header className="border-b border-[#1e1e1e] px-6 py-4 flex items-center justify-between">
         <Logo href="/home" />
-        {isAdmin && (
-          <Link
-            href="/admin"
+        <div className="flex items-center gap-4">
+          {isAdmin && (
+            <Link
+              href="/admin"
+              className="text-xs text-[#888] hover:text-white transition-colors"
+            >
+              管理者
+            </Link>
+          )}
+          <button
+            onClick={async () => { await supabase.auth.signOut(); window.location.href = '/login' }}
             className="text-xs text-[#888] hover:text-white transition-colors"
           >
-            管理者
-          </Link>
-        )}
+            ログアウト
+          </button>
+        </div>
       </header>
 
       {/* Main */}

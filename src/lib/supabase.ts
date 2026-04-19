@@ -1,4 +1,4 @@
-import { createClient } from '@supabase/supabase-js'
+import { createBrowserClient } from '@supabase/ssr'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
@@ -9,7 +9,7 @@ if (!isSupabaseConfigured && typeof window !== 'undefined') {
   console.error('[supabase] NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY が未設定です')
 }
 
-export const supabase = createClient(
+export const supabase = createBrowserClient(
   supabaseUrl ?? 'http://localhost:54321',
   supabaseAnonKey ?? 'missing-anon-key'
 )

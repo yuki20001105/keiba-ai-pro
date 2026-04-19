@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { Logo } from '@/components/Logo'
 import { Toast } from '@/components/Toast'
 import { supabase } from '@/lib/supabase'
+import { authFetch } from '@/lib/auth-fetch'
 import { JRA_VENUES, todayStr, toInputDate, fromInputDate } from '@/lib/types'
 import type { RaceItem } from '@/lib/types'
 import { useScrape } from '@/hooks/useScrape'
@@ -88,7 +89,7 @@ export default function PredictBatchPage() {
 
   const loadModels = async () => {
     try {
-      const res = await fetch('/api/models?ultimate=true')
+      const res = await authFetch('/api/models?ultimate=true')
       if (res.ok) {
         const data = await res.json()
         // model_id 降順（YYYYMMDD_HHMMSS 末尾）で最新モデルを先頭に
@@ -106,7 +107,7 @@ export default function PredictBatchPage() {
     setResults({})
     scrape.reset()
     try {
-      const res = await fetch(`/api/races/by-date?date=${date}`)
+      const res = await authFetch(`/api/races/by-date?date=${date}`)
       const data = await res.json()
       if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`)
       setRaces(data.races || [])
@@ -126,7 +127,7 @@ export default function PredictBatchPage() {
     setResults({})
     scrape.reset()
     try {
-      const res = await fetch(`/api/races/by-date?date=${date}`)
+      const res = await authFetch(`/api/races/by-date?date=${date}`)
       const data = await res.json()
       if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`)
       const fetched = data.races || []

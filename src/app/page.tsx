@@ -1,5 +1,6 @@
 ﻿import Link from 'next/link'
 import { Logo } from '@/components/Logo'
+import { InstallButton } from '@/components/InstallButton'
 
 export default function LandingPage() {
   return (
@@ -8,10 +9,10 @@ export default function LandingPage() {
       <header className="border-b border-[#1e1e1e] px-6 py-4 flex items-center justify-between">
         <Logo href="/home" />
         <Link
-          href="/home"
+          href="/login"
           className="text-xs text-[#888] hover:text-white transition-colors"
         >
-          アプリへ
+          ログイン
         </Link>
       </header>
 
@@ -66,12 +67,7 @@ export default function LandingPage() {
       {/* CTA Banner */}
       <section className="border-t border-[#1e1e1e] px-6 py-16 text-center">
         <p className="text-[#888] text-sm mb-6">準備ができたら、すぐに使い始められます。</p>
-        <Link
-          href="/home"
-          className="bg-white text-black text-sm font-semibold px-8 py-3.5 rounded hover:bg-[#eee] transition-colors"
-        >
-          アプリを開く
-        </Link>
+        <InstallButton />
       </section>
 
       {/* Footer */}

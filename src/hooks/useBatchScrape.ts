@@ -1,5 +1,6 @@
 'use client'
 import { useState, useRef, useCallback } from 'react'
+import { authFetch } from '@/lib/auth-fetch'
 
 export type BatchProgress = {
   current: number
@@ -71,7 +72,7 @@ export function useBatchScrape() {
           eta: '',
         })
 
-        const startRes = await fetch('/api/scrape', {
+        const startRes = await authFetch('/api/scrape', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ start_date: startDateStr, end_date: endDateStr, force_rescrape: forceRescrape }),
@@ -88,7 +89,7 @@ export function useBatchScrape() {
         const MAX_FAIL = 10
         while (!done && !abortRef.current) {
           await new Promise(resolve => setTimeout(resolve, 3000))
-          const statusRes = await fetch(`/api/scrape/status/${job_id}`)
+          const statusRes = await authFetch(`/api/scrape/status/${job_id}`)
           if (!statusRes.ok) {
             if (++failCount >= MAX_FAIL) throw new Error(`ステータス取得失敗 (job_id: ${job_id})`)
             continue

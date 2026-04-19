@@ -41,11 +41,14 @@ def _verify_secret(x_internal_secret: Optional[str]) -> None:
 
 
 async def _scrape_date(date_str: str) -> int:
-    """1 日分のレースを取得して SQLite + Supabase に保存。保存件数を返す。"""
+    """1 日分のレースを取得して SQLite に保存。保存件数を返す。"""
+    import re as _re
     from scraping.race import scrape_race_full  # type: ignore
     from scraping.storage import _save_race_to_ultimate_db  # type: ignore
-    from app_config import ULTIMATE_DB, SUPABASE_ENABLED, get_supabase_client  # type: ignore
+    from scraping.constants import get_random_headers  # type: ignore
+    from app_config import ULTIMATE_DB, SUPABASE_DATA_ENABLED, get_supabase_client  # type: ignore
 
+    import aiohttp
     import httpx
     from bs4 import BeautifulSoup
 
@@ -55,26 +58,33 @@ async def _scrape_date(date_str: str) -> int:
             resp = await client.get(url, follow_redirects=True)
             resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "lxml")
-        race_links = list({
-            "https://race.netkeiba.com" + a["href"]
-            for a in soup.select("a[href*='/race/result.html']")
-        })
+        # result.html（確定済み）と shutuba.html（出走表）の両方からrace_idを抽出
+        race_ids: list[str] = []
+        seen: set[str] = set()
+        for a in soup.select("a[href*='/race/result.html'], a[href*='/race/shutuba.html']"):
+            m = _re.search(r"race_id=(\d{12})", a["href"])
+            if m and m.group(1) not in seen:
+                seen.add(m.group(1))
+                race_ids.append(m.group(1))
     except Exception as e:
         logger.warning(f"レース一覧取得失敗 {date_str}: {e}")
         return 0
 
     count = 0
-    for race_url in race_links:
-        try:
-            race_data = await scrape_race_full(race_url)
-            if race_data:
-                _save_race_to_ultimate_db(race_data, ULTIMATE_DB, overwrite=True)
-                if SUPABASE_ENABLED and get_supabase_client():
-                    from app_config import save_race_to_supabase  # type: ignore
-                    save_race_to_supabase(race_data)
-                count += 1
-        except Exception as e:
-            logger.warning(f"cron scrape {race_url}: {e}")
+    _timeout = aiohttp.ClientTimeout(total=60)
+    async with aiohttp.ClientSession(headers=get_random_headers(), timeout=_timeout) as session:
+        for race_id in race_ids:
+            try:
+                await asyncio.sleep(1.0)  # INV-07: 1秒以上のインターバル
+                race_data = await scrape_race_full(session, race_id, date_hint=date_str)
+                if race_data and race_data.get("horses"):
+                    _save_race_to_ultimate_db(race_data, ULTIMATE_DB, overwrite=True)
+                    if SUPABASE_DATA_ENABLED and get_supabase_client():
+                        from app_config import save_race_to_supabase  # type: ignore
+                        save_race_to_supabase(race_data)
+                    count += 1
+            except Exception as e:
+                logger.warning(f"cron scrape {race_id}: {e}")
     return count
 
 

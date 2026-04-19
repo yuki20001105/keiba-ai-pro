@@ -14,7 +14,7 @@ import pandas as pd
 from fastapi import APIRouter, HTTPException, Request
 
 from app_config import (  # type: ignore
-    SUPABASE_ENABLED,
+    SUPABASE_DATA_ENABLED,
     CONFIG_PATH,
     MODELS_DIR,
     ULTIMATE_DB,
@@ -149,7 +149,7 @@ def _resolve_model_path(model_id: "str | None") -> "Path":
             raise HTTPException(status_code=404, detail=f"モデル {model_id} が見つかりません")
         return p
     p = get_latest_model()
-    if p is None and SUPABASE_ENABLED and get_supabase_client():
+    if p is None and SUPABASE_DATA_ENABLED and get_supabase_client():
         sb_models = list_models_from_supabase()
         if sb_models:
             p = _ensure_model_local(sb_models[0]["model_id"])
@@ -469,7 +469,7 @@ async def analyze_race(request: AnalyzeRaceRequest):
         else:
             model_path = get_latest_model()
             if model_path is None:
-                if SUPABASE_ENABLED and get_supabase_client():
+                if SUPABASE_DATA_ENABLED and get_supabase_client():
                     sb_models = list_models_from_supabase()
                     if sb_models:
                         model_path = _ensure_model_local(sb_models[0]["model_id"])
@@ -546,7 +546,50 @@ async def analyze_race(request: AnalyzeRaceRequest):
             _hrows = _cur.fetchall()
             _conn.close()
             if not _hrows:
-                raise HTTPException(status_code=404, detail=f"レース {request.race_id} の馬データが見つかりません")
+                # 馬データなし → レース情報はあるが horse データが未登録のためオンデマンド再スクレイプ
+                logger.info(f"[analyze] レース {request.race_id} は races_ultimate にあるが horse データなし → 再スクレイプ")
+                try:
+                    import aiohttp as _aiohttp
+                    from scraping.race import scrape_race_full as _scrape_race_full  # type: ignore
+                    from scraping.storage import _save_race_to_ultimate_db  # type: ignore
+                    from scraping.constants import get_random_headers  # type: ignore
+                    _timeout = _aiohttp.ClientTimeout(total=60)
+                    async with _aiohttp.ClientSession(headers=get_random_headers(), timeout=_timeout) as _sess:
+                        _scraped = await _scrape_race_full(_sess, request.race_id)
+                    if not _scraped or not _scraped.get("horses"):
+                        raise HTTPException(
+                            status_code=404,
+                            detail=f"レース {request.race_id} の馬データが見つかりません（スクレイプでも取得できませんでした）",
+                        )
+                    _save_race_to_ultimate_db(_scraped, ULTIMATE_DB, overwrite=True)
+                    logger.info(f"[analyze] レース {request.race_id} 馬データ再スクレイプ完了 ({len(_scraped['horses'])}頭)")
+                    # 再スクレイプ後に再取得
+                    _conn2 = _sq3.connect(str(db_path))
+                    _cur2 = _conn2.cursor()
+                    _cur2.execute(
+                        "SELECT data FROM race_results_ultimate WHERE race_id = ? ORDER BY json_extract(data, '$.horse_number')",
+                        (request.race_id,),
+                    )
+                    _hrows = _cur2.fetchall()
+                    _cur2.execute("SELECT data FROM races_ultimate WHERE race_id = ?", (request.race_id,))
+                    _rrow2 = _cur2.fetchone()
+                    if _rrow2:
+                        _race_data = json.loads(_rrow2[0])
+                    _conn2.close()
+                    if not _hrows:
+                        raise HTTPException(status_code=404, detail=f"レース {request.race_id} の馬データが見つかりません")
+                except HTTPException:
+                    raise
+                except asyncio.TimeoutError:
+                    raise HTTPException(
+                        status_code=503,
+                        detail=f"レース {request.race_id} の再スクレイプがタイムアウトしました",
+                    )
+                except Exception as _se:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"レース {request.race_id} の馬データが見つかりません（再スクレイプ失敗: {_se}）",
+                    )
 
             _horse_records = []
             for _hr in _hrows:

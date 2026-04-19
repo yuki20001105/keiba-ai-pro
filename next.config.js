@@ -1,6 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  output: 'standalone',
   reactStrictMode: true,
+  allowedDevOrigins: ['10.132.114.4'],
   
   experimental: {
     serverActions: {

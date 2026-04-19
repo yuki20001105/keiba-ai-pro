@@ -6,8 +6,12 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url)
     const query = searchParams.toString()
     const url = `${ML_API_URL}/api/data_stats${query ? `?${query}` : ''}`
+    const authHeader = request.headers.get('Authorization') || ''
 
-    const response = await fetch(url, { signal: AbortSignal.timeout(10_000) })
+    const response = await fetch(url, {
+      headers: authHeader ? { Authorization: authHeader } : {},
+      signal: AbortSignal.timeout(10_000),
+    })
     const data = await response.json()
     return NextResponse.json(data, { status: response.status })
   } catch (error) {

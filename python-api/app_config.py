@@ -101,6 +101,19 @@ except ImportError:
         return False
 
 
+# ── Supabase データ操作フラグ ──────────────────────────────────────
+# SUPABASE_ENABLED = True（認証クライアント読み込み成功）でも
+# データ保存・モデル管理には Supabase を使用しない（ローカル SQLite 優先）。
+# 環境変数 SUPABASE_DATA_ENABLED=true を設定すると有効になる。
+import os as _os
+SUPABASE_DATA_ENABLED: bool = (
+    SUPABASE_ENABLED
+    and _os.environ.get("SUPABASE_DATA_ENABLED", "false").lower() in ("true", "1", "yes")
+)
+if SUPABASE_ENABLED:
+    logger.info(f"Supabase データ操作: {'有効' if SUPABASE_DATA_ENABLED else '無効（認証専用モード）'}")
+
+
 # ── モデルヘルパー ──────────────────────────────────────────────────
 
 

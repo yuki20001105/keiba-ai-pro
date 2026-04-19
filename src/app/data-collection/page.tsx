@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { Logo } from '@/components/Logo'
 import { Toast } from '@/components/Toast'
+import { authFetch } from '@/lib/auth-fetch'
 import { useJobPoller } from '@/hooks/useJobPoller'
 import { useBatchScrape } from '@/hooks/useBatchScrape'
 
@@ -59,7 +60,7 @@ export default function DataCollectionPage() {
   const checkLocalApi = async () => {
     setLocalApiStatus('checking')
     try {
-      const res = await fetch('/api/scrape/status/__health_check__', { method: 'GET', signal: AbortSignal.timeout(3000) })
+      const res = await authFetch('/api/scrape/status/__health_check__', { signal: AbortSignal.timeout(3000) })
       setLocalApiStatus(res.status < 500 ? 'online' : 'offline')
     } catch {
       setLocalApiStatus('offline')
@@ -73,7 +74,7 @@ export default function DataCollectionPage() {
 
   const loadStats = async () => {
     try {
-      const res = await fetch('/api/data-stats?ultimate=true')
+      const res = await authFetch('/api/data-stats?ultimate=true')
       if (!res.ok) return
       const stats = await res.json()
       setDataStats({

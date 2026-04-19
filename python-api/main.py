@@ -105,9 +105,6 @@ app.include_router(predict.router)
 app.include_router(models_mgmt.router)
 app.include_router(purchase.router)
 app.include_router(scrape.router)
-
-
-
 app.include_router(backfill.router)
 app.include_router(profiling.router)
 app.include_router(races.router)

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { authFetch } from '@/lib/auth-fetch'
 import type { JobStatus } from '@/lib/types'
 
 export interface JobPollerOptions {
@@ -88,7 +89,7 @@ export function useJobPoller({
       }
 
       try {
-        const res = await fetch(getStatusUrl(jobId))
+        const res = await authFetch(getStatusUrl(jobId))
         if (!res.ok) return // 一時的エラーはスキップ
         const data = await res.json()
 

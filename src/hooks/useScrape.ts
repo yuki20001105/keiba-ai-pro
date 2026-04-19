@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { supabase } from '@/lib/supabase'
+import { authFetch } from '@/lib/auth-fetch'
 import type { ScrapeStatus } from '@/lib/types'
 
 export interface ScrapeParams {
@@ -61,20 +61,10 @@ export function useScrape(): UseScrapeResult {
   const startScrape = useCallback(async ({ startDate, endDate, force = false }: ScrapeParams): Promise<string | null> => {
     setState({ status: 'scraping', message: force ? 'オッズ更新中（強制再スクレイプ）...' : 'スクレイプ開始中...', jobId: null })
 
-    let authHeaders: Record<string, string> = {}
     try {
-      if (supabase) {
-        const { data: { session } } = await supabase.auth.getSession()
-        if (session?.access_token) {
-          authHeaders = { Authorization: `Bearer ${session.access_token}` }
-        }
-      }
-    } catch { /* セッション取得失敗は無視（未ログインでも動作する） */ }
-
-    try {
-      const res = await fetch('/api/scrape', {
+      const res = await authFetch('/api/scrape', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ start_date: startDate, end_date: endDate, force_rescrape: force }),
       })
       if (!res.ok) {

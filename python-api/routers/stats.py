@@ -16,6 +16,7 @@ from app_config import (  # type: ignore
     CONFIG_PATH,
     MODELS_DIR,
     SUPABASE_ENABLED,
+    SUPABASE_DATA_ENABLED,
     ULTIMATE_DB,
     get_supabase_client,
     get_data_stats_from_supabase,
@@ -97,10 +98,7 @@ async def get_data_stats(ultimate: bool = False):
         ultimate: Ultimate版DBを使用するかどうか
     """
     try:
-        if SUPABASE_ENABLED and get_supabase_client():
-            # BUG FIX: 同期ブロッキング呼び出しをイベントループから切り離す
-            return await asyncio.to_thread(get_data_stats_from_supabase)
-
+        # ローカル DB を優先。存在しない場合のみ Supabase にフォールバック
         if ultimate:
             db_path = ULTIMATE_DB
         else:
@@ -110,6 +108,8 @@ async def get_data_stats(ultimate: bool = False):
                 db_path = CONFIG_PATH.parent / db_path
 
         if not db_path.exists():
+            if SUPABASE_DATA_ENABLED and get_supabase_client():
+                return await asyncio.to_thread(get_data_stats_from_supabase)
             return {
                 "total_races": 0,
                 "total_horses": 0,
@@ -218,7 +218,7 @@ async def test_connectivity():
     except Exception as e:
         result["netkeiba"] = {"error": str(e)}
 
-    if SUPABASE_ENABLED:
+    if SUPABASE_DATA_ENABLED:
         try:
             from supabase_client import get_client as _gc  # type: ignore
 

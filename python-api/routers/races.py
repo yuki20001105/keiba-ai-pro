@@ -135,13 +135,20 @@ async def get_race_horses(race_id: str):
 async def get_races_by_date(
     date: str = Query(..., description="日付 YYYYMMDD形式 (例: 20260316)"),
 ):
-    """指定日のDB取得済みレース一覧を返す"""
+    """指定日のDB取得済みレース一覧を返す（馬データが存在するレースのみ）"""
     try:
         conn = sqlite3.connect(str(ULTIMATE_DB))
         cur = conn.cursor()
         year_prefix = date[:4]
+        # race_results_ultimate に馬データがあるレースのみ返す（JOIN で除外）
         cur.execute(
-            "SELECT race_id, data FROM races_ultimate WHERE race_id LIKE ?",
+            """SELECT r.race_id, r.data
+               FROM races_ultimate r
+               WHERE r.race_id LIKE ?
+                 AND EXISTS (
+                     SELECT 1 FROM race_results_ultimate rr
+                     WHERE rr.race_id = r.race_id
+                 )""",
             (f"{year_prefix}%",),
         )
         rows = cur.fetchall()

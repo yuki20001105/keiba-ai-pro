@@ -1,0 +1,36 @@
+services:
+  fastapi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app/keiba
+      - TZ=Asia/Tokyo
+    volumes:
+      - ./keiba/data:/app/keiba/data
+      - ./python-api/models:/app/python-api/models
+      - ./data/logs:/app/python-api/logs
+    restart: unless-stopped
+
+  nextjs:
+    build:
+      context: .
+      dockerfile: Dockerfile.nextjs
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - ML_API_URL=http://fastapi:8000
+      - SCRAPE_API_URL=http://fastapi:8000
+      - PORT=3000
+      - TZ=Asia/Tokyo
+    depends_on:
+      - fastapi
+    restart: unless-stopped

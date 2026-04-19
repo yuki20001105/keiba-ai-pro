@@ -9,6 +9,7 @@ import { RacePredictionPanel } from '@/components/RacePredictionPanel'
 import { RaceFeaturePanel } from '@/components/RaceFeaturePanel'
 import type { RacePredictResult, FeatureData } from '@/lib/race-analysis-types'
 import { supabase } from '@/lib/supabase'
+import { authFetch } from '@/lib/auth-fetch'
 
 // ── 結果照合タブの型 ─────────────────────────────────────────────────
 type PredictionLogEntry = {
@@ -80,7 +81,7 @@ export default function RaceAnalysisPage() {
 
   // モデル一覧を取得（初回のみ）
   useEffect(() => {
-    fetch('/api/models?ultimate=true')
+    authFetch('/api/models?ultimate=true')
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (data?.models?.length) {
