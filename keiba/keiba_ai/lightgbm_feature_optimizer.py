@@ -40,6 +40,73 @@ VENUE_NORMALIZE_MAP: dict = {
 }
 
 
+def resolve_training_mode(
+    fast_mode: bool,
+    audit_mode: bool,
+    n_trials_fast: int = 10,
+    n_trials_prod: int = 100,
+    n_trials_audit: int = 3,
+    n_splits_fast: int = 3,
+    n_splits_prod: int = 5,
+    n_splits_audit: int = 2,
+    boosting_fast: str = "gbdt",
+    boosting_prod: str = "dart",
+    boosting_audit: str = "gbdt",
+    num_boost_round_fast: int = 1000,
+    num_boost_round_prod: int = 3000,
+    num_boost_round_audit: int = 200,
+) -> Dict[str, object]:
+    """Resolve training runtime settings for audit/fast/production modes."""
+    if audit_mode:
+        return {
+            "mode": "audit",
+            "n_trials": int(n_trials_audit),
+            "n_splits": int(n_splits_audit),
+            "boosting_type": str(boosting_audit),
+            "num_boost_round": int(num_boost_round_audit),
+        }
+
+    if fast_mode:
+        return {
+            "mode": "fast",
+            "n_trials": int(n_trials_fast),
+            "n_splits": int(n_splits_fast),
+            "boosting_type": str(boosting_fast),
+            "num_boost_round": int(num_boost_round_fast),
+        }
+
+    return {
+        "mode": "prod",
+        "n_trials": int(n_trials_prod),
+        "n_splits": int(n_splits_prod),
+        "boosting_type": str(boosting_prod),
+        "num_boost_round": int(num_boost_round_prod),
+    }
+
+
+def apply_gpu_mode_recommendation(
+    runtime: Dict[str, object],
+    *,
+    fast_mode: Optional[bool],
+    n_trials: Optional[int],
+    boosting_type: Optional[str],
+    n_splits_fast: int = 3,
+    n_splits_prod: int = 5,
+) -> Dict[str, object]:
+    """Apply GPU-tier recommendation over an existing runtime settings dict."""
+    out = dict(runtime)
+    if fast_mode is None:
+        return out
+
+    out["mode"] = "fast" if fast_mode else "prod"
+    out["n_splits"] = int(n_splits_fast if fast_mode else n_splits_prod)
+    if n_trials is not None:
+        out["n_trials"] = int(n_trials)
+    if boosting_type:
+        out["boosting_type"] = str(boosting_type)
+    return out
+
+
 class LightGBMFeatureOptimizer:
     """LightGBM用の包括的な特徴量最適化クラス
     
@@ -296,6 +363,56 @@ class LightGBMFeatureOptimizer:
             # L3-1: 馬体重トレンド（過去5走の体重変化 slope / 平均変化量）
             'past_5_weight_slope',        # 体重の増減トレンド (kg/走、正=増加傾向)
             'past_5_weight_avg_change',   # 平均体重変化量 (kg)
+
+            # P-5: レース内相手関係特徴量
+            'race_avg_prev_speed',        # レース内全馬の前走スピード指数の平均（相手総合レベル）
+            'race_max_prev_speed',        # レース内最強馬のスピード指数
+            'speed_vs_race_avg',          # 自馬スピード指数 - レース内平均（プラス＝有利）
+            'horse_speed_rank_pct',       # レース内スピード順位パーセンタイル（0=最速）
+            'race_avg_prev_finish',       # レース内全馬の前走着順平均（相手着順レベル）
+            # 欠損フラグ（P-5特徴量が計算できなかった場合）
+            'race_avg_prev_speed_is_missing',
+            'race_max_prev_speed_is_missing',
+            'speed_vs_race_avg_is_missing',
+            'horse_speed_rank_pct_is_missing',
+            'race_avg_prev_finish_is_missing',
+
+            # P-6: ペース期待値・位置取り相性
+            'race_front_runner_count',    # レース内の逃げ/先行馬の数
+            'race_front_runner_pct',      # 逃げ/先行馬の割合（0=差し天国、1=ハイペース）
+            'pace_advantage',             # 自馬脚質とペース環境の適合スコア（0〜1）
+
+            # P-7: 枠番×馬場 granular 勝率
+            'gate_bracket_win_rate',      # 枠番1〜8×venue×surface×dist_band の静的勝率
+            'gate_bracket_win_rate_is_missing',
+
+            # P-8: 血統×条件相性（芝/ダート別・距離帯別）
+            'sire_surface_win_rate',      # 父馬の同馬場勝率
+            'sire_dist_band_win_rate',    # 父馬の距離帯別勝率
+            'damsire_surface_win_rate',   # 母父馬の同馬場勝率
+            'damsire_dist_band_win_rate', # 母父馬の距離帯別勝率
+            'sire_surface_win_rate_is_missing',
+            'sire_dist_band_win_rate_is_missing',
+            'damsire_surface_win_rate_is_missing',
+            'damsire_dist_band_win_rate_is_missing',
+
+            # P-9: フィールド強度（馬の通常クラス vs 今回レース）
+            'horse_avg_class_num',        # 馬の過去走平均クラス水準（expanding window）
+            'class_drop',                 # horse_avg_class_num - 今回race_class_num（正=格下り=有利）
+            'horse_avg_class_num_is_missing',
+            'class_drop_is_missing',
+
+            # P-10: 騎手×脚質相性
+            'jockey_front_win_rate',      # 騎手が逃げ/先行馬で騎乗した場合の勝率
+            'jockey_close_win_rate',      # 騎手が差し/追込馬で騎乗した場合の勝率
+            'jockey_front_win_rate_is_missing',
+            'jockey_close_win_rate_is_missing',
+
+            # 脚質 rolling 統計（_feh_running_style）
+            'running_style_mean_5',       # 馬の過去5走平均脚質（0=逃げ〜3=追込）
+            'running_style_std_5',        # 馬の過去5走脚質のばらつき（大=脚質可変）
+            'running_style_mean_5_is_missing',
+            'running_style_std_5_is_missing',
         ]
         
         available_numeric = [col for col in numeric_features if col in df.columns]
@@ -441,6 +558,34 @@ class LightGBMFeatureOptimizer:
                 # 学習済みモデルのバンドルに記録しておく
                 self._zero_var_cols = getattr(self, '_zero_var_cols', []) + _zero_var
 
+        # ===== 残余 object 型列の自動処理（dtype 安全保証） =====
+        # prev3/4/5_race_surface のようなエンコード漏れ文字列・文字列 ID を LightGBM に
+        # 渡す前に処理する。学習時に記録したエンコーダを保持して transform でも再利用。
+        self._extra_label_encoders: dict = getattr(self, '_extra_label_encoders', {})
+        self._extra_drop_cols: list = getattr(self, '_extra_drop_cols', [])
+        _ID_COLS = {'race_id', 'horse_id', 'jockey_id', 'trainer_id', 'owner_id'}
+        _remaining_obj = df.select_dtypes(include=['object']).columns.tolist()
+        if _remaining_obj:
+            print(f"\n  ⚠ 残余 object 型列を自動処理: {_remaining_obj}")
+            for _c in _remaining_obj:
+                if _c in _ID_COLS:
+                    # ID 列: 文字列 → 数値（解析不能は NaN）
+                    df[_c] = pd.to_numeric(df[_c], errors='coerce')
+                    print(f"    → {_c}: 数値変換")
+                elif df[_c].nunique() <= 50:
+                    # 低カーディナリティ文字列 → LabelEncoding
+                    _le_e = LabelEncoder()
+                    df[_c] = _le_e.fit_transform(
+                        df[_c].fillna('__missing__').astype(str)
+                    ).astype(float)
+                    self._extra_label_encoders[_c] = _le_e
+                    print(f"    → {_c}: LabelEncoding ({df[_c].nunique():.0f}種類)")
+                else:
+                    # 高カーディナリティ文字列 → 削除
+                    df = df.drop(columns=[_c])
+                    self._extra_drop_cols.append(_c)
+                    print(f"    → {_c}: 削除（高カーディナリティ）")
+
         # ===== S-2チェック: track_type_encoded と corner_radius_encoded の独立性検証 =====
         if 'track_type_encoded' in df.columns and 'corner_radius_encoded' in df.columns:
             _corr = df['track_type_encoded'].corr(df['corner_radius_encoded'].fillna(-1))
@@ -556,6 +701,24 @@ class LightGBMFeatureOptimizer:
         # 特徴量変換（対数変換・ベイズ平滑化）
         df = self._add_feature_transforms(df)
 
+        # ===== 残余 object 型列の自動処理（transform 版）=====
+        _ID_COLS_T = {'race_id', 'horse_id', 'jockey_id', 'trainer_id', 'owner_id'}
+        _remaining_obj_t = df.select_dtypes(include=['object']).columns.tolist()
+        if _remaining_obj_t:
+            for _c in _remaining_obj_t:
+                if _c in _ID_COLS_T:
+                    df[_c] = pd.to_numeric(df[_c], errors='coerce')
+                elif _c in getattr(self, '_extra_label_encoders', {}):
+                    _le_e = self._extra_label_encoders[_c]
+                    df[_c] = df[_c].fillna('__missing__').astype(str).map(
+                        lambda x, _le=_le_e: float(_le.transform([x])[0]) if x in _le.classes_ else np.nan
+                    )
+                elif _c in getattr(self, '_extra_drop_cols', []):
+                    df = df.drop(columns=[_c])
+                else:
+                    # 学習時に見られなかった新規 object 列 → 削除
+                    df = df.drop(columns=[_c])
+
         print(f"  ✓ 変換完了: {len(df.columns)}カラム")
 
         return df
@@ -566,6 +729,9 @@ class LightGBMFeatureOptimizer:
             return df, None
         
         # 欠損値を'Unknown'で埋める
+        if pd.api.types.is_categorical_dtype(df[col]):
+            if 'Unknown' not in df[col].cat.categories:
+                df[col] = df[col].cat.add_categories(['Unknown'])
         df[col] = df[col].fillna('Unknown')
         
         le = LabelEncoder()
@@ -691,6 +857,9 @@ class LightGBMFeatureOptimizer:
         # ── 血統: "Unknown" 埋め（_add_entity_statistics が文字列を期待）────
         for col in ['sire', 'damsire', 'dam']:
             if col in df.columns:
+                if pd.api.types.is_categorical_dtype(df[col]):
+                    if 'Unknown' not in df[col].cat.categories:
+                        df[col] = df[col].cat.add_categories(['Unknown'])
                 df[col] = df[col].fillna('Unknown')
 
         # ── 通算成績: 0 埋め（新馬・データ未取得馬）── horse_win_rate は除き NaN 保持

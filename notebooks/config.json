@@ -1,0 +1,15 @@
+{
+  "DATA_SOURCE_MODE": "existing",
+  "FEATURE_SOURCE": "existing",
+  "TRAIN_START": "20130101",
+  "TRAIN_END": "20170101",
+  "TEST_START": "20170102",
+  "TEST_END": "20180505",
+  "TARGET": "speed_deviation",
+  "CV_FOLDS": 5,
+  "OPTUNA_TRIALS": 5,
+  "RANDOM_STATE": 42,
+  "SIM_SCRAPE_START": "2026-01",
+  "SIM_SCRAPE_END": "2026-02",
+  "updated_at": "2026-07-04T17:44:53.098018"
+}

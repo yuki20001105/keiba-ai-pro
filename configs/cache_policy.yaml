@@ -1,0 +1,17 @@
+cache:
+  keys:
+    - data_version
+    - feature_schema_hash
+    - notebook_step
+    - mode
+  files:
+    - cache/ultimate_frame.parquet
+    - cache/features.parquet
+    - cache/predictions.parquet
+    - cache/race_results.parquet
+    - cache/horse_history.parquet
+    - cache/training_data.parquet
+  invalidation:
+    - schema_change
+    - database_updated
+    - mode_changed

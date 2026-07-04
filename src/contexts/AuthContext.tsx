@@ -16,6 +16,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    // ローカル開発バイパス: Supabase 停止中でも admin として動作
+    if (process.env.NEXT_PUBLIC_DEV_BYPASS_AUTH === 'true') {
+      setRole('admin')
+      setLoading(false)
+      return
+    }
+
     const fetchRole = async () => {
       try {
         const { data: { user } } = await supabase.auth.getUser()

@@ -1,0 +1,35 @@
+﻿{
+    "summary":  {
+                    "overall_status":  "FAIL"
+                },
+    "sandbox":  {
+                    "cleanup_status":  "deleted",
+                    "enabled":  true
+                },
+    "steps":  [
+                  {
+                      "name":  "health_check",
+                      "status":  "PASS"
+                  },
+                  {
+                      "name":  "scenario_router_e2e",
+                      "status":  "FAIL"
+                  },
+                  {
+                      "name":  "scenario_router_auto_recovery_e2e",
+                      "status":  "PASS"
+                  },
+                  {
+                      "name":  "py_compile",
+                      "status":  "PASS"
+                  },
+                  {
+                      "name":  "import_smoke",
+                      "status":  "PASS"
+                  }
+              ],
+    "trend":  {
+                  "flaky_warning":  false,
+                  "last_10_success_rate":  1
+              }
+}

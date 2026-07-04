@@ -1,0 +1,18 @@
+{
+  "gate_status": "FAIL",
+  "exit_code": 1,
+  "reasons": [
+    "latest overall_status is not PASS",
+    "required steps failed: scenario_router_e2e"
+  ],
+  "warnings": [
+    "history size is small; reliability trend is not stable yet"
+  ],
+  "latest_status": "FAIL",
+  "last_10_success_rate": 1.0,
+  "flaky_warning": false,
+  "failed_steps": [
+    "scenario_router_e2e"
+  ],
+  "suggested_next_action": "Quality gate passed. Continue normal audit cadence."
+}

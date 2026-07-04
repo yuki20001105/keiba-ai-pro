@@ -1,0 +1,15 @@
+**/*.ipynb
+**/*.csv
+**/*.parquet
+**/*.db
+**/*.sqlite
+**/*.pkl
+**/*.png
+**/*.jpg
+**/.next/**
+**/node_modules/**
+**/.venv/**
+reports/
+data/
+models/
+cache/

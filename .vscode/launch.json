@@ -14,6 +14,7 @@
         "PYTHONIOENCODING": "utf-8",
         "PYTHONPATH": "${workspaceFolder}/keiba;${workspaceFolder}/python-api"
       },
+      "envFile": "${workspaceFolder}/.env.local",
       "console": "integratedTerminal",
       "justMyCode": false
     },
@@ -32,11 +33,25 @@
         "uriFormat": "http://localhost:3000",
         "action": "openExternally"
       }
+    },
+    {
+      // Next.js が既に起動中の状態でブラウザデバッガだけ後から接続する
+      // 「実行とデバッグ」パネルからこの構成を選んでF5
+      "name": "Next.js: Attach Browser (Edge)",
+      "type": "msedge",
+      "request": "attach",
+      "port": 9222,
+      "urlFilter": "http://localhost:3000*",
+      "webRoot": "${workspaceFolder}",
+      "sourceMapPathOverrides": {
+        "webpack://_N_E/*": "${workspaceFolder}/*"
+      }
     }
   ],
   "compounds": [
     {
-      // 両方同時起動。各設定の preLaunchTask (Kill Port 8000 / 3000) が個別に実行される
+      // 両方同時起動 + Edgeデバッガ自動接続。
+      // 各設定の preLaunchTask (Kill Port 8000 / 3000) が個別に実行される
       "name": "All Servers (FastAPI + Next.js)",
       "configurations": ["FastAPI (python-api)", "Next.js (npm run dev)"],
       "stopAll": true

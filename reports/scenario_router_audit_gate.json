@@ -1,0 +1,133 @@
+{
+  "gate_status": "WARN",
+  "exit_code": 0,
+  "reasons": [],
+  "warnings": [
+    "flaky_warning=true"
+  ],
+  "latest_status": "PASS",
+  "last_10_success_rate": 0.8333333333333334,
+  "flaky_warning": true,
+  "failed_steps": [],
+  "baseline_evaluation": [
+    {
+      "step_name": "fastapi_start_or_reuse",
+      "current_duration_sec": 6.907579183578491,
+      "sample_count": 5,
+      "median_duration_sec": 6.880893707275391,
+      "mean_duration_sec": 7.036682939529419,
+      "p95_duration_sec": 9.490484714508057,
+      "warn_threshold_sec": 17.202234268188477,
+      "fail_threshold_sec": 34.40446853637695,
+      "duration_warn_multiplier": 2.5,
+      "duration_fail_multiplier": 5.0,
+      "status": "OK",
+      "note": ""
+    },
+    {
+      "step_name": "health_check",
+      "current_duration_sec": 0.25116777420043945,
+      "sample_count": 5,
+      "median_duration_sec": 0.26376867294311523,
+      "mean_duration_sec": 0.2609811782836914,
+      "p95_duration_sec": 0.27868967056274413,
+      "warn_threshold_sec": 0.6594216823577881,
+      "fail_threshold_sec": 1.3188433647155762,
+      "duration_warn_multiplier": 2.5,
+      "duration_fail_multiplier": 5.0,
+      "status": "OK",
+      "note": ""
+    },
+    {
+      "step_name": "import_smoke",
+      "current_duration_sec": 1.1845202445983887,
+      "sample_count": 5,
+      "median_duration_sec": 1.554119348526001,
+      "mean_duration_sec": 1.6997968196868896,
+      "p95_duration_sec": 2.7249106407165526,
+      "warn_threshold_sec": 3.8852983713150024,
+      "fail_threshold_sec": 7.770596742630005,
+      "duration_warn_multiplier": 2.5,
+      "duration_fail_multiplier": 5.0,
+      "status": "OK",
+      "note": ""
+    },
+    {
+      "step_name": "py_compile",
+      "current_duration_sec": 0.1223137378692627,
+      "sample_count": 5,
+      "median_duration_sec": 0.11779332160949707,
+      "mean_duration_sec": 0.1337578773498535,
+      "p95_duration_sec": 0.17982635498046876,
+      "warn_threshold_sec": 0.2944833040237427,
+      "fail_threshold_sec": 0.5889666080474854,
+      "duration_warn_multiplier": 2.5,
+      "duration_fail_multiplier": 5.0,
+      "status": "OK",
+      "note": ""
+    },
+    {
+      "step_name": "sandbox_fixture_create",
+      "current_duration_sec": 10.872151136398315,
+      "sample_count": 5,
+      "median_duration_sec": 10.835591793060303,
+      "mean_duration_sec": 9.846709489822388,
+      "p95_duration_sec": 11.288706970214843,
+      "warn_threshold_sec": 27.088979482650757,
+      "fail_threshold_sec": 54.177958965301514,
+      "duration_warn_multiplier": 2.5,
+      "duration_fail_multiplier": 5.0,
+      "status": "OK",
+      "note": ""
+    },
+    {
+      "step_name": "scenario_router_auto_recovery_e2e",
+      "current_duration_sec": 0.8053593635559082,
+      "sample_count": 5,
+      "median_duration_sec": 0.9516379833221436,
+      "mean_duration_sec": 0.9261901378631592,
+      "p95_duration_sec": 0.9928873538970947,
+      "warn_threshold_sec": 2.379094958305359,
+      "fail_threshold_sec": 4.758189916610718,
+      "duration_warn_multiplier": 2.5,
+      "duration_fail_multiplier": 5.0,
+      "status": "OK",
+      "note": ""
+    },
+    {
+      "step_name": "scenario_router_e2e",
+      "current_duration_sec": 111.59260869026184,
+      "sample_count": 5,
+      "median_duration_sec": 111.53951740264893,
+      "mean_duration_sec": 90.30842294692994,
+      "p95_duration_sec": 113.48625292778016,
+      "warn_threshold_sec": 278.8487935066223,
+      "fail_threshold_sec": 557.6975870132446,
+      "duration_warn_multiplier": 2.5,
+      "duration_fail_multiplier": 5.0,
+      "status": "OK",
+      "note": ""
+    }
+  ],
+  "suggested_next_action": "Review warnings and keep monitoring trend before tightening strict mode.",
+  "applied_preset": "ci",
+  "preset_file": "scripts\\scenario_router_audit_gate_presets.yaml",
+  "preset_warnings": [],
+  "effective_config": {
+    "baseline_window": 10,
+    "min_baseline_samples": 5,
+    "duration_warn_multiplier": 2.5,
+    "duration_fail_multiplier": 5.0,
+    "min_last_10_success_rate": 0.8,
+    "fail_on_flaky": false,
+    "fail_on_duration_spike": false,
+    "strict": false,
+    "required_steps": [
+      "health_check",
+      "scenario_router_e2e",
+      "scenario_router_auto_recovery_e2e",
+      "py_compile",
+      "import_smoke"
+    ]
+  }
+}

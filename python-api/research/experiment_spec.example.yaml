@@ -1,0 +1,59 @@
+experiment:
+  name: speed_v4_research
+  tags: [baseline, lightgbm, roi]
+
+data:
+  date_from: "2023-01-01"
+  date_to: "2025-12-31"
+  limit_rows: 15000
+  reference_race_ids:
+    - "202665060812"
+
+scenario:
+  enabled: true
+  rebuild_before_run: false
+  use_for_discovery: true
+  include_interactions: true
+  max_interaction_nodes: 24
+
+models:
+  baseline_model_id: model_baseline_v1
+  challenger_model_ids:
+    - model_speed_v4
+    - model_speed_v5
+
+feature_discovery:
+  enabled: false
+  target_col: win
+  max_candidates: 120
+  top_k: 20
+  min_total_score: 20.0
+  promote: false
+
+backtest:
+  enabled: true
+  model_ids:
+    - model_baseline_v1
+    - model_speed_v4
+    - model_speed_v5
+  stake_per_race: 100
+
+feature_impact:
+  enabled: true
+  feature_columns:
+    - odds
+    - horse_weight
+    - burden_weight
+  max_predictions: 4000
+  min_group_size: 20
+
+experiment_lab:
+  enabled: true
+  max_predictions: 4000
+  bootstrap_iters: 3000
+  permutation_iters: 5000
+  min_segment_overlap: 20
+  scenario_segment_by:
+    - expected_pace
+    - expected_bias
+    - winning_pattern

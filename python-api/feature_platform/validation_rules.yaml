@@ -1,0 +1,14 @@
+ranges:
+  burden_weight:
+    min: 40.0
+    max: 70.0
+  popularity:
+    min: 1
+    max: 18
+  odds:
+    min: 0.0
+  finish:
+    min: 1
+    max: 18
+required_non_null:
+  - race_id

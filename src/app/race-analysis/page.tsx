@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { Logo } from '@/components/Logo'
 import Link from 'next/link'
@@ -10,6 +10,70 @@ import { RacePredictionPanel } from '@/components/RacePredictionPanel'
 import { RaceFeaturePanel } from '@/components/RaceFeaturePanel'
 import type { RacePredictResult, FeatureData } from '@/lib/race-analysis-types'
 import { authFetch } from '@/lib/auth-fetch'
+
+// ── 日付・週ナビヘルパー ─────────────────────────────────────────────────
+function shiftDays(dateStr: string, days: number): string {
+  const y = parseInt(dateStr.slice(0, 4))
+  const m = parseInt(dateStr.slice(4, 6)) - 1
+  const d = parseInt(dateStr.slice(6, 8))
+  const dt = new Date(y, m, d)
+  dt.setDate(dt.getDate() + days)
+  return `${dt.getFullYear()}${String(dt.getMonth() + 1).padStart(2, '0')}${String(dt.getDate()).padStart(2, '0')}`
+}
+
+function getWeekTabs(dateStr: string): Array<{ str: string; label: string }> {
+  const y = parseInt(dateStr.slice(0, 4))
+  const m = parseInt(dateStr.slice(4, 6)) - 1
+  const d = parseInt(dateStr.slice(6, 8))
+  const dt = new Date(y, m, d)
+  const dow = dt.getDay() // 0=Sun, 6=Sat
+  const satOffset = dow === 0 ? -1 : 6 - dow
+  const sat = new Date(dt); sat.setDate(dt.getDate() + satOffset)
+  const sun = new Date(sat); sun.setDate(sat.getDate() + 1)
+  const fmt = (x: Date) =>
+    `${x.getFullYear()}${String(x.getMonth() + 1).padStart(2, '0')}${String(x.getDate()).padStart(2, '0')}`
+  const DOW = ['日', '月', '火', '水', '木', '金', '土']
+  const fmtLabel = (x: Date) => `${x.getMonth() + 1}/${x.getDate()}(${DOW[x.getDay()]})`
+  return [
+    { str: fmt(sat), label: fmtLabel(sat) },
+    { str: fmt(sun), label: fmtLabel(sun) },
+  ]
+}
+
+function formatDateDisplay(dateStr: string): string {
+  const y = parseInt(dateStr.slice(0, 4))
+  const m = parseInt(dateStr.slice(4, 6))
+  const d = parseInt(dateStr.slice(6, 8))
+  const dt = new Date(y, m - 1, d)
+  const DOW = ['日', '月', '火', '水', '木', '金', '土']
+  return `${y}年${m}月${d}日（${DOW[dt.getDay()]}）`
+}
+
+function raceBadgeStyle(trackType: string): string {
+  if (trackType?.startsWith('芝')) return 'bg-[#0f4a30] border border-[#1a7a4a] text-[#33dd88]'
+  if (trackType?.startsWith('障')) return 'bg-[#4a0f0f] border border-[#7a1a1a] text-[#dd4444]'
+  return 'bg-[#3a2a0a] border border-[#6a4a12] text-[#ddaa33]'
+}
+function raceTrackColor(trackType: string): string {
+  if (trackType?.startsWith('芝')) return 'text-[#33cc77]'
+  if (trackType?.startsWith('障')) return 'text-[#ff5555]'
+  return 'text-[#ddaa33]'
+}
+
+// モデルID末尾の YYYYMMDD_HHMM を抽出（日付順ソート・表示用）
+function modelCreatedAt(model_id: string): string {
+  const m = model_id.match(/_(\d{8})_(\d{4})$/)
+  return m ? m[1] + m[2] : model_id
+}
+function modelLabel(model_id: string, target?: string, auc?: number): string {
+  const m = model_id.match(/_(\d{8})_(\d{4})$/)
+  const tgt = target || model_id.replace(/^model_/, '').replace(/_lightgbm.*/, '').replace(/_lgbm.*/, '')
+  if (!m) return auc != null ? `${tgt} (AUC: ${auc.toFixed(3)})` : tgt
+  const d = m[1], t = m[2]
+  const dateStr = `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)} ${t.slice(0,2)}:${t.slice(2,4)}`
+  return auc != null ? `${tgt} · ${dateStr} (AUC: ${auc.toFixed(3)})` : `${tgt} · ${dateStr}`
+}
+
 
 // ── 結果照合タブの型 ─────────────────────────────────────────────────
 type PredictionLogEntry = {
@@ -47,12 +111,48 @@ export default function RaceAnalysisPage() {
   const [racesLoading, setRacesLoading] = useState(false)
   const [selectedRaceId, setSelectedRaceId] = useState('')
   const [selectedModelId, setSelectedModelId] = useState<string>('')
+  const [selectedPlace3ModelId, setSelectedPlace3ModelId] = useState<string>('')
   const [models, setModels] = useState<{ model_id: string; target: string; cv_auc_mean: number }[]>([])
   const [tab, setTab] = useState<'predict' | 'features' | 'result'>('predict')
+  const [venueFilter, setVenueFilter] = useState<string>('全て')
 
   // 結果照合タブ
   const [resultData, setResultData] = useState<PredictionHistoryResult | null>(null)
   const [resultLoading, setResultLoading] = useState(false)
+
+  // 競馬場フィルタ済みレース一覧
+  const filteredRaces = useMemo(() => {
+    if (venueFilter === '全て') return races
+    return races.filter(r => r.venue === venueFilter)
+  }, [races, venueFilter])
+
+  // 現在選択レースの前後インデックス
+  const currentIdx = filteredRaces.findIndex(r => r.race_id === selectedRaceId)
+  const prevRace = currentIdx > 0 ? filteredRaces[currentIdx - 1] : null
+  const nextRace = currentIdx >= 0 && currentIdx < filteredRaces.length - 1 ? filteredRaces[currentIdx + 1] : null
+
+  // 開催競馬場の一覧（重複排除）
+  const venueOptions = useMemo(() => {
+    const venues = Array.from(new Set(races.map(r => r.venue).filter(Boolean)))
+    return ['全て', ...venues]
+  }, [races])
+
+  // 競馬場グループ（SPAIA風ヘッダー付き）
+  const venueGroups = useMemo(() => {
+    const grouped = new Map<string, typeof races>()
+    filteredRaces.forEach(r => {
+      if (!grouped.has(r.venue)) grouped.set(r.venue, [])
+      grouped.get(r.venue)!.push(r)
+    })
+    return Array.from(grouped.entries()).map(([venue, rs]) => {
+      const first = rs[0]
+      const header =
+        first?.kai && first?.day
+          ? `${first.kai}回${venue}${first.day}日`
+          : venue
+      return { venue, header, races: rs }
+    })
+  }, [filteredRaces])
 
   const [predictResult, setPredictResult] = useState<RacePredictResult | null>(null)
   const [featData, setFeatData] = useState<FeatureData | null>(null)
@@ -86,10 +186,10 @@ export default function RaceAnalysisPage() {
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (data?.models?.length) {
-          // no_odds モデルは除外し、model_id 降順（最新が先頭）に並べる
+          // no_odds モデルは除外し、末尾の作成日時降順（最新が先頭）に並べる
           const filtered = data.models
             .filter((m: any) => !m.model_id.includes('no_odds'))
-            .sort((a: any, b: any) => b.model_id.localeCompare(a.model_id))
+            .sort((a: any, b: any) => modelCreatedAt(b.model_id).localeCompare(modelCreatedAt(a.model_id)))
           setModels(filtered)
         }
       })
@@ -167,6 +267,7 @@ export default function RaceAnalysisPage() {
     try {
       const body: Record<string, unknown> = { race_id: raceId, bankroll: 10000, risk_mode: 'balanced' }
       if (effectiveModelId) body.model_id = effectiveModelId
+      if (selectedPlace3ModelId) body.place3_model_id = selectedPlace3ModelId
       const [predRes, featRes] = await Promise.all([
         authFetch('/api/analyze-race', {
           method: 'POST',
@@ -234,72 +335,158 @@ export default function RaceAnalysisPage() {
       </header>
 
       <div className="flex flex-1 overflow-hidden">
-        {/* 左サイドバー: 日付ピッカー + レース一覧 */}
-        <aside className="w-64 shrink-0 border-r border-[#1e1e1e] flex flex-col">
-          <div className="p-4 border-b border-[#1e1e1e] space-y-3">
-            <div>
-              <label className="text-xs text-[#666] block mb-2">日付</label>
-              <input
-                type="date"
-                value={date}
-                onChange={e => setDate(e.target.value)}
-                className="w-full px-3 py-2 bg-[#111] border border-[#1e1e1e] rounded text-white text-sm focus:outline-none focus:border-[#333]"
-              />
-            </div>
-            <div>
-              <label className="text-xs text-[#666] block mb-1.5">モデル</label>
-              <select
-                value={selectedModelId}
-                onChange={e => {
-                  setSelectedModelId(e.target.value)
-                  if (selectedRaceId) loadRaceData(selectedRaceId, true, e.target.value)
-                }}
-                className="w-full px-2 py-1.5 bg-[#111] border border-[#1e1e1e] rounded text-white text-xs focus:outline-none focus:border-[#333] truncate"
+        {/* 左サイドバー: 週ナビ + SPAIA風レース一覧 */}
+        <aside className="w-64 shrink-0 border-r border-[#1a1a1a] flex flex-col bg-[#0c0c0c]">
+
+          {/* ── 週ナビゲーション ── */}
+          <div className="px-3 pt-3 pb-2 border-b border-[#1a1a1a]">
+            <div className="flex items-center justify-between mb-2">
+              <button
+                onClick={() => setDate(shiftDays(date, -7))}
+                className="flex items-center gap-0.5 text-[11px] text-[#555] hover:text-[#aaa] transition-colors px-1"
               >
-                <option value="">
-                  最新モデル（自動）{models.length > 0 ? ` — ${models[0].model_id.replace(/_ultimate$/, '').replace(/^model_/, '')}` : ''}
-                </option>
-                {models.map(m => (
-                  <option key={m.model_id} value={m.model_id}>
-                    {m.model_id.replace(/_ultimate$/, '').replace(/^model_/, '')}
-                  </option>
+                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                </svg>
+                前週
+              </button>
+              <div className="flex gap-0.5">
+                {getWeekTabs(date).map(tab => (
+                  <button
+                    key={tab.str}
+                    onClick={() => setDate(tab.str)}
+                    className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${
+                      date === tab.str
+                        ? 'bg-[#007a70] text-white'
+                        : 'text-[#555] hover:text-white hover:bg-[#1a1a1a]'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
                 ))}
-              </select>
+              </div>
+              <button
+                onClick={() => setDate(shiftDays(date, 7))}
+                className="flex items-center gap-0.5 text-[11px] text-[#555] hover:text-[#aaa] transition-colors px-1"
+              >
+                翌週
+                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+              </button>
             </div>
+            <p className="text-center text-[10px] text-[#3a3a3a]">{formatDateDisplay(date)}</p>
           </div>
+
+          {/* ── モデル選択 ── */}
+          <div className="px-3 py-2 space-y-1 border-b border-[#1a1a1a]">
+            <select
+              value={selectedModelId}
+              onChange={e => {
+                setSelectedModelId(e.target.value)
+                if (selectedRaceId) loadRaceData(selectedRaceId, true, e.target.value)
+              }}
+              className="w-full px-2 py-1 bg-[#111] border border-[#1e1e1e] rounded text-white text-[11px] focus:outline-none focus:border-[#2a2a2a] truncate"
+            >
+              <option value="">
+                最新モデル（自動）{models.length > 0 ? ` — ${modelLabel(models[0].model_id, models[0].target)}` : ''}
+              </option>
+              {models.map(m => (
+                <option key={m.model_id} value={m.model_id}>
+                  {modelLabel(m.model_id, m.target, m.cv_auc_mean)}
+                </option>
+              ))}
+            </select>
+            <select
+              value={selectedPlace3ModelId}
+              onChange={e => {
+                setSelectedPlace3ModelId(e.target.value)
+                if (selectedRaceId) loadRaceData(selectedRaceId, true, selectedModelId)
+              }}
+              className="w-full px-2 py-1 bg-[#111] border border-[#1e1e1e] rounded text-white text-[11px] focus:outline-none focus:border-[#2a2a2a] truncate"
+            >
+              <option value="">最新 place3 自動</option>
+              {models.filter(m => m.target === 'place3').map(m => (
+                <option key={m.model_id} value={m.model_id}>
+                  {modelLabel(m.model_id, m.target, m.cv_auc_mean)}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* ── SPAIA風 レースカードリスト ── */}
           <div className="flex-1 overflow-y-auto">
             {racesLoading && (
-              <div className="p-4 flex items-center gap-2 text-xs text-[#555]">
-                <div className="w-3 h-3 border border-[#555] border-t-transparent rounded-full animate-spin" />
-                取得中...
+              <div className="pt-1">
+                {[1, 2, 3, 4, 5].map(i => (
+                  <div key={i} className="px-3 py-2.5 border-b border-[#0e0e0e] animate-pulse flex gap-2.5">
+                    <div className="w-9 h-9 rounded bg-[#1a1a1a] shrink-0" />
+                    <div className="flex-1 pt-0.5 space-y-1.5">
+                      <div className="h-3 w-28 bg-[#1e1e1e] rounded" />
+                      <div className="h-2 w-20 bg-[#161616] rounded" />
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
             {!racesLoading && races.length === 0 && (
               <div className="p-4 space-y-1">
                 <p className="text-xs text-[#555]">レースが見つかりません</p>
-                <p className="text-[10px] text-[#444]">日付を変更するか、データ取得ページで先にデータを取得してください</p>
+                <p className="text-[10px] text-[#444]">日付を変更するか、データ取得ページでデータを取得してください</p>
               </div>
             )}
-            {races.map(r => (
-              <button
-                key={r.race_id}
-                onClick={() => loadRaceData(r.race_id)}
-                disabled={dataLoading}
-                className={`w-full text-left px-4 py-3 border-b border-[#111] transition-colors ${
-                  selectedRaceId === r.race_id
-                    ? 'bg-[#1a1a1a] border-l-2 border-l-white'
-                    : 'hover:bg-[#111] border-l-2 border-l-transparent'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-0.5">
-                  <span className="text-xs text-[#888]">{r.venue}</span>
-                  <span className="text-xs font-bold">{r.race_no}R</span>
+            {!racesLoading && venueGroups.map(group => (
+              <div key={group.venue}>
+                {/* 競馬場ヘッダー */}
+                <div className="px-3 py-1.5 bg-[#0e0e0e] border-b border-[#181818] sticky top-0 z-10 flex items-center gap-2">
+                  <span className="text-[11px] font-bold text-[#009a8a]">{group.header}</span>
+                  <span className="text-[10px] text-[#333] ml-auto">{group.races.length}R</span>
                 </div>
-                <div className="text-xs text-white truncate">{r.race_name || `${r.race_no}レース`}</div>
-                <div className="text-[10px] text-[#555] mt-0.5">
-                  {r.track_type}{r.distance ? ` ${r.distance}m` : ''} · {r.num_horses}頭
-                </div>
-              </button>
+                {/* レースカード */}
+                {group.races.map(r => {
+                  const isSelected = selectedRaceId === r.race_id
+                  return (
+                    <button
+                      key={r.race_id}
+                      onClick={() => loadRaceData(r.race_id)}
+                      disabled={dataLoading}
+                      className={`w-full text-left px-3 py-2.5 border-b border-[#0e0e0e] transition-all ${
+                        isSelected
+                          ? 'bg-[#0c1e1c] border-l-2 border-l-[#00a890]'
+                          : 'hover:bg-[#111] border-l-2 border-l-transparent'
+                      }`}
+                    >
+                      <div className="flex items-start gap-2.5">
+                        {/* レース番号バッジ（SPAIA風） */}
+                        <div className={`w-9 h-9 rounded flex flex-col items-center justify-center shrink-0 ${raceBadgeStyle(r.track_type)}`}>
+                          <span className="text-[8px] opacity-60 leading-none">R</span>
+                          <span className="text-[14px] font-black leading-tight">{r.race_no}</span>
+                        </div>
+                        {/* レース情報 */}
+                        <div className="flex-1 min-w-0 pt-0.5">
+                          <div className="text-xs text-white font-medium truncate leading-snug">
+                            {r.race_name || `${r.race_no}レース`}
+                          </div>
+                          <div className="flex items-center gap-1 mt-1 flex-wrap">
+                            {r.post_time && (
+                              <span className="text-[10px] text-[#666] font-mono">{r.post_time}</span>
+                            )}
+                            {r.post_time && <span className="text-[10px] text-[#333]">·</span>}
+                            <span className={`text-[10px] font-semibold ${raceTrackColor(r.track_type)}`}>
+                              {r.track_type}
+                            </span>
+                            {r.distance > 0 && (
+                              <span className="text-[10px] text-[#555]">{r.distance}m</span>
+                            )}
+                            <span className="text-[10px] text-[#333]">·</span>
+                            <span className="text-[10px] text-[#555]">{r.num_horses}頭</span>
+                          </div>
+                        </div>
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
             ))}
           </div>
         </aside>
@@ -311,10 +498,62 @@ export default function RaceAnalysisPage() {
               ← 左のレースを選択してください
             </div>
           )}
+          {/* 前/次レースナビゲーション */}
+          {(prevRace || nextRace) && !dataLoading && (
+            <div className="flex items-center justify-between px-6 py-2 border-b border-[#1a1a1a] shrink-0">
+              <button
+                onClick={() => prevRace && loadRaceData(prevRace.race_id)}
+                disabled={!prevRace || dataLoading}
+                className="flex items-center gap-1 text-xs text-[#555] hover:text-white disabled:opacity-30 transition-colors"
+              >
+                ← {prevRace ? `${prevRace.venue} ${prevRace.race_no}R` : ''}
+              </button>
+              <span className="text-[10px] text-[#444]">
+                {currentIdx + 1} / {filteredRaces.length}
+              </span>
+              <button
+                onClick={() => nextRace && loadRaceData(nextRace.race_id)}
+                disabled={!nextRace || dataLoading}
+                className="flex items-center gap-1 text-xs text-[#555] hover:text-white disabled:opacity-30 transition-colors"
+              >
+                {nextRace ? `${nextRace.venue} ${nextRace.race_no}R` : ''} →
+              </button>
+            </div>
+          )}
+
           {dataLoading && (
-            <div className="flex-1 flex flex-col items-center justify-center gap-3 text-[#555]">
-              <div className="w-6 h-6 border-2 border-[#555] border-t-white rounded-full animate-spin" />
-              <span className="text-sm">予測計算中...</span>
+            <div className="flex-1 flex flex-col p-6 gap-4">
+              {/* スケルトン: レース情報カード */}
+              <div className="animate-pulse">
+                <div className="flex justify-between items-start">
+                  <div className="space-y-2">
+                    <div className="h-2.5 w-32 bg-[#1e1e1e] rounded" />
+                    <div className="h-5 w-48 bg-[#222] rounded" />
+                  </div>
+                  <div className="flex gap-3">
+                    {[1,2,3].map(i => (
+                      <div key={i} className="bg-[#111] border border-[#1e1e1e] rounded px-5 py-4">
+                        <div className="h-2 w-8 bg-[#1e1e1e] rounded mb-2" />
+                        <div className="h-3.5 w-10 bg-[#222] rounded" />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              {/* スケルトン: 馬リスト */}
+              <div className="space-y-2 animate-pulse mt-6">
+                {[1,2,3,4,5].map(i => (
+                  <div key={i} className="flex items-center gap-3 p-3 bg-[#111] rounded border border-[#1e1e1e]">
+                    <div className="w-7 h-7 rounded-full bg-[#1e1e1e] shrink-0" />
+                    <div className="flex-1 space-y-1.5">
+                      <div className="h-3 w-24 bg-[#222] rounded" />
+                      <div className="h-2 w-16 bg-[#1a1a1a] rounded" />
+                    </div>
+                    <div className="h-6 w-20 bg-[#1a1a1a] rounded" />
+                    <div className="h-3.5 w-10 bg-[#1e1e1e] rounded" />
+                  </div>
+                ))}
+              </div>
             </div>
           )}
           {error && (

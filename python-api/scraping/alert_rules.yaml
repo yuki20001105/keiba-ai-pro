@@ -1,0 +1,40 @@
+trend:
+  short_window: 7
+  long_window: 30
+
+thresholds:
+  parser_survival:
+    mode: min
+    warning: 0.90
+    critical: 0.80
+    action: notify
+  repository_survival:
+    mode: min
+    warning: 0.95
+    critical: 0.90
+    action: retry
+  retry_rate:
+    mode: max
+    warning: 0.15
+    critical: 0.25
+    action: retry
+  quality_score:
+    mode: min
+    warning: 90.0
+    critical: 80.0
+    action: notify
+
+error_codes:
+  E003:
+    warning: 10
+    critical: 30
+    action: invalidate_cache
+  E202:
+    warning: 10
+    critical: 20
+    action: reconnect
+
+quality_gate:
+  min_score: 95.0
+  required_success_rate: 0.90
+  block_on_critical: true

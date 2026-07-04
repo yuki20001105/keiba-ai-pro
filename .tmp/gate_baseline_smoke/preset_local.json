@@ -1,0 +1,103 @@
+{
+  "gate_status": "PASS",
+  "exit_code": 0,
+  "reasons": [],
+  "warnings": [],
+  "latest_status": "PASS",
+  "last_10_success_rate": 1.0,
+  "flaky_warning": false,
+  "failed_steps": [],
+  "baseline_evaluation": [
+    {
+      "step_name": "health_check",
+      "current_duration_sec": 1.0,
+      "sample_count": 5,
+      "median_duration_sec": 1.1400000000000001,
+      "mean_duration_sec": 1.1400000000000001,
+      "p95_duration_sec": 1.176,
+      "warn_threshold_sec": 3.4200000000000004,
+      "fail_threshold_sec": 6.840000000000001,
+      "duration_warn_multiplier": 3.0,
+      "duration_fail_multiplier": 6.0,
+      "status": "OK",
+      "note": ""
+    },
+    {
+      "step_name": "import_smoke",
+      "current_duration_sec": 1.5,
+      "sample_count": 5,
+      "median_duration_sec": 1.57,
+      "mean_duration_sec": 1.57,
+      "p95_duration_sec": 1.588,
+      "warn_threshold_sec": 4.71,
+      "fail_threshold_sec": 9.42,
+      "duration_warn_multiplier": 3.0,
+      "duration_fail_multiplier": 6.0,
+      "status": "OK",
+      "note": ""
+    },
+    {
+      "step_name": "py_compile",
+      "current_duration_sec": 2.0,
+      "sample_count": 5,
+      "median_duration_sec": 2.07,
+      "mean_duration_sec": 2.07,
+      "p95_duration_sec": 2.088,
+      "warn_threshold_sec": 6.209999999999999,
+      "fail_threshold_sec": 12.419999999999998,
+      "duration_warn_multiplier": 3.0,
+      "duration_fail_multiplier": 6.0,
+      "status": "OK",
+      "note": ""
+    },
+    {
+      "step_name": "scenario_router_auto_recovery_e2e",
+      "current_duration_sec": 12.0,
+      "sample_count": 5,
+      "median_duration_sec": 8.7,
+      "mean_duration_sec": 8.7,
+      "p95_duration_sec": 8.88,
+      "warn_threshold_sec": 26.099999999999998,
+      "fail_threshold_sec": 52.199999999999996,
+      "duration_warn_multiplier": 3.0,
+      "duration_fail_multiplier": 6.0,
+      "status": "OK",
+      "note": ""
+    },
+    {
+      "step_name": "scenario_router_e2e",
+      "current_duration_sec": 6.0,
+      "sample_count": 5,
+      "median_duration_sec": 6.21,
+      "mean_duration_sec": 6.21,
+      "p95_duration_sec": 6.263999999999999,
+      "warn_threshold_sec": 18.63,
+      "fail_threshold_sec": 37.26,
+      "duration_warn_multiplier": 3.0,
+      "duration_fail_multiplier": 6.0,
+      "status": "OK",
+      "note": ""
+    }
+  ],
+  "suggested_next_action": "Quality gate passed. Continue normal audit cadence.",
+  "applied_preset": "local",
+  "preset_file": "scripts\\scenario_router_audit_gate_presets.yaml",
+  "preset_warnings": [],
+  "effective_config": {
+    "baseline_window": 5,
+    "min_baseline_samples": 3,
+    "duration_warn_multiplier": 3.0,
+    "duration_fail_multiplier": 6.0,
+    "min_last_10_success_rate": 0.7,
+    "fail_on_flaky": false,
+    "fail_on_duration_spike": false,
+    "strict": false,
+    "required_steps": [
+      "health_check",
+      "scenario_router_e2e",
+      "scenario_router_auto_recovery_e2e",
+      "py_compile",
+      "import_smoke"
+    ]
+  }
+}

@@ -1,0 +1,52 @@
+defaults:
+  severity: FATAL
+  action: ABORT
+  retry: 0
+  plugins: []
+
+codes:
+  E001:
+    severity: ERROR
+    action: RETRY
+    retry: 2
+    plugins:
+      - INVALIDATE_CACHE
+  E002:
+    severity: WARNING
+    action: CONTINUE
+    retry: 0
+    plugins: []
+  E003:
+    severity: ERROR
+    action: RETRY
+    retry: 2
+    plugins:
+      - INVALIDATE_CACHE
+  E004:
+    severity: ERROR
+    action: RETRY
+    retry: 2
+    plugins:
+      - INVALIDATE_CACHE
+  E005:
+    severity: ERROR
+    action: RETRY
+    retry: 2
+    plugins:
+      - INVALIDATE_CACHE
+  E201:
+    severity: WARNING
+    action: RETRY
+    retry: 2
+    plugins: []
+  E202:
+    severity: ERROR
+    action: RETRY
+    retry: 2
+    plugins:
+      - RECONNECT
+  E099:
+    severity: FATAL
+    action: ABORT
+    retry: 0
+    plugins: []

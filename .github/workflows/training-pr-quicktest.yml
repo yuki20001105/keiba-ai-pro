@@ -1,0 +1,42 @@
+name: training-pr-quicktest
+
+on:
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+jobs:
+  quick-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r python-api/requirements.txt
+          pip install pytest
+
+      - name: Run training package tests
+        run: |
+          pytest keiba/keiba_ai/tests/test_training_pipeline_integration.py \
+                 keiba/keiba_ai/tests/test_training_facades.py -q
+
+      - name: Run unified QUICK_TEST training
+        run: |
+          python train.py --mode QUICK_TEST --trials 3 --splits 2 --no-save-model --print-json
+
+      - name: Upload training artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: training-pr-quicktest-artifacts
+          path: |
+            notebooks/reports/

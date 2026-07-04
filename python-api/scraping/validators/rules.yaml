@@ -1,0 +1,6 @@
+race_ids:
+  required: true
+  unique: true
+  item_type: str
+  item_length: 12
+  item_regex: "^[0-9]{12}$"

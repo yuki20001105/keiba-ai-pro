@@ -5,24 +5,180 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import json
 import re
+import sqlite3
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from bs4 import BeautifulSoup
 
-from scraping.constants import HTML_STRAINER, VENUE_MAP, SCRAPE_PROXY_URL, is_cloudflare_block
+from scraping.constants import HTML_STRAINER, VENUE_MAP, SCRAPE_PROXY_URL, is_cloudflare_block, IPBlockedError, jitter_sleep
 from scraping.horse import scrape_horse_detail
 
 try:
-    from app_config import logger  # type: ignore
+    from app_config import logger, ULTIMATE_DB  # type: ignore
 except ImportError:
     import logging
     logger = logging.getLogger(__name__)
+    ULTIMATE_DB = Path(__file__).parent.parent.parent / "keiba" / "data" / "keiba_ultimate.db"
+
+
+# ── 持ちタイムキャッシュ (pedigree_cache.db と同じ keiba_ultimate.db に格納) ──
+_HOLDING_CACHE_INIT = False
+
+
+def _ensure_holding_cache() -> None:
+    global _HOLDING_CACHE_INIT
+    if _HOLDING_CACHE_INIT:
+        return
+    try:
+        conn = sqlite3.connect(str(ULTIMATE_DB))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS holding_times_cache (
+                race_id    TEXT PRIMARY KEY,
+                data       TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+        conn.close()
+        _HOLDING_CACHE_INIT = True
+    except Exception as e:
+        logger.debug(f"_ensure_holding_cache error: {e}")
+
+
+def _get_holding_cache(race_id: str) -> dict | None:
+    _ensure_holding_cache()
+    try:
+        conn = sqlite3.connect(str(ULTIMATE_DB))
+        row = conn.execute(
+            "SELECT data FROM holding_times_cache WHERE race_id = ?", (race_id,)
+        ).fetchone()
+        conn.close()
+        if row:
+            return json.loads(row[0])
+    except Exception:
+        pass
+    return None
+
+
+def _save_holding_cache(race_id: str, data: dict) -> None:
+    if not data:
+        return
+    _ensure_holding_cache()
+    try:
+        conn = sqlite3.connect(str(ULTIMATE_DB))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            "INSERT OR REPLACE INTO holding_times_cache (race_id, data) VALUES (?, ?)",
+            (race_id, json.dumps(data, ensure_ascii=False)),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.debug(f"_save_holding_cache error {race_id}: {e}")
+
+
+async def _fetch_holding_times(session, race_id: str, race_date: str = "") -> dict:
+    """
+    race.netkeiba.com/race_api/ から AplFreqSum を取得し、
+    horse_id → best_time_detail のマップを返す。
+    ログイン済みセッションが必要。失敗時は空 dict を返す。
+    race_date (YYYYMMDD) を指定すると過去レースはSQLiteキャッシュを使用する。
+    """
+    today = datetime.now().strftime("%Y%m%d")
+    # 確定済みレース（過去）はキャッシュから返す
+    if race_date and race_date < today:
+        cached = _get_holding_cache(race_id)
+        if cached is not None:
+            logger.debug(f"_fetch_holding_times: {race_id} → キャッシュヒット ({len(cached)}頭)")
+            return (cached, True)  # (data, from_cache)
+
+    url = "https://race.netkeiba.com/race_api/"
+    post_data = {"class": "AplFreqSum", "method": "get", "compress": "0", "race_id": race_id}
+    referer = f"https://race.netkeiba.com/race/holding_time.html?race_id={race_id}"
+    try:
+        async with session.post(url, data=post_data, headers={"Referer": referer}) as r:
+            if r.status != 200:
+                return ({}, False)
+            body = await r.text(errors="replace")
+        resp = json.loads(body)
+        if resp.get("status") != "OK":
+            return ({}, False)
+        inner = resp.get("data", {})
+        key = next((k for k in inner if "freq_sum" in k and "_last_dt" not in k), None)
+        if not key:
+            return ({}, False)
+        val = inner[key]
+        if not isinstance(val, dict):
+            return ({}, False)
+        fa = val.get("freq_horse_all", {})
+        if not isinstance(fa, dict):
+            return ({}, False)
+        result = {}
+        for horse_id, h in fa.items():
+            if not isinstance(h, dict):
+                continue
+            btd = h.get("best_time_detail")
+            if isinstance(btd, dict):
+                result[horse_id] = btd
+        logger.debug(f"_fetch_holding_times: {race_id} → {len(result)}頭分取得")
+        # 過去レースはキャッシュに保存
+        if result and race_date and race_date < today:
+            _save_holding_cache(race_id, result)
+        return (result, False)  # (data, from_http)
+    except Exception as e:
+        logger.debug(f"_fetch_holding_times error {race_id}: {e}")
+        return ({}, False)
+
+
+def _apply_holding_times(horses: list, holding_data: dict) -> None:
+    """
+    holding_data (horse_id → best_time_detail) の値を各馬の dict にマージする。
+    各タブ (just/short/middle/long) から time_sec, l3f, finish, babasa を抽出。
+    """
+    def _to_sec(t: str):
+        if not t:
+            return None
+        try:
+            if ":" in t:
+                m, s = t.split(":", 1)
+                return round(int(m) * 60 + float(s), 1)
+            return round(float(t), 1)
+        except (ValueError, TypeError):
+            return None
+
+    for h in horses:
+        hid = str(h.get("horse_id", "") or "")
+        btd = holding_data.get(hid)
+        if not btd:
+            continue
+        for tab in ("just", "short", "middle", "long"):
+            entry = btd.get(tab)
+            if not isinstance(entry, dict) or not entry.get("time"):
+                continue
+            prefix = f"holding_{tab}_"
+            h[prefix + "time_sec"] = _to_sec(entry.get("time", ""))
+            try:
+                h[prefix + "l3f"] = float(entry["l3f"]) if entry.get("l3f") else None
+            except (ValueError, TypeError):
+                h[prefix + "l3f"] = None
+            try:
+                h[prefix + "finish"] = int(entry["jyuni"]) if entry.get("jyuni") else None
+            except (ValueError, TypeError):
+                h[prefix + "finish"] = None
+            try:
+                h[prefix + "babasa"] = int(entry["babasa"]) if entry.get("babasa") else None
+            except (ValueError, TypeError):
+                h[prefix + "babasa"] = None
 
 
 async def scrape_race_full(
-    session, race_id: str, date_hint: str = "", quick_mode: bool = False
+    session, race_id: str, date_hint: str = "", quick_mode: bool = False,
+    pedigree_cache: dict | None = None,
 ) -> Optional[dict]:
     """
     単一レースの完全データを netkeiba.com から取得。
@@ -47,6 +203,10 @@ async def scrape_race_full(
                     logger.warning(f"429 Too Many Requests: {url} (試行{_attempt+1}/3)")
                     await asyncio.sleep(10.0 + _attempt * 5.0)
                     continue
+                if resp.status == 400:
+                    raise IPBlockedError(
+                        f"HTTP 400: {url} — IPブロックの可能性があります"
+                    )
                 if resp.status != 200:
                     logger.warning(f"HTTP {resp.status}: {url}")
                     return None
@@ -122,13 +282,10 @@ async def scrape_race_full(
             else:
                 track_type = ""
                 distance = 0
-                # S-3: distance=0 → パース失敗。race_info に _invalid_distance フラグを付与して
-                # DB に保存し、ローダー側でスキップさせる。中央値補完はしない。
-                import logging as _log
-                _log.error(
-                    f"[S-3][INVALID] distance=0: race_id={race_id} HTMLから距離/種別を取得できませんでした。"
-                    f" このレースは _invalid_distance=True で保存され学習・推論から除外されます。"
-                    f" info_text: {info_text[:120]!r}"
+                # S-3: mainrace_data から距離パース失敗。race_table_01 確認後に shutuba から補完を試みる [S-3b]。
+                logger.debug(
+                    f"[S-3] distance=0: race_id={race_id} info_text から距離取得不可。"
+                    f" 出馬表ページで補完を試みます。 info_text: {info_text[:120]!r}"
                 )
 
     # ---- 天候 ----
@@ -258,6 +415,24 @@ async def scrape_race_full(
     if not all_rows:
         return None
 
+    # distance=0 かつ race_table_01 あり → 出馬表から距離情報を補完 [S-3b]
+    if distance == 0:
+        _shutuba_rescue = await _get_race_info_from_shutuba(race_id)
+        if _shutuba_rescue and _shutuba_rescue.get("distance", 0) > 0:
+            distance = _shutuba_rescue["distance"]
+            track_type = _shutuba_rescue.get("track_type", track_type)
+            weather = weather or _shutuba_rescue.get("weather", weather)
+            field_condition = field_condition or _shutuba_rescue.get("field_condition", field_condition)
+            course_direction = course_direction or _shutuba_rescue.get("course_direction", course_direction)
+            post_time = post_time or _shutuba_rescue.get("post_time", post_time)
+            logger.info(f"[S-3b] 出馬表から距離を補完: {race_id} → {track_type}{distance}m")
+        else:
+            logger.warning(
+                f"[S-3][INVALID] distance=0: race_id={race_id} "
+                f"出馬表からも距離を取得できませんでした。_invalid_distance=True で保存します。"
+                f" info_text: {info_text[:120]!r}"
+            )
+
     header_row = all_rows[0]
     header_cells = header_row.find_all(["th", "td"])
     header_texts = [c.get_text(strip=True) for c in header_cells]
@@ -285,6 +460,8 @@ async def scrape_race_full(
     IDX_WEIGHT = col_idx(["馬体重"], -1)
     IDX_TRAINER = col_idx(["調教師"], -1)
     IDX_PRIZE = col_idx(["賞金"], -1)
+    # タイム指数（標準）: ヘッダーに "ﾀｲﾑ指数" が含まれる最初の列 (col 9)
+    IDX_TIME_IDX = col_idx(["ﾀｲﾑ指数", "タイム指数"], -1)
 
     # タイム指数列がある場合の追加確認（デフォルト位置補正）
     has_time_index = any("ﾀｲﾑ指数" in h or "タイム指数" in h for h in header_texts)
@@ -426,6 +603,13 @@ async def scrape_race_full(
             except ValueError:
                 prize_money = None
 
+            # タイム指数（標準）: "**" や空の場合は None
+            time_index_t = txt(IDX_TIME_IDX) if IDX_TIME_IDX >= 0 and IDX_TIME_IDX < len(cols) else ""
+            try:
+                time_index = int(time_index_t) if time_index_t and time_index_t not in ("-", "**", "***") else None
+            except (ValueError, TypeError):
+                time_index = None
+
             cp_list = []
             if corner_positions:
                 cp_list = [int(x) for x in corner_positions.split("-") if x.strip().isdigit()]
@@ -440,7 +624,7 @@ async def scrape_race_full(
                     "horse_name": horse_name,
                     "horse_url": horse_url,
                     "horse_id": horse_id,
-                    "sex_age": sex_age,
+                    # sex_age は sex + age の冗長表現のため省略（ローダー互換あり）
                     "sex": sex,
                     "age": age,
                     "jockey_weight": jockey_weight,
@@ -451,20 +635,21 @@ async def scrape_race_full(
                     "margin": margin,
                     "odds": odds,
                     "popularity": popularity,
+                    # corner_positions: ローダー互換のため文字列のみ保持（_listは省略）
                     "corner_positions": corner_positions,
-                    "corner_positions_list": cp_list,
                     "corner_1": cp_list[0] if n_cp >= 1 else None,
                     "corner_2": cp_list[1] if n_cp >= 2 else None,
                     "corner_3": cp_list[2] if n_cp >= 3 else None,
                     "corner_4": cp_list[3] if n_cp >= 4 else None,
                     "last_3f": last_3f_str,
-                    "weight": weight_text,
+                    # weight 文字列は weight_kg + weight_change の冗長表現のため省略
                     "weight_kg": weight_kg,
                     "weight_change": weight_change,
                     "trainer_name": trainer_name,
                     "trainer_url": trainer_url,
                     "trainer_id": trainer_id,
                     "prize_money": prize_money,
+                    "time_index": time_index,
                 }
             )
         except Exception as ex:
@@ -498,40 +683,61 @@ async def scrape_race_full(
     _ped_task = None  # Supabase バッチ取得は削除済み。SQLite キャッシュは馬単位で確認する。
 
     # ---- ラップタイム解析 ----
+    # HTML構造: <td class="race_lap_cell">11.7 - 10.5 - 11.3 - ...</td>  (sectional)
+    #           <td class="race_lap_cell">11.7 - 22.2 - 33.5 - ... (33.5-39.6)</td> (cumulative)
     lap_cumulative = {}
     lap_sectional = {}
-    for tbl in soup.find_all("table"):
-        rows = tbl.find_all("tr")
-        if len(rows) < 2:
-            continue
-        header_cells2 = rows[0].find_all(["th", "td"])
-        headers_text = [
-            c.get_text(strip=True).replace("\u3000", "").replace(" ", "") for c in header_cells2
-        ]
-        dists = []
-        for h_txt in headers_text:
-            dm = re.match(r"^(\d+)m?$", h_txt)
-            if dm:
-                d = int(dm.group(1))
-                if 100 <= d <= 4000 and d % 200 == 0:
-                    dists.append(d)
-        if len(dists) >= 3:
-            time_cells = rows[1].find_all("td")
-            for i, dist in enumerate(dists):
-                if i < len(time_cells):
+    _lap_cells = soup.find_all("td", class_="race_lap_cell")
+    if _lap_cells and distance:
+        def _parse_lap_cell(cell_text: str) -> list:
+            # 括弧内の注釈 "(33.5-39.6)" を除去
+            _t = re.sub(r"\s*\([^)]*\)\s*", "", cell_text).strip()
+            _vals = []
+            for _tok in re.split(r"[\s\-－]+", _t):
+                _tok = _tok.strip()
+                if re.match(r"^\d+\.?\d*$", _tok):
                     try:
-                        t = float(time_cells[i].get_text(strip=True))
-                        if 5.0 <= t <= 200.0:
-                            lap_cumulative[dist] = t
+                        _vals.append(float(_tok))
                     except ValueError:
                         pass
-            if lap_cumulative:
-                sorted_dists = sorted(lap_cumulative.keys())
-                prev = 0.0
-                for d in sorted_dists:
-                    lap_sectional[d] = round(lap_cumulative[d] - prev, 1)
-                    prev = lap_cumulative[d]
-                break
+            return _vals
+
+        def _vals_to_dist_dict(vals: list, dist: int) -> dict:
+            """ラップ値リストを距離キー dict に変換する。
+            最終距離 = dist。200m 単位で先頭から割り当て。
+            奇数距離（1700m 等）の場合、先頭区間だけ余り距離になる。
+            """
+            n = len(vals)
+            if n == 0:
+                return {}
+            step = 200
+            first = dist - (n - 1) * step
+            if first <= 0:
+                first = step  # フォールバック（起こりにくいが安全のため）
+            result = {}
+            for i, v in enumerate(vals):
+                d = first + i * step
+                if 100 <= d <= 4000:
+                    result[d] = v
+            return result
+
+        # 1行目: sectional laps
+        _sect_vals = _parse_lap_cell(_lap_cells[0].get_text(strip=True))
+        if _sect_vals:
+            lap_sectional = _vals_to_dist_dict(_sect_vals, distance)
+
+        if len(_lap_cells) >= 2:
+            # 2行目: cumulative laps
+            _cum_vals = _parse_lap_cell(_lap_cells[1].get_text(strip=True))
+            if _cum_vals:
+                lap_cumulative = _vals_to_dist_dict(_cum_vals, distance)
+
+        # cumulative が取れなかった場合は sectional から計算
+        if lap_sectional and not lap_cumulative:
+            _cum = 0.0
+            for _d in sorted(lap_sectional.keys()):
+                _cum = round(_cum + lap_sectional[_d], 1)
+                lap_cumulative[_d] = _cum
 
     # ---- 払い戻し表パース（soupを解放する前に実行） ----
     return_tables = _parse_return_tables(soup, race_id)
@@ -547,24 +753,41 @@ async def scrape_race_full(
             pass
 
     # ---- 馬詳細スクレイピング（4頭ずつ並列） ----
-    async def _fetch_detail(h):
+    # pedigree_cache（job_pedigree_cache）が渡された場合はジョブ内共有キャッシュを使用。
+    # なければ race 内ローカルの pedigree_batch を使用（以前の挙動と同一）。
+    _pc = pedigree_cache if pedigree_cache is not None else pedigree_batch
+
+    async def _fetch_detail(h) -> bool:
+        """馬詳細を取得。HTTP リクエストが発生した場合 True を返す（スリープ判定用）。"""
         hid = h.get("horse_id", "")
         hurl = h.get("horse_url", "")
         if not hid:
-            return
+            return False
         detail = await scrape_horse_detail(
-            session, hid, hurl, pedigree_cache=pedigree_batch, quick_mode=_quick_mode
+            session, hid, hurl, pedigree_cache=_pc, quick_mode=_quick_mode,
+            before_date=date_str,  # 未来データ混入防止（INV-01）
         )
+        _http = detail.pop("_http_made", True)  # True = HTTP発生（デフォルトは保守的にTrue）
+        # ジョブ内共有キャッシュに血統情報を書き戻す（次レースのDB読み出しをゼロに）
+        if pedigree_cache is not None and hid:
+            pedigree_cache[hid] = {k: detail.get(k, "") for k in ("sire", "dam", "damsire", "horse_birth_date")}
         h.update(detail)
         del detail
+        return _http
 
     for _ci in range(0, len(unique_horses), 4):
         _chunk = unique_horses[_ci : _ci + 4]
-        await asyncio.gather(*[_fetch_detail(h) for h in _chunk])
-        if _ci + 4 < len(unique_horses):
-            await asyncio.sleep(1.0)  # 4頭ごとにインターバル（IP ブロック抑制）
+        _http_flags = await asyncio.gather(*[_fetch_detail(h) for h in _chunk])
+        # INV-07: HTTP リクエストが発生した場合のみインターバルを挿入（全キャッシュ命中時はスキップ）
+        if _ci + 4 < len(unique_horses) and any(_http_flags):
+            await jitter_sleep(1.5, 3.5)  # 4頭ごとにランダムインターバル（INV-07: >=1.0s）
         gc.collect()
-
+    # ---- 持ちタイムスクレイピング（AplFreqSum API）※過去レースはSQLiteキャッシュ ----
+    _holding_data, _holding_from_cache = await _fetch_holding_times(session, race_id, date_str)
+    if _holding_data:
+        _apply_holding_times(horses, _holding_data)
+        if not _holding_from_cache:
+            await jitter_sleep(1.5, 3.5)  # INV-07: HTTPリクエスト後のみ
     # distance=0 のレースは _invalid_distance フラグを付与（ローダーが除外する）
     _invalid_dist_flag = (distance == 0 or distance is None)
 
@@ -702,6 +925,60 @@ def _build_race_result(race_id, race_name, venue, date_str, post_time, race_clas
         },
         "horses": horses,
         "return_tables": return_tables or [],
+    }
+
+
+async def _get_race_info_from_shutuba(race_id: str) -> Optional[dict]:
+    """
+    出馬表ページ (race.netkeiba.com/race/shutuba.html) からレース情報のみを取得する。
+    distance=0 のレースを補完するための軽量版 (horse リストは取得しない)。
+    距離取得失敗時は None を返す。
+    """
+    import httpx
+
+    shutuba_url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
+    await jitter_sleep(1.5, 3.5)  # INV-07: リクエスト間最低 1.0 秒
+    try:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as hx:
+            resp = await hx.get(shutuba_url)
+        if resp.status_code != 200:
+            logger.warning(f"[S-3b] shutuba HTTP {resp.status_code}: {race_id}")
+            return None
+        html = resp.content.decode("euc-jp", errors="replace")
+    except Exception as e:
+        logger.error(f"[S-3b] shutuba 取得エラー {race_id}: {e}")
+        return None
+
+    soup = BeautifulSoup(html, "lxml")
+    rd1 = soup.find(class_="RaceData01")
+    rd2 = soup.find(class_="RaceData02")
+    info1 = rd1.get_text(" ") if rd1 else ""
+
+    dist_m = re.search(r"(芝|ダ(?:ート)?|障(?:害)?).*?(\d{3,4})\s*m", info1)
+    if not dist_m:
+        logger.warning(f"[S-3b] shutuba からも距離取得不可: {race_id} info1={info1[:80]!r}")
+        return None
+
+    _tt = dist_m.group(1)
+    track_type = "芝" if _tt == "芝" else ("障害" if _tt.startswith("障") else "ダート")
+    distance = int(dist_m.group(2))
+
+    weather_m = re.search(r"天候\s*[:/：]?\s*([^\s/]+)", info1)
+    weather = weather_m.group(1).strip() if weather_m else ""
+    cond_m = re.search(r"馬場\s*[:/：]?\s*([^\s/]+)", info1)
+    field_condition = cond_m.group(1).strip() if cond_m else ""
+    pt_m = re.search(r"(\d{1,2}:\d{2})発走", info1)
+    post_time = pt_m.group(1) if pt_m else ""
+    dir_m = re.search(r"[（(](右|左|直線)[）)]", info1) or re.search(r"(右|左)", info1)
+    course_direction = dir_m.group(1) if dir_m else ""
+
+    return {
+        "distance": distance,
+        "track_type": track_type,
+        "weather": weather,
+        "field_condition": field_condition,
+        "post_time": post_time,
+        "course_direction": course_direction,
     }
 
 
@@ -885,7 +1162,7 @@ async def _scrape_shutuba_fallback(
             "horse_name": horse_name,
             "horse_id": horse_id,
             "horse_url": horse_url,
-            "sex_age": sex_age,
+            # sex_age は sex + age の冗長表現のため省略
             "sex": sex_age[0] if sex_age else "",
             "age": int(sex_age[1:]) if len(sex_age) > 1 and sex_age[1:].isdigit() else None,
             "jockey_weight": float(jw) if jw else None,
@@ -896,7 +1173,7 @@ async def _scrape_shutuba_fallback(
             "trainer_id": trainer_id,
             "trainer_url": trainer_url,
             "weight_kg": horse_weight,
-            "weight_diff": weight_diff,
+            "weight_change": weight_diff,   # weight_diff → weight_change で統一
             "popularity": popularity,
             "odds": odds,          # 出馬表公開済みなら取得、未公開なら None
             "finish_position": None,
@@ -913,6 +1190,41 @@ async def _scrape_shutuba_fallback(
         return None
 
     logger.info(f"[shutuba] {race_id}: {len(horses)}頭取得 ({race_name} @ {venue} {distance}m)")
+
+    # ---- 馬詳細（血統・基本情報）取得 ----
+    # session が利用可能な場合のみ実行（httpx 経由では session なし）
+    if session is not None:
+        seen_ids: set = set()
+        unique_horses = []
+        for _h in horses:
+            _hid = _h.get("horse_id", "")
+            if _hid and _hid not in seen_ids:
+                seen_ids.add(_hid)
+                unique_horses.append(_h)
+        for _ci in range(0, len(unique_horses), 4):
+            _chunk = unique_horses[_ci : _ci + 4]
+            async def _fetch_shutuba_detail(h, _sess=session) -> bool:
+                hid = h.get("horse_id", "")
+                hurl = h.get("horse_url", "")
+                if not hid:
+                    return False
+                detail = await scrape_horse_detail(_sess, hid, hurl, before_date=date_str)
+                _http = detail.pop("_http_made", True)
+                h.update(detail)
+                return _http
+            _http_flags = await asyncio.gather(*[_fetch_shutuba_detail(h) for h in _chunk])
+            # INV-07: HTTP リクエストが発生した場合のみインターバルを挿入
+            if _ci + 4 < len(unique_horses) and any(_http_flags):
+                await jitter_sleep(1.5, 3.5)  # INV-07: >=1.0s
+
+    # ---- 持ちタイムスクレイピング（AplFreqSum API）※過去レースはSQLiteキャッシュ ----
+    if session is not None:
+        _holding_data, _holding_from_cache = await _fetch_holding_times(session, race_id, date_str)
+        if _holding_data:
+            _apply_holding_times(horses, _holding_data)
+            if not _holding_from_cache:
+                await jitter_sleep(1.5, 3.5)  # INV-07: HTTPリクエスト後のみ
+
     return _build_race_result(
         race_id, race_name, venue, date_str, post_time, race_class,
         kai, day, course_direction, distance, track_type, weather,

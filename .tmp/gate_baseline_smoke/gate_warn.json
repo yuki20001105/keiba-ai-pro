@@ -1,0 +1,92 @@
+{
+  "gate_status": "WARN",
+  "exit_code": 0,
+  "reasons": [],
+  "warnings": [
+    "duration baseline warn threshold exceeded: scenario_router_auto_recovery_e2e"
+  ],
+  "latest_status": "PASS",
+  "last_10_success_rate": 1.0,
+  "flaky_warning": false,
+  "failed_steps": [],
+  "baseline_evaluation": [
+    {
+      "step_name": "health_check",
+      "current_duration_sec": 1.0,
+      "sample_count": 10,
+      "median_duration_sec": 1.09,
+      "mean_duration_sec": 1.09,
+      "p95_duration_sec": 1.1709999999999998,
+      "warn_threshold_sec": 2.18,
+      "fail_threshold_sec": 4.36,
+      "duration_warn_multiplier": 2.0,
+      "duration_fail_multiplier": 4.0,
+      "status": "OK",
+      "note": ""
+    },
+    {
+      "step_name": "import_smoke",
+      "current_duration_sec": 1.5,
+      "sample_count": 10,
+      "median_duration_sec": 1.545,
+      "mean_duration_sec": 1.545,
+      "p95_duration_sec": 1.5855000000000001,
+      "warn_threshold_sec": 3.09,
+      "fail_threshold_sec": 6.18,
+      "duration_warn_multiplier": 2.0,
+      "duration_fail_multiplier": 4.0,
+      "status": "OK",
+      "note": ""
+    },
+    {
+      "step_name": "py_compile",
+      "current_duration_sec": 2.0,
+      "sample_count": 10,
+      "median_duration_sec": 2.045,
+      "mean_duration_sec": 2.045,
+      "p95_duration_sec": 2.0855,
+      "warn_threshold_sec": 4.09,
+      "fail_threshold_sec": 8.18,
+      "duration_warn_multiplier": 2.0,
+      "duration_fail_multiplier": 4.0,
+      "status": "OK",
+      "note": ""
+    },
+    {
+      "step_name": "scenario_router_auto_recovery_e2e",
+      "current_duration_sec": 17.0,
+      "sample_count": 10,
+      "median_duration_sec": 8.45,
+      "mean_duration_sec": 8.45,
+      "p95_duration_sec": 8.855,
+      "warn_threshold_sec": 16.9,
+      "fail_threshold_sec": 33.8,
+      "duration_warn_multiplier": 2.0,
+      "duration_fail_multiplier": 4.0,
+      "status": "WARN",
+      "note": ""
+    },
+    {
+      "step_name": "scenario_router_e2e",
+      "current_duration_sec": 6.0,
+      "sample_count": 10,
+      "median_duration_sec": 6.135,
+      "mean_duration_sec": 6.135,
+      "p95_duration_sec": 6.2565,
+      "warn_threshold_sec": 12.27,
+      "fail_threshold_sec": 24.54,
+      "duration_warn_multiplier": 2.0,
+      "duration_fail_multiplier": 4.0,
+      "status": "OK",
+      "note": ""
+    }
+  ],
+  "baseline_config": {
+    "baseline_window": 10,
+    "duration_warn_multiplier": 2.0,
+    "duration_fail_multiplier": 4.0,
+    "min_baseline_samples": 5,
+    "fail_on_duration_spike": false
+  },
+  "suggested_next_action": "Review warnings and keep monitoring trend before tightening strict mode."
+}

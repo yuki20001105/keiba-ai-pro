@@ -1,0 +1,11 @@
+{
+  "gate_status": "PASS",
+  "exit_code": 0,
+  "reasons": [],
+  "warnings": [],
+  "latest_status": "PASS",
+  "last_10_success_rate": 1.0,
+  "flaky_warning": false,
+  "failed_steps": [],
+  "suggested_next_action": "Quality gate passed. Continue normal audit cadence."
+}

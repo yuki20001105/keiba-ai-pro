@@ -1,0 +1,287 @@
+{
+  "started_at": "2026-07-04T15:46:13.175899+00:00",
+  "finished_at": "2026-07-04T15:48:24.911599+00:00",
+  "duration_sec": 131.73570013046265,
+  "summary": {
+    "passed": 7,
+    "failed": 0,
+    "total": 7,
+    "overall_status": "PASS"
+  },
+  "fastapi": {
+    "mode": "started",
+    "pid": 55608
+  },
+  "sandbox": {
+    "enabled": true,
+    "fixture_minimal": false,
+    "sandbox_db_path": "C:\\Users\\yuki2\\Documents\\ws\\keiba-ai-pro\\.tmp\\scenario_router_audit\\sr_audit_wqy36l_r\\mlops.sandbox.db",
+    "sandbox_race_db_path": "C:\\Users\\yuki2\\Documents\\ws\\keiba-ai-pro\\.tmp\\scenario_router_audit\\sr_audit_wqy36l_r\\keiba_ultimate.sandbox.db",
+    "cleanup_status": "deleted",
+    "keep_sandbox_on_failure": false
+  },
+  "triage": {
+    "failure_type": "NONE",
+    "likely_cause": "",
+    "evidence": "",
+    "suggested_fix": [],
+    "rerun_command": "python scripts/run_scenario_router_audit.py --sandbox --enable-gate --gate-preset ci"
+  },
+  "steps": [
+    {
+      "name": "sandbox_fixture_create",
+      "status": "PASS",
+      "duration_sec": 10.872151136398315,
+      "error_message": "",
+      "stdout_tail": "{\"sandbox_dir\": \"C:\\\\Users\\\\yuki2\\\\Documents\\\\ws\\\\keiba-ai-pro\\\\.tmp\\\\scenario_router_audit\\\\sr_audit_wqy36l_r\", \"mlops_db_path\": \"C:\\\\Users\\\\yuki2\\\\Documents\\\\ws\\\\keiba-ai-pro\\\\.tmp\\\\scenario_router_audit\\\\sr_audit_wqy36l_r\\\\mlops.sandbox.db\", \"race_db_path\": \"C:\\\\Users\\\\yuki2\\\\Documents\\\\ws\\\\keiba-ai-pro\\\\.tmp\\\\scenario_router_audit\\\\sr_audit_wqy36l_r\\\\keiba_ultimate.sandbox.db\", \"fixture_minimal\": false}"
+    },
+    {
+      "name": "fastapi_start_or_reuse",
+      "status": "PASS",
+      "duration_sec": 6.907579183578491,
+      "error_message": "",
+      "stdout_tail": "{\"mode\": \"started\", \"pid\": 55608}"
+    },
+    {
+      "name": "health_check",
+      "status": "PASS",
+      "duration_sec": 0.25116777420043945,
+      "error_message": "",
+      "stdout_tail": "url=http://127.0.0.1:8000/health"
+    },
+    {
+      "name": "scenario_router_e2e",
+      "status": "PASS",
+      "duration_sec": 111.59260869026184,
+      "error_message": "",
+      "stdout_tail": "base_url http://127.0.0.1:8000\nrace_candidates 59\nrequest_model_id model_speed_deviation_lightgbm_20130101_20180128_20260612_2207\nhealth_ok True\noff_probe_202602010101 True\nrace_id 202602010101\noff_api_200 True\noff_prediction_runs_saved True\noff_prediction_results_saved True\noff_router_mode_saved True\noff_effective_router_mode_saved True\noff_actual_model_id_correct True\noff_selected_model_id_saved True\noff_shadow_selected_model_id_saved True\nshadow_api_200 True\nshadow_prediction_runs_saved True\nshadow_prediction_results_saved True\nshadow_router_mode_saved True\nshadow_effective_router_mode_saved True\nshadow_actual_model_id_correct True\nshadow_selected_model_id_saved True\nshadow_shadow_selected_model_id_saved True\nshadow_actual_not_switched True\ncanary0_api_200 True\ncanary0_prediction_runs_saved True\ncanary0_prediction_results_saved True\ncanary0_router_mode_saved True\ncanary0_effective_router_mode_saved True\ncanary0_actual_model_id_correct True\ncanary0_selected_model_id_saved True\ncanary0_shadow_selected_model_id_saved True\ncanary0_canary_percent_saved True\ncanary0_canary_bucket_saved True\ncanary0_canary_selected_saved True\ncanary100_api_200 True\ncanary100_prediction_runs_saved True\ncanary100_prediction_results_saved True\ncanary100_router_mode_saved True\ncanary100_effective_router_mode_saved True\ncanary100_actual_model_id_correct True\ncanary100_selected_model_id_saved True\ncanary100_shadow_selected_model_id_saved True\ncanary100_canary_percent_saved True\ncanary100_canary_bucket_saved True\ncanary100_canary_selected_saved True\nactive_api_200 True\nactive_prediction_runs_saved True\nactive_prediction_results_saved True\nactive_router_mode_saved True\nactive_effective_router_mode_saved True\nactive_actual_model_id_correct True\nactive_selected_model_id_saved True\nactive_shadow_selected_model_id_saved True\nactive_selected_model_id_non_empty True\ncanary_bucket_same_for_same_race True\nlist_api_200 True\nlist_api_contains_legacy True\nlist_api_contains_new True\nget_api_200 True\nget_api_legacy_id_match True\nget_api_legacy_results_present True\ncleanup_done True\n"
+    },
+    {
+      "name": "scenario_router_auto_recovery_e2e",
+      "status": "PASS",
+      "duration_sec": 0.8053593635559082,
+      "error_message": "",
+      "stdout_tail": "[PASS] health: status=200\n[PASS] admin_auth: probe_status=404\n[PASS] setup_alert: sra_e2e_auto_247e4ac5cf\n[PASS] setup_policy: srarp_e2e_11c7e7b944\n[PASS] prepare_response_api: status=200\n[PASS] prepare_response_id: srir_69a8bf907815\n[PASS] evaluate_api: status=200\n[PASS] 1_plan_generated: plan_size=10\n[PASS] 2_run_canary_auto_execute\n[PASS] 3_danger_manual_required\n[PASS] execute_dry_http: status=200\n[PASS] 4_dry_run_no_state_change: statuses=['DRY_RUN']\n[PASS] execute_apply_http: status=200\n[PASS] 5_safe_only_execute\n[PASS] 6_danger_not_executed_without_confirm\n[PASS] executions_api: status=200\n[PASS] 7_history_saved: count=20 statuses=['DRY_RUN', 'EXECUTED', 'SKIPPED']\n[PASS] 8_cleanup\nRESULT: PASS\n"
+    },
+    {
+      "name": "py_compile",
+      "status": "PASS",
+      "duration_sec": 0.1223137378692627,
+      "error_message": "",
+      "stdout_tail": ""
+    },
+    {
+      "name": "import_smoke",
+      "status": "PASS",
+      "duration_sec": 1.1845202445983887,
+      "error_message": "",
+      "stdout_tail": "import_smoke_ok\n\n2026-07-05 00:48:24,221 - INFO - ================================================================================\n2026-07-05 00:48:24,221 - INFO - app_config ロード開始\n2026-07-05 00:48:24,221 - INFO - ログファイル: C:\\Users\\yuki2\\Documents\\ws\\keiba-ai-pro\\python-api\\optuna_debug.log\n2026-07-05 00:48:24,221 - INFO - ================================================================================\n2026-07-05 00:48:24,239 - INFO - Supabase クライアント読み込み成功\n2026-07-05 00:48:24,239 - INFO - Supabase データ操作: 無効（認証専用モード）\n"
+    }
+  ],
+  "history_tracker": {
+    "history_path": "C:\\Users\\yuki2\\Documents\\ws\\keiba-ai-pro\\reports\\scenario_router_audit_history.jsonl",
+    "trend_path": "C:\\Users\\yuki2\\Documents\\ws\\keiba-ai-pro\\reports\\scenario_router_audit_trend.md",
+    "append_ok": true,
+    "trend_ok": true,
+    "error": "",
+    "history_count": 6,
+    "trend": {
+      "latest_status": "PASS",
+      "last_10_success_rate": 0.8333333333333334,
+      "last_30_success_rate": 0.8333333333333334,
+      "common_failure_types": [
+        {
+          "failure_type": "SCENARIO_ROUTER_E2E_FAILED",
+          "count": 1
+        }
+      ],
+      "slowest_steps": [
+        {
+          "step_name": "scenario_router_e2e",
+          "avg_duration_sec": 93.85578723748525,
+          "samples": 6
+        },
+        {
+          "step_name": "sandbox_fixture_create",
+          "avg_duration_sec": 10.017616430918375,
+          "samples": 6
+        },
+        {
+          "step_name": "fastapi_start_or_reuse",
+          "avg_duration_sec": 7.015165646870931,
+          "samples": 6
+        },
+        {
+          "step_name": "import_smoke",
+          "avg_duration_sec": 1.613917390505473,
+          "samples": 6
+        },
+        {
+          "step_name": "scenario_router_auto_recovery_e2e",
+          "avg_duration_sec": 0.9060516754786173,
+          "samples": 6
+        }
+      ],
+      "baseline_window": 10,
+      "step_baselines": [
+        {
+          "step_name": "fastapi_start_or_reuse",
+          "samples": 6,
+          "latest_duration_sec": 6.907579183578491,
+          "median_duration_sec": 6.889435529708862,
+          "mean_duration_sec": 7.015165646870931,
+          "p95_duration_sec": 9.330853462219238
+        },
+        {
+          "step_name": "health_check",
+          "samples": 6,
+          "latest_duration_sec": 0.25116777420043945,
+          "median_duration_sec": 0.25746822357177734,
+          "mean_duration_sec": 0.25934561093648273,
+          "p95_duration_sec": 0.2779856324195862
+        },
+        {
+          "step_name": "import_smoke",
+          "samples": 6,
+          "latest_duration_sec": 1.1845202445983887,
+          "median_duration_sec": 1.3752878904342651,
+          "mean_duration_sec": 1.613917390505473,
+          "p95_duration_sec": 2.6520750522613525
+        },
+        {
+          "step_name": "py_compile",
+          "samples": 6,
+          "latest_duration_sec": 0.1223137378692627,
+          "median_duration_sec": 0.11935389041900635,
+          "mean_duration_sec": 0.13185052076975504,
+          "p95_duration_sec": 0.17649418115615845
+        },
+        {
+          "step_name": "sandbox_fixture_create",
+          "samples": 6,
+          "latest_duration_sec": 10.872151136398315,
+          "median_duration_sec": 10.853871464729309,
+          "mean_duration_sec": 10.017616430918375,
+          "p95_duration_sec": 11.27066022157669
+        },
+        {
+          "step_name": "scenario_router_auto_recovery_e2e",
+          "samples": 6,
+          "latest_duration_sec": 0.8053593635559082,
+          "median_duration_sec": 0.9215095043182373,
+          "mean_duration_sec": 0.9060516754786173,
+          "p95_duration_sec": 0.9921205639839172
+        },
+        {
+          "step_name": "scenario_router_e2e",
+          "samples": 6,
+          "latest_duration_sec": 111.59260869026184,
+          "median_duration_sec": 111.56606304645538,
+          "mean_duration_sec": 93.85578723748525,
+          "p95_duration_sec": 113.44993525743484
+        }
+      ],
+      "flaky_warning": true,
+      "suggested_next_action": "Audit appears flaky. Preserve sandbox on next failure and compare step durations/evidence."
+    }
+  },
+  "trend": {
+    "latest_status": "PASS",
+    "last_10_success_rate": 0.8333333333333334,
+    "last_30_success_rate": 0.8333333333333334,
+    "common_failure_types": [
+      {
+        "failure_type": "SCENARIO_ROUTER_E2E_FAILED",
+        "count": 1
+      }
+    ],
+    "slowest_steps": [
+      {
+        "step_name": "scenario_router_e2e",
+        "avg_duration_sec": 93.85578723748525,
+        "samples": 6
+      },
+      {
+        "step_name": "sandbox_fixture_create",
+        "avg_duration_sec": 10.017616430918375,
+        "samples": 6
+      },
+      {
+        "step_name": "fastapi_start_or_reuse",
+        "avg_duration_sec": 7.015165646870931,
+        "samples": 6
+      },
+      {
+        "step_name": "import_smoke",
+        "avg_duration_sec": 1.613917390505473,
+        "samples": 6
+      },
+      {
+        "step_name": "scenario_router_auto_recovery_e2e",
+        "avg_duration_sec": 0.9060516754786173,
+        "samples": 6
+      }
+    ],
+    "baseline_window": 10,
+    "step_baselines": [
+      {
+        "step_name": "fastapi_start_or_reuse",
+        "samples": 6,
+        "latest_duration_sec": 6.907579183578491,
+        "median_duration_sec": 6.889435529708862,
+        "mean_duration_sec": 7.015165646870931,
+        "p95_duration_sec": 9.330853462219238
+      },
+      {
+        "step_name": "health_check",
+        "samples": 6,
+        "latest_duration_sec": 0.25116777420043945,
+        "median_duration_sec": 0.25746822357177734,
+        "mean_duration_sec": 0.25934561093648273,
+        "p95_duration_sec": 0.2779856324195862
+      },
+      {
+        "step_name": "import_smoke",
+        "samples": 6,
+        "latest_duration_sec": 1.1845202445983887,
+        "median_duration_sec": 1.3752878904342651,
+        "mean_duration_sec": 1.613917390505473,
+        "p95_duration_sec": 2.6520750522613525
+      },
+      {
+        "step_name": "py_compile",
+        "samples": 6,
+        "latest_duration_sec": 0.1223137378692627,
+        "median_duration_sec": 0.11935389041900635,
+        "mean_duration_sec": 0.13185052076975504,
+        "p95_duration_sec": 0.17649418115615845
+      },
+      {
+        "step_name": "sandbox_fixture_create",
+        "samples": 6,
+        "latest_duration_sec": 10.872151136398315,
+        "median_duration_sec": 10.853871464729309,
+        "mean_duration_sec": 10.017616430918375,
+        "p95_duration_sec": 11.27066022157669
+      },
+      {
+        "step_name": "scenario_router_auto_recovery_e2e",
+        "samples": 6,
+        "latest_duration_sec": 0.8053593635559082,
+        "median_duration_sec": 0.9215095043182373,
+        "mean_duration_sec": 0.9060516754786173,
+        "p95_duration_sec": 0.9921205639839172
+      },
+      {
+        "step_name": "scenario_router_e2e",
+        "samples": 6,
+        "latest_duration_sec": 111.59260869026184,
+        "median_duration_sec": 111.56606304645538,
+        "mean_duration_sec": 93.85578723748525,
+        "p95_duration_sec": 113.44993525743484
+      }
+    ],
+    "flaky_warning": true,
+    "suggested_next_action": "Audit appears flaky. Preserve sandbox on next failure and compare step durations/evidence."
+  }
+}

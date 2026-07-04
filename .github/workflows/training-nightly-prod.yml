@@ -1,0 +1,42 @@
+name: training-nightly-prod
+
+on:
+  schedule:
+    - cron: "0 17 * * *"
+  workflow_dispatch:
+
+jobs:
+  prod-nightly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r python-api/requirements.txt
+          pip install pytest
+
+      - name: Run training package tests
+        run: |
+          pytest keiba/keiba_ai/tests/test_training_pipeline_integration.py \
+                 keiba/keiba_ai/tests/test_training_facades.py -q
+
+      - name: Run unified PROD training
+        run: |
+          python train.py --mode PROD --trials 10 --splits 5 --no-save-model --print-json
+
+      - name: Upload training artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: training-nightly-prod-artifacts
+          path: |
+            notebooks/reports/

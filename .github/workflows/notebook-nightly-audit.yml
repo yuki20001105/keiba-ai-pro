@@ -1,0 +1,54 @@
+name: notebook-nightly-audit
+
+on:
+  schedule:
+    - cron: "0 17 * * *"
+  workflow_dispatch:
+
+jobs:
+  audit-prod-gpu:
+    runs-on: [self-hosted, linux, x64, gpu]
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run notebook audit tests
+        run: pytest tests/notebook -q
+
+      - name: Check GPU runtime
+        run: nvidia-smi
+
+      - name: Run notebook audit (PROD)
+        run: |
+          python scripts/notebook_audit_runner.py \
+            --start 0 \
+            --end 8 \
+            --mode prod \
+            --max-retry 3 \
+            --cell-timeout 600 \
+            --notebook-timeout 7200 \
+            --rerun-failed 1
+
+      - name: Validate artifacts
+        run: python scripts/validate_artifacts.py
+
+      - name: Build gpu benchmark report
+        run: python scripts/collect_gpu_benchmark.py
+
+      - name: Upload reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: notebook-nightly-audit-reports
+          path: reports/

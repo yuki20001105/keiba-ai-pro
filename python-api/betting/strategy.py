@@ -36,32 +36,67 @@ class ProBettingStrategy:
     ) -> int:
         """
         ケリー基準で最適賭け額計算
-        
+
+        Task4: 期待値フィルタ付き。期待値 < 1.3 の馬は購入しない。
+        Kelly 計算式: f* = ((odds - 1) * p - (1 - p)) / (odds - 1)
+
         Args:
             probability: 的中確率 (0-1)
             odds: オッズ
-            kelly_fraction: フラクショナルケリー (デフォルト1/4)
-        
+            kelly_fraction: フラクショナルケリー (デフォルト0.25 = 1/4 Kelly)
+
         Returns:
-            推奨賭け額
+            推奨賭け額（期待値 < 1.3 の場合は 0）
         """
         if probability <= 0 or odds <= 1.0:
             return 0
-        
-        # ケリー基準: f* = (p × odds - 1) / (odds - 1)
+
+        # ── 期待値フィルタ（Task4）──────────────────────────────────────────
+        # 期待値 = 予測勝率 × オッズ。1.3未満は購入しない（プラス期待値のみ）
+        expected_value = probability * odds
+        if expected_value < 1.3:
+            return 0
+
+        # ── Kelly 基準（Task4: 正しい計算式に修正）──────────────────────────
+        # f* = ((odds - 1) * p - (1 - p)) / (odds - 1)
+        #    = (p * odds - 1) / (odds - 1)  ※ 単純化した等価式
+        # 注: フルKelly禁止。必ず kelly_fraction=0.25 でフラクショナルKellyを使用。
         kelly_percentage = (probability * odds - 1) / (odds - 1)
-        
+
         if kelly_percentage <= 0:
             return 0
-        
-        # フラクショナルケリー適用
+
+        # フラクショナルケリー適用（フルKelly禁止: デフォルト0.25）
         adjusted_kelly = kelly_percentage * kelly_fraction
-        
+
         # 破産リスク回避: 上限5%
         adjusted_kelly = min(adjusted_kelly, 0.05)
-        
+
         return int(self.bankroll * adjusted_kelly)
-    
+
+    def calc_expected_value(self, probability: float, odds: float) -> float:
+        """期待値を計算する（Task4）。
+
+        Returns:
+            expected_value = probability * odds
+            1.0以上 → プラス期待値、1.3以上 → 購入推奨
+        """
+        if probability <= 0 or odds <= 0:
+            return 0.0
+        return probability * odds
+
+    def should_bet(self, probability: float, odds: float, min_ev: float = 1.3) -> bool:
+        """購入判定（Task4）。
+
+        Returns:
+            True: 期待値 >= min_ev かつ Kelly > 0
+        """
+        ev = self.calc_expected_value(probability, odds)
+        if ev < min_ev:
+            return False
+        kelly = self.calculate_kelly_bet(probability, odds)
+        return kelly > 0
+
     def evaluate_race_level(
         self, 
         pro_eval: Optional[Dict], 

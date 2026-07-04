@@ -17,6 +17,7 @@
 9. [APIエンドポイント一覧](#9-apiエンドポイント一覧)
 10. [起動方法](#10-起動方法)
 11. [Gitブランチ戦略](#11-gitブランチ戦略)
+12. [Notebook監査基盤](#12-notebook監査基盤)
 
 ---
 
@@ -893,6 +894,24 @@ GitHub Release（release.yml が自動作成）
 | `main` | レビュー済み・テスト通過の安定コード |
 | `release` | デプロイ済み本番コード（タグ `v1`, `v2`, … が打たれる） |
 
+### リモートの最新版をローカルに取り込む
+
+```powershell
+# 現在のブランチのまま最新を取得してマージ
+git pull
+
+# ブランチを指定して取り込む場合
+git checkout develop
+git pull origin develop
+
+# リモートの変更を確認してから取り込みたい場合（安全）
+git fetch origin          # リモート情報だけ取得（ローカルは変更しない）
+git log HEAD..origin/develop --oneline  # 差分を確認
+git merge origin/develop  # 確認後にマージ
+```
+
+> **注意**: ローカルに未コミットの変更がある場合は先に `git stash` で退避するか、コミットしてから pull してください。
+
 ### よく使うコマンド
 
 ```powershell
@@ -920,6 +939,72 @@ git checkout -b feature/my-feature
 ```
 
 ### コミットメッセージ規約
+
+---
+
+## 12. Notebook監査基盤
+
+Notebook 00-08 の監査実行:
+
+```bash
+python scripts/notebook_audit_runner.py \
+  --start 0 \
+  --end 8 \
+  --mode audit \
+  --max-retry 3 \
+  --cell-timeout 600 \
+  --notebook-timeout 7200 \
+  --rerun-failed 1
+```
+
+モード設定:
+
+- fast: n_trials=10, n_splits=3, boosting=gbdt
+- audit: n_trials=3, n_splits=2, num_boost_round=200
+- prod: n_trials=100, n_splits=5, boosting=dart
+
+補助コマンド:
+
+```bash
+pytest tests/notebook -q
+python scripts/validate_artifacts.py
+python scripts/collect_gpu_benchmark.py
+```
+
+主な出力先:
+
+- reports/notebook_execution_log.csv
+- reports/notebook_execution_report.md
+- reports/audit_report.md
+- reports/issues.md
+- reports/performance_report.md
+- reports/memory_optimization_report.md
+- reports/cache_strategy.md
+- reports/gpu_usage_log.csv
+- reports/optuna_trial_log.csv
+- reports/gpu_benchmark.csv
+
+キャッシュ設計:
+
+- cache/ultimate_frame.parquet
+- cache/features.parquet
+- cache/predictions.parquet
+- cache/race_results.parquet
+- cache/horse_history.parquet
+- cache/training_data.parquet
+
+キャッシュキー:
+
+- data_version
+- feature_schema_hash
+- notebook_step
+- mode
+
+invalidation:
+
+- schema変更
+- DB更新
+- mode変更
 
 | プレフィックス | 用途 |
 |-------------|------|

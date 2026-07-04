@@ -42,6 +42,7 @@ def _verify_secret(x_internal_secret: Optional[str]) -> None:
 
 async def _scrape_date(date_str: str) -> int:
     """1 日分のレースを取得して SQLite に保存。保存件数を返す。"""
+    import asyncio
     import re as _re
     from scraping.race import scrape_race_full  # type: ignore
     from scraping.storage import _save_race_to_ultimate_db  # type: ignore
@@ -52,22 +53,48 @@ async def _scrape_date(date_str: str) -> int:
     import httpx
     from bs4 import BeautifulSoup
 
-    url = f"https://race.netkeiba.com/top/race_list.html?kaisai_date={date_str}"
+    race_ids: list[str] = []
+
+    # ① db.netkeiba.com/race/list/{date}/ → 完了済みレース一覧（結果ページ）
+    db_url = f"https://db.netkeiba.com/race/list/{date_str}/"
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.get(url, follow_redirects=True)
-            resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "lxml")
-        # result.html（確定済み）と shutuba.html（出走表）の両方からrace_idを抽出
-        race_ids: list[str] = []
-        seen: set[str] = set()
-        for a in soup.select("a[href*='/race/result.html'], a[href*='/race/shutuba.html']"):
-            m = _re.search(r"race_id=(\d{12})", a["href"])
-            if m and m.group(1) not in seen:
-                seen.add(m.group(1))
-                race_ids.append(m.group(1))
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True,
+                                     headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}) as client:
+            resp = await client.get(db_url)
+        if resp.status_code == 200:
+            html = resp.content.decode("euc-jp", errors="replace")
+            # race_id は YYYY[場コード][回][日][レース] 形式で日付は含まれない
+            race_ids = list(dict.fromkeys(_re.findall(r"/race/(\d{12})/", html)))
+            if race_ids:
+                logger.info(f"[scheduler] {date_str}: db.netkeiba.com から {len(race_ids)} レースID検出")
     except Exception as e:
-        logger.warning(f"レース一覧取得失敗 {date_str}: {e}")
+        logger.warning(f"[scheduler] db.netkeiba.com 取得失敗 {date_str}: {e}")
+
+    # ② フォールバック: race.netkeiba.com/top/race_list_sub.html（直近30日）
+    if not race_ids:
+        sub_url = f"https://race.netkeiba.com/top/race_list_sub.html?kaisai_date={date_str}"
+        try:
+            async with httpx.AsyncClient(timeout=20.0, follow_redirects=True,
+                                         headers={"User-Agent": "Mozilla/5.0"}) as client:
+                resp2 = await client.get(sub_url)
+            if resp2.status_code == 200:
+                html2 = resp2.content.decode("euc-jp", errors="replace")
+                soup2 = BeautifulSoup(html2, "lxml")
+                seen: set[str] = set()
+                for a in soup2.find_all("a", href=True):
+                    m = _re.search(r"race_id=(\d{12})", a["href"])
+                    if m and m.group(1) not in seen:
+                        seen.add(m.group(1))
+                        race_ids.append(m.group(1))
+                if race_ids:
+                    logger.info(f"[scheduler] {date_str}: race_list_sub から {len(race_ids)} レースID検出")
+                else:
+                    logger.info(f"[scheduler] {date_str}: race_list_sub 0件")
+        except Exception as e:
+            logger.warning(f"[scheduler] race_list_sub 取得失敗 {date_str}: {e}")
+
+    if not race_ids:
+        logger.info(f"[scheduler] {date_str}: レースIDなし → スキップ（結果未掲載またはIPブロック）")
         return 0
 
     count = 0
@@ -78,7 +105,7 @@ async def _scrape_date(date_str: str) -> int:
                 await asyncio.sleep(1.0)  # INV-07: 1秒以上のインターバル
                 race_data = await scrape_race_full(session, race_id, date_hint=date_str)
                 if race_data and race_data.get("horses"):
-                    _save_race_to_ultimate_db(race_data, ULTIMATE_DB, overwrite=True)
+                    _save_race_to_ultimate_db(race_data, ULTIMATE_DB)
                     if SUPABASE_DATA_ENABLED and get_supabase_client():
                         from app_config import save_race_to_supabase  # type: ignore
                         save_race_to_supabase(race_data)

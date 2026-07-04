@@ -197,7 +197,7 @@ async def backfill_coat_color(limit: int = 200) -> dict:
             for url in urls_to_try:
                 for attempt in range(2):
                     try:
-                        await asyncio.sleep(0.4 + attempt * 1.5)
+                        await asyncio.sleep(1.0 + attempt * 1.5)  # INV-07: 最小1.0秒
                         async with session.get(url) as resp:
                             if resp.status == 200:
                                 content = await resp.read()

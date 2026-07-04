@@ -1,0 +1,40 @@
+{
+  "summary": {
+    "overall_status": "PASS"
+  },
+  "steps": [
+    {
+      "name": "health_check",
+      "status": "PASS",
+      "duration_sec": 1.0
+    },
+    {
+      "name": "scenario_router_e2e",
+      "status": "PASS",
+      "duration_sec": 6.0
+    },
+    {
+      "name": "scenario_router_auto_recovery_e2e",
+      "status": "PASS",
+      "duration_sec": 12.0
+    },
+    {
+      "name": "py_compile",
+      "status": "PASS",
+      "duration_sec": 2.0
+    },
+    {
+      "name": "import_smoke",
+      "status": "PASS",
+      "duration_sec": 1.5
+    }
+  ],
+  "sandbox": {
+    "enabled": true,
+    "cleanup_status": "deleted"
+  },
+  "trend": {
+    "last_10_success_rate": 1.0,
+    "flaky_warning": false
+  }
+}

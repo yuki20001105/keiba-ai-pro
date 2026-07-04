@@ -20,14 +20,14 @@ type Bet = {
 
 // race_id (YYYYMMDDVVRR) → { date, venueCode, venueLabel, raceNo }
 function parseRaceId(raceId: string) {
-  const date = raceId.slice(0, 8)   // '20260902'
-  const vc   = raceId.slice(8, 10)  // '08'
-  const rno  = raceId.slice(10, 12) // '03'
+  const date = raceId.slice(0, 8)   // YYYYVVKK（表示用fallback）
+  const vc   = raceId.slice(4, 6)   // VV = 会場コード（正: chars 4-5）
+  const rno  = raceId.slice(10, 12) // RR = レース番号
   const venue = JRA_VENUES.find(v => v.code === vc)
   return {
     date,
     venueCode: vc,
-    venueLabel: venue?.name ?? vc,
+    venueLabel: venue?.name ?? '',  // 未知コードは空文字（数字をそのまま表示しない）
     raceNo: rno ? String(parseInt(rno, 10)) : '',
     dateLabel: date.length === 8
       ? `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}`
@@ -77,14 +77,16 @@ function ResultInputRow({
     if (isHit && (isNaN(amount) || amount <= 0)) { setError('払戻金額を入力してください'); return }
     setSaving(true)
     setError('')
+    // 外れ時は -1 を送信（ページ遷移後も完了セクションに表示するためのセンチネル値）
+    const dbAmount = isHit ? amount : -1
     try {
       const res = await authFetch(`/api/purchase/${bet.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ actual_return: amount, is_hit: isHit }),
+        body: JSON.stringify({ actual_return: dbAmount, is_hit: isHit }),
       })
       if (!res.ok) { const d = await res.json(); throw new Error(d.detail || 'エラー') }
-      onSave({ ...bet, actual_return: amount, is_hit: isHit })
+      onSave({ ...bet, actual_return: dbAmount, is_hit: isHit })
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'エラーが発生しました')
     } finally {
@@ -160,6 +162,8 @@ function ResultInputRow({
   )
 }
 
+const LS_RESULT_IDS_KEY = 'keiba-result-entered-ids'
+
 export default function DashboardPage() {
   const [loading, setLoading] = useState(true)
   const [dataStats, setDataStats] = useState({ totalRaces: 0, totalHorses: 0, totalModels: 0 })
@@ -171,6 +175,8 @@ export default function DashboardPage() {
   const [toast, setToast] = useState({ visible: false, message: '', type: 'success' as 'success' | 'error' })
   const [sortKey, setSortKey] = useState<'date' | 'venue' | 'raceNo'>('date')
   const [sortDir, setSortDir] = useState<'desc' | 'asc'>('desc')
+  const [autoFillingIds, setAutoFillingIds] = useState<Set<string>>(new Set())
+  const [batchAutoFilling, setBatchAutoFilling] = useState(false)
 
   const handleSort = (key: 'date' | 'venue' | 'raceNo') => {
     if (sortKey === key) {
@@ -185,11 +191,54 @@ export default function DashboardPage() {
     setToast({ visible: true, message, type })
   }, [])
 
+  const autoFillResult = async (betId: string) => {
+    setAutoFillingIds(prev => new Set(prev).add(betId))
+    try {
+      const res = await authFetch(`/api/purchase/${betId}/auto-result`, { method: 'POST' })
+      const d = await res.json()
+      if (!res.ok) { showToast(d.detail || '自動入力に失敗しました', 'error'); return }
+      if (!d.found) { showToast(d.message || '払戻データが見つかりません', 'error'); return }
+      setBets(prev => prev.map(b => String(b.id) === betId
+        ? { ...b, is_hit: d.is_hit, actual_return: d.actual_return }
+        : b))
+      setResultEnteredIds(prev => new Set(prev).add(betId))
+      showToast(d.message || (d.is_hit ? '✓ 的中' : '✗ 外れ'))
+    } catch {
+      showToast('自動入力に失敗しました', 'error')
+    } finally {
+      setAutoFillingIds(prev => { const s = new Set(prev); s.delete(betId); return s })
+    }
+  }
+
+  const batchAutoFillResults = async () => {
+    setBatchAutoFilling(true)
+    try {
+      const res = await authFetch('/api/purchase/batch-auto-result', { method: 'POST' })
+      const d = await res.json()
+      if (!res.ok) { showToast(d.detail || '一括自動入力に失敗しました', 'error'); return }
+      // 結果入力済みIDを反映（hit / miss 両方を完了扱いに）
+      const enteredIds: string[] = (d.results ?? [])
+        .filter((r: { status: string }) => r.status === 'hit' || r.status === 'miss')
+        .map((r: { id: string }) => r.id)
+      if (enteredIds.length > 0) {
+        setResultEnteredIds(prev => new Set([...prev, ...enteredIds]))
+      }
+      // 結果を反映するためリスト再取得
+      await loadBets()
+      showToast(`処理完了: 的中 ${d.hit}件 / 外れ ${d.miss}件 / スキップ ${d.skipped}件`)
+    } catch {
+      showToast('一括自動入力に失敗しました', 'error')
+    } finally {
+      setBatchAutoFilling(false)
+    }
+  }
+
   const deleteBet = async (betId: string) => {
     try {
       const res = await authFetch(`/api/purchase/${betId}`, { method: 'DELETE' })
       if (!res.ok) { const d = await res.json(); throw new Error(d.detail || 'エラー') }
       setBets(prev => prev.filter(b => String(b.id) !== betId))
+      setResultEnteredIds(prev => { const s = new Set(prev); s.delete(betId); return s })
       showToast('削除しました')
     } catch (e: unknown) {
       showToast(e instanceof Error ? e.message : '削除に失敗しました', 'error')
@@ -197,6 +246,13 @@ export default function DashboardPage() {
       setDeletingBetId(null)
     }
   }
+
+  // resultEnteredIds を localStorage に永続化（ページ遷移後もリセットされない）
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_RESULT_IDS_KEY, JSON.stringify([...resultEnteredIds]))
+    } catch {}
+  }, [resultEnteredIds])
 
   useEffect(() => {
     Promise.all([loadStats(), loadBets(), loadStatistics()]).finally(() => setLoading(false))
@@ -217,7 +273,16 @@ export default function DashboardPage() {
       const res = await authFetch('/api/purchase-history?limit=200')
       if (res.ok) {
         const d = await res.json()
-        setBets(d.history || [])
+        const history: Bet[] = d.history || []
+        setBets(history)
+        // localStorage の永続化済み ID と DB の -1 sentinel（外れ確定）を合算して復元
+        let storedIds: string[] = []
+        try {
+          const raw = localStorage.getItem(LS_RESULT_IDS_KEY)
+          if (raw) storedIds = JSON.parse(raw)
+        } catch {}
+        const dbMissIds = history.filter(b => b.actual_return === -1).map(b => String(b.id))
+        setResultEnteredIds(new Set([...storedIds, ...dbMissIds]))
       }
     } catch {}
   }
@@ -236,7 +301,7 @@ export default function DashboardPage() {
   const totalBets = bets.length
   const wins = bets.filter(b => b.is_hit).length
   const totalCost = bets.reduce((s, b) => s + (b.total_cost ?? 0), 0)
-  const totalReturn = bets.reduce((s, b) => s + (b.actual_return ?? 0), 0)
+  const totalReturn = bets.reduce((s, b) => s + Math.max(0, b.actual_return ?? 0), 0)
   const totalPL = totalReturn - totalCost
   const winRate = totalBets > 0 ? (wins / totalBets * 100).toFixed(1) : '-'
   const recoveryRate = totalCost > 0 ? (totalReturn / totalCost * 100).toFixed(1) : '-'
@@ -270,10 +335,11 @@ export default function DashboardPage() {
     let cumCost = 0
     let cumReturn = 0
     return sorted.map((b, i) => {
-      const pl = (b.actual_return ?? 0) - (b.total_cost ?? 0)
+      const actualRet = Math.max(0, b.actual_return ?? 0)
+      const pl = actualRet - (b.total_cost ?? 0)
       cumPL += pl
       cumCost += b.total_cost ?? 0
-      cumReturn += b.actual_return ?? 0
+      cumReturn += actualRet
       const rr = cumCost > 0 ? Math.round(cumReturn / cumCost * 100) : 0
       const label = b.purchase_date ?? b.created_at?.slice(0, 10) ?? `#${i + 1}`
       return { label, 累積損益: cumPL, 回収率: rr }
@@ -469,7 +535,7 @@ export default function DashboardPage() {
               <span className="flex items-center gap-1"><span className="w-3 h-2 rounded bg-[#4ade80] inline-block opacity-80"/>回収率≥100%</span>
               <span className="flex items-center gap-1"><span className="w-3 h-2 rounded bg-[#f87171] inline-block opacity-80"/>回収率＜100%</span>
               <span className="flex items-center gap-1"><span className="w-3 h-2 rounded bg-[#7dd3fc] inline-block opacity-50"/>的中率</span>
-              <span className="ml-auto">点線: 100%ライン</span>
+              <span className="ml-auto">点線: 100%</span>
             </div>
           </div>
         )}
@@ -493,6 +559,15 @@ export default function DashboardPage() {
                   <span className="text-xs px-2 py-0.5 rounded-full bg-[#1a1200] text-[#fbbf24] border border-[#3a2800] font-medium">
                     {pendingBets.length}件
                   </span>
+                )}
+                {pendingBets.length > 0 && (
+                  <button
+                    onClick={batchAutoFillResults}
+                    disabled={batchAutoFilling}
+                    className="ml-auto text-xs px-3 py-1 rounded border border-[#334155] text-[#94a3b8] hover:text-white hover:border-[#475569] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {batchAutoFilling ? '処理中...' : '自動入力'}
+                  </button>
                 )}
               </div>
               {pendingBets.length === 0 ? (
@@ -540,7 +615,7 @@ export default function DashboardPage() {
                                   {bet.purchase_date ?? rp.dateLabel}
                                 </td>
                                 <td className="px-4 py-3 text-white text-xs font-medium whitespace-nowrap">
-                                  {bet.venue || rp.venueLabel}
+                                  {bet.venue || rp.venueLabel || '—'}
                                 </td>
                                 <td className="px-4 py-3 text-[#888] text-xs whitespace-nowrap">
                                   {rp.raceNo ? `${rp.raceNo}R` : '—'}
@@ -561,16 +636,26 @@ export default function DashboardPage() {
                                   </Link>
                                 </td>
                                 <td className="px-4 py-3">
-                                  <button
-                                    onClick={() => setEditingBetId(isEditing ? null : String(bet.id))}
-                                    className="text-xs px-3 py-1 rounded font-medium transition-colors whitespace-nowrap"
-                                    style={isEditing
-                                      ? { background: '#1a1a1a', color: '#666', border: '1px solid #2a2a2a' }
-                                      : { background: '#1a1200', color: '#fbbf24', border: '1px solid #3a2800' }
-                                    }
-                                  >
-                                    {isEditing ? '閉じる' : '結果を入力 →'}
-                                  </button>
+                                  <div className="flex items-center gap-1.5">
+                                    <button
+                                      onClick={() => setEditingBetId(isEditing ? null : String(bet.id))}
+                                      className="text-xs px-3 py-1 rounded font-medium transition-colors whitespace-nowrap"
+                                      style={isEditing
+                                        ? { background: '#1a1a1a', color: '#666', border: '1px solid #2a2a2a' }
+                                        : { background: '#1a1200', color: '#fbbf24', border: '1px solid #3a2800' }
+                                      }
+                                    >
+                                      {isEditing ? '閉じる' : '結果を入力 →'}
+                                    </button>
+                                    <button
+                                      onClick={() => autoFillResult(String(bet.id))}
+                                      disabled={autoFillingIds.has(String(bet.id)) || batchAutoFilling}
+                                      className="text-xs px-2 py-1 rounded border border-[#334155] text-[#94a3b8] hover:text-white hover:border-[#475569] disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+                                      title="DBの払戻データから自動入力"
+                                    >
+                                      {autoFillingIds.has(String(bet.id)) ? '…' : '⚡自動'}
+                                    </button>
+                                  </div>
                                 </td>
                                 <td className="px-4 py-3">
                                   {deletingBetId === String(bet.id) ? (
@@ -658,7 +743,7 @@ export default function DashboardPage() {
                       </thead>
                       <tbody>
                         {completedBets.slice(0, 50).map(bet => {
-                          const ret = bet.actual_return ?? 0
+                          const ret = Math.max(0, bet.actual_return ?? 0)
                           const pl = ret - (bet.total_cost ?? 0)
                           const rp = parseRaceId(bet.race_id)
                           return (
@@ -667,7 +752,7 @@ export default function DashboardPage() {
                                 {bet.purchase_date ?? rp.dateLabel}
                               </td>
                               <td className="px-4 py-3 text-white text-xs font-medium whitespace-nowrap">
-                                {bet.venue || rp.venueLabel}
+                                {bet.venue || rp.venueLabel || '—'}
                               </td>
                               <td className="px-4 py-3 text-[#888] text-xs whitespace-nowrap">
                                 {rp.raceNo ? `${rp.raceNo}R` : '—'}
@@ -745,18 +830,10 @@ export default function DashboardPage() {
         />
 
         {/* ── フッター CTA ──────────────────────────────────────────────────── */}
-        <div className="p-5 bg-[#111] border border-[#1e1e1e] rounded-lg flex items-center justify-between gap-4">
-          <div>
-            <div className="text-xs text-[#666] mb-0.5">新しいデータを追加する</div>
-            <div className="text-sm font-medium">データ取得</div>
-            <div className="text-xs text-[#555] mt-0.5">最新のレース情報を収集してモデルを更新します</div>
-          </div>
-          <Link
-            href="/data-collection"
-            className="shrink-0 flex items-center gap-1.5 bg-white text-black text-sm font-medium px-5 py-2.5 rounded hover:bg-[#eee] transition-colors"
-          >
+        <div className="py-3 flex justify-end">
+          <Link href="/data-collection" className="shrink-0 flex items-center gap-1.5 text-[#555] hover:text-white text-xs transition-colors">
             データ取得へ
-            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
             </svg>
           </Link>

@@ -1,0 +1,31 @@
+features:
+  - name: horse_speed_last3_mean
+    type: rolling_mean
+    source: speed_index
+    group_by: horse_id
+    order_by: race_id
+    window: 3
+    min_periods: 1
+
+  - name: horse_finish_last5_mean
+    type: rolling_mean
+    source: finish
+    group_by: horse_id
+    order_by: race_id
+    window: 5
+    min_periods: 1
+
+  - name: jockey_top3_rate_last10
+    type: rolling_topk_rate
+    source: finish
+    group_by: jockey_id
+    order_by: race_id
+    window: 10
+    top_k: 3
+    min_periods: 3
+
+  - name: odds_rank_in_race
+    type: race_rank
+    source: odds
+    race_key: race_id
+    ascending: true

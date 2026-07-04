@@ -1,0 +1,15 @@
+{
+  "gate_status": "FAIL",
+  "exit_code": 1,
+  "reasons": [
+    "last_10_success_rate below threshold: 50.00% < 80.00%"
+  ],
+  "warnings": [
+    "history size is small; reliability trend is not stable yet"
+  ],
+  "latest_status": "PASS",
+  "last_10_success_rate": 0.5,
+  "flaky_warning": false,
+  "failed_steps": [],
+  "suggested_next_action": "Quality gate passed. Continue normal audit cadence."
+}

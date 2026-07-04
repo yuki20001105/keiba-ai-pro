@@ -51,16 +51,13 @@ def _query_history(db_path: str, limit: int, race_date: Optional[str] = None) ->
                 pl.popularity,
                 pl.model_id,
                 pl.predicted_at,
-                CAST(json_extract(rr.value, '$.finish_position') AS INTEGER) AS actual_finish,
-                json_extract(rr.value, '$.finish_time')               AS finish_time,
-                CAST(json_extract(rr.value, '$.odds') AS REAL)         AS actual_odds
+                CAST(json_extract(rr.data, '$.finish_position') AS INTEGER) AS actual_finish,
+                json_extract(rr.data, '$.finish_time')               AS finish_time,
+                CAST(json_extract(rr.data, '$.odds') AS REAL)         AS actual_odds
             FROM prediction_log pl
-            LEFT JOIN (
-                SELECT rru.race_id, jj.value
-                FROM   race_results_ultimate rru, json_each(rru.data) jj
-            ) rr
+            LEFT JOIN race_results_ultimate rr
                 ON  rr.race_id = pl.race_id
-                AND json_extract(rr.value, '$.horse_id') = pl.horse_id
+                AND json_extract(rr.data, '$.horse_id') = pl.horse_id
             WHERE 1=1 {date_filter}
             ORDER BY pl.race_date DESC, pl.race_id DESC, pl.predicted_rank ASC
             LIMIT ?
@@ -110,7 +107,7 @@ def _group_by_race(rows: list[dict]) -> list[dict]:
 
 
 def _calc_stats(races: list[dict]) -> dict:
-    """的中率・ROI・EV などの集計"""
+    """的中率・ROI・EV などの集計（Task5: クラス別・競馬場別・距離別ROI追加）"""
     total = len(races)
     if total == 0:
         return {"total_races": 0}
@@ -143,6 +140,8 @@ def _calc_stats(races: list[dict]) -> dict:
     roi: Optional[float] = None
     avg_ev: Optional[float] = None
     positive_ev_rate: Optional[float] = None
+    avg_odds: Optional[float] = None
+    avg_kelly: Optional[float] = None
     if n_bets > 0:
         # 実際のオッズ（確定値）を優先、なければ予測時オッズを使用
         total_return = sum(
@@ -157,14 +156,58 @@ def _calc_stats(races: list[dict]) -> dict:
             avg_ev = round(sum(ev_list) / len(ev_list), 3)
             positive_ev_rate = round(sum(1 for e in ev_list if e > 0) / len(ev_list) * 100, 1)
 
+        # 平均オッズ（Task5）
+        odds_list = [p["odds"] or p["actual_odds"] for p in top1_preds
+                     if (p["odds"] or p["actual_odds"])]
+        if odds_list:
+            avg_odds = round(sum(odds_list) / len(odds_list), 2)
+
+        # 平均Kelly（Task5: ev から近似）
+        kelly_list = []
+        for p in top1_preds:
+            wp = p.get("win_probability")
+            od = p.get("odds") or p.get("actual_odds")
+            if wp and od and od > 1.0 and wp * od >= 1.3:
+                k = (wp * od - 1) / (od - 1) * 0.25
+                kelly_list.append(min(k, 0.05))
+        if kelly_list:
+            avg_kelly = round(sum(kelly_list) / len(kelly_list), 4)
+
+    # ── クラス別・競馬場別・距離別ROI（Task5）──────────────────────────────
+    def _roi_by_key(key: str) -> list[dict]:
+        from collections import defaultdict
+        groups: dict[str, dict] = defaultdict(lambda: {"bets": 0, "returns": 0.0})
+        for r in decided:
+            grp_val = r.get(key, "不明") or "不明"
+            for p in r["predictions"]:
+                if p["predicted_rank"] != 1:
+                    continue
+                groups[str(grp_val)]["bets"] += 1
+                if p["actual_finish"] == 1:
+                    groups[str(grp_val)]["returns"] += (p["actual_odds"] or p["odds"] or 0)
+        result = []
+        for k, v in sorted(groups.items()):
+            nb = v["bets"]
+            nr = v["returns"]
+            result.append({
+                "key": k,
+                "bets": nb,
+                "roi": round((nr / nb - 1) * 100, 1) if nb > 0 else None,
+            })
+        return result
+
     return {
-        "total_races":       total,
-        "decided_races":     n,
-        "top1_win_rate":     round(top1_hit / n * 100, 1),
-        "top1_place3_rate":  round(top3_hit / n * 100, 1),
-        "roi":               roi,
-        "avg_ev":            avg_ev,
-        "positive_ev_rate":  positive_ev_rate,
+        "total_races":         total,
+        "decided_races":       n,
+        "n_bets":              n_bets,
+        "top1_win_rate":       round(top1_hit / n * 100, 1),
+        "top1_place3_rate":    round(top3_hit / n * 100, 1),
+        "roi":                 roi,
+        "avg_ev":              avg_ev,
+        "positive_ev_rate":    positive_ev_rate,
+        "avg_odds":            avg_odds,
+        "avg_kelly":           avg_kelly,
+        "roi_by_venue":        _roi_by_key("venue"),
     }
 
 
@@ -180,6 +223,119 @@ async def prediction_history(
     races = _group_by_race(rows)
     stats = _calc_stats(races)
     return {"races": races, "stats": stats}
+
+
+def _query_history_since(db_path: str, days: Optional[int]) -> list[dict]:
+    """days日以内の全予測を取得（None=全期間）"""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='prediction_log'"
+        ).fetchone()
+        if not exists:
+            return []
+        date_filter = ""
+        params: list = []
+        if days is not None:
+            date_filter = "AND pl.race_date >= strftime('%Y%m%d', date('now', ?))"
+            params.append(f"-{days} days")
+        rows = conn.execute(
+            f"""
+            SELECT
+                pl.race_id,
+                pl.race_name,
+                pl.venue,
+                pl.race_date,
+                pl.horse_id,
+                pl.horse_name,
+                pl.horse_number,
+                pl.predicted_rank,
+                pl.win_probability,
+                pl.p_raw,
+                pl.odds,
+                pl.popularity,
+                pl.model_id,
+                pl.predicted_at,
+                CAST(json_extract(rr.data, '$.finish_position') AS INTEGER) AS actual_finish,
+                json_extract(rr.data, '$.finish_time')               AS finish_time,
+                CAST(json_extract(rr.data, '$.odds') AS REAL)         AS actual_odds
+            FROM prediction_log pl
+            LEFT JOIN race_results_ultimate rr
+                ON  rr.race_id = pl.race_id
+                AND json_extract(rr.data, '$.horse_id') = pl.horse_id
+            WHERE 1=1 {date_filter}
+            ORDER BY pl.race_date DESC, pl.race_id DESC, pl.predicted_rank ASC
+            LIMIT 5000
+            """,
+            params,
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+@router.get("/api/prediction-history/summary")
+async def prediction_history_summary(
+    current_user: dict = Depends(require_premium),
+):
+    """期間別の的中率・ROI サマリーを返す"""
+    import asyncio
+
+    periods = [
+        {"label": "直近30日",  "days": 30},
+        {"label": "直近90日",  "days": 90},
+        {"label": "直近180日", "days": 180},
+        {"label": "全期間",    "days": None},
+    ]
+
+    results = []
+    for p in periods:
+        rows = await asyncio.to_thread(_query_history_since, str(ULTIMATE_DB), p["days"])
+        races = _group_by_race(rows)
+        stats = _calc_stats(races)
+        results.append({"period": p["label"], **stats})
+
+    # モデル別成績（全期間）
+    all_rows = await asyncio.to_thread(_query_history_since, str(ULTIMATE_DB), None)
+    model_stats = _calc_stats_by_model(all_rows)
+
+    return {"periods": results, "by_model": model_stats}
+
+
+def _calc_stats_by_model(rows: list[dict]) -> list[dict]:
+    """model_id別の的中率・ROI を集計"""
+    from collections import defaultdict
+    by_model: dict[str, list[dict]] = defaultdict(list)
+    for row in rows:
+        if row.get("predicted_rank") == 1:
+            by_model[row["model_id"]].append(row)
+
+    result = []
+    for model_id, preds in by_model.items():
+        n = len(preds)
+        decided = [p for p in preds if p["actual_finish"] is not None]
+        nd = len(decided)
+        if nd == 0:
+            continue
+        wins = sum(1 for p in decided if p["actual_finish"] == 1)
+        places = sum(1 for p in decided if (p["actual_finish"] or 99) <= 3)
+        total_return = sum(
+            (p["actual_odds"] or p["odds"] or 0)
+            for p in decided
+            if p["actual_finish"] == 1
+        )
+        roi = round((total_return / nd - 1) * 100, 1) if nd > 0 else None
+        result.append({
+            "model_id": model_id,
+            "total_bets": n,
+            "decided": nd,
+            "win_rate": round(wins / nd * 100, 1),
+            "place3_rate": round(places / nd * 100, 1),
+            "roi": roi,
+        })
+    result.sort(key=lambda x: x["win_rate"], reverse=True)
+    return result
 
 
 @router.get("/api/prediction-history/{race_id}")
@@ -213,10 +369,10 @@ async def prediction_history_by_race(
                     pl.popularity,
                     pl.model_id,
                     pl.predicted_at,
-                    CAST(json_extract(rr.value, '$.finish_position') AS INTEGER) AS actual_finish,
-                    json_extract(rr.value, '$.finish_time')               AS finish_time,
-                    CAST(json_extract(rr.value, '$.last3f') AS REAL)       AS actual_last3f,
-                    CAST(json_extract(rr.value, '$.odds') AS REAL)         AS actual_odds
+                    CAST(json_extract(rr.data, '$.finish_position') AS INTEGER) AS actual_finish,
+                    json_extract(rr.data, '$.finish_time')               AS finish_time,
+                    CAST(json_extract(rr.data, '$.last3f') AS REAL)       AS actual_last3f,
+                    CAST(json_extract(rr.data, '$.odds') AS REAL)         AS actual_odds
                 FROM prediction_log pl
                 INNER JOIN (
                     SELECT horse_id, MAX(predicted_at) AS latest_at
@@ -225,12 +381,9 @@ async def prediction_history_by_race(
                     GROUP BY horse_id
                 ) latest ON pl.horse_id = latest.horse_id
                          AND pl.predicted_at = latest.latest_at
-                LEFT JOIN (
-                    SELECT rru.race_id, jj.value
-                    FROM   race_results_ultimate rru, json_each(rru.data) jj
-                ) rr
+                LEFT JOIN race_results_ultimate rr
                     ON  rr.race_id = pl.race_id
-                    AND json_extract(rr.value, '$.horse_id') = pl.horse_id
+                    AND json_extract(rr.data, '$.horse_id') = pl.horse_id
                 WHERE pl.race_id = ?
                 ORDER BY pl.predicted_rank ASC
                 """,

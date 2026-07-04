@@ -20,9 +20,19 @@ from app_config import (  # type: ignore
     get_active_model_id,
     set_active_model_id,
     get_latest_model,
+    list_models_from_supabase,
+    delete_model_from_supabase,
 )
 
 router = APIRouter()
+
+
+def _get_feature_count(bundle: dict) -> int:
+    """バンドルから特徴量数を抽出する共通ヘルパー"""
+    return (
+        len(bundle.get("feature_columns") or [])
+        or len(bundle.get("feature_cols_num") or []) + len(bundle.get("feature_cols_cat") or [])
+    )
 
 
 @router.get("/api/models")
@@ -39,7 +49,6 @@ async def list_models(ultimate: bool | None = None):
 
         if not local_files and SUPABASE_DATA_ENABLED and get_supabase_client():
             # ローカルに何もない場合のみ Supabase にフォールバック
-            from app_config import list_models_from_supabase  # type: ignore
             sb_models = list_models_from_supabase()
             if ultimate is not None:
                 sb_models = [m for m in sb_models if m.get("ultimate_mode", False) == ultimate]
@@ -59,10 +68,7 @@ async def list_models(ultimate: bool | None = None):
                 # ultimate フィルタ（None = 全件返す）
                 if ultimate is not None and is_ultimate != ultimate:
                     continue
-                feat_count = (
-                    len(bundle.get("feature_columns") or [])
-                    or len(bundle.get("feature_cols_num") or []) + len(bundle.get("feature_cols_cat") or [])
-                )
+                feat_count = _get_feature_count(bundle)
                 model_id = model_path.stem
                 models.append({
                     "model_id": model_id,
@@ -99,7 +105,6 @@ async def delete_model(model_id: str):
     try:
         deleted = []
         if SUPABASE_DATA_ENABLED and get_supabase_client():
-            from app_config import delete_model_from_supabase  # type: ignore
             # 戻り値を確認: False = モデルが Supabase に存在しない
             if delete_model_from_supabase(model_id):
                 deleted.append(f"supabase:{model_id}")
@@ -133,10 +138,7 @@ async def get_model_info(model_id: str):
             "metrics": bundle.get("metrics", {}),
             "data_count": bundle.get("data_count", 0),
             "race_count": bundle.get("race_count", 0),
-                "feature_count": (
-                    len(bundle.get("feature_columns") or [])
-                    or len(bundle.get("feature_cols_num") or []) + len(bundle.get("feature_cols_cat") or [])
-                ),
+                "feature_count": _get_feature_count(bundle),
         }
     except HTTPException:
         raise
@@ -160,10 +162,7 @@ async def get_active_model():
 
     try:
         bundle = joblib.load(model_path)
-        feat_count = (
-            len(bundle.get("feature_columns") or [])
-            or len(bundle.get("feature_cols_num") or []) + len(bundle.get("feature_cols_cat") or [])
-        )
+        feat_count = _get_feature_count(bundle)
         return {
             "model_id": active_id,
             "target": bundle.get("target", "unknown"),

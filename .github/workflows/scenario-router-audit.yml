@@ -1,0 +1,102 @@
+name: scenario-router-audit
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 17 * * *"
+
+jobs:
+  scenario-router-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f python-api/requirements.txt ]; then pip install -r python-api/requirements.txt; fi
+
+      - name: Run Scenario Router Audit Pipeline
+        env:
+          API_BASE_URL: ${{ secrets.API_BASE_URL }}
+          E2E_BEARER_TOKEN: ${{ secrets.E2E_BEARER_TOKEN }}
+          E2E_USE_FAKE_ADMIN_TOKEN: ${{ secrets.E2E_USE_FAKE_ADMIN_TOKEN }}
+          SCENARIO_ROUTER_AUDIT_SANDBOX: "1"
+          SCENARIO_ROUTER_AUDIT_CLEANUP: "1"
+          SCENARIO_ROUTER_AUDIT_HEALTH_TIMEOUT_SEC: "180"
+          AUTO_RECOVERY_E2E_TIMEOUT_SEC: "120"
+        run: |
+          python scripts/run_scenario_router_audit.py --sandbox --enable-gate --gate-preset ci
+
+      - name: Run Scenario Router Quality Gate
+        if: always()
+        run: |
+          python scripts/scenario_router_audit_gate.py \
+            --result-json reports/scenario_router_audit_result.json \
+            --history-jsonl reports/scenario_router_audit_history.jsonl \
+            --output-json reports/scenario_router_audit_gate.json \
+            --output-md reports/scenario_router_audit_gate.md \
+            --preset ci
+
+      - name: Ensure report files exist on failure
+        if: always()
+        run: |
+          mkdir -p reports
+          test -f reports/scenario_router_audit_report.md || echo "# Scenario Router Audit Report" > reports/scenario_router_audit_report.md
+          test -f reports/scenario_router_audit_result.json || echo '{"summary":{"overall_status":"FAIL","error":"report generation failed"}}' > reports/scenario_router_audit_result.json
+          test -f reports/scenario_router_audit_history.jsonl || touch reports/scenario_router_audit_history.jsonl
+          test -f reports/scenario_router_audit_trend.md || echo "# Scenario Router Audit Trend" > reports/scenario_router_audit_trend.md
+          test -f reports/scenario_router_audit_gate.json || echo '{"gate_status":"FAIL","exit_code":1,"reasons":["gate file missing"]}' > reports/scenario_router_audit_gate.json
+          test -f reports/scenario_router_audit_gate.md || echo "# Scenario Router Audit Gate" > reports/scenario_router_audit_gate.md
+
+      - name: Publish Triage Summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          import pathlib
+          import os
+
+          p = pathlib.Path("reports/scenario_router_audit_result.json")
+          d = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+          s = d.get("summary") if isinstance(d.get("summary"), dict) else {}
+          t = d.get("triage") if isinstance(d.get("triage"), dict) else {}
+          sb = d.get("sandbox") if isinstance(d.get("sandbox"), dict) else {}
+
+          lines = []
+          lines.append("## Scenario Router Audit Triage")
+          lines.append("")
+          lines.append(f"- overall_status: {s.get('overall_status', '')}")
+          lines.append(f"- failure_type: {t.get('failure_type', 'NONE')}")
+          lines.append(f"- likely_cause: {t.get('likely_cause', '')}")
+          lines.append(f"- rerun_command: {t.get('rerun_command', '')}")
+          lines.append(f"- sandbox_db_path: {sb.get('sandbox_db_path', '')}")
+          lines.append(f"- cleanup_status: {sb.get('cleanup_status', '')}")
+
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY", "")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as f:
+                  f.write("\n".join(lines) + "\n")
+          PY
+
+      - name: Upload scenario router audit reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenario-router-audit-reports
+          path: |
+            reports/scenario_router_audit_report.md
+            reports/scenario_router_audit_result.json
+            reports/scenario_router_audit_history.jsonl
+            reports/scenario_router_audit_trend.md
+            reports/scenario_router_audit_gate.json
+            reports/scenario_router_audit_gate.md

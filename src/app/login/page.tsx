@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { Logo } from '@/components/Logo'
@@ -13,6 +13,13 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+
+  // ローカル開発バイパス: Supabase 停止中でも自動ログイン
+  useEffect(() => {
+    if (process.env.NEXT_PUBLIC_DEV_BYPASS_AUTH === 'true') {
+      router.replace('/home')
+    }
+  }, [router])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -73,7 +80,7 @@ export default function LoginPage() {
             />
           </div>
           <div>
-            <label className="block text-sm text-[#888] mb-1">パスワード{tab === 'signup' && <span className="text-[#666]">（6文字以上）</span>}</label>
+            <label className="block text-sm text-[#888] mb-1">パスワード</label>
             <input
               type="password"
               value={password}

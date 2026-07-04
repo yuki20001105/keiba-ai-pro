@@ -1,1 +1,37 @@
-{}
+{
+  // Python: FastAPI用のvenvをワークスペースのデフォルトに設定
+  // （デバッグ起動時に python-api/.venv を使用するため）
+  "python.defaultInterpreterPath": "${workspaceFolder}/python-api/.venv/Scripts/python.exe",
+  "python.terminal.activateEnvironment": false,
+  "files.watcherExclude": {
+    "**/.git/**": true,
+    "**/.next/**": true,
+    "**/node_modules/**": true,
+    "**/.venv/**": true,
+    "**/cache/**": true,
+    "**/data/**": true,
+    "**/models/**": true
+  },
+  "search.exclude": {
+    "**/.next/**": true,
+    "**/node_modules/**": true,
+    "**/.venv/**": true,
+    "**/*.db": true,
+    "**/*.pkl": true,
+    "**/*.csv": true,
+    "**/data/**": true,
+    "**/models/**": true
+  },
+  "python.analysis.exclude": [
+    "**/.venv",
+    "**/.next",
+    "**/node_modules",
+    "**/data",
+    "**/models",
+    "**/cache"
+  ],
+  "python.analysis.indexing": false,
+  "notebook.output.textLineLimit": 2000,
+  "jupyter.restoreNotebookViewState": false,
+  "git.autorefresh": false
+}

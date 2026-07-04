@@ -5,7 +5,9 @@ GET /api/debug/race/{race_id}/features - 特徴量エンジニアリング後の
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import math
 import sqlite3
 import traceback
 from typing import Any, Dict, List
@@ -15,6 +17,8 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app_config import ULTIMATE_DB, logger  # type: ignore
 from deps.auth import require_premium  # type: ignore
+from keiba_ai.feature_engineering import add_derived_features  # type: ignore
+from keiba_ai.ultimate_features import UltimateFeatureCalculator  # type: ignore
 
 router = APIRouter()
 
@@ -52,9 +56,6 @@ def _load_raw_race(race_id: str) -> Dict[str, Any]:
 
 def _build_feature_df(race_id: str, race_info: Dict, horses: List[Dict]) -> pd.DataFrame:
     """predict.pyと同じ手順で特徴量エンジニアリングを適用する"""
-    from keiba_ai.feature_engineering import add_derived_features  # type: ignore
-    from keiba_ai.ultimate_features import UltimateFeatureCalculator  # type: ignore
-
     # DataFrame組み立て
     records = []
     for hd in horses:
@@ -133,8 +134,6 @@ def _build_feature_df(race_id: str, race_info: Dict, horses: List[Dict]) -> pd.D
 
 def _df_to_records(df: pd.DataFrame) -> List[Dict[str, Any]]:
     """DataFrame を JSON化可能な形式に変換"""
-    import math
-
     def _clean(v: Any) -> Any:
         if isinstance(v, float):
             if math.isnan(v) or math.isinf(v):
@@ -189,7 +188,6 @@ async def debug_features(
 ):
     """特徴量エンジニアリング後の全カラム・値を返す"""
     try:
-        import asyncio
         raw = _load_raw_race(race_id)
         df = await asyncio.to_thread(_build_feature_df, race_id, raw["race_info"], raw["horses"])
 

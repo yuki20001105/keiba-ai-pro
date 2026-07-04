@@ -10,6 +10,9 @@ export async function proxy(req: NextRequest) {
 
   if (PUBLIC_PATHS.some(p => pathname === p)) return res
 
+  // ローカル開発バイパス: Supabase 停止中でも全ページにアクセス可
+  if (process.env.NEXT_PUBLIC_DEV_BYPASS_AUTH === 'true') return res
+
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,

@@ -24,7 +24,7 @@ FUTURE_FIELDS: frozenset = frozenset({
     "last_3f_time",
     "last_3f_rank",
     "last_3f_rank_normalized",
-    # コーナー通過
+    # コーナー通過（生データ）
     "corner_1",
     "corner_2",
     "corner_3",
@@ -35,6 +35,20 @@ FUTURE_FIELDS: frozenset = frozenset({
     "corner_position_variance",
     "last_corner_position",
     "position_change",
+    # コーナー通過派生特徴量（当該レース結果から生成 → post-race リーク）
+    # _fe_corner_position() が corner_1/2/3/4 から生成する特徴量。
+    # 歴史的脚質は running_style_mean_5 / running_style_std_5 (_fe_history) で代替。
+    "corner_first",
+    "corner_last",
+    "corner_gain",
+    "running_style_code",
+    # 上記の欠損フラグ（リーク特徴量の付随フラグ）
+    "corner_first_is_missing",
+    "corner_last_is_missing",
+    "corner_gain_is_missing",
+    "running_style_code_is_missing",
+    # タイム指数（netkeiba の結果ページから取得 → レース後に確定する値）
+    "time_index",
     # 最終結果
     "margin",
     "prize_money",
@@ -108,9 +122,17 @@ UNNECESSARY_COLUMNS: tuple[str, ...] = (
     "id",
     "prev_race_venue",
     "prev2_race_venue",
+    "prev3_race_venue",
+    "prev4_race_venue",
+    "prev5_race_venue",
     "prev_race_date",
     "prev2_race_date",
+    "prev3_race_date",
+    "prev4_race_date",
+    "prev5_race_date",
     "race_name",
+    # 持ちタイム（非数値フィールド）
+
     # リーク（当該レース結果 — FUTURE_FIELDS と重複）
     "time_seconds",
     "corner_1",
@@ -150,6 +172,16 @@ UNNECESSARY_COLUMNS: tuple[str, ...] = (
     "sanrentan_payout_is_missing",
     # prev_race_surface 未収録 → 常に 0 になるフラグ
     "is_surface_change",
+    # ──────────────────────────────────────────────────────────────────────────
+    # オッズ系列の除外（speed_deviation モデルを市場予測に依存させないため）
+    # odds/log_odds は speed_deviation gain の 84.9% を占めており、
+    # モデルが馬の実力特徴量（スピード指数等）を学習できていなかった。
+    # 除外することで prev_speed_index / speed_vs_race_avg 等に学習が向かう。
+    # ──────────────────────────────────────────────────────────────────────────
+    "odds",                      # gain 61.5%: 市場予測に過依存（除外）
+    "log_odds",                  # gain 23.3%: odds の対数変換（同様に除外）
+    "implied_prob",              # = 1/odds の変換（情報重複）
+    "popularity",                # 人気順（odds と高相関）
     # ──────────────────────────────────────────────────────────────────────────
     # 冗長オッズ変換（odds/implied_prob で十分。LightGBM 木モデルは単調変換に不変）
     # ──────────────────────────────────────────────────────────────────────────
@@ -288,8 +320,78 @@ UNNECESSARY_COLUMNS: tuple[str, ...] = (
     "prev2_speed_index_is_missing", # prev2_speed_zscore_is_missing と r=1.000（完全重複）
     # jt_combo の冗長列（race count は jt_combo_win_rate_smooth に内包済み）
     "jt_combo_races",               # jt_combo_win_rate_smooth のベイズ平滑に使用済み、直接追加は不要
-    # 馬場状態の重複: weather_encoded は field_condition_encoded で代替可能
-    "weather_encoded",              # field_condition_encoded（良/稍重/重/不良）で十分
+    # 馬場状態の重複: weather_encoded は field_condition_encoded で代替可能、とされていたが
+    # 同じ「良」でも晴・乾燥と曇・湿度高めは異なるため weather は独立情報として復活
+    # "weather_encoded",              # 復活: field_condition と相関あるが独立シグナル
     # race_class_num と race_class_encoded は同一情報（クラス順序）
     "race_class_num",               # race_class_encoded（0.83%ゲイン）と冗長
+    # ──────────────────────────────────────────────────────────────────────────
+    # ITR-10: 高相関特徴量の除去（ITR-08 profiling 相関マトリクス解析 2026-04-26 に基づく）
+    # speed_deviation ターゲットの精度向上のため、多重共線性を持つ列を整理する。
+    # ──────────────────────────────────────────────────────────────────────────
+    # オッズ関連の冗長ペア（odds/log_odds を残し、その派生を除去）
+    "odds_z_in_race",       # r=0.861 with popularity_normalized, r=0.793 with odds → log_odds で代替済み
+    "popularity_normalized", # r=0.862 with odds_z_in_race, r=0.715 with implied_prob → log_odds が優先
+    "top3_probability",     # r=0.681 (inverse) with market_entropy → market_entropy が情報量大
+    # ──────────────────────────────────────────────────────────────────────────
+    # ITR-11: implied_prob / popularity の除去（2026-05-08 市場情報重複解消）
+    # odds(53%) + implied_prob(21%) + popularity(4.8%) で市場 Gain 74%超 → log_odds 1列に統一
+    # implied_prob = 1/odds（単調変換。LightGBM 木モデルには同一情報）
+    # popularity   = rank(odds)（順序情報。odds から自明）
+    # log_odds = log1p(odds) を唯一の市場シグナルとして使用
+    # ──────────────────────────────────────────────────────────────────────────
+    "implied_prob",         # = 1/odds → log_odds に統一
+    "popularity",           # = rank(odds) → odds から自明
+    # 前々走スピード指標（prev_speed_index / speed_index_change で情報を保持済み）
+    # speed_index_change = prev_speed_index - prev2_speed_index として ITR-04 で生成済み
+    # → prev2 を除去しても speed_index_change が変化トレンドを捉えている
+    "prev2_speed_index",    # r=0.813 with prev_speed_index → speed_index_change で差分を保持
+    "prev2_speed_zscore",   # r=0.582 with prev_speed_zscore, r=0.676 with prev2_speed_index
+    # 騎手・調教師統計の冗長ペア（直近30日レートの方が新鮮な情報を含む）
+    "jockey_show_rate",     # r=0.697 with jockey_recent30_win_rate → jockey_recent30_win_rate を優先
+    "trainer_show_rate",    # r=0.630 with trainer_recent30_win_rate → trainer_recent30_win_rate を優先
+    # ──────────────────────────────────────────────────────────────────────────
+    # 重複・問題カラムの整理（2026-05-09）
+    # ──────────────────────────────────────────────────────────────────────────
+    # [1] データソースフラグ（出馬表スクレイプ時のみ True → 学習データでは常に NaN）
+    "_shutuba",             # 推論/学習間で値が非対称 → 情報なし
+    # [2] 性別の3重表現 → sex_code(-1/0/1) に一本化
+    "sex",                  # 生文字列。sex_code で代替済み
+    "sex_セ",               # get_dummies one-hot。sex_code で代替済み
+    "sex_牝",               # get_dummies one-hot。sex_code で代替済み
+    "sex_牡",               # get_dummies one-hot。sex_code で代替済み
+    # [3] sf_index_last ≈ prev_speed_index（前走スピード指数の2重表現）
+    # speed_figures テーブルのカバレッジは ~10%（3086行/29778行）
+    # prev_speed_index は prev_race_distance/time から常時計算可能 → こちらを優先
+    "sf_index_last",              # prev_speed_index と重複、かつカバレッジ10%未満
+    "sf_index_last_is_missing",   # ↑削除に伴い不要
+    # [4] running_style の2重表現 → running_style_num(数値) に一本化
+    "running_style",        # 生文字列('逃げ'/'先行'/...)。running_style_num で代替済み
+    # [5] 騎手・調教師の生文字列（高カーディナリティ、統計量で代替）
+    "jockey_name",          # 生文字列。jockey_recent30_win_rate 等の統計量を使用
+    "trainer_name",         # 生文字列。trainer_recent30_win_rate 等の統計量を使用
+    # [6] weight_diff はDBに存在せず（DB内は weight_change）、推論時も [A-6] で無視済み
+    "weight_diff",          # DBに存在しない。推論時は weight_change を使用
+    # [7] 前走クラス文字列（prev_race_class_num として数値化済み）
+    "prev_race_class",      # 生文字列。prev_race_class_num で代替済み
+    # [8] 前走馬場文字列（object 型。surface_encoded で現レース馬場は既に捉えている）
+    # prev_race_surface / prev2_race_surface は low_card_categorical で LabelEncoding 可能だが
+    # prev3〜5 のカバレッジが低く、surface_changed フラグで代替可能なため除外
+    "prev_race_surface",    # 生文字列（"芝"/"ダ"）
+    "prev2_race_surface",   # 生文字列
+    "prev3_race_surface",   # 生文字列
+    "prev4_race_surface",   # 生文字列
+    "prev5_race_surface",   # 生文字列
+    # ──────────────────────────────────────────────────────────────────────────
+    # 完全一致・完全逆相関ペアの除去（correlation_analysis 2026-06-14 に基づく）
+    # high_correlation.csv で |r| = 1.0 が確認された冗長列を削除する。
+    # ──────────────────────────────────────────────────────────────────────────
+    "kai_num",                         # kai と r=1.0（完全一致）
+    "day_num",                         # day と r=1.0（完全一致）
+    "race_avg_prev_finish_is_missing", # race_max_prev_speed_is_missing と r=1.0
+    "race_max_prev_speed_is_missing",  # race_avg_prev_speed_is_missing と r=1.0
+    "holding_just_finish_is_missing",  # has_just_data と r=-1.0（完全逆相関）
+    "holding_just_speed_is_missing",   # has_just_data / holding_just_time_sec_is_missing と r=1.0
+    "holding_just_time_sec_is_missing",# holding_just_speed_is_missing と r=1.0
+    "last_training_time_3f_is_missing",# has_training_data と r=-1.0（完全逆相関）
 )

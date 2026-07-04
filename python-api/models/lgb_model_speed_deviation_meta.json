@@ -1,0 +1,391 @@
+{
+  "feature_cols": [
+    "horse_number",
+    "prev_race_distance",
+    "prev2_race_finish",
+    "prev2_race_distance",
+    "distance",
+    "num_horses",
+    "kai",
+    "day",
+    "prev_race_finish",
+    "prev3_race_finish",
+    "prev3_race_time",
+    "prev3_race_weight",
+    "prev3_race_distance",
+    "prev4_race_finish",
+    "prev4_race_time",
+    "prev4_race_weight",
+    "prev4_race_distance",
+    "prev5_race_finish",
+    "prev5_race_time",
+    "prev5_race_weight",
+    "prev5_race_distance",
+    "holding_just_time_sec",
+    "holding_just_l3f",
+    "holding_just_finish",
+    "holding_just_babasa",
+    "holding_middle_time_sec",
+    "holding_middle_l3f",
+    "holding_middle_finish",
+    "holding_middle_babasa",
+    "holding_short_time_sec",
+    "holding_short_l3f",
+    "holding_short_finish",
+    "holding_short_babasa",
+    "holding_long_time_sec",
+    "holding_long_l3f",
+    "holding_long_finish",
+    "holding_long_babasa",
+    "horse_weight",
+    "horse_weight_change",
+    "days_since_last_race",
+    "race_num",
+    "cos_date",
+    "sin_date",
+    "seasonal_sex",
+    "frame_race_type",
+    "kai_cos",
+    "kai_sin",
+    "day_cos",
+    "day_sin",
+    "is_late_opening",
+    "is_female_only_race",
+    "is_3yo_limited",
+    "race_age_condition",
+    "class_rank_adj",
+    "weight_vs_standard",
+    "is_female",
+    "is_gelding",
+    "market_entropy",
+    "distance_change",
+    "prev_speed_index",
+    "prev_speed_zscore",
+    "recent_form_weighted",
+    "form_trend",
+    "speed_index_change",
+    "speed_avg_weighted",
+    "speed_best_2",
+    "speed_improving",
+    "prev3_speed_index",
+    "prev4_speed_index",
+    "prev5_speed_index",
+    "recent_form_5race",
+    "form_consistency",
+    "win_count_5",
+    "top3_count_5",
+    "speed_best_5",
+    "speed_trend_5",
+    "prev_race_class_num",
+    "class_change",
+    "is_class_up",
+    "is_class_down",
+    "is_same_class",
+    "class_diff_abs",
+    "race_class_rank",
+    "prev_class_rank",
+    "class_drop",
+    "class_up",
+    "is_consecutive_week",
+    "is_fresh",
+    "is_second_after_rest",
+    "race_avg_prev_speed",
+    "race_max_prev_speed",
+    "speed_vs_race_avg",
+    "horse_speed_rank_pct",
+    "race_avg_prev_finish",
+    "has_just_data",
+    "holding_just_speed",
+    "holding_just_time_rank",
+    "holding_just_finish_rank",
+    "last_training_time_3f",
+    "last_training_grade_encoded",
+    "has_training_data",
+    "jockey_course_win_rate",
+    "jockey_course_races",
+    "horse_field_win_rate",
+    "horse_field_races",
+    "horse_weather_win_rate",
+    "horse_weather_races",
+    "gate_win_rate",
+    "gate_bracket_win_rate",
+    "jt_combo_win_rate_smooth",
+    "jockey_field_win_rate",
+    "jockey_field_races",
+    "sire_win_rate",
+    "sire_show_rate",
+    "sire_surface_win_rate",
+    "sire_dist_band_win_rate",
+    "sire_field_win_rate",
+    "sire_field_races",
+    "sire_venue_win_rate",
+    "damsire_win_rate",
+    "damsire_show_rate",
+    "damsire_surface_win_rate",
+    "damsire_dist_band_win_rate",
+    "damsire_field_win_rate",
+    "damsire_field_races",
+    "damsire_venue_win_rate",
+    "jockey_front_win_rate",
+    "jockey_close_win_rate",
+    "horse_speed_exp_mean",
+    "horse_speed_exp_std",
+    "horse_speed_vs_exp",
+    "race_avg_prev_speed_is_missing",
+    "speed_vs_race_avg_is_missing",
+    "gate_bracket_win_rate_is_missing",
+    "jockey_front_win_rate_is_missing",
+    "jockey_close_win_rate_is_missing",
+    "last_training_grade_encoded_is_missing",
+    "horse_speed_exp_mean_is_missing",
+    "horse_speed_exp_std_is_missing",
+    "horse_speed_vs_exp_is_missing",
+    "venue_encoded",
+    "venue_code_encoded",
+    "weather_encoded",
+    "field_condition_encoded",
+    "race_class_encoded",
+    "rest_category"
+  ],
+  "cat_features": [
+    "venue_encoded",
+    "venue_code_encoded",
+    "weather_encoded",
+    "field_condition_encoded",
+    "race_class_encoded"
+  ],
+  "target": "speed_deviation",
+  "task": "regression",
+  "metrics": {
+    "rmse": 0.7998,
+    "corr": 0.4197
+  },
+  "best_iteration": 109,
+  "params": {
+    "objective": "regression",
+    "metric": "rmse",
+    "learning_rate": 0.03854267643913452,
+    "num_leaves": 63,
+    "min_data_in_leaf": 30,
+    "feature_fraction": 0.7035119926400067,
+    "bagging_fraction": 0.8650089137415928,
+    "bagging_freq": 3,
+    "verbose": -1,
+    "boosting_type": "gbdt",
+    "device_type": "gpu",
+    "verbosity": -1,
+    "seed": 42,
+    "num_threads": 16,
+    "max_bin": 255,
+    "gpu_use_dp": false,
+    "max_depth": 3,
+    "min_child_samples": 75,
+    "lambda_l1": 0.0004793052550782129,
+    "lambda_l2": 0.0008325158565947976
+  },
+  "feature_importance": [
+    {
+      "feature": "prev_race_finish",
+      "gain": 32676.11157989502,
+      "split": 46
+    },
+    {
+      "feature": "recent_form_weighted",
+      "gain": 29472.367645263672,
+      "split": 44
+    },
+    {
+      "feature": "recent_form_5race",
+      "gain": 27361.11816596985,
+      "split": 66
+    },
+    {
+      "feature": "horse_speed_rank_pct",
+      "gain": 24799.987701416016,
+      "split": 52
+    },
+    {
+      "feature": "race_avg_prev_finish",
+      "gain": 19283.61856174469,
+      "split": 103
+    },
+    {
+      "feature": "speed_vs_race_avg",
+      "gain": 16580.346598625183,
+      "split": 53
+    },
+    {
+      "feature": "jockey_close_win_rate",
+      "gain": 13204.624114990234,
+      "split": 42
+    },
+    {
+      "feature": "horse_speed_exp_mean",
+      "gain": 7966.342645645142,
+      "split": 38
+    },
+    {
+      "feature": "jockey_course_win_rate",
+      "gain": 7298.541078567505,
+      "split": 32
+    },
+    {
+      "feature": "jt_combo_win_rate_smooth",
+      "gain": 5701.014678955078,
+      "split": 27
+    },
+    {
+      "feature": "distance_change",
+      "gain": 5477.4028034210205,
+      "split": 44
+    },
+    {
+      "feature": "race_class_encoded",
+      "gain": 3815.828582763672,
+      "split": 33
+    },
+    {
+      "feature": "speed_best_5",
+      "gain": 2063.0989570617676,
+      "split": 10
+    },
+    {
+      "feature": "venue_encoded",
+      "gain": 2026.0099143981934,
+      "split": 14
+    },
+    {
+      "feature": "prev2_race_finish",
+      "gain": 1998.5035781860352,
+      "split": 10
+    },
+    {
+      "feature": "prev_race_distance",
+      "gain": 1850.5947933197021,
+      "split": 16
+    },
+    {
+      "feature": "prev3_speed_index",
+      "gain": 1050.8797912597656,
+      "split": 10
+    },
+    {
+      "feature": "prev_speed_zscore",
+      "gain": 988.6648006439209,
+      "split": 11
+    },
+    {
+      "feature": "top3_count_5",
+      "gain": 912.8163948059082,
+      "split": 11
+    },
+    {
+      "feature": "sire_surface_win_rate",
+      "gain": 780.8249988555908,
+      "split": 9
+    },
+    {
+      "feature": "horse_weight",
+      "gain": 734.1947107315063,
+      "split": 7
+    },
+    {
+      "feature": "gate_win_rate",
+      "gain": 605.6613121032715,
+      "split": 5
+    },
+    {
+      "feature": "holding_just_time_rank",
+      "gain": 538.5265960693359,
+      "split": 5
+    },
+    {
+      "feature": "horse_speed_vs_exp",
+      "gain": 533.3407077789307,
+      "split": 7
+    },
+    {
+      "feature": "last_training_grade_encoded",
+      "gain": 472.3071975708008,
+      "split": 6
+    },
+    {
+      "feature": "days_since_last_race",
+      "gain": 425.1291961669922,
+      "split": 8
+    },
+    {
+      "feature": "jockey_field_win_rate",
+      "gain": 365.08431243896484,
+      "split": 3
+    },
+    {
+      "feature": "gate_bracket_win_rate",
+      "gain": 308.1967010498047,
+      "split": 4
+    },
+    {
+      "feature": "prev2_race_distance",
+      "gain": 256.9186019897461,
+      "split": 3
+    },
+    {
+      "feature": "speed_avg_weighted",
+      "gain": 232.16600036621094,
+      "split": 2
+    }
+  ],
+  "test_days": 120,
+  "cutoff_date": "2025-01-01",
+  "mode": "quick_test",
+  "fast_mode": true,
+  "audit_mode": false,
+  "device_type": "gpu",
+  "lightgbm_version": "4.6.0",
+  "lightgbm_gpu_available": false,
+  "cuda_version": "13.1",
+  "gpu_name": "NVIDIA GeForce RTX 4070 Ti SUPER",
+  "gpu_memory_total_mb": 16376.0,
+  "optuna_trials": 5,
+  "cv_splits": 2,
+  "total_training_seconds": 18.56062479998218,
+  "avg_trial_seconds": 3.531974840001203,
+  "gpu_speedup": null,
+  "runtime_breakdown": [
+    {
+      "stage": "Total",
+      "seconds": 876.8702562999679,
+      "formatted": "14m 36s"
+    },
+    {
+      "stage": "Preprocessing",
+      "seconds": 0.12883489998057485,
+      "formatted": "0s"
+    },
+    {
+      "stage": "Data Loading",
+      "seconds": 0.12883489998057485,
+      "formatted": "0s"
+    },
+    {
+      "stage": "Feature Engineering",
+      "seconds": 0.0,
+      "formatted": "0s"
+    },
+    {
+      "stage": "Optuna",
+      "seconds": 17.659874200006016,
+      "formatted": "17s"
+    },
+    {
+      "stage": "Training",
+      "seconds": 0.8715821000514552,
+      "formatted": "0s"
+    }
+  ],
+  "trial_log_csv": "C:\\Users\\yuki2\\Documents\\ws\\keiba-ai-pro\\notebooks\\reports\\optuna_trial_log.csv",
+  "gpu_usage_log_csv": "C:\\Users\\yuki2\\Documents\\ws\\keiba-ai-pro\\notebooks\\reports\\gpu_usage_log.csv",
+  "system_usage_log_csv": "C:\\Users\\yuki2\\Documents\\ws\\keiba-ai-pro\\notebooks\\reports\\system_usage_log.csv",
+  "gpu_benchmark_csv": "C:\\Users\\yuki2\\Documents\\ws\\keiba-ai-pro\\notebooks\\reports\\gpu_benchmark.csv",
+  "created_at": "2026-07-04T19:53:22.621768"
+}

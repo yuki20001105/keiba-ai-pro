@@ -1,0 +1,90 @@
+{
+  "gate_status": "PASS",
+  "exit_code": 0,
+  "reasons": [],
+  "warnings": [],
+  "latest_status": "PASS",
+  "last_10_success_rate": 1.0,
+  "flaky_warning": false,
+  "failed_steps": [],
+  "baseline_evaluation": [
+    {
+      "step_name": "health_check",
+      "current_duration_sec": 1.0,
+      "sample_count": 3,
+      "median_duration_sec": 1.02,
+      "mean_duration_sec": 1.02,
+      "p95_duration_sec": 1.038,
+      "warn_threshold_sec": 2.04,
+      "fail_threshold_sec": 4.08,
+      "duration_warn_multiplier": 2.0,
+      "duration_fail_multiplier": 4.0,
+      "status": "INFO",
+      "note": "insufficient baseline samples"
+    },
+    {
+      "step_name": "import_smoke",
+      "current_duration_sec": 1.5,
+      "sample_count": 3,
+      "median_duration_sec": 1.51,
+      "mean_duration_sec": 1.51,
+      "p95_duration_sec": 1.5190000000000001,
+      "warn_threshold_sec": 3.02,
+      "fail_threshold_sec": 6.04,
+      "duration_warn_multiplier": 2.0,
+      "duration_fail_multiplier": 4.0,
+      "status": "INFO",
+      "note": "insufficient baseline samples"
+    },
+    {
+      "step_name": "py_compile",
+      "current_duration_sec": 2.0,
+      "sample_count": 3,
+      "median_duration_sec": 2.01,
+      "mean_duration_sec": 2.01,
+      "p95_duration_sec": 2.019,
+      "warn_threshold_sec": 4.02,
+      "fail_threshold_sec": 8.04,
+      "duration_warn_multiplier": 2.0,
+      "duration_fail_multiplier": 4.0,
+      "status": "INFO",
+      "note": "insufficient baseline samples"
+    },
+    {
+      "step_name": "scenario_router_auto_recovery_e2e",
+      "current_duration_sec": 12.0,
+      "sample_count": 3,
+      "median_duration_sec": 8.1,
+      "mean_duration_sec": 8.1,
+      "p95_duration_sec": 8.19,
+      "warn_threshold_sec": 16.2,
+      "fail_threshold_sec": 32.4,
+      "duration_warn_multiplier": 2.0,
+      "duration_fail_multiplier": 4.0,
+      "status": "INFO",
+      "note": "insufficient baseline samples"
+    },
+    {
+      "step_name": "scenario_router_e2e",
+      "current_duration_sec": 6.0,
+      "sample_count": 3,
+      "median_duration_sec": 6.03,
+      "mean_duration_sec": 6.03,
+      "p95_duration_sec": 6.0569999999999995,
+      "warn_threshold_sec": 12.06,
+      "fail_threshold_sec": 24.12,
+      "duration_warn_multiplier": 2.0,
+      "duration_fail_multiplier": 4.0,
+      "status": "INFO",
+      "note": "insufficient baseline samples"
+    }
+  ],
+  "baseline_config": {
+    "baseline_window": 10,
+    "duration_warn_multiplier": 2.0,
+    "duration_fail_multiplier": 4.0,
+    "min_baseline_samples": 5,
+    "fail_on_duration_spike": false
+  },
+  "suggested_next_action": "Quality gate passed. Continue normal audit cadence."
+}

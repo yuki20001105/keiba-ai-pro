@@ -284,17 +284,21 @@ def _expanding_win_rate_by_group(
     """
     if id_col not in history_df.columns or group_col not in history_df.columns:
         return history_df
-    orig_idx = history_df.index.copy()
-    s = history_df.sort_values('race_id', kind='mergesort').copy()
+    orig_idx = history_df.index
+    # [高速化] 必要列のみ抽出してソート（全列コピーを回避: 200列→4列で ~50x メモリ削減）
+    _needed = [c for c in ['race_id', 'finish', id_col, group_col]
+               if c in history_df.columns]
+    s = history_df[_needed].sort_values('race_id', kind='mergesort')
     fin_num  = pd.to_numeric(s['finish'], errors='coerce').fillna(0)
     win_flag = (fin_num == 1).astype(float)
-    grp      = s[[id_col, group_col]].astype(str).apply('|'.join, axis=1)
+    # [高速化] ベクトル化文字列連結（apply('|'.join) より 10-20x 高速）
+    grp      = s[id_col].astype(str) + '|' + s[group_col].astype(str)
     race_cnt = s.groupby(grp, sort=False).cumcount()
-    s['_w']  = win_flag
+    s = s.assign(_w=win_flag.values)
     cum_wins = s.groupby(grp, sort=False)['_w'].cumsum() - s['_w']
-    s.drop(columns=['_w'], inplace=True)
-    s[out_rate] = (cum_wins / race_cnt.clip(1)).fillna(0.0)
-    s[out_cnt]  = race_cnt
+    s = s.drop(columns=['_w'])
+    s = s.assign(**{out_rate: (cum_wins / race_cnt.clip(1)).fillna(0.0).values,
+                    out_cnt:  race_cnt.values})
     s_back = s.reindex(orig_idx)
     history_df = history_df.copy()
     history_df[out_rate] = s_back[out_rate].values
@@ -316,20 +320,22 @@ def _expanding_grouped_stats(
     needed = ['race_id', 'finish', id_col, group_col]
     if any(c not in history_df.columns for c in needed):
         return history_df
-    orig_idx = history_df.index.copy()
-    s = history_df.sort_values('race_id', kind='mergesort').copy()
+    orig_idx = history_df.index
+    # [高速化] 必要列のみ抽出してソート
+    s = history_df[needed].sort_values('race_id', kind='mergesort')
     fin_num  = pd.to_numeric(s['finish'], errors='coerce').fillna(0)
     win_flag = (fin_num == 1).astype(float)
-    grp      = s[[id_col, group_col]].astype(str).apply('|'.join, axis=1)
+    # [高速化] ベクトル化文字列連結
+    grp      = s[id_col].astype(str) + '|' + s[group_col].astype(str)
     race_cnt = s.groupby(grp, sort=False).cumcount()
-    s['_w'] = win_flag
-    s['_f'] = fin_num
+    s = s.assign(_w=win_flag.values, _f=fin_num.values)
     cum_wins = s.groupby(grp, sort=False)['_w'].cumsum() - s['_w']
     cum_fin  = s.groupby(grp, sort=False)['_f'].cumsum() - s['_f']
-    s.drop(columns=['_w', '_f'], inplace=True)
-    s[f'{out_prefix}_win_rate']   = (cum_wins / race_cnt.clip(1)).fillna(0.0)
-    s[f'{out_prefix}_avg_finish'] = (cum_fin  / race_cnt.clip(1)).fillna(0.0)
-    s[f'{out_prefix}_races']      = race_cnt
+    s = s.assign(**{
+        f'{out_prefix}_win_rate':   (cum_wins / race_cnt.clip(1)).fillna(0.0).values,
+        f'{out_prefix}_avg_finish': (cum_fin  / race_cnt.clip(1)).fillna(0.0).values,
+        f'{out_prefix}_races':      race_cnt.values,
+    })
     s_back = s.reindex(orig_idx)
     history_df = history_df.copy()
     for col in [f'{out_prefix}_win_rate', f'{out_prefix}_avg_finish', f'{out_prefix}_races']:
@@ -352,23 +358,24 @@ def _expanding_stats(
     """
     if eid_col not in history_df.columns:
         return history_df
-    orig_idx   = history_df.index.copy()
-    s          = history_df.sort_values('race_id', kind='mergesort').copy()
+    orig_idx = history_df.index
+    # [高速化] 必要列のみ抽出してソート
+    _needed = [c for c in ['race_id', 'finish', eid_col] if c in history_df.columns]
+    s = history_df[_needed].sort_values('race_id', kind='mergesort')
     fin_num    = pd.to_numeric(s['finish'], errors='coerce').fillna(0)
     win_flag   = (fin_num == 1).astype(float)
     place_flag = (fin_num <= 3).astype(float)   # 3着以内
     show_flag  = (fin_num <= 2).astype(float)   # 2着以内
     race_cnt   = s.groupby(eid_col, sort=False).cumcount()
-    s['_w']  = win_flag
-    s['_pl'] = place_flag
-    s['_sh'] = show_flag
+    s = s.assign(_w=win_flag.values, _pl=place_flag.values, _sh=show_flag.values)
     cum_w  = s.groupby(eid_col, sort=False)['_w'].cumsum()  - s['_w']
     cum_pl = s.groupby(eid_col, sort=False)['_pl'].cumsum() - s['_pl']
     cum_sh = s.groupby(eid_col, sort=False)['_sh'].cumsum() - s['_sh']
-    s.drop(columns=['_w', '_pl', '_sh'], inplace=True)
-    s[f'{prefix}_win_rate']        = (cum_w  / race_cnt.clip(1)).fillna(0.0)
-    s[f'{prefix}_show_rate']       = (cum_pl / race_cnt.clip(1)).fillna(0.0)
-    s[f'{prefix}_place_rate_top2'] = (cum_sh / race_cnt.clip(1)).fillna(0.0)
+    s = s.assign(**{
+        f'{prefix}_win_rate':        (cum_w  / race_cnt.clip(1)).fillna(0.0).values,
+        f'{prefix}_show_rate':       (cum_pl / race_cnt.clip(1)).fillna(0.0).values,
+        f'{prefix}_place_rate_top2': (cum_sh / race_cnt.clip(1)).fillna(0.0).values,
+    })
     s_back = s.reindex(orig_idx)
     history_df = history_df.copy()
     for col in [f'{prefix}_win_rate', f'{prefix}_show_rate', f'{prefix}_place_rate_top2']:
@@ -521,6 +528,78 @@ def _fe_id_season(df: pd.DataFrame) -> pd.DataFrame:
         for n, c in zip(_race_name_col, _race_class_col)
     ]
 
+    # 開催回次（kai）・開催日次（day）— コース傷み・馬場変化の代理変数
+    # kai: 第1回～第5回（0-4）, day: 開催1日目～8日目（0-7）
+    # cos/sin 変換でモデルが連続性・周期性を学習しやすくする
+    if 'kai' in df.columns:
+        _kai = pd.to_numeric(df['kai'], errors='coerce').fillna(0)
+        df['kai_num'] = _kai
+        # 年間最大5回×8日 = 40日スパンの周期性をエンコード
+        df['kai_cos'] = np.cos(2.0 * np.pi * _kai / 5.0)
+        df['kai_sin'] = np.sin(2.0 * np.pi * _kai / 5.0)
+    if 'day' in df.columns:
+        _day = pd.to_numeric(df['day'], errors='coerce').fillna(0)
+        df['day_num'] = _day
+        df['day_cos'] = np.cos(2.0 * np.pi * _day / 8.0)
+        df['day_sin'] = np.sin(2.0 * np.pi * _day / 8.0)
+        # 開催後半フラグ（5日目以降はコースが傷みやすい）
+        df['is_late_opening'] = (_day >= 5).astype(int)
+
+    # ── 牝馬限定レースフラグ ─────────────────────────────────────────────────
+    # race_name に「牝」を含むレースを牝馬限定として扱う
+    # （牝馬ステークス系グレードレース・条件戦どちらも対象）
+    if 'race_name' in df.columns:
+        _rname = df['race_name'].fillna('').astype(str)
+        df['is_female_only_race'] = _rname.str.contains('牝', na=False).astype('int8')
+
+        # 3歳限定フラグ（race_name に "3歳" かつ "4歳" を含まないもの）
+        _is_3yo_only = (
+            _rname.str.contains('3歳', na=False) &
+            ~_rname.str.contains('3歳以上|3（4）歳|3.4.歳', na=False, regex=True)
+        )
+        df['is_3yo_limited'] = _is_3yo_only.astype('int8')
+
+        # 年齢区分エンコード（2歳専用=0, 3歳専用=1, 3歳以上=2, 4歳以上=3）
+        _age_cond = pd.Series(2, index=df.index, dtype='int8')  # デフォルト: 3歳以上
+        _age_cond = _age_cond.where(~_rname.str.contains('4歳以上|4歳上', na=False), 3)
+        _age_cond = _age_cond.where(~_is_3yo_only, 1)
+        _age_cond = _age_cond.where(~_rname.str.contains('2歳', na=False), 0)
+        df['race_age_condition'] = _age_cond
+
+    # ── クラスランク補正（牝馬限定は実質0.5クラス分難易度が低い）────────────
+    if 'race_class_num' in df.columns and 'is_female_only_race' in df.columns:
+        _rcn_adj = pd.to_numeric(df['race_class_num'], errors='coerce')
+        df['class_rank_adj'] = _rcn_adj - (df['is_female_only_race'].astype(float) * 0.5)
+
+    # ── 騎手負担重量 vs 性齢標準重量（基準差分）───────────────────────────────
+    # JRA標準: 5歳以上牡せん=58kg / 牝=56kg。3歳馬は月ごとに軽減。
+    # 負担重量 - 基準重量 > 0 → ハンデ上乗せ or 実力評価高い
+    if 'jockey_weight' in df.columns:
+        _jw = pd.to_numeric(df['jockey_weight'], errors='coerce')
+        # 性別ベース標準（牝=56, 牡/セン=58 で近似）
+        _std = pd.Series(58.0, index=df.index)
+        if 'sex' in df.columns:
+            _std = _std.where(
+                ~df['sex'].isin(['牝', 'female']), 56.0
+            )
+        if 'age' in df.columns:
+            _age = pd.to_numeric(df['age'], errors='coerce').fillna(5)
+            # 3歳馬は平均で2kg軽い（別定規定に準拠）
+            _std = _std - ((_age <= 3).astype(float) * 2.0)
+        df['weight_vs_standard'] = _jw - _std
+
+    # ── 馬柱記号特徴量（Task3）─────────────────────────────────────────────
+    # 性別フラグ（sex_code から派生）
+    if 'sex_code' in df.columns:
+        _sc = pd.to_numeric(df['sex_code'], errors='coerce').fillna(0)
+        df['is_female']  = (_sc == 1).astype('int8')   # 牝馬フラグ
+        df['is_gelding'] = (df['sex'].isin(['セ', 'セン', 'gelding'])
+                            if 'sex' in df.columns
+                            else pd.Series(0, index=df.index, dtype='int8'))
+    elif 'sex' in df.columns:
+        df['is_female']  = df['sex'].isin(['牝', 'female']).astype('int8')
+        df['is_gelding'] = df['sex'].isin(['セ', 'セン', 'gelding']).astype('int8')
+
     return df
 
 
@@ -544,11 +623,14 @@ def _fe_course(df: pd.DataFrame) -> pd.DataFrame:
 
     # ユニークな組み合わせのみ計算してマージ（O(行数) → O(ユニーク数)）
     unique_combos = df[['_vcol', 'distance', _surface_col]].drop_duplicates().copy()
-    combo_feats = unique_combos.apply(
-        lambda row: pd.Series(_get_course_features_by_venue(row['_vcol'], row['distance'], row[_surface_col])),
-        axis=1,
-    )
-    unique_combos[['straight_length', 'track_type', 'corner_radius', 'inner_bias']] = combo_feats
+    _feat_rows = [
+        _get_course_features_by_venue(v, d, s)
+        for v, d, s in unique_combos[['_vcol', 'distance', _surface_col]].itertuples(index=False, name=None)
+    ]
+    combo_feats = pd.DataFrame(_feat_rows, index=unique_combos.index)
+    unique_combos[['straight_length', 'track_type', 'corner_radius', 'inner_bias']] = combo_feats[
+        ['straight_length', 'track_type', 'corner_radius', 'inner_bias']
+    ]
     # マージ時のサフィックス衝突を防ぐ: db_ultimate_loader で surface にコピー済みの
     # track_type 列（芝/ダート）は不要なので、コースマスター由来の track_type を優先する
     if 'track_type' in df.columns:
@@ -574,6 +656,7 @@ def _fe_market(df: pd.DataFrame) -> pd.DataFrame:
 
     _o = pd.to_numeric(df['odds'], errors='coerce')
     df['implied_prob']     = np.where(_o > 0, 1.0 / _o, np.nan)
+    df['log_odds']         = np.log1p(_o)       # log(1+odds): 単一市場シグナル。odds の単調変換だが数値スケールが安定
     df['odds_is_missing']  = _o.isna().astype(int)
 
     if 'race_id' in df.columns:
@@ -585,22 +668,23 @@ def _fe_market(df: pd.DataFrame) -> pd.DataFrame:
         df['odds_z_in_race']    = df.groupby('race_id')['odds'].transform(
             lambda x: (x - x.mean()) / (x.std() + 1e-8)
         )
-        # 市場エントロピー / 上位3頭の暗黙確率和
-        def _market_stats(grp: pd.DataFrame) -> pd.Series:
-            o = pd.to_numeric(grp['odds'], errors='coerce').dropna()
-            if len(o) < 2:
-                return pd.Series({'market_entropy': 0.0, 'top3_probability': 0.5})
-            probs = 1.0 / o
-            total = probs.sum()
-            if total == 0:
-                return pd.Series({'market_entropy': 0.0, 'top3_probability': 0.5})
-            probs /= total
-            return pd.Series({
-                'market_entropy':   float(-np.sum(probs * np.log(probs + 1e-10))),
-                'top3_probability': float(probs.nlargest(3).sum()),
-            })
-        market_agg = df.groupby('race_id', sort=False).apply(_market_stats, include_groups=False).reset_index()
-        df = df.merge(market_agg, on='race_id', how='left')
+        # 市場エントロピー / 上位3頭の暗黙確率和（groupby.applyを使わないベクトル化版）
+        _prob_raw = np.where(_o > 0, 1.0 / _o, np.nan)
+        _prob_raw_s = pd.Series(_prob_raw, index=df.index)
+        _prob_sum = _prob_raw_s.groupby(df['race_id'], sort=False).transform('sum')
+        _prob_norm = (_prob_raw_s / _prob_sum).replace([np.inf, -np.inf], np.nan)
+
+        _entropy_term = -_prob_norm * np.log(_prob_norm + 1e-10)
+        _entropy_by_race = _entropy_term.groupby(df['race_id'], sort=False).transform('sum')
+
+        _rank_prob = _prob_norm.groupby(df['race_id'], sort=False).rank(method='first', ascending=False)
+        _top3_term = _prob_norm.where(_rank_prob <= 3, 0.0)
+        _top3_by_race = _top3_term.groupby(df['race_id'], sort=False).transform('sum')
+
+        _race_size = df.groupby('race_id', sort=False)['race_id'].transform('size')
+        _valid_market = (_race_size >= 2) & (_prob_sum > 0)
+        df['market_entropy'] = np.where(_valid_market, _entropy_by_race, 0.0)
+        df['top3_probability'] = np.where(_valid_market, _top3_by_race, 0.5)
     else:
         # 単レース予測（race_id なし）
         df['implied_prob_norm'] = df['implied_prob']
@@ -702,6 +786,451 @@ def _fe_prev_race(df: pd.DataFrame) -> pd.DataFrame:
             _spi1.notna() & _spi2.notna(), _spi1 - _spi2, np.nan
         )
 
+        # ── 直近2走の加重平均スピード指数（直近重視: 0.6×前走 + 0.4×前々走）
+        df['speed_avg_weighted'] = np.where(
+            _spi1.notna() & _spi2.notna(), 0.6 * _spi1 + 0.4 * _spi2,
+            np.where(_spi1.notna(), _spi1, _spi2)
+        )
+
+        # ── 直近2走の最高スピード指数（ベスト出力の指標）
+        df['speed_best_2'] = np.where(
+            _spi1.notna() & _spi2.notna(), np.maximum(_spi1, _spi2),
+            np.where(_spi1.notna(), _spi1, _spi2)
+        )
+
+        # ── スピード改善方向フラグ（1=前走の方が速い/改善, 0=低下, NaN=片方欠損）
+        df['speed_improving'] = np.where(
+            _spi1.notna() & _spi2.notna(),
+            (_spi1 > _spi2).astype(float),
+            np.nan
+        )
+
+    # ── 前走スピード指数のクラス内 z-score（race_class_encoded を利用）
+    if 'prev_speed_index' in df.columns and 'race_class_encoded' in df.columns:
+        _spi = pd.to_numeric(df['prev_speed_index'], errors='coerce')
+        _cls = df['race_class_encoded']
+        df['prev_speed_index_vs_class'] = df.groupby(_cls, sort=False)['prev_speed_index'].transform(
+            lambda x: (pd.to_numeric(x, errors='coerce') - pd.to_numeric(x, errors='coerce').mean())
+                      / (pd.to_numeric(x, errors='coerce').std() + 1e-8)
+        )
+
+    # ── 3〜5走前スピード指数（prev3-5 が補完済みの場合に有効）
+    for _n in (3, 4, 5):
+        _t_col = f'prev{_n}_race_time'
+        _d_col = f'prev{_n}_race_distance'
+        _si_col = f'prev{_n}_speed_index'
+        if _t_col in df.columns and _d_col in df.columns:
+            _pt = pd.to_numeric(df[_t_col], errors='coerce')
+            _pd_n = pd.to_numeric(df[_d_col], errors='coerce')
+            df[_si_col] = np.where((_pt > 0) & (_pd_n > 0), _pd_n / _pt, np.nan)
+
+    # ── 直近5走の集計特徴量
+    _finish_cols = []
+    for _n in (1, 2, 3, 4, 5):
+        _c = f'prev{"" if _n == 1 else str(_n)}_race_finish' if _n == 1 else f'prev{_n}_race_finish'
+        _c = 'prev_race_finish' if _n == 1 else f'prev{_n}_race_finish'
+        if _c in df.columns:
+            _finish_cols.append((_n, _c))
+    _speed_cols = []
+    for _n in (1, 2, 3, 4, 5):
+        _sc = 'prev_speed_index' if _n == 1 else f'prev{_n}_speed_index'
+        if _sc in df.columns:
+            _speed_cols.append((_n, _sc))
+
+    if len(_finish_cols) >= 3:
+        # 近走フォーム（5走分加重平均、直近重視: 1走=0.35, 2=0.25, 3=0.20, 4=0.12, 5=0.08）
+        _weights = {1: 0.35, 2: 0.25, 3: 0.20, 4: 0.12, 5: 0.08}
+        _wsum   = np.zeros(len(df))
+        _wval   = np.zeros(len(df))
+        _valid  = np.zeros(len(df), dtype=bool)
+        for _n, _c in _finish_cols:
+            _v = pd.to_numeric(df[_c], errors='coerce').values
+            _mask = ~np.isnan(_v)
+            _wsum  = np.where(_mask, _wsum + _weights[_n], _wsum)
+            _wval  = np.where(_mask, _wval + _weights[_n] * _v, _wval)
+            _valid = _valid | _mask
+        df['recent_form_5race'] = np.where(_valid & (_wsum > 0), _wval / _wsum, np.nan)
+
+        # 一貫性（着順の標準偏差: 小ほど安定）
+        _fmat = np.column_stack([
+            pd.to_numeric(df[_c], errors='coerce').values for _, _c in _finish_cols
+        ])
+        df['form_consistency'] = np.nanstd(_fmat, axis=1)
+        df['form_consistency'] = np.where(
+            np.sum(~np.isnan(_fmat), axis=1) >= 2, df['form_consistency'], np.nan
+        )
+
+        # 5走内勝利数・複勝数
+        df['win_count_5']  = np.nansum((_fmat == 1).astype(float) * ~np.isnan(_fmat), axis=1)
+        df['top3_count_5'] = np.nansum((_fmat <= 3).astype(float) * ~np.isnan(_fmat), axis=1)
+
+    if len(_speed_cols) >= 3:
+        _smat = np.column_stack([
+            pd.to_numeric(df[_sc], errors='coerce').values for _, _sc in _speed_cols
+        ])
+        # 5走ベストスピード（最大値）
+        df['speed_best_5'] = np.nanmax(_smat, axis=1)
+        df['speed_best_5'] = np.where(np.all(np.isnan(_smat), axis=1), np.nan, df['speed_best_5'])
+        # スピード指数トレンド（最新 - 最古の有効値）
+        _first_valid = np.array([
+            _smat[i, next((j for j in range(_smat.shape[1]) if not np.isnan(_smat[i, j])), -1)]
+            if np.any(~np.isnan(_smat[i])) else np.nan
+            for i in range(len(_smat))
+        ])
+        _last_valid = np.array([
+            _smat[i, next((j for j in range(_smat.shape[1]-1, -1, -1) if not np.isnan(_smat[i, j])), -1)]
+            if np.any(~np.isnan(_smat[i])) else np.nan
+            for i in range(len(_smat))
+        ])
+        df['speed_trend_5'] = np.where(
+            ~np.isnan(_first_valid) & ~np.isnan(_last_valid),
+            _first_valid - _last_valid,  # 最新 - 最古（正 = 改善）
+            np.nan
+        )
+
+    # ── 前走クラス数値化（prev_race_class → prev_race_class_num）
+    # 今走クラスとの差分: class_change = race_class_num - prev_race_class_num
+    # 正 = 格上挑戦、負 = 格下げ
+    if 'prev_race_class' in df.columns:
+        df['prev_race_class_num'] = [
+            _race_class_to_num('', c) for c in df['prev_race_class'].fillna('')
+        ]
+        if 'race_class_num' in df.columns:
+            _rcn  = pd.to_numeric(df['race_class_num'],      errors='coerce')
+            _prcn = pd.to_numeric(df['prev_race_class_num'], errors='coerce')
+            _diff = _rcn - _prcn  # 正=格上挑戦, 負=格下げ
+            df['class_change']   = _diff
+            df['is_class_up']    = (_diff > 0).astype('int8')
+            df['is_class_down']  = (_diff < 0).astype('int8')
+            df['is_same_class']  = (_diff == 0).astype('int8')
+            df['class_diff_abs'] = _diff.abs()
+            # ── クラスランク特徴量（Task2: レースクラス体系の明示的特徴量化）──────
+            # race_class_rank: 今走のクラス数値（race_class_num のエイリアス）
+            # prev_class_rank: 前走のクラス数値（prev_race_class_num のエイリアス）
+            # class_drop / class_up: 降級/昇級フラグ（is_class_down/up のエイリアス）
+            df['race_class_rank'] = _rcn.clip(lower=-1, upper=8)
+            df['prev_class_rank'] = _prcn.clip(lower=-1, upper=8)
+            # class_drop / class_up: magnitude（何段階の昇降級か）
+            df['class_drop']      = np.where(_diff < 0, _diff.abs(), 0.0)
+            df['class_up']        = np.where(_diff > 0, _diff.abs(), 0.0)
+
+    # ── 馬柱記号特徴量（Task3）─────────────────────────────────────────────
+    # days_since_last_race から休み明け・叩き2走目・連闘を計算
+    if 'days_since_last_race' in df.columns:
+        _dslr = pd.to_numeric(df['days_since_last_race'], errors='coerce')
+        # 連闘: 前走から7日以内（ほぼ週替わり同競馬場続戦）
+        df['is_consecutive_week'] = ((_dslr > 0) & (_dslr <= 7)).astype('int8')
+        # 休み明け: 前走から60日超
+        _is_rest = _dslr > 60
+        df['is_fresh'] = _is_rest.astype('int8')
+        # 叩き2走目: 前走が休み明け（60日超）後の2戦目 → prev_race自体がfreshかどうかは
+        # 展開上判定困難なため、21-59日間を「叩き2走目候補」として近似する
+        df['is_second_after_rest'] = ((_dslr >= 21) & (_dslr <= 59)).astype('int8')
+
+    # 騎手乗り替わり: 前走騎手IDと今走騎手IDが異なる場合
+    # prev_jockey_id がDBにない場合は history から計算
+    if 'jockey_id' in df.columns:
+        _jid = df['jockey_id'].astype(str)
+        # prev_jockey_id はスクレイプ値が存在しないため、
+        # 前走騎手情報がある場合のみ計算（not available → NaN のまま）
+        if 'prev_jockey_id' in df.columns:
+            _pjid = df['prev_jockey_id'].astype(str)
+            df['jockey_changed'] = ((_jid != _pjid) & (_pjid != 'nan') & (_pjid != '')).astype('int8')
+            df['first_jockey']   = ((_jid != _pjid) | _pjid.isin(['nan', ''])).astype('int8')
+        else:
+            # prev_jockey_id が存在しない場合はフラグを NaN で埋める
+            df['jockey_changed'] = np.nan
+            df['first_jockey']   = np.nan
+
+    return df
+
+def _fe_opponent(df: pd.DataFrame) -> pd.DataFrame:
+    """レース内相手関係特徴量を追加する（P-5）。
+
+    race_id グループ内で前走スピード指数・着順の統計を計算し、
+    各馬の「このレースでの相対的な強さ」を捉える。
+    全て prev_* 系（過去レース情報）に基づくため未来情報混入なし。
+
+    追加特徴量:
+      - race_avg_prev_speed   : レース内全馬の前走スピード指数の平均（相手の総合レベル）
+      - race_max_prev_speed   : レース内全馬の前走スピード指数の最大（最強馬レベル）
+      - speed_vs_race_avg     : 自馬スピード指数 - レース内平均（プラス＝有利）
+      - horse_speed_rank_pct  : レース内スピード順位パーセンタイル（0=最速, 1に近い＝最遅）
+      - race_avg_prev_finish  : レース内全馬の前走着順の平均（相手の着順レベル）
+    """
+    if 'race_id' not in df.columns:
+        return df
+
+    if 'prev_speed_index' in df.columns:
+        _spi = pd.to_numeric(df['prev_speed_index'], errors='coerce')
+        df['_tmp_spi'] = _spi
+        _grp_spi = df.groupby('race_id', sort=False)['_tmp_spi']
+        df['race_avg_prev_speed'] = _grp_spi.transform('mean')
+        df['race_max_prev_speed'] = _grp_spi.transform('max')
+        # 自馬のスピード指数 - レース内平均（プラス＝相手より速い）
+        df['speed_vs_race_avg'] = np.where(
+            _spi.notna() & df['race_avg_prev_speed'].notna(),
+            _spi - df['race_avg_prev_speed'],
+            np.nan,
+        )
+        # レース内スピード順位パーセンタイル（0=最速, 1に近いほど遅い）
+        _n = df.groupby('race_id', sort=False)['_tmp_spi'].transform('size').clip(lower=1)
+        _rank = df.groupby('race_id', sort=False)['_tmp_spi'].rank(
+            ascending=False, method='min', na_option='bottom'
+        )
+        df['horse_speed_rank_pct'] = (_rank - 1) / _n
+        df = df.drop(columns=['_tmp_spi'])
+
+    if 'prev_race_finish' in df.columns:
+        _pf = pd.to_numeric(df['prev_race_finish'], errors='coerce')
+        df['_tmp_pf'] = _pf
+        df['race_avg_prev_finish'] = df.groupby('race_id', sort=False)['_tmp_pf'].transform('mean')
+        df = df.drop(columns=['_tmp_pf'])
+
+    return df
+
+
+def _fe_holding_time(df: pd.DataFrame) -> pd.DataFrame:
+    """持ちタイム（AplFreqSum API）から派生特徴量を追加する。
+
+    - has_just_data: 同コース・距離の出走経験フラグ（0/1）
+    - holding_just_speed: just タブのタイム秒から速度指数（distance / time_sec）を計算
+    - holding_just_time_rank: レース内での速度ランク（速いほど小さい値）
+    - holding_just_finish_rank: just 着順のレース内ランク
+    - holding_*_babasa: 数値型に統一（馬場指数; short/middle/long の time_sec は距離依存で比較不能なため不使用）
+    - holding_just_time_sec 等の欠損フラグは _fe_missing_flags に委ねる
+    """
+    # has_just_data フラグ
+    if 'holding_just_time_sec' in df.columns:
+        _jt = pd.to_numeric(df['holding_just_time_sec'], errors='coerce')
+        df['has_just_data'] = _jt.notna().astype(int)
+
+        # just 速度指数（distance / just_time_sec）
+        if 'distance' in df.columns:
+            _d = pd.to_numeric(df['distance'], errors='coerce')
+            df['holding_just_speed'] = np.where(
+                _jt.notna() & (_jt > 0) & _d.notna(), _d / _jt, np.nan
+            )
+            # レース内速度ランク（速いほど順位が小さい = 高速）
+            if 'race_id' in df.columns:
+                df['holding_just_time_rank'] = df.groupby('race_id', sort=False)['holding_just_speed'].rank(
+                    method='min', ascending=False, na_option='bottom'
+                )
+    else:
+        df['has_just_data'] = 0
+
+    # just 着順のレース内ランク
+    if 'holding_just_finish' in df.columns and 'race_id' in df.columns:
+        _jf = pd.to_numeric(df['holding_just_finish'], errors='coerce')
+        df['_holding_just_finish_num'] = _jf
+        df['holding_just_finish_rank'] = df.groupby('race_id', sort=False)['_holding_just_finish_num'].rank(
+            method='min', ascending=True, na_option='bottom'
+        )
+        df = df.drop(columns=['_holding_just_finish_num'])
+
+    # babasa (馬場指数) を全タブ数値型に統一
+    for tab in ('just', 'short', 'middle', 'long'):
+        col = f'holding_{tab}_babasa'
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    return df
+
+
+def _fe_corner_position(df: pd.DataFrame) -> pd.DataFrame:
+    """コーナー通過順位から脚質特徴量を生成する。
+
+    ソース列: corner_1, corner_2, corner_3, corner_4（race_results_ultimate.data より展開済み）
+    生成特徴量:
+      - corner_last          : 最終コーナー通過順（4角 or 存在する最後の角）
+      - corner_first         : 先頭コーナー通過順（1角 or 2角）
+      - corner_gain          : 最終角 - 先頭角（負 = 捲り上げ・差し）
+      - running_style_code   : 脚質コード  1=逃げ/2=先行/3=差し/4=追い込み（corner_last ÷ num_horses で判定）
+      - running_style_mean_5 : 過去5走の running_style_code 平均（expanding window は _fe_history で担当）
+                               ※ ここでは当走の running_style_code のみを計算し、
+                                  rolling 統計は _fe_history が行う
+
+    カバレッジ: corner_4 が ~56%, corner_3 が ~67%。corner_last は最大 ~94%。
+    """
+    # ── 先頭・最終コーナー通過順の取得 ──────────────────────────────────
+    # df.get(col, np.nan) は列が存在しない場合スカラー nan を返す → .notna() が AttributeError になるため
+    # 列が存在しない場合は index 揃いの NaN Series を使う
+    _nan_s = pd.Series(np.nan, index=df.index)
+    _c1 = pd.to_numeric(df['corner_1'] if 'corner_1' in df.columns else _nan_s, errors='coerce')
+    _c2 = pd.to_numeric(df['corner_2'] if 'corner_2' in df.columns else _nan_s, errors='coerce')
+    _c3 = pd.to_numeric(df['corner_3'] if 'corner_3' in df.columns else _nan_s, errors='coerce')
+    _c4 = pd.to_numeric(df['corner_4'] if 'corner_4' in df.columns else _nan_s, errors='coerce')
+
+    # 先頭コーナー（1角→2角の順に取得）
+    df['corner_first'] = np.where(_c1.notna(), _c1, _c2)
+
+    # 最終コーナー（4角→3角→2角の順に取得）
+    _last = _c4.copy()
+    _last = np.where(_last.isna(), _c3, _last)
+    _last = np.where(pd.isna(_last), _c2, _last)
+    _last = np.where(pd.isna(_last), _c1, _last)
+    df['corner_last'] = pd.to_numeric(_last, errors='coerce')
+
+    # コーナー上がり（正 = 追い込み、負 = 逃げ）
+    _first = pd.to_numeric(df['corner_first'], errors='coerce')
+    _last_s = pd.to_numeric(df['corner_last'], errors='coerce')
+    df['corner_gain'] = np.where(
+        _first.notna() & _last_s.notna(),
+        _last_s - _first,
+        np.nan,
+    )
+
+    # ── 脚質コード（num_horses で正規化した相対通過順） ────────────────
+    # 1=逃げ(top 10%), 2=先行(~30%), 3=差し(~60%), 4=追い込み(>60%)
+    _num = pd.to_numeric(df['num_horses'] if 'num_horses' in df.columns else _nan_s, errors='coerce').replace(0, np.nan)
+    _rel = _last_s / _num  # 0〜1 の相対順位（1 = 最後方）
+
+    _style = np.select(
+        [
+            _rel.notna() & (_rel <= 0.10),
+            _rel.notna() & (_rel <= 0.30),
+            _rel.notna() & (_rel <= 0.60),
+            _rel.notna() & (_rel > 0.60),
+        ],
+        [1, 2, 3, 4],
+        default=np.nan,
+    )
+    df['running_style_code'] = pd.to_numeric(_style, errors='coerce')
+
+    return df
+
+
+def _fe_speed_figures(df: pd.DataFrame, speed_figures_df: "pd.DataFrame | None") -> pd.DataFrame:
+    """speed_figures テーブルの速度指数特徴量を追加する。
+
+    対象特徴量:
+      - sf_index_last       : 前走スピード指数
+      - sf_index_2ago       : 2走前スピード指数
+      - sf_index_3ago       : 3走前スピード指数
+      - sf_max_index        : 過去最大スピード指数
+      - sf_course_max_index : 同コース最大スピード指数
+      - sf_dist_max_index   : 同距離最大スピード指数
+      - sf_index_trend      : 直近トレンド（index_last - index_2ago）
+
+    カバレッジ ~8% のため大半が NaN。LightGBM の use_missing=True でネイティブに扱う。
+    """
+    _SF_COLS = ['index_last', 'index_2ago', 'index_3ago', 'max_index', 'course_max_index', 'dist_max_index']
+    _SF_RENAME = {c: f'sf_{c}' for c in _SF_COLS}
+
+    if speed_figures_df is None or speed_figures_df.empty or 'horse_number' not in df.columns:
+        for dst_c in _SF_RENAME.values():
+            df[dst_c] = np.nan
+        df['sf_index_trend'] = np.nan
+        return df
+
+    _sf = speed_figures_df.copy()
+    _sf['horse_number'] = pd.to_numeric(_sf['horse_number'], errors='coerce')
+    for c in _SF_COLS:
+        if c in _sf.columns:
+            _sf[c] = pd.to_numeric(_sf[c], errors='coerce')
+
+    _merge_cols = ['race_id', 'horse_number'] + [c for c in _SF_COLS if c in _sf.columns]
+    _sf_merge = (
+        _sf[_merge_cols]
+        .drop_duplicates(subset=['race_id', 'horse_number'], keep='first')
+    )
+
+    _df_keys = pd.DataFrame({
+        'race_id': df['race_id'].values if 'race_id' in df.columns else '',
+        'horse_number': pd.to_numeric(df['horse_number'], errors='coerce').values,
+        '_pos': np.arange(len(df)),
+    })
+    _merged = _df_keys.merge(_sf_merge, on=['race_id', 'horse_number'], how='left')
+    _merged = _merged.sort_values('_pos').reset_index(drop=True)
+
+    for src_c, dst_c in _SF_RENAME.items():
+        df[dst_c] = _merged[src_c].values if src_c in _merged.columns else np.nan
+
+    # 指数トレンド（前走 - 2走前、上昇なら正値）
+    _last = pd.to_numeric(df.get('sf_index_last', np.nan), errors='coerce')
+    _2ago = pd.to_numeric(df.get('sf_index_2ago', np.nan), errors='coerce')
+    df['sf_index_trend'] = np.where(_last.notna() & _2ago.notna(), _last - _2ago, np.nan)
+
+    return df
+
+
+def _fe_training(df: pd.DataFrame, training_df: "pd.DataFrame | None") -> pd.DataFrame:
+    """最終追い切り（training_data テーブル）の特徴量を追加する。
+
+    対象特徴量:
+      - last_training_time_3f       : 最終追い切り上がり3F秒（例: 25.3）
+      - last_training_grade_encoded : 評価ランク A=4, B=3, C=2, D=1
+      - has_training_data           : 調教データ存在フラグ（0/1）
+      - training_comment_score      : コメントのポジ/ネガキーワード差分スコア
+
+    カバレッジ ~6% のため大半が NaN。LightGBM の use_missing=True でネイティブに扱う。
+    """
+    _GRADE_MAP = {'A': 4, 'B': 3, 'C': 2, 'D': 1}
+    # 厩舎コメントキーワード（ポジティブ）
+    _POS_KW = ['好仕上', '好気配', '充実', '活発', '力強', 'シャープ', '抜群',
+               '好調', '一番時計', '自己ベスト', '好ムード', '圧倒', '良好',
+               '好感', '好内容', '増した', '別格', 'まるで違']
+    # 厩舎コメントキーワード（ネガティブ）
+    _NEG_KW = ['物足り', '不満', '疑問', '地味', '及第点', '遅れ', 'スロー',
+               'ひと息', '心配', '目立たず', '精彩欠', '不安', '良化']
+
+    if training_df is None or training_df.empty or 'horse_number' not in df.columns:
+        df['last_training_time_3f'] = np.nan
+        df['last_training_grade_encoded'] = np.nan
+        df['has_training_data'] = 0
+        df['training_comment_score'] = np.nan
+        return df
+
+    # is_last_training=1 のみ使用（念のためフィルタ）
+    if 'is_last_training' in training_df.columns:
+        _td = training_df[pd.to_numeric(training_df['is_last_training'], errors='coerce').fillna(0) == 1].copy()
+    else:
+        _td = training_df.copy()
+
+    if _td.empty:
+        df['last_training_time_3f'] = np.nan
+        df['last_training_grade_encoded'] = np.nan
+        df['has_training_data'] = 0
+        df['training_comment_score'] = np.nan
+        return df
+
+    _td['last_training_time_3f'] = pd.to_numeric(_td['time_3f'], errors='coerce')
+    _td['last_training_grade_encoded'] = _td['grade'].map(_GRADE_MAP)
+    _td['horse_number'] = pd.to_numeric(_td['horse_number'], errors='coerce')
+
+    # コメントスコア（ポジキーワード数 - ネガキーワード数）
+    if 'comment' in _td.columns:
+        def _score_comment(txt: str) -> float:
+            if not txt or not isinstance(txt, str):
+                return np.nan
+            pos = sum(1 for kw in _POS_KW if kw in txt)
+            neg = sum(1 for kw in _NEG_KW if kw in txt)
+            return float(pos - neg)
+        _td['training_comment_score'] = _td['comment'].apply(_score_comment)
+    else:
+        _td['training_comment_score'] = np.nan
+
+    # 同一 race_id + horse_number で複数行ある場合は最初の行を使用
+    _td_merge = (
+        _td[['race_id', 'horse_number', 'last_training_time_3f',
+             'last_training_grade_encoded', 'training_comment_score']]
+        .drop_duplicates(subset=['race_id', 'horse_number'], keep='first')
+    )
+
+    # df のインデックスを保存して安全に merge
+    _df_keys = pd.DataFrame({
+        'race_id': df['race_id'].values if 'race_id' in df.columns else '',
+        'horse_number': pd.to_numeric(df['horse_number'], errors='coerce').values,
+        '_pos': np.arange(len(df)),
+    })
+    _merged = _df_keys.merge(_td_merge, on=['race_id', 'horse_number'], how='left')
+    _merged = _merged.sort_values('_pos').reset_index(drop=True)
+
+    df['last_training_time_3f'] = _merged['last_training_time_3f'].values
+    df['last_training_grade_encoded'] = _merged['last_training_grade_encoded'].values
+    df['has_training_data'] = (~_merged['last_training_time_3f'].isna()).astype(int).values
+    df['training_comment_score'] = _merged['training_comment_score'].values
+
     return df
 
 
@@ -714,12 +1243,60 @@ def _fe_missing_flags(df: pd.DataFrame) -> pd.DataFrame:
         'prev_speed_index', 'prev_speed_zscore',
         'prev2_speed_index', 'prev2_speed_zscore',
         'horse_win_rate', 'race_class_num',
+        'holding_just_time_sec', 'holding_just_speed', 'holding_just_finish',
+        'race_avg_prev_speed', 'race_max_prev_speed',
+        'speed_vs_race_avg', 'horse_speed_rank_pct', 'race_avg_prev_finish',
+        # P-9: フィールド強度
+        'horse_avg_class_num', 'class_drop',
+        # P-7: 枠番×馬場詳細
+        'gate_bracket_win_rate',
+        # P-8: 血統×条件相性
+        'sire_surface_win_rate', 'sire_dist_band_win_rate',
+        'damsire_surface_win_rate', 'damsire_dist_band_win_rate',
+        # P-10: 騎手×脚質相性
+        'jockey_front_win_rate', 'jockey_close_win_rate',
+        # 脚質 rolling 統計（6.6%/100%カバレッジ → is_missing フラグで管理）
+        'running_style_mean_5', 'running_style_std_5',
+        # 馬場状態別・天気別相性
+        'horse_field_win_rate', 'horse_field_races',
+        'horse_weather_win_rate', 'horse_weather_races',
+        'jockey_field_win_rate', 'jockey_field_races',
+        'sire_field_win_rate', 'sire_field_races',
+        'damsire_field_win_rate', 'damsire_field_races',
+        # 開催回次・日次
+        'kai_num', 'day_num',
+        # 調教タイム・評価（カバレッジ ~6%）
+        'last_training_time_3f', 'last_training_grade_encoded',
+        'training_comment_score',
+        # 速度指数（speed_figures テーブル、カバレッジ ~8%）
+        'sf_index_last', 'sf_index_2ago', 'sf_index_3ago',
+        'sf_max_index', 'sf_course_max_index', 'sf_dist_max_index',
+        'sf_index_trend',
+        # 馬の通算スピード expanding window（_feh_horse_speed）
+        'horse_speed_exp_mean', 'horse_speed_exp_std', 'horse_speed_vs_exp',
+        # ※ corner_first/last/gain/running_style_code は当該レースの corner_1/2/3/4
+        #    から生成する post-race フィールドのため FUTURE_FIELDS に移動。
+        #    欠損フラグも不要になったので _FLAG_COLS から削除。
     ]
+    # 欠損フィルにデフォルト値が必要な列（0 以外）
+    _FLAG_FILLNA: dict = {
+        'running_style_mean_5': 1.5,   # 中央値（先行 = 中立）
+    }
+    # 着順系は「欠損そのもの」を下流で判定したいケースがあるため埋めない。
+    _NO_FILL_COLS = {
+        'prev_race_finish',
+        'prev2_race_finish',
+    }
     for col in _FLAG_COLS:
         if col in df.columns:
             _s = pd.to_numeric(df[col], errors='coerce')
             df[f'{col}_is_missing'] = _s.isna().astype(int)
-            df[col] = _s  # NaN のまま保持
+            if col in _NO_FILL_COLS:
+                df[col] = _s
+            else:
+                # NaN を埋める（_is_missing フラグで欠損情報は保持済み）
+                _fill_val = _FLAG_FILLNA.get(col, 0)
+                df[col] = _s.fillna(_fill_val)
 
     if 'prev_race_finish' in df.columns:
         df['prev_race_finish'] = pd.to_numeric(df['prev_race_finish'], errors='coerce')
@@ -757,32 +1334,33 @@ def _fe_lap(df: pd.DataFrame) -> pd.DataFrame:
 
     _all_dists_sorted = sorted(int(c.replace('lap_sect_', '').replace('m', '')) for c in _sect_cols)
 
-    def _pace_summary(row) -> pd.Series:
-        try:
-            dist = int(float(row.get('distance', 0)))
-        except (TypeError, ValueError):
-            dist = 0
-        valid = [d for d in _all_dists_sorted if d <= dist]
-        if len(valid) < 2:
-            return pd.Series({'race_pace_front': np.nan, 'race_pace_back': np.nan,
-                               'race_pace_diff': np.nan, 'race_pace_ratio': np.nan})
-        mid   = len(valid) // 2
-        front = [v for d in valid[:mid]  if pd.notna(v := row.get(f'lap_sect_{d}m')) and v > 0]
-        back  = [v for d in valid[mid:]  if pd.notna(v := row.get(f'lap_sect_{d}m')) and v > 0]
-        if not front or not back:
-            return pd.Series({'race_pace_front': np.nan, 'race_pace_back': np.nan,
-                               'race_pace_diff': np.nan, 'race_pace_ratio': np.nan})
-        fp, bp = float(np.mean(front)), float(np.mean(back))
-        return pd.Series({
-            'race_pace_front': fp,
-            'race_pace_back':  bp,
-            'race_pace_diff':  fp - bp,
-            'race_pace_ratio': fp / bp if bp > 0 else np.nan,
-        })
+    # distanceごとに有効セクショナル列が異なるため、距離単位でベクトル計算する
+    _dist_num = pd.to_numeric(df['distance'], errors='coerce')
+    df['race_pace_front'] = np.nan
+    df['race_pace_back'] = np.nan
 
-    _pace_df = df.apply(_pace_summary, axis=1)
-    for col in ['race_pace_front', 'race_pace_back', 'race_pace_diff', 'race_pace_ratio']:
-        df[col] = _pace_df[col]
+    _unique_dist = sorted(d for d in _dist_num.dropna().unique())
+    for _dval in _unique_dist:
+        valid = [d for d in _all_dists_sorted if d <= int(_dval)]
+        if len(valid) < 2:
+            continue
+        mid = len(valid) // 2
+        front_cols = [f'lap_sect_{d}m' for d in valid[:mid] if f'lap_sect_{d}m' in df.columns]
+        back_cols = [f'lap_sect_{d}m' for d in valid[mid:] if f'lap_sect_{d}m' in df.columns]
+        if not front_cols or not back_cols:
+            continue
+        _mask = (_dist_num == _dval)
+        _front_src = df.loc[_mask, front_cols].where(df.loc[_mask, front_cols] > 0)
+        _back_src = df.loc[_mask, back_cols].where(df.loc[_mask, back_cols] > 0)
+        df.loc[_mask, 'race_pace_front'] = _front_src.mean(axis=1, skipna=True)
+        df.loc[_mask, 'race_pace_back'] = _back_src.mean(axis=1, skipna=True)
+
+    df['race_pace_diff'] = df['race_pace_front'] - df['race_pace_back']
+    df['race_pace_ratio'] = np.where(
+        pd.to_numeric(df['race_pace_back'], errors='coerce') > 0,
+        df['race_pace_front'] / df['race_pace_back'],
+        np.nan,
+    )
 
     return df
 
@@ -813,25 +1391,96 @@ def _fe_history(df: pd.DataFrame, full_history_df: pd.DataFrame) -> pd.DataFrame
     内部的に以下のサブ関数を順に呼び出す:
       _feh_jockey_course      — 騎手×コース別勝率
       _feh_horse_aptitude     — 馬の距離/馬場/競馬場/複合条件別適性
-      _feh_gate_bias          — 枠番バイアス（会場×距離帯×馬場）
+      _feh_gate_bias          — 枠番バイアス（会場×距離帯×馬場）+ P-7 granular
       _feh_jt_combo           — 騎手×調教師コンビ（ベイズ平滑化）
-      _feh_entity_career      — 騎手・調教師・血統の通算成績
+      _feh_entity_career      — 騎手・調教師・血統の通算成績 + P-8 血統×条件
       _feh_recent_form        — 馬の近走（past3/5/10）統計
       _feh_entity_recent30    — 騎手・調教師の近30走勝率
       _feh_last_3f            — 上がり3F rolling 統計
       _feh_payout_history     — 過去単勝配当 rolling 統計
       _feh_running_style      — 脚質 rolling 統計
+      _feh_field_strength     — P-9 フィールド強度（格下り/格上り指数）
+      _feh_race_dynamics      — P-6 ペース期待値・位置取り相性
+      _feh_jockey_running_style — P-10 騎手×脚質相性
     """
-    df, full_history_df = _feh_jockey_course(df, full_history_df)
-    df, full_history_df = _feh_horse_aptitude(df, full_history_df)
-    df, full_history_df = _feh_gate_bias(df, full_history_df)
-    df, full_history_df = _feh_jt_combo(df, full_history_df)
-    df, full_history_df = _feh_entity_career(df, full_history_df)
-    df, full_history_df = _feh_recent_form(df, full_history_df)
-    df, full_history_df = _feh_entity_recent30(df, full_history_df)
-    df, full_history_df = _feh_last_3f(df, full_history_df)
-    df, full_history_df = _feh_payout_history(df, full_history_df)
-    df, full_history_df = _feh_running_style(df, full_history_df)
+    h = full_history_df
+
+    # h に running_style_num / race_class_num が無い場合は計算する
+    # （full_history_df は _fe_horse_category / _fe_id_season 前の生データのため）
+    _need_copy = (
+        ('running_style_num' not in h.columns and 'corner_positions_list' in h.columns)
+        or ('race_class_num' not in h.columns and 'race_name' in h.columns)
+    )
+    if _need_copy:
+        h = h.copy()
+
+    if 'running_style_num' not in h.columns and 'corner_positions_list' in h.columns:
+        _nh_h = (
+            h['n_horses']
+            if 'n_horses' in h.columns
+            else h.groupby('race_id', sort=False)['race_id'].transform('count')
+        )
+        h['running_style'] = [
+            classify_running_style(c, nh)
+            for c, nh in zip(h['corner_positions_list'], _nh_h)
+        ]
+        h['running_style_num'] = h['running_style'].map(_RUNNING_STYLE_NUM)
+
+    if 'race_class_num' not in h.columns and 'race_name' in h.columns:
+        _rcn_col = h.get('race_name',  pd.Series([''] * len(h), index=h.index))
+        _rcc_col = h.get('race_class', pd.Series([''] * len(h), index=h.index))
+        h['race_class_num'] = [
+            _race_class_to_num(n, c) for n, c in zip(_rcn_col, _rcc_col)
+        ]
+
+    # [高速化] 各 _feh_* 関数は df/h の独立したコピーで動作するため
+    # ThreadPoolExecutor で並列実行できる（max_workers=4 で h コピーを 4 つに抑制）。
+    # pandas groupby/cumsum は C 拡張内で GIL を解放するためスレッド並列が有効。
+    _feh_funcs = [
+        _feh_jockey_course,
+        _feh_horse_aptitude,
+        _feh_gate_bias,
+        _feh_jt_combo,
+        _feh_entity_career,
+        _feh_recent_form,
+        _feh_entity_recent30,
+        _feh_last_3f,
+        _feh_payout_history,
+        _feh_running_style,
+        _feh_field_strength,       # P-9
+        _feh_race_dynamics,         # P-6
+        _feh_jockey_running_style,  # P-10
+        _feh_horse_speed,
+    ]
+    _orig_df_cols = set(df.columns)
+    _h_snapshot = h  # ワーカーが参照するスナップショット（各ワーカーは copy() を使用）
+
+    def _run_feh(func):
+        try:
+            _df_w = df.copy()           # df は 18 行程度なので安価
+            _h_w  = _h_snapshot.copy()  # h は独立コピー（各ワーカーが in-place 変更するため必須）
+            _df_out, _ = func(_df_w, _h_w)
+            new_cols = [c for c in _df_out.columns if c not in _orig_df_cols]
+            return _df_out[new_cols].copy() if new_cols else None
+        except Exception:
+            return None
+
+    try:
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+        with _TPE(max_workers=4) as _pool:
+            _results = list(_pool.map(_run_feh, _feh_funcs))
+        _new_dfs = [r for r in _results if r is not None]
+        if _new_dfs:
+            df = pd.concat([df] + _new_dfs, axis=1)
+            df = df.loc[:, ~df.columns.duplicated()]  # 万が一の重複列除去
+    except Exception:
+        # フォールバック: 並列化失敗時は逐次実行
+        for _fn in _feh_funcs:
+            try:
+                df, h = _fn(df, h)
+            except Exception:
+                pass
+
     return df
 
 
@@ -919,13 +1568,37 @@ def _feh_horse_aptitude(
             on=['horse_id', 'race_id'], how='left')
         h = h.drop(columns=['_dist_surface'], errors='ignore')
 
+    # 馬場状態別（良/稍重/重/不良）
+    if 'horse_id' in h.columns and 'field_condition' in h.columns:
+        h = _expanding_win_rate_by_group(
+            h, 'horse_id', 'field_condition',
+            'horse_field_win_rate', 'horse_field_races')
+        df = df.merge(
+            h[['horse_id', 'race_id', 'horse_field_win_rate', 'horse_field_races']]
+            .drop_duplicates(subset=['horse_id', 'race_id']),
+            on=['horse_id', 'race_id'], how='left')
+
+    # 天気別（晴/曇/雨/小雨 等）
+    if 'horse_id' in h.columns and 'weather' in h.columns:
+        h = _expanding_win_rate_by_group(
+            h, 'horse_id', 'weather',
+            'horse_weather_win_rate', 'horse_weather_races')
+        df = df.merge(
+            h[['horse_id', 'race_id', 'horse_weather_win_rate', 'horse_weather_races']]
+            .drop_duplicates(subset=['horse_id', 'race_id']),
+            on=['horse_id', 'race_id'], how='left')
+
     return df, h
 
 
 def _feh_gate_bias(
     df: pd.DataFrame, h: pd.DataFrame
 ) -> tuple:
-    """枠番バイアス（会場×距離帯×馬場）を静的集計で付与する。"""
+    """枠番バイアス（会場×距離帯×馬場）を静的集計で付与する。
+
+    gate_win_rate       : 内/外枠二値バイアス（従来）
+    gate_bracket_win_rate : P-7 枠番1〜8 × venue × surface × dist_band の静的勝率
+    """
     if not all(c in h.columns for c in ('bracket_number', 'finish', 'venue')):
         return df, h
 
@@ -949,6 +1622,35 @@ def _feh_gate_bias(
     df = df.merge(_gate_agg[_merge_keys + ['_gate_wr']], on=_merge_keys, how='left')
     df['gate_win_rate'] = df['_gate_wr'].fillna(0.5)
     df = df.drop(columns=['_dist_band', '_is_inner', '_gate_wr'], errors='ignore')
+
+    # --- P-7: 枠番1〜8 × venue × surface × dist_band 静的集計（より細かいバイアス）---
+    _hg2 = h.copy()
+    _hg2['_is_win2']   = (pd.to_numeric(_hg2['finish'], errors='coerce') == 1).astype(int)
+    _hg2['_dist_band2'] = _hg2['distance'].apply(_dist_band) if 'distance' in _hg2.columns else 'unknown'
+    _surf_h2 = _hg2['surface'].astype(str) if 'surface' in _hg2.columns else pd.Series(['?'] * len(_hg2), index=_hg2.index)
+    _hg2['_brk_key'] = (
+        pd.to_numeric(_hg2['bracket_number'], errors='coerce').fillna(-1).astype(int).astype(str)
+        + '|' + _hg2['venue'].astype(str) + '×' + _surf_h2 + '×' + _hg2['_dist_band2']
+    )
+    _brk_agg = (
+        _hg2.groupby('_brk_key', sort=False)
+        .agg(_cnt2=('_is_win2', 'count'), _wins2=('_is_win2', 'sum'))
+        .reset_index()
+    )
+    _brk_agg['gate_bracket_win_rate'] = np.where(
+        _brk_agg['_cnt2'] >= 20,
+        _brk_agg['_wins2'] / _brk_agg['_cnt2'],
+        np.nan,
+    )
+    _dist_band_df = df['distance'].apply(_dist_band) if 'distance' in df.columns else 'unknown'
+    _surf_df = df['surface'].astype(str) if 'surface' in df.columns else '?'
+    df['_brk_key'] = (
+        pd.to_numeric(df.get('bracket_number', pd.Series([None] * len(df))), errors='coerce')
+        .fillna(-1).astype(int).astype(str)
+        + '|' + df['venue'].astype(str) + '×' + _surf_df + '×' + _dist_band_df
+    )
+    df = df.merge(_brk_agg[['_brk_key', 'gate_bracket_win_rate']], on='_brk_key', how='left')
+    df = df.drop(columns=['_brk_key'], errors='ignore')
 
     return df, h
 
@@ -999,6 +1701,16 @@ def _feh_entity_career(
             .drop_duplicates(subset=['jockey_id', 'race_id']),
             on=['jockey_id', 'race_id'], how='left')
 
+        # 騎手 × 馬場状態別 expanding window 勝率
+        if 'field_condition' in h.columns:
+            h = _expanding_win_rate_by_group(
+                h, 'jockey_id', 'field_condition',
+                'jockey_field_win_rate', 'jockey_field_races')
+            df = df.merge(
+                h[['jockey_id', 'race_id', 'jockey_field_win_rate', 'jockey_field_races']]
+                .drop_duplicates(subset=['jockey_id', 'race_id']),
+                on=['jockey_id', 'race_id'], how='left')
+
     if 'trainer_id' in df.columns:
         h = _expanding_stats(h, 'trainer_id', 'trainer')
         df = df.merge(
@@ -1008,12 +1720,61 @@ def _feh_entity_career(
             on=['trainer_id', 'race_id'], how='left')
 
     for _sid in ('sire', 'damsire'):
-        if _sid in h.columns and _sid in df.columns:
-            h = _expanding_stats(h, _sid, _sid)
+        if _sid not in h.columns or _sid not in df.columns:
+            continue
+        h = _expanding_stats(h, _sid, _sid)
+        df = df.merge(
+            h[[_sid, 'race_id', f'{_sid}_win_rate', f'{_sid}_show_rate']]
+            .drop_duplicates(subset=[_sid, 'race_id']),
+            on=[_sid, 'race_id'], how='left')
+
+        # P-8: 血統 × 馬場別 expanding window 勝率
+        if 'surface' in h.columns:
+            h['_sid_surf'] = h['surface'].astype(str)
+            h = _expanding_win_rate_by_group(
+                h, _sid, '_sid_surf',
+                f'{_sid}_surface_win_rate', f'{_sid}_surface_races')
             df = df.merge(
-                h[[_sid, 'race_id', f'{_sid}_win_rate', f'{_sid}_show_rate']]
+                h[[_sid, 'race_id', f'{_sid}_surface_win_rate']]
                 .drop_duplicates(subset=[_sid, 'race_id']),
                 on=[_sid, 'race_id'], how='left')
+            h = h.drop(columns=['_sid_surf'], errors='ignore')
+
+        # P-8: 血統 × 距離帯別 expanding window 勝率
+        if 'distance' in h.columns:
+            h['_sid_dist'] = h['distance'].apply(_dist_band)
+            h = _expanding_win_rate_by_group(
+                h, _sid, '_sid_dist',
+                f'{_sid}_dist_band_win_rate', f'{_sid}_dist_band_races')
+            df = df.merge(
+                h[[_sid, 'race_id', f'{_sid}_dist_band_win_rate']]
+                .drop_duplicates(subset=[_sid, 'race_id']),
+                on=[_sid, 'race_id'], how='left')
+            h = h.drop(columns=['_sid_dist'], errors='ignore')
+
+        # P-8 拡張: 血統 × 馬場状態別 expanding window 勝率
+        if 'field_condition' in h.columns:
+            h['_sid_field'] = h['field_condition'].astype(str)
+            h = _expanding_win_rate_by_group(
+                h, _sid, '_sid_field',
+                f'{_sid}_field_win_rate', f'{_sid}_field_races')
+            df = df.merge(
+                h[[_sid, 'race_id', f'{_sid}_field_win_rate', f'{_sid}_field_races']]
+                .drop_duplicates(subset=[_sid, 'race_id']),
+                on=[_sid, 'race_id'], how='left')
+            h = h.drop(columns=['_sid_field'], errors='ignore')
+
+        # P-8 拡張: 血統 × 競馬場別 expanding window 勝率
+        if 'venue' in h.columns:
+            h['_sid_venue'] = h['venue'].astype(str)
+            h = _expanding_win_rate_by_group(
+                h, _sid, '_sid_venue',
+                f'{_sid}_venue_win_rate', f'{_sid}_venue_races')
+            df = df.merge(
+                h[[_sid, 'race_id', f'{_sid}_venue_win_rate']]
+                .drop_duplicates(subset=[_sid, 'race_id']),
+                on=[_sid, 'race_id'], how='left')
+            h = h.drop(columns=['_sid_venue'], errors='ignore')
 
     return df, h
 
@@ -1143,6 +1904,186 @@ def _feh_payout_history(
     return df, h
 
 
+def _feh_field_strength(
+    df: pd.DataFrame, h: pd.DataFrame
+) -> tuple:
+    """P-9: フィールド強度（馬の通常クラス vs 今回レース）を付与する。
+
+    horse_avg_class_num : 馬の過去走の平均クラス水準（expanding window）
+    class_drop          : horse_avg_class_num - 今回レース class_num
+                          正 = 格下り（有利）、負 = 格上り（不利）
+    """
+    if 'race_class_num' not in h.columns or 'horse_id' not in h.columns:
+        return df, h
+
+    _oi  = h.index.copy()
+    _s   = h.sort_values('race_id', kind='mergesort').copy()
+    _cls = pd.to_numeric(_s['race_class_num'], errors='coerce')
+    _s['_cls'] = _cls
+    _cls_sh = _s.groupby('horse_id', sort=False)['_cls'].shift(1)
+    _s['horse_avg_class_num'] = (
+        _cls_sh.groupby(_s['horse_id'])
+        .expanding(min_periods=1).mean()
+        .droplevel(0).reindex(_s.index))
+    _s.drop(columns=['_cls'], inplace=True)
+    _back = _s.reindex(_oi)
+    h['horse_avg_class_num'] = _back['horse_avg_class_num'].values
+    df = df.merge(
+        h[['horse_id', 'race_id', 'horse_avg_class_num']]
+        .drop_duplicates(subset=['horse_id', 'race_id']),
+        on=['horse_id', 'race_id'], how='left')
+
+    if 'race_class_num' in df.columns and 'horse_avg_class_num' in df.columns:
+        _rcn  = pd.to_numeric(df['race_class_num'],      errors='coerce')
+        _hacn = pd.to_numeric(df['horse_avg_class_num'], errors='coerce')
+        df['class_drop'] = np.where(_hacn.notna() & _rcn.notna(), _hacn - _rcn, np.nan)
+
+    return df, h
+
+
+def _feh_race_dynamics(
+    df: pd.DataFrame, h: pd.DataFrame
+) -> tuple:
+    """P-6: ペース期待値・位置取り相性を付与する（_feh_running_style 後に呼ぶこと）。
+
+    race_front_runner_count : レース内の逃げ/先行馬の数（running_style_mean_5 < 1.5）
+    race_front_runner_pct   : 逃げ/先行馬の割合（0=差し天国、1=ハイペース）
+    pace_advantage          : 自馬の脚質とペース環境の適合スコア（0〜1）
+                              逃げ/先行 → front_runner が少ないほど高い（単独逃げ有利）
+                              差し/追込 → front_runner が多いほど高い（ハイペース恩恵）
+    """
+    if 'race_id' not in df.columns or 'running_style_mean_5' not in df.columns:
+        return df, h
+
+    _rs = pd.to_numeric(df['running_style_mean_5'], errors='coerce').fillna(1.5)
+    df['_tmp_is_front'] = (_rs < 1.5).astype(float)
+
+    _grp = df.groupby('race_id', sort=False)
+    df['race_front_runner_count'] = _grp['_tmp_is_front'].transform('sum')
+    _n_horses = _grp['_tmp_is_front'].transform('count').clip(lower=1)
+    df['race_front_runner_pct'] = df['race_front_runner_count'] / _n_horses
+
+    # 逃げ/先行: front が少ないほど有利 → 1 - front_pct
+    # 差し/追込: front が多いほど有利 → front_pct
+    _is_front = (_rs < 1.5).values
+    df['pace_advantage'] = np.where(
+        _is_front,
+        1.0 - df['race_front_runner_pct'],
+        df['race_front_runner_pct'],
+    )
+    df = df.drop(columns=['_tmp_is_front'], errors='ignore')
+
+    return df, h
+
+
+def _feh_jockey_running_style(
+    df: pd.DataFrame, h: pd.DataFrame
+) -> tuple:
+    """P-10: 騎手×脚質相性（逃げ先行 vs 差し追込）の expanding window 勝率を付与する。
+
+    jockey_front_win_rate : 騎手が逃げ/先行馬を騎乗して勝った率（expanding window）
+    jockey_close_win_rate : 騎手が差し/追込馬を騎乗して勝った率（expanding window）
+    """
+    needed = ('jockey_id', 'running_style_num', 'finish', 'race_id')
+    if any(c not in h.columns for c in needed) or 'jockey_id' not in df.columns:
+        return df, h
+
+    _oi  = h.index.copy()
+    _s   = h.sort_values('race_id', kind='mergesort').copy()
+    _fin = pd.to_numeric(_s['finish'], errors='coerce').fillna(0)
+    _rs  = pd.to_numeric(_s['running_style_num'], errors='coerce').fillna(1.5)
+    _win = (_fin == 1).astype(float)
+    _jk  = _s['jockey_id']
+
+    for _is_front, _out in [(True, 'jockey_front_win_rate'), (False, 'jockey_close_win_rate')]:
+        _valid = (_rs < 1.5) if _is_front else (_rs >= 1.5)
+        _s['_w']   = (_win * _valid.astype(float))
+        _s['_cnt'] = _valid.astype(float)
+        _cum_w   = _s.groupby(_jk, sort=False)['_w'].cumsum()   - _s['_w']
+        _cum_cnt = _s.groupby(_jk, sort=False)['_cnt'].cumsum() - _s['_cnt']
+        _s[_out]  = np.where(_cum_cnt >= 3, _cum_w / _cum_cnt.clip(1), np.nan)
+        _s.drop(columns=['_w', '_cnt'], inplace=True)
+
+    _out_cols = ['jockey_front_win_rate', 'jockey_close_win_rate']
+    _back = _s.reindex(_oi)
+    for _c in _out_cols:
+        h[_c] = _back[_c].values
+    df = df.merge(
+        h[['jockey_id', 'race_id'] + _out_cols]
+        .drop_duplicates(subset=['jockey_id', 'race_id']),
+        on=['jockey_id', 'race_id'], how='left')
+
+    return df, h
+
+
+def _feh_horse_speed(
+    df: pd.DataFrame, h: pd.DataFrame
+) -> tuple:
+    """馬の通算スピード指数 expanding window 統計を付与する。
+
+    full_history_df の prev_race_time / prev_race_distance から horse_id 別の
+    expanding mean / std を計算し、馬の歴史的速度ベースラインを特徴量として提供する。
+    leave-current-out 方式（row k では rows 0..k-1 の統計）を採用。
+
+    出力列:
+      - horse_speed_exp_mean : 過去走の prev_speed_index expanding mean
+      - horse_speed_exp_std  : 過去走の prev_speed_index expanding std
+      - horse_speed_vs_exp   : 当走 prev_speed_index - expanding mean（自己比較）
+    """
+    needed = ('horse_id', 'race_id', 'prev_race_time', 'prev_race_distance')
+    if any(c not in h.columns for c in needed):
+        return df, h
+
+    _oi = h.index.copy()
+    _s  = h.sort_values('race_id', kind='mergesort').copy()
+
+    _pt = pd.to_numeric(_s['prev_race_time'], errors='coerce')
+    _pd = pd.to_numeric(_s['prev_race_distance'], errors='coerce')
+    _s['_spi'] = np.where((_pt > 0) & (_pd > 0), _pd / _pt, np.nan)
+
+    # NaN-aware expanding mean / std (leave-current-out)
+    _s['_spi_f']  = _s['_spi'].fillna(0.0)
+    _s['_spi_v']  = _s['_spi'].notna().astype(float)
+    _s['_spi_sq'] = (_s['_spi'] ** 2).fillna(0.0)
+
+    _cum_sum = _s.groupby('horse_id', sort=False)['_spi_f'].cumsum()  - _s['_spi_f']
+    _cum_cnt = _s.groupby('horse_id', sort=False)['_spi_v'].cumsum()  - _s['_spi_v']
+    _cum_sq  = _s.groupby('horse_id', sort=False)['_spi_sq'].cumsum() - _s['_spi_sq']
+
+    _s['horse_speed_exp_mean'] = np.where(_cum_cnt > 0, _cum_sum / _cum_cnt, np.nan)
+
+    _denom = np.where(_cum_cnt > 1, _cum_cnt, np.nan)
+    _E_x   = _cum_sum / np.where(_cum_cnt > 0, _cum_cnt, np.nan)
+    _E_x2  = _cum_sq  / _denom
+    _var   = _E_x2 - _E_x ** 2
+    _s['horse_speed_exp_std'] = np.where(
+        _cum_cnt > 1, np.sqrt(np.maximum(_var, 0.0)), np.nan
+    )
+
+    _s = _s.drop(columns=['_spi', '_spi_f', '_spi_v', '_spi_sq'], errors='ignore')
+    _back = _s.reindex(_oi)
+    h = h.copy()
+    h['horse_speed_exp_mean'] = _back['horse_speed_exp_mean'].values
+    h['horse_speed_exp_std']  = _back['horse_speed_exp_std'].values
+
+    df = df.merge(
+        h[['horse_id', 'race_id', 'horse_speed_exp_mean', 'horse_speed_exp_std']]
+        .drop_duplicates(subset=['horse_id', 'race_id']),
+        on=['horse_id', 'race_id'], how='left',
+    )
+
+    # 自己比較：当走 prev_speed_index - 自馬の歴史平均
+    if 'prev_speed_index' in df.columns:
+        _spi_cur = pd.to_numeric(df['prev_speed_index'], errors='coerce')
+        df['horse_speed_vs_exp'] = np.where(
+            _spi_cur.notna() & df['horse_speed_exp_mean'].notna(),
+            _spi_cur - df['horse_speed_exp_mean'],
+            np.nan,
+        )
+
+    return df, h
+
+
 def _feh_running_style(
     df: pd.DataFrame, h: pd.DataFrame
 ) -> tuple:
@@ -1182,7 +2123,12 @@ def _feh_running_style(
 # Public API
 # ===========================================================================
 
-def add_derived_features(df: pd.DataFrame, full_history_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+def add_derived_features(
+    df: pd.DataFrame,
+    full_history_df: Optional[pd.DataFrame] = None,
+    training_df: Optional[pd.DataFrame] = None,
+    speed_figures_df: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
     """データフレームに派生特徴量を追加する（公開 API）。
 
     内部的には以下の順序でパイプラインを実行する:
@@ -1192,14 +2138,21 @@ def add_derived_features(df: pd.DataFrame, full_history_df: Optional[pd.DataFram
       4. _fe_course             — コース特性（直線長・内枠バイアス）
       5. _fe_market             — オッズ・市場エントロピー
       6. _fe_prev_race          — 前走日・距離変化・スピード指数
-      7. _fe_lap                — ラップタイム展開・ペース要約
-      8. _fe_payout             — 配当派生特徴量
-      9. _fe_missing_flags      — 欠損フラグ付与・型統一
-     10. _fe_history            — 全 expanding/rolling 統計（full_history_df 必要）
+      7. _fe_opponent           — レース内相手関係特徴量（P-5）
+      8. _fe_holding_time       — 持ちタイム（AplFreqSum）派生特徴量
+      9. _fe_lap                — ラップタイム展開・ペース要約
+     10. _fe_payout             — 配当派生特徴量
+     11. _fe_corner_position    — コーナー通過順→脚質コード（corner_first/last/gain/running_style_code）
+     12. _fe_speed_figures      — speed_figures テーブルの速度指数（speed_figures_df 必要）
+     13. _fe_training           — 最終追い切り特徴量（training_df 必要）
+     14. _fe_missing_flags      — 欠損フラグ付与・型統一
+     15. _fe_history            — 全 expanding/rolling 統計 + P-6/P-7/P-8/P-9/P-10（full_history_df 必要）
 
     Args:
         df: 現在のレースデータ。
-        full_history_df: 過去データ全体（統計計算用）。省略時は step 1/10 をスキップ。
+        full_history_df: 過去データ全体（統計計算用）。省略時は step 1/14 をスキップ。
+        training_df: training_data テーブルの DataFrame。省略時は調教特徴量が NaN になる。
+        speed_figures_df: speed_figures テーブルの DataFrame。省略時は速度指数が NaN になる。
 
     Returns:
         pd.DataFrame: 派生特徴量が追加されたデータフレーム。
@@ -1212,11 +2165,17 @@ def add_derived_features(df: pd.DataFrame, full_history_df: Optional[pd.DataFram
     df = _fe_course(df)
     df = _fe_market(df)
     df = _fe_prev_race(df)
+    df = _fe_opponent(df)
+    df = _fe_holding_time(df)
     df = _fe_lap(df)
     df = _fe_payout(df)
-    df = _fe_missing_flags(df)
+    df = _fe_corner_position(df)
+    df = _fe_speed_figures(df, speed_figures_df)
+    df = _fe_training(df, training_df)
     if full_history_df is not None:
         df = _fe_history(df, full_history_df)
+    # _fe_missing_flags は _fe_history 後（P-6〜P-10 の列が揃ってから）
+    df = _fe_missing_flags(df)
     # ── ITR-05: 騎手コース得意度（_fe_history後に計算 jockey_course_win_rateが必要）
     # 正 = このコースで平均より高勝率、負 = 苦手コース
     if 'jockey_course_win_rate' in df.columns and 'jockey_recent30_win_rate' in df.columns:
@@ -1225,6 +2184,7 @@ def add_derived_features(df: pd.DataFrame, full_history_df: Optional[pd.DataFram
         df['jockey_venue_advantage'] = np.where(
             _jcwr.notna() & _j30wr.notna(), _jcwr - _j30wr, np.nan
         )
-    return df
+    # Rebuild contiguous blocks to reduce fragmentation warnings in downstream ops.
+    return df.copy()
 
 

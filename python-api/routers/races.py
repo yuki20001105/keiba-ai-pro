@@ -42,6 +42,10 @@ def _parse_race_row(race_id: str, data_str: str) -> dict:
         "field_condition": d.get("field_condition", ""),
         "num_horses": d.get("num_horses", 0),
         "date": d.get("date", ""),
+        "post_time": d.get("post_time", ""),
+        "race_class": d.get("race_class", ""),
+        "kai": d.get("kai", 0),
+        "day": d.get("day", 0),
     }
 
 
@@ -139,17 +143,16 @@ async def get_races_by_date(
     try:
         conn = sqlite3.connect(str(ULTIMATE_DB))
         cur = conn.cursor()
-        year_prefix = date[:4]
-        # race_results_ultimate に馬データがあるレースのみ返す（JOIN で除外）
+        # json_extract で指定日付のレースのみ取得（全年スキャン回避）
         cur.execute(
             """SELECT r.race_id, r.data
                FROM races_ultimate r
-               WHERE r.race_id LIKE ?
+               WHERE json_extract(r.data, '$.date') = ?
                  AND EXISTS (
                      SELECT 1 FROM race_results_ultimate rr
                      WHERE rr.race_id = r.race_id
                  )""",
-            (f"{year_prefix}%",),
+            (date,),
         )
         rows = cur.fetchall()
         conn.close()

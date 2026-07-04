@@ -7,6 +7,8 @@ GET  /api/train/status/{job_id}
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import inspect
 import traceback
 import uuid
 from datetime import datetime
@@ -14,8 +16,13 @@ from pathlib import Path
 from typing import List
 
 import joblib
+import lightgbm as lgb
 import numpy as np
+import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException
+from scipy.stats import spearmanr
+from sklearn.metrics import roc_auc_score, log_loss
+from sklearn.model_selection import train_test_split
 
 from app_config import (  # type: ignore
     SUPABASE_DATA_ENABLED,
@@ -26,9 +33,16 @@ from app_config import (  # type: ignore
     logger,
 )
 from deps.auth import require_premium  # type: ignore
-from models import TrainRequest, TrainResponse  # type: ignore
+from feature_platform import FeatureStoreManager  # type: ignore
+from mlops import MLOpsStore  # type: ignore
 from keiba_ai.constants import FUTURE_FIELDS  # type: ignore
+from keiba_ai.db_ultimate_loader import load_ultimate_training_frame  # type: ignore
 from keiba_ai.feature_catalog import FeatureCatalog  # type: ignore
+from keiba_ai.feature_engineering import add_derived_features  # type: ignore
+from keiba_ai.lightgbm_feature_optimizer import prepare_for_lightgbm_ultimate  # type: ignore
+from keiba_ai.optuna_optimizer import OptunaLightGBMOptimizer  # type: ignore
+from keiba_ai.train import _make_target  # type: ignore
+from models import TrainRequest, TrainResponse  # type: ignore
 from scraping.jobs import _purge_old_jobs, _MAX_JOBS  # type: ignore
 
 router = APIRouter()
@@ -45,6 +59,89 @@ class BCWrap:
 
     def predict(self, x: "np.ndarray") -> "np.ndarray":
         return self._c.predict(np.asarray(x, float).reshape(-1, 1)).ravel()
+
+
+# ---------------------------------------------------------------------------
+# speed_deviation 補助関数（P-3: softmax 温度キャリブレーション + Top-1 精度）
+# ---------------------------------------------------------------------------
+
+def _calibrate_softmax_temperature(
+    y_pred: "np.ndarray",
+    y_true: "np.ndarray",
+    race_ids: "np.ndarray",
+) -> float:
+    """softmax 温度 T をバリデーションセットで最適化する（P-3）。
+
+    within-race z-score（y_true）で「最速馬」を定義し、その馬の softmax 確率を
+    最大化する T を scipy.optimize.minimize_scalar で探索する。
+
+    Args:
+        y_pred: モデルの予測 z-score（テストセット）
+        y_true: 実際の within-race z-score（テストセット）
+        race_ids: 各行の race_id（テストセット）
+
+    Returns:
+        最適化された T（範囲 exp(-3)〜exp(3) ≈ 0.05〜20）。失敗時は 1.0。
+    """
+    import numpy as _np
+    from scipy.optimize import minimize_scalar as _ms
+
+    unique_races = _np.unique(race_ids)
+
+    def _neg_log_lik(log_T: float) -> float:
+        T = _np.exp(log_T)
+        total_ll = 0.0
+        n = 0
+        for rid in unique_races:
+            mask = race_ids == rid
+            zp = y_pred[mask]
+            zt = y_true[mask]
+            if _np.isnan(zp).any() or _np.isnan(zt).any() or len(zp) < 2:
+                continue
+            winner_idx = int(_np.argmax(zt))  # within-race 最速馬 = "winner"
+            scaled = zp / T
+            scaled -= scaled.max()
+            probs = _np.exp(scaled) / _np.exp(scaled).sum()
+            wp = float(probs[winner_idx])
+            if wp > 1e-10:
+                total_ll += _np.log(wp)
+                n += 1
+        return -total_ll / max(n, 1)
+
+    try:
+        result = _ms(_neg_log_lik, bounds=(-3.0, 3.0), method="bounded")
+        T_opt = float(_np.exp(result.x))
+        logger.info(f"[温度キャリブレーション] 最適 T = {T_opt:.4f}")
+        return T_opt
+    except Exception as _e:
+        logger.warning(f"[温度キャリブレーション] 失敗: {_e} → T=1.0 を使用")
+        return 1.0
+
+
+def _compute_top1_accuracy(
+    y_pred: "np.ndarray",
+    y_true: "np.ndarray",
+    race_ids: "np.ndarray",
+) -> float:
+    """予測 z-score 最大馬が実際の within-race 最速馬と一致する割合（Top-1 精度）。
+
+    Returns:
+        Top-1 accuracy（0.0〜1.0）
+    """
+    import numpy as _np
+
+    correct = 0
+    total = 0
+    for rid in _np.unique(race_ids):
+        mask = race_ids == rid
+        zp = y_pred[mask]
+        zt = y_true[mask]
+        if _np.isnan(zp).any() or _np.isnan(zt).any() or len(zp) < 2:
+            continue
+        if int(_np.argmax(zp)) == int(_np.argmax(zt)):
+            correct += 1
+        total += 1
+    return correct / max(total, 1)
 
 
 
@@ -116,13 +213,23 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
     if progress_cb is None:
         def progress_cb(msg: str, pct: int = None): pass  # noqa: F811
     try:
-        import pandas as pd
-        from keiba_ai.db_ultimate_loader import load_ultimate_training_frame  # type: ignore
-        from keiba_ai.feature_engineering import add_derived_features  # type: ignore
-        from keiba_ai.lightgbm_feature_optimizer import (  # type: ignore
-            prepare_for_lightgbm_ultimate,
-        )
-        from keiba_ai.optuna_optimizer import OptunaLightGBMOptimizer  # type: ignore
+        _feature_store_meta: dict | None = None
+        _feature_store_mgr = FeatureStoreManager()
+        _mlops_store = MLOpsStore()
+        _experiment_id: str | None = None
+        _model_registry_id: int | None = None
+        if request.enforce_feature_quality_gate:
+            _gate = await asyncio.to_thread(
+                _feature_store_mgr.evaluate_gate,
+                request.min_feature_quality_score,
+                request.max_feature_validation_errors,
+            )
+            if not bool(_gate.get("allow_training")):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Feature quality gate blocked training: {_gate.get('reasons', [])}",
+                )
+
 
         # Phase 0: 87特徴量モード固定（入力値に関わらず常に ultimate LightGBM）
         request = request.model_copy(update={
@@ -134,6 +241,7 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
         start_time = datetime.now()
         optuna_executed = False
         optuna_error = None
+        _experiment_id = f"exp_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
         print("\n" + "=" * 70)
         print("【学習リクエスト受信】")
@@ -169,6 +277,35 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
         # データ読み辿み（常に ultimate モード）
         progress_cb("学習データ読み込み中...", 8)
         df = load_ultimate_training_frame(db_path)
+        # ★ フィルタ前の全データを保持 — rolling/expanding 統計（prev_speed_index・
+        # 騎手勝率・血統統計等）は全期間ベースで計算する必要があるため。
+        # 日付フィルタ後の df を full_history_df に使うと、フィルタ外の過去レース
+        # 情報が失われ、特徴量のほぼ全てが NaN → ゼロ分散 → drop されてしまう。
+        _df_full_history = df
+
+        # training_data テーブルの読み込み（調教タイム特徴量用）
+        _training_df: Optional[pd.DataFrame] = None
+        try:
+            import sqlite3 as _sqlite3
+            _tconn = _sqlite3.connect(str(db_path))
+            _training_df = pd.read_sql("SELECT * FROM training_data", _tconn)
+            _tconn.close()
+            logger.info(f"training_data 読み込み: {len(_training_df)} 行")
+        except Exception as _te:
+            logger.warning(f"training_data 読み込みスキップ: {_te}")
+            _training_df = None
+
+        # speed_figures テーブルの読み込み（速度指数特徴量用）
+        _speed_figures_df: Optional[pd.DataFrame] = None
+        try:
+            import sqlite3 as _sqlite3_sf
+            _sfconn = _sqlite3_sf.connect(str(db_path))
+            _speed_figures_df = pd.read_sql("SELECT * FROM speed_figures", _sfconn)
+            _sfconn.close()
+            logger.info(f"speed_figures 読み込み: {len(_speed_figures_df)} 行")
+        except Exception as _sfe:
+            logger.warning(f"speed_figures 読み込みスキップ: {_sfe}")
+            _speed_figures_df = None
 
         print(f"DEBUG: Loaded {len(df)} rows from database")
         progress_cb(f"データ読み込み完了 ({len(df):,} 行)", 15)
@@ -209,14 +346,14 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
             )
 
         # ターゲット変数を先に取得（FUTURE_FIELDSのdrop前にfinish列が必要）
-        from keiba_ai.train import _make_target  # type: ignore
         y = _make_target(df, request.target)
 
         if request.target != "speed_deviation" and len(y.unique()) < 2:
             raise HTTPException(status_code=400, detail="2クラス以上が必要です")
         # 特徴量エンジニアリング（finish等を使うのでdrop前に実施）
         progress_cb("特徴量エンジニアリング中...", 20)
-        df = add_derived_features(df, full_history_df=df)
+        # full_history_df: フィルタ前全データ（日付絞り込み後も全期間の rolling 統計を正確に計算）
+        df = add_derived_features(df, full_history_df=_df_full_history, training_df=_training_df, speed_figures_df=_speed_figures_df)
         # NOTE: UltimateFeatureCalculator は feature_engineering.py で同等の特徴量を
         # ベクトル化计算済みのため除去（zero-variance 問題も解消）
         df = df.loc[:, ~df.columns.duplicated()]
@@ -234,6 +371,8 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
         valid_cat_cols = []
         model = None
         auc = logloss = cv_auc_mean = cv_auc_std = 0.0
+        _softmax_temperature = 1.0  # P-3: デフォルト値（キャリブレーション後に更新）
+        _top1_acc = 0.0             # P-2: Top-1 accuracy（追加評価指標）
 
         if request.use_optimizer and request.model_type == "lightgbm":
             try:
@@ -245,17 +384,13 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
                 exclude_cols = [
                     request.target, "race_id", "horse_id", "jockey_id",
                     "trainer_id", "owner_id", "finish_position",
-                ]
+                ] + list(getattr(request, "extra_exclude_features", []))
                 X = df_optimized.drop([c for c in exclude_cols if c in df_optimized.columns], axis=1)
                 obj_cols = X.select_dtypes(include=["object"]).columns.tolist()
                 if obj_cols:
                     X = X.drop(columns=obj_cols)
                 feature_count = len(X.columns)
                 _all_feature_columns = X.columns.tolist()
-
-                from sklearn.model_selection import train_test_split
-                from sklearn.metrics import roc_auc_score, log_loss
-                import lightgbm as lgb
 
                 # 時系列分割（ランダム分割より汎化性能検証に適切）
                 X = X.reset_index(drop=True)
@@ -264,10 +399,30 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
                 _is_regression = request.target == "speed_deviation"
                 _is_ranking    = request.target == "rank"
 
-                # regression 前処理: finish_time NaN 行を分割前に除去
+                # regression 前処理: NaN 行・未完了レースを分割前に除去
                 # race_results_ultimate に出馬表(shutuba)データが混在すると
                 # 時系列分割でテストセットが全 NaN になり model.predict が失敗する
                 if _is_regression:
+                    # P-4: 完了率50%未満のレースを丸ごと除外（ノイズ削減）
+                    if "race_id" in df.columns:
+                        _rid_tmp = df["race_id"].reset_index(drop=True)
+                        _y_tmp   = y.reset_index(drop=True)
+                        _completion = _y_tmp.groupby(_rid_tmp).transform(
+                            lambda g: g.notna().mean()
+                        )
+                        _complete_mask = (_completion >= 0.5).values
+                        if not _complete_mask.all():
+                            _n_bad_races = int(len(set(_rid_tmp[~_complete_mask])))
+                            _n_bad_rows  = int((~_complete_mask).sum())
+                            logger.info(
+                                f"P-4: 完了率50%未満のレース {_n_bad_races}件 ({_n_bad_rows}行) を除去"
+                            )
+                            X = X.reset_index(drop=True).loc[_complete_mask].reset_index(drop=True)
+                            y = y.reset_index(drop=True).loc[_complete_mask].reset_index(drop=True)
+                            df = df.reset_index(drop=True).loc[_complete_mask].reset_index(drop=True)
+                            df_optimized = df_optimized.reset_index(drop=True).loc[_complete_mask].reset_index(drop=True)
+
+                    # 残りの NaN 行（個別馬の time_seconds 欠損）を除去
                     _pre_valid = y.notna().values
                     if not _pre_valid.all():
                         n_removed = int((~_pre_valid).sum())
@@ -277,8 +432,9 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
                         )
                         X = X.loc[_pre_valid].reset_index(drop=True)
                         y = y.loc[_pre_valid].reset_index(drop=True)
-                        # df のインデックスを同期（race_date が時系列分割に使用される）
+                        # df と df_optimized のインデックスを同期
                         df = df.reset_index(drop=True).loc[_pre_valid].reset_index(drop=True)
+                        df_optimized = df_optimized.reset_index(drop=True).loc[_pre_valid].reset_index(drop=True)
 
                 _time_split = False
                 if "race_date" in df.columns:
@@ -366,9 +522,8 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
                     )
                     _scores = model.predict(X_test.values)
                     from scipy.stats import spearmanr as _spr
-                    import numpy as _np_loc_r
                     _sp, _ = _spr(y_test.values, _scores)
-                    auc = float(_sp) if not _np_loc_r.isnan(_sp) else 0.0
+                    auc = float(_sp) if not np.isnan(_sp) else 0.0
                     logloss = 0.0
                     cv_auc_mean = auc
                     cv_auc_std  = 0.0
@@ -428,7 +583,7 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
                         _cv_rmse_mean = cv_result["valid rmse-mean"][-1]
                         _cv_rmse_std  = cv_result["valid rmse-stdv"][-1]
                         best_round_cv = len(cv_result["valid rmse-mean"])
-                        cv_auc_mean = 1.0 - _cv_rmse_mean
+                        cv_auc_mean = 0.0   # placeholder — 最終モデル評価後に Spearman ρ で上書き
                         cv_auc_std  = _cv_rmse_std
                     else:
                         cv_logloss_mean = cv_result["valid binary_logloss-mean"][-1]
@@ -454,12 +609,25 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
 
                     y_pred_proba = model.predict(X_test)
                     if _is_regression:
-                        from scipy.stats import spearmanr as _spearmanr
-                        import numpy as _np_loc
-                        _sp, _ = _spearmanr(y_test, y_pred_proba)
-                        auc = float(_sp) if not _np_loc.isnan(_sp) else 0.0
-                        logloss = float(_np_loc.sqrt(_np_loc.nanmean((y_test.values - y_pred_proba) ** 2)))
+                        _sp, _ = spearmanr(y_test, y_pred_proba)
+                        auc = float(_sp) if not np.isnan(_sp) else 0.0
+                        logloss = float(np.sqrt(np.nanmean((y_test.values - y_pred_proba) ** 2)))
                         cv_auc_mean = auc
+                        # P-3: softmax 温度キャリブレーション（Optuna なしパスでも実行）
+                        if "race_id" in df_optimized.columns:
+                            _test_idx_base = list(X_test.index)
+                            _df_opt_ri = df_optimized.reset_index(drop=True)
+                            _race_ids_test_base = _df_opt_ri.loc[_test_idx_base, "race_id"].values
+                            _softmax_temperature = _calibrate_softmax_temperature(
+                                y_pred_proba, y_test.values, _race_ids_test_base
+                            )
+                            _top1_acc = _compute_top1_accuracy(
+                                y_pred_proba, y_test.values, _race_ids_test_base
+                            )
+                            logger.info(
+                                f"[評価指標] Spearman_ρ={auc:.4f}, RMSE={logloss:.4f}, "
+                                f"Top-1={_top1_acc:.4f}, T={_softmax_temperature:.4f}"
+                            )
                     else:
                         auc = roc_auc_score(y_test, y_pred_proba)
                         logloss = log_loss(y_test, y_pred_proba)
@@ -480,6 +648,7 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
                         optuna_optimizer = OptunaLightGBMOptimizer(
                             n_trials=request.optuna_trials, cv_folds=request.cv_folds,
                             random_state=42, timeout=300,
+                            is_regression=_is_regression,
                         )
                         best_params, best_optuna_score = optuna_optimizer.optimize(
                             X, y, categorical_features=categorical_indices,
@@ -541,12 +710,29 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
                                           callbacks=[_opt_final_lgb_cb])
                         y_pred_proba = model.predict(X_test)
                         if _is_regression:
-                            from scipy.stats import spearmanr as _spearmanr2
-                            import numpy as _np_loc2
-                            _sp2, _ = _spearmanr2(y_test, y_pred_proba)
-                            auc = float(_sp2) if not _np_loc2.isnan(_sp2) else 0.0
-                            logloss = float(_np_loc2.sqrt(_np_loc2.nanmean((y_test.values - y_pred_proba) ** 2)))
+                            _sp, _ = spearmanr(y_test, y_pred_proba)
+                            auc = float(_sp) if not np.isnan(_sp) else 0.0
+                            logloss = float(np.sqrt(np.nanmean((y_test.values - y_pred_proba) ** 2)))
                             cv_auc_mean = auc
+                            # P-3: softmax 温度キャリブレーション（within-race z-score 基準）
+                            if "race_id" in df_optimized.columns:
+                                _test_idx = list(X_test.index)
+                                _race_ids_test = (
+                                    df_optimized["race_id"]
+                                    .reset_index(drop=True)
+                                    .iloc[_test_idx]
+                                    .values
+                                )
+                                _softmax_temperature = _calibrate_softmax_temperature(
+                                    y_pred_proba, y_test.values, _race_ids_test
+                                )
+                                _top1_acc = _compute_top1_accuracy(
+                                    y_pred_proba, y_test.values, _race_ids_test
+                                )
+                                logger.info(
+                                    f"[評価指標] Spearman_ρ={auc:.4f}, RMSE={logloss:.4f}, "
+                                    f"Top-1={_top1_acc:.4f}, T={_softmax_temperature:.4f}"
+                                )
                         else:
                             auc = roc_auc_score(y_test, y_pred_proba)
                             logloss = log_loss(y_test, y_pred_proba)
@@ -565,13 +751,6 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
                     optuna_error = f"{type(e).__name__}: {str(e)}"
                     print(f"❌ Optuna最適化エラー: {optuna_error}")
                     traceback.print_exc()
-
-        else:
-            # Phase 0: 標準モード削除。use_optimizer=True/model_type='lightgbm' のみサポート。
-            raise HTTPException(
-                status_code=400,
-                detail="use_optimizer=True / model_type='lightgbm' のみサポートされています（87特徴量モード）",
-            )
 
         # 確率キャリブレーション（BetaCalibration優先、IsotonicRegressionにフォールバック）
         # speed_deviation（回帰）/ rank（ランキング）の場合はキャリブレーション不要
@@ -595,9 +774,8 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
                 except ImportError:
                     logger.info("betacal 未インストール。IsotonicRegression でキャリブレーション学習完了")
                 # キャリブレーション後の logloss を計算
-                from sklearn.metrics import log_loss as _ll_fn
                 _y_cal = calibrator.predict(y_pred_proba)
-                logloss_calibrated = float(_ll_fn(y_test, _y_cal))
+                logloss_calibrated = float(log_loss(y_test, _y_cal))
             except Exception as _cal_err:
                 logger.warning(f"キャリブレーション学習失敗: {_cal_err}")
 
@@ -622,21 +800,27 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
             "model_type": "lightgbm",
             "ultimate_mode": True,
             "use_optimizer": True,
+            "softmax_temperature": float(_softmax_temperature),  # P-3: predict.py で使用
             "pipeline_config": {
                 "use_feature_engineering": True,
                 "use_optimizer": request.use_optimizer,
                 "optimizer_type": type(optimizer).__name__ if optimizer is not None else None,
                 "requires_full_history": True,
-                "feature_engineering_hash": __import__("hashlib").md5(
-                    __import__("inspect").getsource(
+                "feature_engineering_hash": hashlib.md5(
+                    inspect.getsource(
                         __import__("keiba_ai.feature_engineering", fromlist=["add_derived_features"])
                     ).encode()
                 ).hexdigest()[:12],
             },
             "metrics": {
-                "auc": float(auc), "logloss": float(logloss),
+                "auc": float(auc),
+                "spearman_rho": float(auc) if _is_regression else 0.0,
+                "logloss": float(logloss),
+                "rmse": float(logloss) if _is_regression else 0.0,
                 "logloss_calibrated": float(logloss_calibrated),
                 "cv_auc_mean": float(cv_auc_mean), "cv_auc_std": float(cv_auc_std),
+                "top1_accuracy": float(_top1_acc),
+                "softmax_temperature": float(_softmax_temperature),
             },
             "data_count": len(df),
             "race_count": df["race_id"].nunique() if "race_id" in df.columns else 0,
@@ -676,6 +860,7 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
                     "ultimate_mode": True,
                     "use_optimizer": True,
                     "auc": float(auc),
+                    "spearman_rho": float(auc) if _is_regression else 0.0,
                     "cv_auc_mean": float(cv_auc_mean),
                     "data_count": len(df),
                     "race_count": int(df["race_id"].nunique()) if "race_id" in df.columns else 0,
@@ -685,6 +870,99 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
                 },
             )
 
+        if request.feature_store_enabled:
+            try:
+                _feature_store_meta = await asyncio.to_thread(
+                    _feature_store_mgr.materialize_from_training_frame,
+                    df=df,
+                    feature_columns=_all_feature_columns,
+                    target=request.target,
+                    model_id=model_id,
+                    training_date_from=_get_actual_date_from(df, request.training_date_from),
+                    training_date_to=_get_actual_date_to(df, request.training_date_to),
+                    feature_set_name=(request.feature_set_name or request.target),
+                    source_hash=str(bundle.get("pipeline_config", {}).get("feature_engineering_hash", "")),
+                )
+                logger.info(
+                    "Feature Store materialized: "
+                    f"version={_feature_store_meta.get('version_id')} "
+                    f"score={_feature_store_meta.get('quality_score')}"
+                )
+            except Exception as _fsm_err:
+                logger.warning(f"Feature Store materialization skipped: {_fsm_err}")
+
+        try:
+            _git_hash = "unknown"
+            try:
+                import subprocess as _sp
+                _cp = _sp.run(
+                    ["git", "rev-parse", "--short", "HEAD"],
+                    cwd=str(Path(__file__).parent.parent.parent),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                _git_hash = (_cp.stdout or "").strip() or "unknown"
+            except Exception:
+                pass
+
+            await asyncio.to_thread(
+                _mlops_store.record_experiment,
+                experiment_id=str(_experiment_id),
+                target=request.target,
+                model_type="lightgbm",
+                git_hash=_git_hash,
+                dataset_from=_get_actual_date_from(df, request.training_date_from),
+                dataset_to=_get_actual_date_to(df, request.training_date_to),
+                feature_store_version=(str(_feature_store_meta.get("version_id")) if _feature_store_meta else None),
+                feature_quality_score=(float(_feature_store_meta.get("quality_score")) if _feature_store_meta else None),
+                params={
+                    "cv_folds": int(request.cv_folds),
+                    "test_size": float(request.test_size),
+                    "use_optuna": bool(request.use_optuna),
+                    "optuna_trials": int(request.optuna_trials),
+                    "use_optimizer": bool(request.use_optimizer),
+                },
+                metrics={
+                    "auc": float(auc),
+                    "spearman_rho": float(auc) if _is_regression else 0.0,
+                    "logloss": float(logloss),
+                    "logloss_calibrated": float(logloss_calibrated),
+                    "cv_auc_mean": float(cv_auc_mean),
+                    "cv_auc_std": float(cv_auc_std),
+                    "top1_accuracy": float(_top1_acc),
+                    "softmax_temperature": float(_softmax_temperature),
+                },
+                artifacts={
+                    "model_path": str(model_path),
+                    "model_id": str(model_id),
+                    "feature_count": int(feature_count),
+                },
+                status="completed",
+            )
+
+            _model_registry_id = await asyncio.to_thread(
+                _mlops_store.register_model,
+                model_id=str(model_id),
+                target=request.target,
+                experiment_id=str(_experiment_id),
+                dataset_from=_get_actual_date_from(df, request.training_date_from),
+                dataset_to=_get_actual_date_to(df, request.training_date_to),
+                feature_store_version=(str(_feature_store_meta.get("version_id")) if _feature_store_meta else None),
+                feature_quality_score=(float(_feature_store_meta.get("quality_score")) if _feature_store_meta else None),
+                metrics={
+                    "auc": float(auc),
+                    "logloss": float(logloss),
+                    "cv_auc_mean": float(cv_auc_mean),
+                    "cv_auc_std": float(cv_auc_std),
+                },
+                stage="candidate",
+                status="active",
+                notes="auto-registered from training pipeline",
+            )
+        except Exception as _mlops_err:
+            logger.warning(f"MLOps tracking skipped: {_mlops_err}")
+
         progress_cb("学習完了", 98)
         training_time = (datetime.now() - start_time).total_seconds()
         return TrainResponse(
@@ -692,18 +970,32 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
             model_id=model_id,
             model_path=str(model_path),
             metrics={
-                "auc": float(auc), "logloss": float(logloss),
+                "auc": float(auc),
+                "spearman_rho": float(auc) if _is_regression else 0.0,
+                "logloss": float(logloss),
+                "rmse": float(logloss) if _is_regression else 0.0,
                 "logloss_calibrated": float(logloss_calibrated),
                 "cv_auc_mean": float(cv_auc_mean), "cv_auc_std": float(cv_auc_std),
+                "top1_accuracy": float(_top1_acc),
+                "softmax_temperature": float(_softmax_temperature),
             },
             data_count=len(df),
             race_count=df["race_id"].nunique() if "race_id" in df.columns else 0,
             feature_count=feature_count,
             training_time=training_time,
-            message=f"モデル学習完了 (AUC: {auc:.4f}, LogLoss: {logloss:.4f}, LogLoss(Cal): {logloss_calibrated:.4f})",
+            message=(
+                f"モデル学習完了 (Spearman_ρ: {auc:.4f}, RMSE: {logloss:.4f}, "
+                f"Top-1: {_top1_acc:.4f}, T: {_softmax_temperature:.3f})"
+                if _is_regression else
+                f"モデル学習完了 (AUC: {auc:.4f}, LogLoss: {logloss:.4f}, LogLoss(Cal): {logloss_calibrated:.4f})"
+            ),
             optuna_executed=optuna_executed,
             optuna_error=optuna_error,
             feature_columns=_all_feature_columns,
+            feature_store_version=(str(_feature_store_meta.get("version_id")) if _feature_store_meta else None),
+            feature_quality_score=(float(_feature_store_meta.get("quality_score")) if _feature_store_meta else None),
+            experiment_id=_experiment_id,
+            model_registry_id=_model_registry_id,
         )
 
     except HTTPException:

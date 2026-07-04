@@ -1,0 +1,13 @@
+{
+  "gate_status": "WARN",
+  "exit_code": 0,
+  "reasons": [],
+  "warnings": [
+    "history size is small; reliability trend is not stable yet"
+  ],
+  "latest_status": "PASS",
+  "last_10_success_rate": 1.0,
+  "flaky_warning": false,
+  "failed_steps": [],
+  "suggested_next_action": "Review warnings and keep monitoring trend before tightening strict mode."
+}

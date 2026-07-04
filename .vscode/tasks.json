@@ -89,6 +89,34 @@
       }
     },
     {
+      "label": "Start FastAPI (Dev Reload)",
+      "type": "shell",
+      "command": "${workspaceFolder}/python-api/.venv/Scripts/python.exe",
+      "args": ["main.py"],
+      "options": {
+        "cwd": "${workspaceFolder}/python-api",
+        "env": {
+          "FASTAPI_DEV": "true"
+        }
+      },
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "servers"
+      }
+    },
+    {
+      "label": "Start All Servers (Dev Reload)",
+      "dependsOn": ["Start FastAPI (Dev Reload)", "Start Next.js"],
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
+    },
+    {
       "label": "Set Admin (Prompt Email)",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/Scripts/python.exe",

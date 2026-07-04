@@ -1,0 +1,88 @@
+{
+  "load_baseline": {
+    "elapsed_sec": 52.826,
+    "rss_before_gb": 0.066,
+    "rss_after_gb": 5.194,
+    "shape": [
+      575346,
+      132
+    ],
+    "memory_mb": 2640.74,
+    "stage_profile": {
+      "sqlite_read": 7.3394,
+      "merge": 9.7949,
+      "astype": 0.5776,
+      "fillna": 0.2079,
+      "sort": 4.0801,
+      "feature_creation": 14.0829,
+      "memory_opt": 0.0
+    }
+  },
+  "memory_optimization": {
+    "elapsed_sec": 13.081,
+    "before_mb": 2640.74,
+    "after_mb": 338.98,
+    "reduction_mb": 2301.77,
+    "reduction_pct": 87.16,
+    "int_downcast_cols": 7,
+    "float_downcast_cols": 65,
+    "object_to_category_cols": 57
+  },
+  "cache": {
+    "cache_miss_sec": 0.235,
+    "cache_hit_sec": 0.202,
+    "parquet_exists": false,
+    "pickle_exists": false
+  },
+  "feature_creation": {
+    "sample_rows": 20000,
+    "add_derived_features_sec": 166.737
+  },
+  "sqlite_optimization": {
+    "created_index_count": 0,
+    "create_index_sec": 0.0,
+    "analyze_sec": 0.517,
+    "vacuum_sec": 27.919,
+    "required_presence": {
+      "race_id": true,
+      "horse_id": true,
+      "jockey_id": true,
+      "trainer_id": true,
+      "date": true
+    },
+    "index_names": [
+      "idx_plog_race",
+      "idx_races_date",
+      "idx_return_race_id",
+      "idx_rr_date",
+      "idx_rr_horse_id",
+      "idx_rr_jockey_id",
+      "idx_rr_race_id",
+      "idx_rr_trainer_id",
+      "idx_rru_horse_id",
+      "idx_rru_race_id",
+      "idx_ru_date",
+      "idx_ru_race_id",
+      "idx_speed_unique",
+      "idx_training_race_id",
+      "idx_training_unique",
+      "sqlite_autoindex_entries_1",
+      "sqlite_autoindex_holding_times_cache_1",
+      "sqlite_autoindex_horse_details_1",
+      "sqlite_autoindex_jockey_details_1",
+      "sqlite_autoindex_models_1",
+      "sqlite_autoindex_race_lap_times_1",
+      "sqlite_autoindex_races_1",
+      "sqlite_autoindex_races_ultimate_1",
+      "sqlite_autoindex_results_1",
+      "sqlite_autoindex_scraped_dates_1",
+      "sqlite_autoindex_trainer_details_1"
+    ]
+  },
+  "polars_benchmark": {
+    "polars_available": false,
+    "pandas_sec": 0.169,
+    "pandas_rss_delta_gb": 0.035,
+    "polars_error": "ModuleNotFoundError: No module named 'polars'"
+  }
+}

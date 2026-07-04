@@ -13,7 +13,7 @@ export interface JobPollerOptions {
   onError?: (message: string) => void
   /** ポーリング間隔 (ms) — デフォルト 3000 */
   intervalMs?: number
-  /** タイムアウト上限 (ms) — デフォルト 10分 */
+  /** タイムアウト上限 (ms) — デフォルト 20分 */
   maxMs?: number
 }
 
@@ -46,7 +46,7 @@ export function useJobPoller({
   onCompleted,
   onError,
   intervalMs = 3000,
-  maxMs = 10 * 60 * 1000,
+  maxMs = 20 * 60 * 1000,
 }: JobPollerOptions): JobPollerResult {
   const [status, setStatus] = useState<JobStatus>('idle')
   const [progress, setProgress] = useState('')
@@ -93,7 +93,11 @@ export function useJobPoller({
         if (!res.ok) return // 一時的エラーはスキップ
         const data = await res.json()
 
-        const msg: string = data.progress || data.message || ''
+        // progress は object { message, done, total } の場合と文字列の場合がある
+        const msg: string =
+          (typeof data.progress === 'object' ? data.progress?.message : data.progress)
+          || data.message
+          || ''
         if (msg) setProgress(msg)
         if (typeof data.pct === 'number') setPct(data.pct)
 
@@ -106,6 +110,12 @@ export function useJobPoller({
           setStatus('error')
           setProgress(data.error || 'エラーが発生しました')
           onErrorRef.current?.(data.error || 'エラーが発生しました')
+        } else if (data.status === 'blocked') {
+          stop()
+          setStatus('error')
+          const blockMsg = data.error || 'IPブロック検知 — VPNのIP変更後に再実行してください'
+          setProgress(blockMsg)
+          onErrorRef.current?.(blockMsg)
         } else if (data.status === 'not_found') {
           stop()
           setStatus('error')

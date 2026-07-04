@@ -6,6 +6,31 @@ import { Logo } from '@/components/Logo'
 import { authFetch } from '@/lib/auth-fetch'
 
 // ── 型定義 ────────────────────────────────────────────────────────────
+type PeriodStats = {
+  period: string
+  total_races: number
+  decided_races?: number
+  top1_win_rate?: number
+  top1_place3_rate?: number
+  roi?: number | null
+  avg_ev?: number | null
+  positive_ev_rate?: number | null
+}
+
+type ModelStats = {
+  model_id: string
+  total_bets: number
+  decided: number
+  win_rate: number
+  place3_rate: number
+  roi: number | null
+}
+
+type SummaryData = {
+  periods: PeriodStats[]
+  by_model: ModelStats[]
+}
+
 type PredictionEntry = {
   horse_id: string
   horse_name: string
@@ -83,6 +108,185 @@ function EvBadge({ ev }: { ev: number | null }) {
     <span className="text-[10px] text-[#444]">
       EV{(ev * 100).toFixed(0)}%
     </span>
+  )
+}
+
+// ── スケルトン ──────────────────────────────────────────────────────
+function SkeletonCard() {
+  return (
+    <div className="bg-[#111] border border-[#1e1e1e] rounded-lg overflow-hidden mb-3 animate-pulse">
+      <div className="flex items-center justify-between px-4 py-2.5 border-b border-[#1e1e1e]">
+        <div className="flex gap-2">
+          <div className="h-3 w-20 bg-[#222] rounded" />
+          <div className="h-3 w-16 bg-[#222] rounded" />
+        </div>
+        <div className="h-3 w-12 bg-[#222] rounded" />
+      </div>
+      <div className="px-4 pt-2 pb-1">
+        <div className="h-4 w-40 bg-[#222] rounded" />
+      </div>
+      <div className="px-4 pb-3 space-y-1.5 mt-2">
+        {[1, 2, 3].map(i => (
+          <div key={i} className="flex gap-3">
+            <div className="h-3 w-4 bg-[#1a1a1a] rounded" />
+            <div className="h-3 w-24 bg-[#1a1a1a] rounded" />
+            <div className="h-3 w-12 bg-[#1a1a1a] rounded ml-auto" />
+            <div className="h-3 w-10 bg-[#1a1a1a] rounded" />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ── 実績サマリータブ ─────────────────────────────────────────────────
+function SummaryTab() {
+  const [data, setData] = useState<SummaryData | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    setLoading(true)
+    authFetch('/api/prediction-history/summary', { signal: AbortSignal.timeout(30_000) })
+      .then(r => r.ok ? r.json() : r.json().then((e: { detail?: string }) => Promise.reject(e.detail || 'error')))
+      .then(setData)
+      .catch(e => setError(String(e)))
+      .finally(() => setLoading(false))
+  }, [])
+
+  if (loading) {
+    return (
+      <div className="space-y-4">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {[1, 2, 3, 4].map(i => (
+            <div key={i} className="bg-[#111] border border-[#1e1e1e] rounded-lg px-4 py-3 animate-pulse">
+              <div className="h-2 w-16 bg-[#222] rounded mb-3" />
+              <div className="h-6 w-12 bg-[#222] rounded" />
+            </div>
+          ))}
+        </div>
+      </div>
+    )
+  }
+  if (error) {
+    return <div className="text-sm text-red-400 bg-red-900/20 border border-red-900/40 rounded px-4 py-3">{error}</div>
+  }
+  if (!data) return null
+
+  return (
+    <div className="space-y-8">
+      {/* 期間別テーブル */}
+      <section>
+        <h2 className="text-xs font-semibold text-[#555] uppercase tracking-wider mb-3">期間別実績</h2>
+        <div className="bg-[#111] border border-[#1e1e1e] rounded-lg overflow-hidden">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-[#1e1e1e] text-[#555]">
+                <th className="px-4 py-2.5 text-left font-normal">期間</th>
+                <th className="px-4 py-2.5 text-right font-normal">総レース</th>
+                <th className="px-4 py-2.5 text-right font-normal">確定済み</th>
+                <th className="px-4 py-2.5 text-right font-normal">単勝的中率</th>
+                <th className="px-4 py-2.5 text-right font-normal">複勝的中率</th>
+                <th className="px-4 py-2.5 text-right font-normal">ROI</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.periods.map(p => (
+                <tr key={p.period} className="border-t border-[#1a1a1a] hover:bg-[#141414]">
+                  <td className="px-4 py-2.5 font-medium text-white">{p.period}</td>
+                  <td className="px-4 py-2.5 text-right text-[#888]">{p.total_races}</td>
+                  <td className="px-4 py-2.5 text-right text-[#888]">{p.decided_races ?? '—'}</td>
+                  <td className="px-4 py-2.5 text-right">
+                    {p.top1_win_rate != null ? (
+                      <span className={p.top1_win_rate >= 35 ? 'text-emerald-400 font-semibold' : p.top1_win_rate >= 25 ? 'text-yellow-400' : 'text-[#888]'}>
+                        {p.top1_win_rate}%
+                      </span>
+                    ) : '—'}
+                  </td>
+                  <td className="px-4 py-2.5 text-right">
+                    {p.top1_place3_rate != null ? (
+                      <span className={p.top1_place3_rate >= 55 ? 'text-emerald-400 font-semibold' : p.top1_place3_rate >= 40 ? 'text-yellow-400' : 'text-[#888]'}>
+                        {p.top1_place3_rate}%
+                      </span>
+                    ) : '—'}
+                  </td>
+                  <td className="px-4 py-2.5 text-right">
+                    {p.roi != null ? (
+                      <span className={p.roi >= 0 ? 'text-emerald-400 font-semibold' : 'text-red-400'}>
+                        {p.roi >= 0 ? '+' : ''}{p.roi}%
+                      </span>
+                    ) : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+      </section>
+
+      {/* モデル別成績 */}
+      {data.by_model.length > 0 && (
+        <section>
+          <h2 className="text-xs font-semibold text-[#555] uppercase tracking-wider mb-3">モデル別成績</h2>
+          <div className="bg-[#111] border border-[#1e1e1e] rounded-lg overflow-hidden">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-[#1e1e1e] text-[#555]">
+                  <th className="px-4 py-2.5 text-left font-normal">モデルID</th>
+                  <th className="px-4 py-2.5 text-right font-normal">確定レース</th>
+                  <th className="px-4 py-2.5 text-right font-normal">単勝的中率</th>
+                  <th className="px-4 py-2.5 text-right font-normal">複勝的中率</th>
+                  <th className="px-4 py-2.5 text-right font-normal">ROI</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.by_model.map((m, idx) => (
+                  <tr key={m.model_id} className="border-t border-[#1a1a1a] hover:bg-[#141414]">
+                    <td className="px-4 py-2.5">
+                      <div className="flex items-center gap-2">
+                        {idx === 0 && <span className="text-[10px] px-1 py-0.5 bg-yellow-500/20 text-yellow-400 rounded">TOP</span>}
+                        <span className="font-mono text-[#aaa] text-[10px]">
+                          {m.model_id.replace(/_ultimate$/, '').replace(/^model_/, '')}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-2.5 text-right text-[#888]">{m.decided}</td>
+                    <td className="px-4 py-2.5 text-right">
+                      <span className={m.win_rate >= 35 ? 'text-emerald-400 font-semibold' : m.win_rate >= 25 ? 'text-yellow-400' : 'text-[#888]'}>
+                        {m.win_rate}%
+                      </span>
+                    </td>
+                    <td className="px-4 py-2.5 text-right">
+                      <span className={m.place3_rate >= 55 ? 'text-emerald-400 font-semibold' : m.place3_rate >= 40 ? 'text-yellow-400' : 'text-[#888]'}>
+                        {m.place3_rate}%
+                      </span>
+                    </td>
+                    <td className="px-4 py-2.5 text-right">
+                      {m.roi != null ? (
+                        <span className={m.roi >= 0 ? 'text-emerald-400 font-semibold' : 'text-red-400'}>
+                          {m.roi >= 0 ? '+' : ''}{m.roi}%
+                        </span>
+                      ) : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {data.periods[0]?.total_races === 0 && (
+        <div className="text-center text-[#555] py-12">
+          <p className="text-sm mb-2">実績データがありません</p>
+          <p className="text-xs text-[#444]">
+            <Link href="/race-analysis" className="text-[#4a9eff] hover:underline">予測スコア詳細</Link>
+            {' '}でレースを分析すると自動的に蓄積されます
+          </p>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -183,6 +387,7 @@ function RaceCard({ race }: { race: RaceHistory }) {
 
 // ── メインページ ─────────────────────────────────────────────────────
 export default function PredictionHistoryPage() {
+  const [activeTab, setActiveTab] = useState<'history' | 'stats'>('history')
   const [races, setRaces] = useState<RaceHistory[]>([])
   const [stats, setStats] = useState<Stats | null>(null)
   const [loading, setLoading] = useState(false)
@@ -228,6 +433,26 @@ export default function PredictionHistoryPage() {
         </button>
       </header>
 
+      {/* タブバー */}
+      <div className="flex border-b border-[#1e1e1e] px-6">
+        {([
+          { key: 'history', label: '予測履歴' },
+          { key: 'stats',   label: '実績分析' },
+        ] as const).map(t => (
+          <button
+            key={t.key}
+            onClick={() => setActiveTab(t.key)}
+            className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition-colors ${
+              activeTab === t.key
+                ? 'border-white text-white'
+                : 'border-transparent text-[#555] hover:text-[#888]'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
       <div className="max-w-3xl mx-auto px-4 py-6">
         {/* エラー */}
         {error && (
@@ -236,87 +461,95 @@ export default function PredictionHistoryPage() {
           </div>
         )}
 
-        {/* サマリー統計 */}
-        {stats && stats.total_races > 0 && (
-          <div className="mb-6 space-y-3">
-            {/* 基本指標 */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              {[
-                { label: '予測済みレース', value: `${stats.total_races}レース` },
-                { label: '結果確定', value: stats.decided_races != null ? `${stats.decided_races}レース` : '—' },
-                { label: '予測1位 単勝的中率', value: stats.top1_win_rate != null ? `${stats.top1_win_rate}%` : '—' },
-                { label: '予測1位 複勝的中率', value: stats.top1_place3_rate != null ? `${stats.top1_place3_rate}%` : '—' },
-              ].map(s => (
-                <div key={s.label} className="bg-[#111] border border-[#1e1e1e] rounded-lg px-4 py-3">
-                  <div className="text-[10px] text-[#555] mb-1">{s.label}</div>
-                  <div className="text-lg font-semibold">{s.value}</div>
-                </div>
-              ))}
-            </div>
-            {/* ROI / EV 指標 */}
-            {stats.roi != null && (
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div className={`border rounded-lg px-4 py-3 ${
-                  stats.roi >= 0 ? 'bg-emerald-950/30 border-emerald-800/40' : 'bg-red-950/20 border-red-900/30'
-                }`}>
-                  <div className="text-[10px] text-[#555] mb-1">シミュレーションROI（予測1位に一律賭け）</div>
-                  <div className={`text-xl font-bold ${stats.roi >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                    {stats.roi >= 0 ? '+' : ''}{stats.roi}%
-                  </div>
-                </div>
-                {stats.avg_ev != null && (
-                  <div className="bg-[#111] border border-[#1e1e1e] rounded-lg px-4 py-3">
-                    <div className="text-[10px] text-[#555] mb-1">平均期待値（予測1位）</div>
-                    <div className={`text-lg font-semibold ${stats.avg_ev >= 0 ? 'text-emerald-400' : 'text-[#888]'}`}>
-                      {stats.avg_ev >= 0 ? '+' : ''}{(stats.avg_ev * 100).toFixed(1)}%
+        {/* ── 実績分析タブ ── */}
+        {activeTab === 'stats' && <SummaryTab />}
+
+        {/* ── 予測履歴タブ ── */}
+        {activeTab === 'history' && (
+          <>
+            {/* サマリー統計 */}
+            {stats && stats.total_races > 0 && (
+              <div className="mb-6 space-y-3">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  {[
+                    { label: '予測済みレース', value: `${stats.total_races}レース` },
+                    { label: '結果確定', value: stats.decided_races != null ? `${stats.decided_races}レース` : '—' },
+                    { label: '予測1位 単勝的中率', value: stats.top1_win_rate != null ? `${stats.top1_win_rate}%` : '—' },
+                    { label: '予測1位 複勝的中率', value: stats.top1_place3_rate != null ? `${stats.top1_place3_rate}%` : '—' },
+                  ].map(s => (
+                    <div key={s.label} className="bg-[#111] border border-[#1e1e1e] rounded-lg px-4 py-3">
+                      <div className="text-[10px] text-[#555] mb-1">{s.label}</div>
+                      <div className="text-lg font-semibold">{s.value}</div>
                     </div>
-                  </div>
-                )}
-                {stats.positive_ev_rate != null && (
-                  <div className="bg-[#111] border border-[#1e1e1e] rounded-lg px-4 py-3">
-                    <div className="text-[10px] text-[#555] mb-1">期待値プラス割合</div>
-                    <div className="text-lg font-semibold">{stats.positive_ev_rate}%</div>
+                  ))}
+                </div>
+                {stats.roi != null && (
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className={`border rounded-lg px-4 py-3 ${
+                      stats.roi >= 0 ? 'bg-emerald-950/30 border-emerald-800/40' : 'bg-red-950/20 border-red-900/30'
+                    }`}>
+                      <div className="text-[10px] text-[#555] mb-1">ROI</div>
+                      <div className={`text-xl font-bold ${stats.roi >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                        {stats.roi >= 0 ? '+' : ''}{stats.roi}%
+                      </div>
+                    </div>
+                    {stats.avg_ev != null && (
+                      <div className="bg-[#111] border border-[#1e1e1e] rounded-lg px-4 py-3">
+                        <div className="text-[10px] text-[#555] mb-1">平均EV</div>
+                        <div className={`text-lg font-semibold ${stats.avg_ev >= 0 ? 'text-emerald-400' : 'text-[#888]'}`}>
+                          {stats.avg_ev >= 0 ? '+' : ''}{(stats.avg_ev * 100).toFixed(1)}%
+                        </div>
+                      </div>
+                    )}
+                    {stats.positive_ev_rate != null && (
+                      <div className="bg-[#111] border border-[#1e1e1e] rounded-lg px-4 py-3">
+                        <div className="text-[10px] text-[#555] mb-1">EV+割合</div>
+                        <div className="text-lg font-semibold">{stats.positive_ev_rate}%</div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
             )}
-          </div>
-        )}
 
-        {/* ロード中 */}
-        {loading && (
-          <div className="text-center text-[#555] py-16 text-sm">読み込み中...</div>
-        )}
+            {/* スケルトンローディング */}
+            {loading && (
+              <div className="space-y-0">
+                {[1, 2, 3].map(i => <SkeletonCard key={i} />)}
+              </div>
+            )}
 
-        {/* データなし */}
-        {!loading && races.length === 0 && !error && (
-          <div className="text-center text-[#555] py-16">
-            <p className="text-sm mb-2">予測履歴がありません</p>
-            <p className="text-xs text-[#444]">
-              <Link href="/race-analysis" className="text-[#4a9eff] hover:underline">予測スコア詳細</Link>
-              {' '}でレースを分析すると自動的に保存されます
-            </p>
-          </div>
-        )}
+            {/* データなし */}
+            {!loading && races.length === 0 && !error && (
+              <div className="text-center text-[#555] py-16">
+                <p className="text-sm mb-2">予測履歴がありません</p>
+                <p className="text-xs text-[#444]">
+                  <Link href="/race-analysis" className="text-[#4a9eff] hover:underline">予測スコア詳細</Link>
+                  {' '}でレースを分析すると自動的に保存されます
+                </p>
+              </div>
+            )}
 
-        {/* 結果確定済みレース */}
-        {decidedRaces.length > 0 && (
-          <section className="mb-8">
-            <h2 className="text-xs font-semibold text-[#555] uppercase tracking-wider mb-3">
-              結果確定 ({decidedRaces.length}レース)
-            </h2>
-            {decidedRaces.map(r => <RaceCard key={r.race_id} race={r} />)}
-          </section>
-        )}
+            {/* 結果確定済みレース */}
+            {!loading && decidedRaces.length > 0 && (
+              <section className="mb-8">
+                <h2 className="text-xs font-semibold text-[#555] uppercase tracking-wider mb-3">
+                  結果確定 ({decidedRaces.length}レース)
+                </h2>
+                {decidedRaces.map(r => <RaceCard key={r.race_id} race={r} />)}
+              </section>
+            )}
 
-        {/* 結果待ちレース */}
-        {pendingRaces.length > 0 && (
-          <section>
-            <h2 className="text-xs font-semibold text-[#555] uppercase tracking-wider mb-3">
-              結果待ち ({pendingRaces.length}レース)
-            </h2>
-            {pendingRaces.map(r => <RaceCard key={r.race_id} race={r} />)}
-          </section>
+            {/* 結果待ちレース */}
+            {!loading && pendingRaces.length > 0 && (
+              <section>
+                <h2 className="text-xs font-semibold text-[#555] uppercase tracking-wider mb-3">
+                  結果待ち ({pendingRaces.length}レース)
+                </h2>
+                {pendingRaces.map(r => <RaceCard key={r.race_id} race={r} />)}
+              </section>
+            )}
+          </>
         )}
       </div>
     </div>

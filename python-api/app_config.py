@@ -6,11 +6,38 @@ from __future__ import annotations
 
 import logging
 import sys
+import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import joblib
 from fastapi import HTTPException
+
+# ── .env 読み込み（ローカル開発用 / 本番は環境変数優先） ──────────
+# .env は混合エンコードの可能性があるため encoding-safe 手動パース
+def _load_env_safe_appconfig() -> None:
+    from pathlib import Path as _P
+    _env = _P(__file__).parent.parent / ".env"
+    if not _env.exists():
+        return
+    try:
+        raw = _env.read_bytes()
+        for lb in raw.split(b"\n"):
+            try:
+                line = lb.decode("ascii").strip()
+            except UnicodeDecodeError:
+                continue
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                k, _, v = line.partition("=")
+                k, v = k.strip(), v.strip()
+                if k and k not in __import__("os").environ:
+                    __import__("os").environ[k] = v
+    except Exception:
+        pass
+
+_load_env_safe_appconfig()
 
 # ── keiba_ai モジュールパスを sys.path に追加 ──────────────────────
 sys.path.insert(0, str(Path(__file__).parent.parent / "keiba"))
@@ -36,7 +63,11 @@ MODELS_DIR = Path(__file__).parent / "models"
 MODELS_DIR.mkdir(exist_ok=True)
 
 CONFIG_PATH = Path(__file__).parent.parent / "keiba" / "config.yaml"
-ULTIMATE_DB = Path(__file__).parent.parent / "keiba" / "data" / "keiba_ultimate.db"
+_ULTIMATE_DB_OVERRIDE = (
+    os.environ.get("SCENARIO_ROUTER_AUDIT_RACE_DB_PATH", "").strip()
+    or os.environ.get("ULTIMATE_DB_PATH", "").strip()
+)
+ULTIMATE_DB = Path(_ULTIMATE_DB_OVERRIDE) if _ULTIMATE_DB_OVERRIDE else (Path(__file__).parent.parent / "keiba" / "data" / "keiba_ultimate.db")
 
 # ── keiba_ai.config の load_config を再エクスポート ──────────────
 try:
@@ -245,10 +276,24 @@ def _ensure_model_local(model_id: str) -> Optional[Path]:
     return None
 
 
+# ── モデルバンドルキャッシュ（mtime ベース: 再学習でファイルが更新されれば自動無効化）
+_MODEL_BUNDLE_CACHE: Dict[str, tuple] = {}  # path → (mtime, bundle)
+
+
 def load_model_bundle(model_path: Path) -> Dict[str, Any]:
-    """モデルバンドルをロード"""
+    """モデルバンドルをロード（メモリキャッシュ付き）。
+    joblib.load は LightGBM モデルで 1-3s かかるため、mtime が変わらない限りキャッシュを返す。
+    再学習でファイルが更新されると mtime が変わり自動的に再読み込みされる。
+    """
     try:
-        return joblib.load(model_path)
+        _key = str(model_path)
+        _mtime = model_path.stat().st_mtime
+        _cached = _MODEL_BUNDLE_CACHE.get(_key)
+        if _cached is not None and _cached[0] == _mtime:
+            return _cached[1]
+        bundle = joblib.load(model_path)
+        _MODEL_BUNDLE_CACHE[_key] = (_mtime, bundle)
+        return bundle
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"モデルのロードに失敗: {str(e)}")
 

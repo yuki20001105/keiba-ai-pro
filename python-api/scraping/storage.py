@@ -44,6 +44,7 @@ def _init_sqlite_db(db_path: Path) -> None:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_rru_race_id ON race_results_ultimate (race_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_return_race_id ON return_tables_ultimate (race_id)")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS scraped_dates (
@@ -53,6 +54,53 @@ def _init_sqlite_db(db_path: Path) -> None:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS training_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                race_id TEXT NOT NULL,
+                horse_number INTEGER,
+                horse_name TEXT,
+                training_date TEXT,
+                course TEXT,
+                track_condition TEXT,
+                rider TEXT,
+                time_6f REAL,
+                time_5f REAL,
+                time_4f REAL,
+                time_3f REAL,
+                time_1f REAL,
+                lap_6f_5f REAL,
+                lap_5f_4f REAL,
+                lap_4f_3f REAL,
+                lap_3f_1f REAL,
+                lap_1f_g REAL,
+                position TEXT,
+                pace TEXT,
+                grade TEXT,
+                comment TEXT,
+                is_last_training INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_training_race_id ON training_data (race_id)")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_training_unique ON training_data (race_id, horse_number, training_date, course)")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS speed_figures (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                race_id TEXT NOT NULL,
+                horse_number INTEGER,
+                horse_name TEXT,
+                max_index INTEGER,
+                avg_5_index INTEGER,
+                dist_max_index INTEGER,
+                course_max_index INTEGER,
+                index_3ago INTEGER,
+                index_2ago INTEGER,
+                index_last INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_speed_unique ON speed_figures (race_id, horse_number)")
         conn.commit()
         conn.close()
         logger.debug(f"SQLite初期化完了(WAL): {db_path}")
@@ -60,7 +108,7 @@ def _init_sqlite_db(db_path: Path) -> None:
         logger.warning(f"SQLite初期化失敗: {e}")
 
 
-def _save_race_sqlite_only(race_data: dict, db_path: Path, overwrite: bool = True) -> bool:
+def _save_race_sqlite_only(race_data: dict, db_path: Path) -> bool:
     """スクレイピング結果を SQLite のみに保存（Supabase 非対応）"""
     race_info = race_data["race_info"]
     horses = race_data["horses"]
@@ -90,8 +138,7 @@ def _save_race_sqlite_only(race_data: dict, db_path: Path, overwrite: bool = Tru
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        if overwrite:
-            cur.execute("DELETE FROM race_results_ultimate WHERE race_id = ?", (race_id,))
+        cur.execute("DELETE FROM race_results_ultimate WHERE race_id = ?", (race_id,))
         for h in horses:
             cur.execute(
                 "INSERT INTO race_results_ultimate (race_id, data) VALUES (?, ?)",
@@ -109,7 +156,7 @@ def _save_race_sqlite_only(race_data: dict, db_path: Path, overwrite: bool = Tru
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        if overwrite and return_tables:
+        if return_tables:
             cur.execute("DELETE FROM return_tables_ultimate WHERE race_id = ?", (race_id,))
         for rt in return_tables:
             cur.execute(
@@ -131,48 +178,163 @@ def _save_race_sqlite_only(race_data: dict, db_path: Path, overwrite: bool = Tru
         return False
 
 
-def _save_race_to_ultimate_db(race_data: dict, db_path: Path, overwrite: bool = True) -> bool:
-    """スクレイピング結果を keiba_ultimate.db (SQLite) に保存"""
-    race_info = race_data["race_info"]
-    horses = race_data["horses"]
-    race_id = race_info["race_id"]
+def _save_race_to_ultimate_db(race_data: dict, db_path: Path) -> bool:
+    """スクレイピング結果を keiba_ultimate.db (SQLite) に保存。_save_race_sqlite_only に委譲。"""
+    return _save_race_sqlite_only(race_data, db_path)
 
+
+# ============================================================
+# 調教タイムデータの保存
+# ============================================================
+
+def _save_training_data(race_id: str, training_records: list, db_path: Path) -> int:
+    """調教タイムレコードを SQLite の training_data テーブルに保存する。
+    既存レコードは IGNORE（重複スキップ）。
+    Returns: 挿入件数
+    """
+    if not training_records:
+        return 0
     try:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(db_path))
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS races_ultimate (
-                race_id TEXT PRIMARY KEY,
-                data TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        cur.execute(
-            "INSERT OR REPLACE INTO races_ultimate (race_id, data) VALUES (?, ?)",
-            (race_id, json.dumps(race_info, ensure_ascii=False)),
-        )
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS race_results_ultimate (
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS training_data (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                race_id TEXT,
-                data TEXT NOT NULL,
+                race_id TEXT NOT NULL,
+                horse_number INTEGER,
+                horse_name TEXT,
+                training_date TEXT,
+                course TEXT,
+                track_condition TEXT,
+                rider TEXT,
+                time_6f REAL,
+                time_5f REAL,
+                time_4f REAL,
+                time_3f REAL,
+                time_1f REAL,
+                lap_6f_5f REAL,
+                lap_5f_4f REAL,
+                lap_4f_3f REAL,
+                lap_3f_1f REAL,
+                lap_1f_g REAL,
+                position TEXT,
+                pace TEXT,
+                grade TEXT,
+                comment TEXT,
+                is_last_training INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        if overwrite:
-            cur.execute("DELETE FROM race_results_ultimate WHERE race_id = ?", (race_id,))
-        for h in horses:
-            cur.execute(
-                "INSERT INTO race_results_ultimate (race_id, data) VALUES (?, ?)",
-                (race_id, json.dumps(h, ensure_ascii=False)),
-            )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_training_race_id ON training_data (race_id)")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_training_unique ON training_data (race_id, horse_number, training_date, course)")
+
+        inserted = 0
+        for rec in training_records:
+            try:
+                conn.execute(
+                    """INSERT OR IGNORE INTO training_data
+                       (race_id, horse_number, horse_name, training_date, course, track_condition,
+                        rider, time_6f, time_5f, time_4f, time_3f, time_1f,
+                        lap_6f_5f, lap_5f_4f, lap_4f_3f, lap_3f_1f, lap_1f_g,
+                        position, pace, grade, comment, is_last_training)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        rec.get("race_id", race_id),
+                        rec.get("horse_number"),
+                        rec.get("horse_name", ""),
+                        rec.get("training_date", ""),
+                        rec.get("course", ""),
+                        rec.get("track_condition", ""),
+                        rec.get("rider", ""),
+                        rec.get("time_6f"),
+                        rec.get("time_5f"),
+                        rec.get("time_4f"),
+                        rec.get("time_3f"),
+                        rec.get("time_1f"),
+                        rec.get("lap_6f_5f"),
+                        rec.get("lap_5f_4f"),
+                        rec.get("lap_4f_3f"),
+                        rec.get("lap_3f_1f"),
+                        rec.get("lap_1f_g"),
+                        rec.get("position", ""),
+                        rec.get("pace", ""),
+                        rec.get("grade", ""),
+                        rec.get("comment", ""),
+                        1 if rec.get("is_last_training") else 0,
+                    ),
+                )
+                inserted += conn.execute("SELECT changes()").fetchone()[0]
+            except Exception as _re:
+                logger.debug(f"training_data insert skip {race_id}: {_re}")
         conn.commit()
         conn.close()
-        return True
+        return inserted
     except Exception as e:
-        logger.warning(f"SQLite 保存失敗 {race_id}: {e}")
-        return False
+        logger.warning(f"training_data 保存失敗 {race_id}: {e}")
+        return 0
+
+
+def _save_speed_figures(race_id: str, records: list, db_path: Path) -> int:
+    """タイム指数レコードを SQLite の speed_figures テーブルに保存する。
+    既存レコードは REPLACE（上書き更新）。
+    Returns: 挿入・更新件数
+    """
+    if not records:
+        return 0
+    try:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS speed_figures (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                race_id TEXT NOT NULL,
+                horse_number INTEGER,
+                horse_name TEXT,
+                max_index INTEGER,
+                avg_5_index INTEGER,
+                dist_max_index INTEGER,
+                course_max_index INTEGER,
+                index_3ago INTEGER,
+                index_2ago INTEGER,
+                index_last INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_speed_unique ON speed_figures (race_id, horse_number)")
+
+        inserted = 0
+        for rec in records:
+            try:
+                conn.execute(
+                    """INSERT OR REPLACE INTO speed_figures
+                       (race_id, horse_number, horse_name,
+                        max_index, avg_5_index, dist_max_index, course_max_index,
+                        index_3ago, index_2ago, index_last)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        rec.get("race_id", race_id),
+                        rec.get("horse_number"),
+                        rec.get("horse_name", ""),
+                        rec.get("max_index"),
+                        rec.get("avg_5_index"),
+                        rec.get("dist_max_index"),
+                        rec.get("course_max_index"),
+                        rec.get("index_3ago"),
+                        rec.get("index_2ago"),
+                        rec.get("index_last"),
+                    ),
+                )
+                inserted += conn.execute("SELECT changes()").fetchone()[0]
+            except Exception as _re:
+                logger.debug(f"speed_figures insert skip {race_id}: {_re}")
+        conn.commit()
+        conn.close()
+        return inserted
+    except Exception as e:
+        logger.warning(f"speed_figures 保存失敗 {race_id}: {e}")
+        return 0
 
 
 # ============================================================

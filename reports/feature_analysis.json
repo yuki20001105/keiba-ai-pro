@@ -1,0 +1,510 @@
+{
+  "target": "speed_deviation",
+  "created_at": "2026-06-28T21:54:47.185666",
+  "n_features_total": 105,
+  "n_features_ranked": 105,
+  "top30_final_rank": [
+    {
+      "rank": 1,
+      "feature": "recent_form_5race",
+      "final_score": 0.7621,
+      "imp_score": 1.0,
+      "uni_score": 0.2071,
+      "quality_score": 1.0,
+      "group": "05_前走・近走"
+    },
+    {
+      "rank": 2,
+      "feature": "recent_form_weighted",
+      "final_score": 0.666,
+      "imp_score": 0.78,
+      "uni_score": 0.2533,
+      "quality_score": 1.0,
+      "group": "05_前走・近走"
+    },
+    {
+      "rank": 3,
+      "feature": "prev_race_finish",
+      "final_score": 0.4874,
+      "imp_score": 0.3866,
+      "uni_score": 0.3135,
+      "quality_score": 1.0,
+      "group": "99_その他"
+    },
+    {
+      "rank": 4,
+      "feature": "rest_category",
+      "final_score": 0.35,
+      "imp_score": 0.0,
+      "uni_score": 0.5,
+      "quality_score": 1.0,
+      "group": "99_その他"
+    },
+    {
+      "rank": 5,
+      "feature": "form_trend",
+      "final_score": 0.3142,
+      "imp_score": 0.0247,
+      "uni_score": 0.3395,
+      "quality_score": 1.0,
+      "group": "05_前走・近走"
+    },
+    {
+      "rank": 6,
+      "feature": "speed_trend_5",
+      "final_score": 0.3137,
+      "imp_score": 0.0012,
+      "uni_score": 0.3852,
+      "quality_score": 0.9878,
+      "group": "99_その他"
+    },
+    {
+      "rank": 7,
+      "feature": "num_horses",
+      "final_score": 0.3089,
+      "imp_score": 0.0009,
+      "uni_score": 0.3615,
+      "quality_score": 1.0,
+      "group": "99_その他"
+    },
+    {
+      "rank": 8,
+      "feature": "prev4_race_finish",
+      "final_score": 0.3028,
+      "imp_score": 0.0102,
+      "uni_score": 0.3257,
+      "quality_score": 1.0,
+      "group": "99_その他"
+    },
+    {
+      "rank": 9,
+      "feature": "holding_just_l3f",
+      "final_score": 0.2972,
+      "imp_score": 0.0006,
+      "uni_score": 0.323,
+      "quality_score": 1.0,
+      "group": "99_その他"
+    },
+    {
+      "rank": 10,
+      "feature": "speed_vs_race_avg",
+      "final_score": 0.2887,
+      "imp_score": 0.0671,
+      "uni_score": 0.1921,
+      "quality_score": 0.9878,
+      "group": "06_相手関係"
+    },
+    {
+      "rank": 11,
+      "feature": "holding_short_time_sec",
+      "final_score": 0.2797,
+      "imp_score": 0.0003,
+      "uni_score": 0.2653,
+      "quality_score": 1.0,
+      "group": "99_その他"
+    },
+    {
+      "rank": 12,
+      "feature": "horse_speed_rank_pct",
+      "final_score": 0.2735,
+      "imp_score": 0.1469,
+      "uni_score": 0.0,
+      "quality_score": 1.0,
+      "group": "06_相手関係"
+    },
+    {
+      "rank": 13,
+      "feature": "prev_speed_index",
+      "final_score": 0.2729,
+      "imp_score": 0.0204,
+      "uni_score": 0.2089,
+      "quality_score": 1.0,
+      "group": "05_前走・近走"
+    },
+    {
+      "rank": 14,
+      "feature": "prev_speed_zscore",
+      "final_score": 0.2696,
+      "imp_score": 0.046,
+      "uni_score": 0.1555,
+      "quality_score": 1.0,
+      "group": "05_前走・近走"
+    },
+    {
+      "rank": 15,
+      "feature": "race_avg_prev_finish",
+      "final_score": 0.2676,
+      "imp_score": 0.1353,
+      "uni_score": 0.0,
+      "quality_score": 1.0,
+      "group": "99_その他"
+    },
+    {
+      "rank": 16,
+      "feature": "prev5_speed_index",
+      "final_score": 0.2625,
+      "imp_score": 0.0014,
+      "uni_score": 0.206,
+      "quality_score": 1.0,
+      "group": "99_その他"
+    },
+    {
+      "rank": 17,
+      "feature": "holding_just_babasa",
+      "final_score": 0.2615,
+      "imp_score": 0.0,
+      "uni_score": 0.205,
+      "quality_score": 1.0,
+      "group": "99_その他"
+    },
+    {
+      "rank": 18,
+      "feature": "day",
+      "final_score": 0.2614,
+      "imp_score": 0.0,
+      "uni_score": 0.2048,
+      "quality_score": 1.0,
+      "group": "99_その他"
+    },
+    {
+      "rank": 19,
+      "feature": "holding_just_finish",
+      "final_score": 0.2571,
+      "imp_score": 0.0008,
+      "uni_score": 0.189,
+      "quality_score": 1.0,
+      "group": "99_その他"
+    },
+    {
+      "rank": 20,
+      "feature": "days_since_last_race",
+      "final_score": 0.2569,
+      "imp_score": 0.0007,
+      "uni_score": 0.1965,
+      "quality_score": 0.9878,
+      "group": "05_前走・近走"
+    },
+    {
+      "rank": 21,
+      "feature": "holding_middle_time_sec",
+      "final_score": 0.2537,
+      "imp_score": 0.0009,
+      "uni_score": 0.1774,
+      "quality_score": 1.0,
+      "group": "99_その他"
+    },
+    {
+      "rank": 22,
+      "feature": "holding_just_time_sec",
+      "final_score": 0.2527,
+      "imp_score": 0.0002,
+      "uni_score": 0.1754,
+      "quality_score": 1.0,
+      "group": "99_その他"
+    },
+    {
+      "rank": 23,
+      "feature": "venue_code_encoded",
+      "final_score": 0.2524,
+      "imp_score": 0.0,
+      "uni_score": 0.1748,
+      "quality_score": 1.0,
+      "group": "99_その他"
+    },
+    {
+      "rank": 24,
+      "feature": "speed_index_change",
+      "final_score": 0.2438,
+      "imp_score": 0.0029,
+      "uni_score": 0.1494,
+      "quality_score": 0.9878,
+      "group": "05_前走・近走"
+    },
+    {
+      "rank": 25,
+      "feature": "prev5_race_weight",
+      "final_score": 0.2409,
+      "imp_score": 0.0002,
+      "uni_score": 0.136,
+      "quality_score": 1.0,
+      "group": "99_その他"
+    },
+    {
+      "rank": 26,
+      "feature": "speed_best_2",
+      "final_score": 0.239,
+      "imp_score": 0.0022,
+      "uni_score": 0.1263,
+      "quality_score": 1.0,
+      "group": "99_その他"
+    },
+    {
+      "rank": 27,
+      "feature": "speed_best_5",
+      "final_score": 0.2383,
+      "imp_score": 0.003,
+      "uni_score": 0.1227,
+      "quality_score": 1.0,
+      "group": "99_その他"
+    },
+    {
+      "rank": 28,
+      "feature": "market_entropy",
+      "final_score": 0.237,
+      "imp_score": 0.0073,
+      "uni_score": 0.1112,
+      "quality_score": 1.0,
+      "group": "04_オッズ市場"
+    },
+    {
+      "rank": 29,
+      "feature": "holding_middle_l3f",
+      "final_score": 0.237,
+      "imp_score": 0.0129,
+      "uni_score": 0.1018,
+      "quality_score": 1.0,
+      "group": "99_その他"
+    },
+    {
+      "rank": 30,
+      "feature": "form_consistency",
+      "final_score": 0.2354,
+      "imp_score": 0.0428,
+      "uni_score": 0.0468,
+      "quality_score": 1.0,
+      "group": "99_その他"
+    }
+  ],
+  "group_scores": [
+    {
+      "group": "05_前走・近走",
+      "n_feats": 12,
+      "avg_score": 0.1715,
+      "sum_score": 2.0583,
+      "max_score": 1.0
+    },
+    {
+      "group": "06_相手関係",
+      "n_feats": 4,
+      "avg_score": 0.0568,
+      "sum_score": 0.2274,
+      "max_score": 0.1469
+    },
+    {
+      "group": "01_レース基本情報",
+      "n_feats": 6,
+      "avg_score": 0.0067,
+      "sum_score": 0.0402,
+      "max_score": 0.0187
+    },
+    {
+      "group": "07_持ちタイム",
+      "n_feats": 3,
+      "avg_score": 0.0118,
+      "sum_score": 0.0355,
+      "max_score": 0.035
+    },
+    {
+      "group": "04_オッズ市場",
+      "n_feats": 1,
+      "avg_score": 0.0073,
+      "sum_score": 0.0073,
+      "max_score": 0.0073
+    },
+    {
+      "group": "13_欠損フラグ",
+      "n_feats": 7,
+      "avg_score": 0.0003,
+      "sum_score": 0.0019,
+      "max_score": 0.0007
+    }
+  ],
+  "high_corr_pairs": [
+    {
+      "feature_a": "kai",
+      "feature_b": "kai_sin",
+      "pearson_r": 1.0
+    },
+    {
+      "feature_a": "kai",
+      "feature_b": "venue_encoded",
+      "pearson_r": 1.0
+    },
+    {
+      "feature_a": "kai_sin",
+      "feature_b": "venue_encoded",
+      "pearson_r": 1.0
+    },
+    {
+      "feature_a": "day",
+      "feature_b": "venue_code_encoded",
+      "pearson_r": 1.0
+    },
+    {
+      "feature_a": "holding_just_time_sec",
+      "feature_b": "holding_middle_time_sec",
+      "pearson_r": 0.9993
+    },
+    {
+      "feature_a": "holding_just_time_sec",
+      "feature_b": "holding_short_time_sec",
+      "pearson_r": 0.9953
+    },
+    {
+      "feature_a": "holding_middle_time_sec",
+      "feature_b": "holding_short_time_sec",
+      "pearson_r": 0.9949
+    },
+    {
+      "feature_a": "distance",
+      "feature_b": "holding_middle_time_sec",
+      "pearson_r": 0.9926
+    },
+    {
+      "feature_a": "distance",
+      "feature_b": "holding_just_time_sec",
+      "pearson_r": 0.9924
+    },
+    {
+      "feature_a": "prev5_race_time",
+      "feature_b": "prev5_race_distance",
+      "pearson_r": 0.9911
+    },
+    {
+      "feature_a": "prev3_race_time",
+      "feature_b": "prev3_race_distance",
+      "pearson_r": 0.9909
+    },
+    {
+      "feature_a": "distance",
+      "feature_b": "holding_long_time_sec",
+      "pearson_r": 0.9893
+    },
+    {
+      "feature_a": "holding_middle_time_sec",
+      "feature_b": "holding_long_time_sec",
+      "pearson_r": 0.9889
+    },
+    {
+      "feature_a": "holding_just_time_sec",
+      "feature_b": "holding_long_time_sec",
+      "pearson_r": 0.9882
+    },
+    {
+      "feature_a": "distance",
+      "feature_b": "holding_short_time_sec",
+      "pearson_r": 0.9876
+    },
+    {
+      "feature_a": "holding_short_time_sec",
+      "feature_b": "holding_long_time_sec",
+      "pearson_r": 0.9872
+    },
+    {
+      "feature_a": "prev4_race_time",
+      "feature_b": "prev4_race_distance",
+      "pearson_r": 0.9866
+    },
+    {
+      "feature_a": "prev3_race_weight",
+      "feature_b": "prev4_race_weight",
+      "pearson_r": 0.9847
+    },
+    {
+      "feature_a": "cos_date",
+      "feature_b": "sin_date",
+      "pearson_r": 0.9823
+    },
+    {
+      "feature_a": "prev4_race_weight",
+      "feature_b": "prev5_race_weight",
+      "pearson_r": 0.9803
+    }
+  ],
+  "high_vif": [
+    {
+      "feature": "recent_form_5race",
+      "vif": Infinity
+    },
+    {
+      "feature": "recent_form_weighted",
+      "vif": Infinity
+    },
+    {
+      "feature": "prev_race_finish",
+      "vif": Infinity
+    },
+    {
+      "feature": "race_avg_prev_finish",
+      "vif": Infinity
+    },
+    {
+      "feature": "horse_speed_rank_pct",
+      "vif": Infinity
+    },
+    {
+      "feature": "distance_change",
+      "vif": Infinity
+    },
+    {
+      "feature": "race_class_encoded",
+      "vif": Infinity
+    },
+    {
+      "feature": "speed_vs_race_avg",
+      "vif": Infinity
+    },
+    {
+      "feature": "prev2_race_finish",
+      "vif": Infinity
+    },
+    {
+      "feature": "top3_count_5",
+      "vif": Infinity
+    }
+  ],
+  "pruning_sim": [
+    {
+      "n_dropped": 0,
+      "n_features": 105,
+      "cv_mean": -0.9988,
+      "cv_metric": "-rmse"
+    },
+    {
+      "n_dropped": 10,
+      "n_features": 95,
+      "cv_mean": -0.9988,
+      "cv_metric": "-rmse"
+    },
+    {
+      "n_dropped": 20,
+      "n_features": 85,
+      "cv_mean": -0.9988,
+      "cv_metric": "-rmse"
+    },
+    {
+      "n_dropped": 30,
+      "n_features": 75,
+      "cv_mean": -0.9988,
+      "cv_metric": "-rmse"
+    },
+    {
+      "n_dropped": 50,
+      "n_features": 55,
+      "cv_mean": -0.9988,
+      "cv_metric": "-rmse"
+    },
+    {
+      "n_dropped": 70,
+      "n_features": 35,
+      "cv_mean": -0.9988,
+      "cv_metric": "-rmse"
+    }
+  ],
+  "recommended_n_features": 105,
+  "quality_summary": {
+    "n_nan_over20": 0,
+    "n_outlier_over5": 0,
+    "n_leak_flag": 0
+  }
+}

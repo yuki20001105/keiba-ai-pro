@@ -1,6 +1,22 @@
 'use client'
 import type { RacePredictResult } from '@/lib/race-analysis-types'
 
+/** 信号機カラー: EV値に応じたテキストクラス */
+function evColor(ev: number | null | undefined): string {
+  if (ev == null) return 'text-[#555]'
+  if (ev >= 1.2) return 'text-emerald-400'
+  if (ev >= 0.9) return 'text-yellow-400'
+  return 'text-red-400'
+}
+
+/** 信号機カラー: バッジ状 */
+function evBadge(ev: number | null | undefined): string {
+  if (ev == null) return 'bg-[#1a1a1a] text-[#555] border-[#222]'
+  if (ev >= 1.2) return 'bg-emerald-950/40 text-emerald-400 border-emerald-800/40'
+  if (ev >= 0.9) return 'bg-yellow-950/40 text-yellow-400 border-yellow-800/40'
+  return 'bg-red-950/30 text-red-400 border-red-900/30'
+}
+
 function probColor(p: number): string {
   if (p > 0.3) return 'bg-[#86efac]'
   if (p > 0.2) return 'bg-[#a3e635]'
@@ -71,6 +87,69 @@ export function RacePredictionPanel({ result }: Props) {
         </div>
       )}
 
+      {/* 本命馬カード */}
+      {(() => {
+        const top1 = preds.find(h => h.predicted_rank === 1)
+        if (!top1) return null
+        return (
+          <div className="rounded-lg border border-[#2a4a2a] bg-gradient-to-br from-[#0d1f0d] to-[#0a0a0a] overflow-hidden">
+            <div className="flex items-center gap-1.5 px-4 pt-3 pb-0">
+              <span className="text-[10px] font-semibold text-[#fbbf24] uppercase tracking-wider">本命</span>
+              <div className="h-px flex-1 bg-[#1e2a1e]" />
+            </div>
+            <div className="px-4 pt-2 pb-4 flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-[#fbbf24] flex items-center justify-center text-xl font-black text-black shrink-0">
+                1
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-xl font-bold truncate">{top1.horse_name}</div>
+                <div className="text-xs text-[#888] mt-0.5">
+                  <span className="mr-2">{top1.horse_number}番</span>
+                  {top1.jockey_name && <span className="mr-2">{top1.jockey_name}</span>}
+                  {top1.age && <span>{top1.sex}{top1.age}</span>}
+                </div>
+              </div>
+              <div className="flex gap-4 shrink-0 text-right">
+                <div>
+                  <div className="text-[10px] text-[#555] mb-1">勝率スコア</div>
+                  <div className="text-2xl font-black font-mono text-[#7dd3fc]">{(top1.p_norm * 100).toFixed(1)}%</div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-[#555] mb-1">オッズ</div>
+                  <div className="text-2xl font-bold font-mono">{top1.odds != null ? `${top1.odds}倍` : '—'}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-[#555] mb-1">期待値</div>
+                  <div className={`text-2xl font-bold font-mono ${evColor(top1.expected_value)}`}>
+                    {top1.expected_value != null ? top1.expected_value.toFixed(2) : '—'}
+                  </div>
+                </div>
+              </div>
+            </div>
+            {/* EVバー */}
+            {top1.expected_value != null && (
+              <div className="px-4 pb-3">
+                <div className="flex items-center gap-2">
+                  <div className="text-[10px] text-[#555] w-12">期待値</div>
+                  <div className="flex-1 bg-[#1a1a1a] rounded-full h-1.5 overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all ${
+                        top1.expected_value >= 1.2 ? 'bg-emerald-400' :
+                        top1.expected_value >= 0.9 ? 'bg-yellow-400' : 'bg-red-400'
+                      }`}
+                      style={{ width: `${Math.min(top1.expected_value / 2 * 100, 100)}%` }}
+                    />
+                  </div>
+                  <span className={`text-xs font-mono font-bold w-12 text-right ${evColor(top1.expected_value)}`}>
+                    {top1.expected_value.toFixed(2)}x
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        )
+      })()}
+
       {/* 馬一覧 */}
       <div className="space-y-2">
         {preds.map((p) => {
@@ -106,7 +185,7 @@ export function RacePredictionPanel({ result }: Props) {
                   </div>
                   <div>
                     <div className="text-[10px] text-[#555]">期待値</div>
-                    <div className={`text-sm font-mono ${p.expected_value != null && p.expected_value >= 1 ? 'text-[#86efac]' : 'text-[#f87171]'}`}>
+                    <div className={`text-sm font-mono font-semibold border rounded px-1.5 py-0.5 ${evBadge(p.expected_value)}`}>
                       {p.expected_value != null ? p.expected_value.toFixed(2) : '—'}
                     </div>
                   </div>

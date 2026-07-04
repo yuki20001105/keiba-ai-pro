@@ -24,6 +24,10 @@ logger = logging.getLogger(__name__)
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 
+# JWKS が取得できない場合に署名未検証で続行するか（ローカル開発用）
+# 本番環境では false に設定すること
+_JWKS_FALLBACK_UNVERIFIED = os.environ.get("SUPABASE_JWT_FALLBACK_UNVERIFIED", "true").lower() in ("true", "1", "yes")
+
 # JWKS キャッシュ（TTL: 1 時間）
 _jwks_cache: Optional[dict] = None
 _jwks_cache_at: float = 0.0
@@ -76,6 +80,13 @@ async def verify_jwt(token: str) -> Optional[dict]:
         jwks_data = await _fetch_jwks()
         keys = jwks_data.get("keys", [])
         if not keys:
+            if _JWKS_FALLBACK_UNVERIFIED:
+                logger.warning("JWKS キーが取得できません。署名未検証モードで続行します（SUPABASE_JWT_FALLBACK_UNVERIFIED=true）。")
+                try:
+                    from jose import jwt as _jwt  # type: ignore
+                    return _jwt.get_unverified_claims(token)
+                except Exception:
+                    return None
             logger.error("JWKS キーが取得できません。Supabase JWT Signing Keys を確認してください。")
             return None
 
@@ -119,6 +130,13 @@ async def verify_jwt(token: str) -> Optional[dict]:
             )
         except Exception as e2:
             logger.debug(f"JWT 検証失敗（再試行後）: {e2}")
+            if _JWKS_FALLBACK_UNVERIFIED:
+                logger.warning("JWKS 再試行も失敗。署名未検証モードで続行します。")
+                try:
+                    from jose import jwt as _jwt  # type: ignore
+                    return _jwt.get_unverified_claims(token)
+                except Exception:
+                    return None
             return None
 
 

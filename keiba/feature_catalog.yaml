@@ -840,6 +840,671 @@ engineered_features:
   type: numeric
   enabled: true
   description: weight_diff (学習時に自動検出)
+- name: time_index
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: time_index (学習時に自動検出)
+- name: prev3_race_finish
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: prev3_race_finish (学習時に自動検出)
+- name: prev3_race_time
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: prev3_race_time (学習時に自動検出)
+- name: prev3_race_weight
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: prev3_race_weight (学習時に自動検出)
+- name: prev3_race_distance
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: prev3_race_distance (学習時に自動検出)
+- name: prev4_race_finish
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: prev4_race_finish (学習時に自動検出)
+- name: prev4_race_time
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: prev4_race_time (学習時に自動検出)
+- name: prev4_race_weight
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: prev4_race_weight (学習時に自動検出)
+- name: prev4_race_distance
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: prev4_race_distance (学習時に自動検出)
+- name: prev5_race_finish
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: prev5_race_finish (学習時に自動検出)
+- name: prev5_race_time
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: prev5_race_time (学習時に自動検出)
+- name: prev5_race_weight
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: prev5_race_weight (学習時に自動検出)
+- name: prev5_race_distance
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: prev5_race_distance (学習時に自動検出)
+- name: holding_just_time_sec
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_just_time_sec (学習時に自動検出)
+- name: holding_just_l3f
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_just_l3f (学習時に自動検出)
+- name: holding_just_finish
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_just_finish (学習時に自動検出)
+- name: holding_just_babasa
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_just_babasa (学習時に自動検出)
+- name: holding_middle_time_sec
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_middle_time_sec (学習時に自動検出)
+- name: holding_middle_l3f
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_middle_l3f (学習時に自動検出)
+- name: holding_middle_finish
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_middle_finish (学習時に自動検出)
+- name: holding_middle_babasa
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_middle_babasa (学習時に自動検出)
+- name: holding_short_time_sec
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_short_time_sec (学習時に自動検出)
+- name: holding_short_l3f
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_short_l3f (学習時に自動検出)
+- name: holding_short_finish
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_short_finish (学習時に自動検出)
+- name: holding_short_babasa
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_short_babasa (学習時に自動検出)
+- name: holding_long_time_sec
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_long_time_sec (学習時に自動検出)
+- name: holding_long_l3f
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_long_l3f (学習時に自動検出)
+- name: holding_long_finish
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_long_finish (学習時に自動検出)
+- name: holding_long_babasa
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_long_babasa (学習時に自動検出)
+- name: has_just_data
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: has_just_data (学習時に自動検出)
+- name: holding_just_speed
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_just_speed (学習時に自動検出)
+- name: holding_just_time_rank
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_just_time_rank (学習時に自動検出)
+- name: holding_just_finish_rank
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_just_finish_rank (学習時に自動検出)
+- name: holding_just_time_sec_is_missing
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_just_time_sec_is_missing (学習時に自動検出)
+- name: holding_just_speed_is_missing
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_just_speed_is_missing (学習時に自動検出)
+- name: holding_just_finish_is_missing
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_just_finish_is_missing (学習時に自動検出)
+- name: date_day
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: date_day (学習時に自動検出)
+- name: date_dayofweek
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: date_dayofweek (学習時に自動検出)
+- name: race_avg_prev_speed
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: race_avg_prev_speed (学習時に自動検出)
+- name: race_max_prev_speed
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: race_max_prev_speed (学習時に自動検出)
+- name: speed_vs_race_avg
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: speed_vs_race_avg (学習時に自動検出)
+- name: horse_speed_rank_pct
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: horse_speed_rank_pct (学習時に自動検出)
+- name: race_avg_prev_finish
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: race_avg_prev_finish (学習時に自動検出)
+- name: race_avg_prev_speed_is_missing
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: race_avg_prev_speed_is_missing (学習時に自動検出)
+- name: race_max_prev_speed_is_missing
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: race_max_prev_speed_is_missing (学習時に自動検出)
+- name: speed_vs_race_avg_is_missing
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: speed_vs_race_avg_is_missing (学習時に自動検出)
+- name: race_avg_prev_finish_is_missing
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: race_avg_prev_finish_is_missing (学習時に自動検出)
+- name: gate_bracket_win_rate
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: gate_bracket_win_rate (学習時に自動検出)
+- name: sire_surface_win_rate
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: sire_surface_win_rate (学習時に自動検出)
+- name: sire_dist_band_win_rate
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: sire_dist_band_win_rate (学習時に自動検出)
+- name: damsire_surface_win_rate
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: damsire_surface_win_rate (学習時に自動検出)
+- name: damsire_dist_band_win_rate
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: damsire_dist_band_win_rate (学習時に自動検出)
+- name: horse_avg_class_num
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: horse_avg_class_num (学習時に自動検出)
+- name: class_drop
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: class_drop (学習時に自動検出)
+- name: race_front_runner_count
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: race_front_runner_count (学習時に自動検出)
+- name: race_front_runner_pct
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: race_front_runner_pct (学習時に自動検出)
+- name: pace_advantage
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: pace_advantage (学習時に自動検出)
+- name: jockey_front_win_rate
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: jockey_front_win_rate (学習時に自動検出)
+- name: jockey_close_win_rate
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: jockey_close_win_rate (学習時に自動検出)
+- name: horse_avg_class_num_is_missing
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: horse_avg_class_num_is_missing (学習時に自動検出)
+- name: class_drop_is_missing
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: class_drop_is_missing (学習時に自動検出)
+- name: gate_bracket_win_rate_is_missing
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: gate_bracket_win_rate_is_missing (学習時に自動検出)
+- name: jockey_front_win_rate_is_missing
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: jockey_front_win_rate_is_missing (学習時に自動検出)
+- name: jockey_close_win_rate_is_missing
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: jockey_close_win_rate_is_missing (学習時に自動検出)
+- name: running_style_mean_5_is_missing
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: running_style_mean_5_is_missing (学習時に自動検出)
+- name: kai_num
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: kai_num (学習時に自動検出)
+- name: kai_cos
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: kai_cos (学習時に自動検出)
+- name: kai_sin
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: kai_sin (学習時に自動検出)
+- name: day_num
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: day_num (学習時に自動検出)
+- name: day_cos
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: day_cos (学習時に自動検出)
+- name: day_sin
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: day_sin (学習時に自動検出)
+- name: is_late_opening
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: is_late_opening (学習時に自動検出)
+- name: horse_field_win_rate
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: horse_field_win_rate (学習時に自動検出)
+- name: horse_field_races
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: horse_field_races (学習時に自動検出)
+- name: horse_weather_win_rate
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: horse_weather_win_rate (学習時に自動検出)
+- name: horse_weather_races
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: horse_weather_races (学習時に自動検出)
+- name: jockey_field_win_rate
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: jockey_field_win_rate (学習時に自動検出)
+- name: jockey_field_races
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: jockey_field_races (学習時に自動検出)
+- name: sire_field_win_rate
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: sire_field_win_rate (学習時に自動検出)
+- name: sire_field_races
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: sire_field_races (学習時に自動検出)
+- name: damsire_field_win_rate
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: damsire_field_win_rate (学習時に自動検出)
+- name: damsire_field_races
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: damsire_field_races (学習時に自動検出)
+- name: weather_encoded
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: weather_encoded (学習時に自動検出)
+- name: log_odds
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: log_odds (学習時に自動検出)
+- name: last_training_time_3f
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: last_training_time_3f (学習時に自動検出)
+- name: last_training_grade_encoded
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: last_training_grade_encoded (学習時に自動検出)
+- name: has_training_data
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: has_training_data (学習時に自動検出)
+- name: last_training_time_3f_is_missing
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: last_training_time_3f_is_missing (学習時に自動検出)
+- name: last_training_grade_encoded_is_missing
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: last_training_grade_encoded_is_missing (学習時に自動検出)
+- name: sf_index_last
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: sf_index_last (学習時に自動検出)
+- name: sf_index_2ago
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: sf_index_2ago (学習時に自動検出)
+- name: sf_index_3ago
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: sf_index_3ago (学習時に自動検出)
+- name: sf_max_index
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: sf_max_index (学習時に自動検出)
+- name: sf_course_max_index
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: sf_course_max_index (学習時に自動検出)
+- name: sf_dist_max_index
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: sf_dist_max_index (学習時に自動検出)
+- name: sf_index_trend
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: sf_index_trend (学習時に自動検出)
+- name: training_comment_score
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: training_comment_score (学習時に自動検出)
+- name: sire_venue_win_rate
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: sire_venue_win_rate (学習時に自動検出)
+- name: damsire_venue_win_rate
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: damsire_venue_win_rate (学習時に自動検出)
+- name: training_comment_score_is_missing
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: training_comment_score_is_missing (学習時に自動検出)
+- name: sf_index_last_is_missing
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: sf_index_last_is_missing (学習時に自動検出)
+- name: sf_index_2ago_is_missing
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: sf_index_2ago_is_missing (学習時に自動検出)
+- name: sf_index_3ago_is_missing
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: sf_index_3ago_is_missing (学習時に自動検出)
+- name: sf_max_index_is_missing
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: sf_max_index_is_missing (学習時に自動検出)
+- name: sf_course_max_index_is_missing
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: sf_course_max_index_is_missing (学習時に自動検出)
+- name: sf_dist_max_index_is_missing
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: sf_dist_max_index_is_missing (学習時に自動検出)
+- name: sf_index_trend_is_missing
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: sf_index_trend_is_missing (学習時に自動検出)
+- name: corner_first
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: corner_first (学習時に自動検出)
+- name: corner_last
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: corner_last (学習時に自動検出)
+- name: corner_gain
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: corner_gain (学習時に自動検出)
+- name: running_style_code
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: running_style_code (学習時に自動検出)
+- name: corner_first_is_missing
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: corner_first_is_missing (学習時に自動検出)
+- name: corner_last_is_missing
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: corner_last_is_missing (学習時に自動検出)
+- name: corner_gain_is_missing
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: corner_gain_is_missing (学習時に自動検出)
+- name: running_style_code_is_missing
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: running_style_code_is_missing (学習時に自動検出)
+- name: speed_avg_weighted
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: speed_avg_weighted (学習時に自動検出)
+- name: speed_best_2
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: speed_best_2 (学習時に自動検出)
+- name: speed_improving
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: speed_improving (学習時に自動検出)
+- name: horse_speed_exp_mean
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: horse_speed_exp_mean (学習時に自動検出)
+- name: horse_speed_exp_std
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: horse_speed_exp_std (学習時に自動検出)
+- name: horse_speed_vs_exp
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: horse_speed_vs_exp (学習時に自動検出)
+- name: horse_speed_exp_mean_is_missing
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: horse_speed_exp_mean_is_missing (学習時に自動検出)
+- name: horse_speed_exp_std_is_missing
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: horse_speed_exp_std_is_missing (学習時に自動検出)
+- name: horse_speed_vs_exp_is_missing
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: horse_speed_vs_exp_is_missing (学習時に自動検出)
+- name: prev3_speed_index
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: prev3_speed_index (学習時に自動検出)
+- name: prev4_speed_index
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: prev4_speed_index (学習時に自動検出)
+- name: prev5_speed_index
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: prev5_speed_index (学習時に自動検出)
+- name: recent_form_5race
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: recent_form_5race (学習時に自動検出)
+- name: form_consistency
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: form_consistency (学習時に自動検出)
+- name: win_count_5
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: win_count_5 (学習時に自動検出)
+- name: top3_count_5
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: top3_count_5 (学習時に自動検出)
+- name: speed_best_5
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: speed_best_5 (学習時に自動検出)
+- name: speed_trend_5
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: speed_trend_5 (学習時に自動検出)
 unnecessary_columns:
 - name: post_time
   reason: 発走時刻URI

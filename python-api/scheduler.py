@@ -63,6 +63,30 @@ async def _job_scrape_today() -> None:
     await _run_scrape_for_date(today)
 
 
+async def _job_prefetch_shutuba_morning() -> None:
+    """朝8時ジョブ: 当日の全出馬表＋馬詳細をプリフェッチしてDBキャッシュを温める。
+
+    analyze_race は races_ultimate を先に確認するため、このジョブで事前保存しておけば
+    ユーザーの予測リクエスト時にオンデマンドスクレイプ（~70s）が不要になる（~5s に短縮）。
+    既にキャッシュ済みの（馬詳細あり）レースはスキップするため冪等。
+    """
+    from app_config import ULTIMATE_DB  # type: ignore
+    from scraping.prefetch import prefetch_shutuba_for_date  # type: ignore
+
+    today = datetime.now().strftime("%Y%m%d")
+    logger.info(f"[scheduler] 朝プリフェッチ開始: {today}")
+    try:
+        result = await prefetch_shutuba_for_date(today, str(ULTIMATE_DB))
+        logger.info(
+            f"[scheduler] 朝プリフェッチ完了: "
+            f"取得={result['races_fetched']}, "
+            f"スキップ={result['races_already_cached']}, "
+            f"失敗={result['races_failed']} / 合計={result['races_total']}"
+        )
+    except Exception as e:
+        logger.error(f"[scheduler] 朝プリフェッチ失敗: {e}")
+
+
 # ---------------------------------------------------------------------------
 # スケジューラ起動 / 停止
 # ---------------------------------------------------------------------------
@@ -91,6 +115,17 @@ def start_scheduler() -> None:
         id="scrape_yesterday",
         replace_existing=True,
         misfire_grace_time=600,
+    )
+
+    # 毎朝 8:00 — 当日の全出馬表＋馬詳細をプリフェッチ（予測高速化の核心）
+    # analyze_race は races_ultimate を先にチェックするため、
+    # ここで保存しておけばオンデマンドスクレイプ（~70s）が不要になる（~5s に短縮）
+    _scheduler.add_job(
+        _job_prefetch_shutuba_morning,
+        CronTrigger(hour=8, minute=0, timezone=_TZ),
+        id="prefetch_shutuba_morning",
+        replace_existing=True,
+        misfire_grace_time=1800,  # 30分以内のmisfireは実行する
     )
 
     # 9:00 〜 21:00 の偶数時 (2時間おき) — 当日をリアルタイム更新

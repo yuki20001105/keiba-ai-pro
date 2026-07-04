@@ -17,5 +17,7 @@ export async function authFetch(
   const headers = new Headers(init?.headers)
   if (token) headers.set('Authorization', `Bearer ${token}`)
 
-  return fetch(input, { ...init, headers })
+  // INV-05準拠: FastAPIへのリクエストは最大300秒のタイムアウトを設定
+  const signal = (init?.signal) ?? AbortSignal.timeout(300_000)
+  return fetch(input, { ...init, headers, signal })
 }

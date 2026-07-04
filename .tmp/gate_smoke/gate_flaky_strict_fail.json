@@ -1,0 +1,15 @@
+{
+  "gate_status": "FAIL",
+  "exit_code": 1,
+  "reasons": [
+    "flaky_warning=true under strict/fail-on-flaky policy"
+  ],
+  "warnings": [
+    "history size is small; reliability trend is not stable yet"
+  ],
+  "latest_status": "PASS",
+  "last_10_success_rate": 1.0,
+  "flaky_warning": true,
+  "failed_steps": [],
+  "suggested_next_action": "Quality gate passed. Continue normal audit cadence."
+}

@@ -85,17 +85,27 @@ def _make_target(df: pd.DataFrame, target: str) -> pd.Series:
         )
         return (is_winner | is_tie).astype(int)
     if target == "speed_deviation":
-        # 速度偏差（距離×馬場種別グループ内 z-score）
-        # speed_index = distance / time_seconds（m/s）をグループ正規化
+        # 速度偏差（レース内 within-race z-score）
+        # speed = distance / time_seconds（m/s）をレース内で正規化
+        # 設計根拠:
+        #   - race_id グループ内統計のみ使用 → 学習/テスト間のターゲットリーク排除
+        #   - z = (speed - race_mean) / race_std は直接 softmax で win_probability に変換可能
+        #   - 同一レース内の相対的速さを表現 → Kelly 推奨の根拠として適切
         ts = pd.to_numeric(df["time_seconds"], errors="coerce")
         dist = pd.to_numeric(df["distance"], errors="coerce")
         spd = dist / ts.replace(0, np.nan)
-        if "surface" in df.columns:
-            grp = df["distance"].astype(str) + "_" + df["surface"].fillna("unknown").astype(str)
+        if "race_id" in df.columns:
+            # 推奨: レース内正規化（ターゲットリーク排除・softmax と整合）
+            grp_mean = spd.groupby(df["race_id"]).transform("mean")
+            grp_std = spd.groupby(df["race_id"]).transform("std").replace(0, np.nan)
         else:
-            grp = df["distance"].astype(str)
-        grp_mean = spd.groupby(grp).transform("mean")
-        grp_std = spd.groupby(grp).transform("std").replace(0, np.nan)
+            # フォールバック: 距離×馬場種別グループ（race_id 欠損時のみ）
+            if "surface" in df.columns:
+                grp = df["distance"].astype(str) + "_" + df["surface"].fillna("unknown").astype(str)
+            else:
+                grp = df["distance"].astype(str)
+            grp_mean = spd.groupby(grp).transform("mean")
+            grp_std = spd.groupby(grp).transform("std").replace(0, np.nan)
         return (spd - grp_mean) / grp_std
     if target == "rank":
         # ランキング学習用スコア（1着=最高スコア）

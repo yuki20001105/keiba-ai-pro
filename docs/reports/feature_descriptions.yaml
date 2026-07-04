@@ -1,0 +1,147 @@
+# ============================================================
+# 特徴量日本語説明辞書
+# ============================================================
+# 新しい特徴量を追加したら、このファイルに追記するだけで
+# gen_feature_report.py が自動的に説明を使用します。
+#
+# 書き方:
+#   特徴量名: "日本語説明"
+#
+# 説明がない特徴量は "（説明未登録）" と表示されます。
+# ============================================================
+
+# ── 馬能力・近走成績 ──────────────────────────────────────────────────────
+recent_form_weighted:           "近走成績加重平均（直近ほど高ウェイト）"
+recent_form_5race:              "近5走着順の単純平均"
+horse_speed_rank_pct:           "同クラス内での速度パーセンタイル順位"
+top3_count_5:                   "近5走で3着以内に入った回数"
+speed_vs_race_avg:              "前走速度 − レース平均速度の差"
+prev_race_finish:               "前走着順"
+prev_speed_zscore:              "前走速度のZスコア（標準化）"
+race_avg_prev_finish:           "同レース出走馬の前走平均着順"
+prev2_race_finish:              "2走前の着順"
+prev3_race_finish:              "3走前の着順"
+prev4_race_finish:              "4走前の着順"
+prev5_race_finish:              "5走前の着順"
+prev_speed_index:               "前走速度指数"
+prev3_speed_index:              "3走前の速度指数"
+prev4_speed_index:              "4走前の速度指数"
+prev5_speed_index:              "5走前の速度指数"
+win_count_5:                    "近5走の勝利数"
+race_avg_prev_speed:            "同レース出走馬の前走平均速度"
+race_max_prev_speed:            "同レース出走馬の前走最高速度"
+speed_best_5:                   "近5走の最高速度指数"
+speed_best_2:                   "近2走の最高速度指数"
+speed_avg_weighted:             "速度指数の加重平均（近走ほど高ウェイト）"
+form_trend:                     "近走着順のトレンド（上昇/下降傾向）"
+speed_trend_5:                  "近5走速度指数のトレンド"
+speed_improving:                "速度改善中フラグ（前走より向上）"
+form_consistency:               "成績安定度（着順の標準偏差の逆数）"
+speed_index_change:             "前走比の速度指数変化量"
+
+# ── 欠損フラグ（_is_missing 系） ──────────────────────────────────────────
+race_avg_prev_finish_is_missing:  "前走平均着順の欠損フラグ"
+race_max_prev_speed_is_missing:   "前走最高速度の欠損フラグ"
+race_avg_prev_speed_is_missing:   "前走平均速度の欠損フラグ"
+speed_vs_race_avg_is_missing:     "速度差分の欠損フラグ"
+holding_just_speed_is_missing:    "同開催・同距離速度の欠損フラグ"
+holding_just_finish_is_missing:   "同開催・同距離着順の欠損フラグ"
+holding_just_time_sec_is_missing: "同開催・同距離タイムの欠損フラグ"
+
+# ── 距離・コース適性 ───────────────────────────────────────────────────────
+distance_change:                "前走からの距離変化(m)（正=距離延長）"
+prev_race_distance:             "前走の距離(m)"
+prev2_race_distance:            "2走前の距離(m)"
+prev3_race_distance:            "3走前の距離(m)"
+prev4_race_distance:            "4走前の距離(m)"
+prev5_race_distance:            "5走前の距離(m)"
+distance:                       "今走のレース距離(m)"
+
+# ── 開催・同条件実績（holding 系） ────────────────────────────────────────
+holding_just_speed:             "同開催・同距離での速度指数"
+holding_just_time_sec:          "同開催・同距離でのタイム（秒）"
+holding_just_finish:            "同開催・同距離での着順"
+holding_just_time_rank:         "同開催・同距離でのタイムランク"
+holding_just_finish_rank:       "同開催・同距離での着順ランク"
+holding_just_l3f:               "同開催・同距離の上がり3ハロン"
+holding_just_babasa:            "同開催・同距離の馬場差"
+holding_middle_l3f:             "同開催・中距離の上がり3ハロン"
+holding_middle_finish:          "同開催・中距離の着順"
+holding_middle_time_sec:        "同開催・中距離のタイム（秒）"
+holding_middle_babasa:          "同開催・中距離の馬場差"
+holding_long_l3f:               "同開催・長距離の上がり3ハロン"
+holding_long_finish:            "同開催・長距離の着順"
+holding_long_time_sec:          "同開催・長距離のタイム（秒）"
+holding_long_babasa:            "同開催・長距離の馬場差"
+holding_short_l3f:              "同開催・短距離の上がり3ハロン"
+holding_short_finish:           "同開催・短距離の着順"
+holding_short_time_sec:         "同開催・短距離のタイム（秒）"
+holding_short_babasa:           "同開催・短距離の馬場差"
+has_just_data:                  "同開催・同距離データの有無フラグ"
+
+# ── 馬体重 ───────────────────────────────────────────────────────────────
+horse_weight:                   "馬体重(kg)"
+horse_weight_change:            "前走比の馬体重変化(kg)（正=増加）"
+weight_vs_standard:             "馬体重 − 標準体重の差(kg)"
+prev3_race_weight:              "3走前の馬体重(kg)"
+prev4_race_weight:              "4走前の馬体重(kg)"
+prev5_race_weight:              "5走前の馬体重(kg)"
+
+# ── クラス・条件 ──────────────────────────────────────────────────────────
+race_class_encoded:             "レースクラスのエンコード値（数値化）"
+is_class_down:                  "前走よりクラスが下がった場合のフラグ"
+is_class_up:                    "前走よりクラスが上がった場合のフラグ"
+is_same_class:                  "前走と同クラスのフラグ"
+class_change:                   "前走からのクラス変化幅"
+class_diff_abs:                 "クラス差の絶対値"
+class_rank_adj:                 "クラス調整後のランク"
+prev_race_class_num:            "前走クラスの数値"
+race_age_condition:             "レース年齢条件（2歳/3歳/古馬等）"
+is_3yo_limited:                 "3歳限定戦フラグ"
+is_female_only_race:            "牝馬限定戦フラグ"
+
+# ── 開催・日時 ───────────────────────────────────────────────────────────
+kai:                            "開催回（第〇回）"
+kai_num:                        "開催回の数値"
+kai_sin:                        "開催回のサイン変換（周期特徴）"
+kai_cos:                        "開催回のコサイン変換（周期特徴）"
+day:                            "開催日（曜日・連続開催日）"
+day_num:                        "開催日の数値"
+day_sin:                        "開催日のサイン変換（周期特徴）"
+day_cos:                        "開催日のコサイン変換（周期特徴）"
+sin_date:                       "日付のサイン変換（年内周期性）"
+cos_date:                       "日付のコサイン変換（年内周期性）"
+is_late_opening:                "後半開催フラグ（季節後半）"
+seasonal_sex:                   "季節×性別の交互作用特徴量"
+
+# ── コース・馬場 ──────────────────────────────────────────────────────────
+venue_encoded:                  "競馬場のエンコード値"
+venue_code_encoded:             "競馬場コードのエンコード値"
+weather_encoded:                "当日天候のエンコード値"
+field_condition_encoded:        "馬場状態のエンコード値（良/稍重/重/不良）"
+frame_race_type:                "枠番×レース種別の交互作用"
+
+# ── レース構成 ───────────────────────────────────────────────────────────
+num_horses:                     "出走頭数"
+race_num:                       "レース番号（1〜12R）"
+horse_number:                   "馬番"
+market_entropy:                 "オッズ分布のエントロピー（不確実性の高さ）"
+
+# ── 休養 ─────────────────────────────────────────────────────────────────
+days_since_last_race:           "前走からの休養日数"
+rest_category:                  "休養カテゴリ（短/中/長期）"
+
+# ── タイム ───────────────────────────────────────────────────────────────
+prev3_race_time:                "3走前のタイム（秒）"
+prev4_race_time:                "4走前のタイム（秒）"
+prev5_race_time:                "5走前のタイム（秒）"
+
+# ── 性別 ─────────────────────────────────────────────────────────────────
+sex_encoded:                    "性別のエンコード値（牡/牝/セン）"
+
+# ============================================================
+# 新しい特徴量を追加する場合はここに追記してください
+# 例:
+#   jockey_win_rate_by_distance:  "距離帯別の騎手勝率"
+#   trainer_course_win_rate:      "競馬場×厩舎の勝率"
+# ============================================================
