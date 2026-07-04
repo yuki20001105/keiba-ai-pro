@@ -109,6 +109,9 @@ verify_result.txt
 patch_log*.txt
 dev-server.log
 
+# Local notebook workspace
+notebooks/
+
 # python-api generated outputs
 python-api/*.log
 python-api/*.jsonl
