@@ -463,26 +463,13 @@ async def analyze_race(request: AnalyzeRaceRequest):
         return AnalyzeRaceResponse(**_cached[1])
 
     try:
-        from app_config import list_models_from_supabase  # type: ignore
         from betting.strategy import BettingRecommender  # type: ignore
 
         # Phase 0: 常に ultimate DB を使用（87特徴量モード固定）
         db_path = ULTIMATE_DB
 
-        # モデルロード
-        if request.model_id:
-            model_path = _ensure_model_local(request.model_id)
-            if not model_path:
-                raise HTTPException(status_code=404, detail=f"モデル {request.model_id} が見つかりません")
-        else:
-            model_path = get_latest_model()
-            if model_path is None:
-                if SUPABASE_DATA_ENABLED and get_supabase_client():
-                    sb_models = list_models_from_supabase()
-                    if sb_models:
-                        model_path = _ensure_model_local(sb_models[0]["model_id"])
-                if model_path is None:
-                    raise HTTPException(status_code=404, detail="訓練済みモデルが見つかりません")
+        # モデルロード（model_id指定 → active model pointer → latest の順）
+        model_path = _resolve_model_path(request.model_id)
 
         bundle = load_model_bundle(model_path)
 

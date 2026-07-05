@@ -180,6 +180,8 @@ def main() -> int:
             token_provided=token_provided,
         )
         result["attempted_models"] = [requested_model_id or "<default>"]
+        result["fallback_attempts"] = []
+        result["fallback_attempts_count"] = 0
 
         if not ok and reason == "model-feature-mismatch" and requested_model_id is None:
             detail = str(response_payload.get("detail") or "")
@@ -216,6 +218,7 @@ def main() -> int:
                     break
 
             result["fallback_attempts"] = fallback_attempts
+            result["fallback_attempts_count"] = len(fallback_attempts)
             if not result.get("fallback_used"):
                 result["fallback_used"] = False
 
