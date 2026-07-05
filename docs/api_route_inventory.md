@@ -1,6 +1,6 @@
 # API Route Inventory and Classification
 
-Updated: 2026-07-05 (P1-13 sandbox write adapter)
+Updated: 2026-07-05 (P1-14 sandbox precheck added)
 Scope: Next.js API routes and FastAPI endpoints classification
 
 ## 1. Classification Rules
@@ -692,3 +692,53 @@ Operational policy:
 
 Migration marker update:
 - /api/netkeiba/race: `migrationStatus=sandbox-write-added`
+
+## 16. P1-14 Sandbox Table Existence + Schema Compatibility Precheck (Read-only)
+
+Goal in this phase:
+- validate sandbox write readiness without any write/readback,
+- verify sandbox table existence and schema compatibility,
+- keep write safety contracts strict.
+
+Precheck endpoint:
+- `GET /api/netkeiba/race/sandbox/precheck`
+
+Expected sandbox tables (only):
+- `sandbox_netkeiba_races`
+- `sandbox_netkeiba_race_results`
+- `sandbox_netkeiba_race_payouts`
+
+Precheck checks (read-only only):
+- table existence,
+- required columns (`race_id` and `data|payload`),
+- text-type compatibility for required columns,
+- row-limit support metadata (`races<=1`, `race_results<=30`, `race_payouts<=100`),
+- base table reference detection in sandbox table SQL objects.
+
+Precheck response contract:
+- `service=netkeiba-race-sandbox-precheck`
+- `target_mode=sandbox`
+- `write_performed=false` (fixed)
+- `status=ready|stopped|warn|unavailable`
+- table-level report with:
+	- `exists`
+	- `schema_compatible`
+	- `missing_columns`
+	- `type_mismatches`
+	- `row_limit_supported`
+	- `references_base_tables`
+
+Safety behavior:
+- base tables (`races`, `race_results`, `race_payouts`) are not precheck targets,
+- missing sandbox table is not hard fail (`stopped`/`warn` contract),
+- contract violation only is treated as fail in smoke.
+
+Smoke/suite updates:
+- new smoke mode:
+	- `scripts/smoke_netkeiba_race_write_guard.py --expect-sandbox-precheck`
+- suite optional precheck step:
+	- `--verify-write-guard-sandbox-precheck`
+- both are explicit opt-in and remain excluded from default suite.
+
+Migration marker update:
+- /api/netkeiba/race: `migrationStatus=sandbox-precheck-added`

@@ -9,7 +9,7 @@ export type NextRouteMeta = {
   usesSupabaseDirectly?: boolean
   usesScrapeServiceDirectly?: boolean
   migrationTarget?: MigrationTarget
-  migrationStatus?: 'not-started' | 'in-progress' | 'preflight-added' | 'dry-run-added' | 'payload-diff-added' | 'write-guard-added' | 'write-guard-enabled-verified' | 'staging-write-guard-designed' | 'staging-writer-stub-added' | 'sandbox-write-added' | 'migrated'
+  migrationStatus?: 'not-started' | 'in-progress' | 'preflight-added' | 'dry-run-added' | 'payload-diff-added' | 'write-guard-added' | 'write-guard-enabled-verified' | 'staging-write-guard-designed' | 'staging-writer-stub-added' | 'sandbox-write-added' | 'sandbox-precheck-added' | 'migrated'
   riskLevel?: RiskLevel
 }
 
@@ -22,11 +22,11 @@ export const NEXT_API_ROUTE_CLASSIFICATION: NextRouteMeta[] = [
   {
     route: '/api/netkeiba/race',
     classification: 'experimental',
-    note: 'Mixed external scrape + Supabase write path (write kept in Next, FastAPI staging sandbox write adapter added)',
+    note: 'Mixed external scrape + Supabase write path (write kept in Next, FastAPI staging sandbox precheck + sandbox write adapter)',
     usesSupabaseDirectly: true,
     usesScrapeServiceDirectly: true,
     migrationTarget: 'fastapi-staging-sandbox-write',
-    migrationStatus: 'sandbox-write-added',
+    migrationStatus: 'sandbox-precheck-added',
     riskLevel: 'high',
   },
   {

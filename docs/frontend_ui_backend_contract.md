@@ -611,3 +611,49 @@ Safety constraints preserved:
 - no UI route switch
 - no `.env` commit
 - token/secret not exposed
+
+## 26. Implementation Status (P1-14 Sandbox Precheck Read-only)
+
+Updated: 2026-07-05
+
+Implemented in this step:
+- added read-only FastAPI endpoint:
+	- `GET /api/netkeiba/race/sandbox/precheck`
+- precheck verifies only sandbox readiness:
+	- expected sandbox tables exist
+	- required columns exist
+	- required column types are compatible
+	- row-limit support metadata is available
+	- base table references are not present in sandbox SQL objects
+- precheck is non-mutating:
+	- no Supabase write
+	- no SQLite write
+	- no readback mutation path
+	- `write_performed=false` fixed
+
+Expected sandbox tables:
+- `sandbox_netkeiba_races`
+- `sandbox_netkeiba_race_results`
+- `sandbox_netkeiba_race_payouts`
+
+Response status contract:
+- `ready`: sandbox schema is compatible
+- `stopped`: sandbox table missing (or safe stop condition)
+- `warn`: schema/type/reference issue detected
+- `unavailable`: precheck cannot run safely
+
+Smoke updates:
+- new mode:
+	- `python scripts/smoke_netkeiba_race_write_guard.py --expect-sandbox-precheck`
+- suite optional step:
+	- `--verify-write-guard-sandbox-precheck`
+- default smoke/suite remain non-write and do not run sandbox precheck unless explicitly requested.
+
+Migration marker:
+- `/api/netkeiba/race` tracked as `migrationStatus=sandbox-precheck-added`.
+
+Safety constraints preserved:
+- production write remains blocked
+- base table write is forbidden in this phase
+- Next `/api/netkeiba/race` write path unchanged
+- UI flow unchanged
