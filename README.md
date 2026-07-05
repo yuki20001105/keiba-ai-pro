@@ -764,6 +764,7 @@ npm run build
 python -m compileall -q python-api scripts
 python scripts/run_keiba_smoke_suite.py
 python scripts/smoke_analyze_race_api.py
+python scripts/smoke_notion_report_api.py
 python scripts/run_keiba_notebook_e2e.py --mode audit
 git grep -n -I "<notion-token-prefix>"
 git status --short
@@ -1152,6 +1153,18 @@ cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
 python-api\.venv\Scripts\python.exe scripts\run_keiba_smoke_suite.py
 ```
 
+**Notion output UI/API smoke**
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_notion_report_api.py
+```
+
+補足:
+- `KEIBA_AUTH_BEARER_TOKEN` 未設定時は `auth-required` として warn
+- `KEIBA_AUTH_BEARER_TOKEN_NONPREMIUM` を設定すると non-Premium/Admin の 403 検証を実施
+- send は `sent` または `config-missing/warn` を許容
+
 strict preflight で統合実行する場合:
 
 ```powershell
@@ -1194,7 +1207,14 @@ git status --short
 - Write guard sandbox write検証結果JSON: `reports/netkeiba_race_write_guard_sandbox_write_smoke_result.json`
 - Write guard sandbox write-readback検証結果JSON: `reports/netkeiba_race_write_guard_sandbox_write_readback_smoke_result.json`
 - Smoke suite結果JSON: `reports/keiba_smoke_suite_result.json`
+- Notion output UI/API smoke結果JSON: `reports/notion_report_smoke_result.json`
 - 監査ログ（任意）: `reports/e2e_logs/`
+
+### モデル再設計ワークベンチ仕様
+
+- 仕様書: `docs/specs/model-redesign-workbench.md`
+- 範囲: 画面、API、ジョブ管理、提案→承認→再学習フロー、本番反映ガード
+- 現状: 仕様確定済み（実装は別フェーズ）
 
 ---
 

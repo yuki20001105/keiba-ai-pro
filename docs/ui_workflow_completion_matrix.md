@@ -83,7 +83,7 @@ Scope: UI (src/app) + Next API (src/app/api) + FastAPI router/script mapping inv
 | 6 | モデル評価 | yes | partial | partial | partial_ui | partial | 条件付きOK | AUC/logloss/履歴ROIは表示。高度評価(反復比較)はUI外 |
 | 7 | 予測 | yes | yes | yes | complete_ui | complete | OK | /predict-batch, /race-analysis |
 | 8 | 予測結果の分析 | yes | yes | yes | complete_ui | complete | OK (Premium含む) | /prediction-history + /race-analysis result tab + /dashboard |
-| 9 | モデル再設計・改善提案 | no (専用画面なし) | no (UI) | no (UI) | script_only | missing | NG | optimizer.py / notebooks 依存 |
+| 9 | モデル再設計・改善提案 | no (専用画面なし) | no (UI) | no (UI) | script_only | missing (spec-defined) | NG | optimizer.py / notebooks 依存。仕様: docs/specs/model-redesign-workbench.md |
 | 10 | Notionレポート出力 | yes | yes (Premium/Admin) | yes | partial_ui | partial | 条件付きOK | /notion-report + /api/notion-report で preview -> send。token未設定時は config-missing/warn |
 | 11 | 本番運用前チェック | yes | yes (read-only scope) | yes | partial_ui | partial | 条件付きOK | /production-readiness で health/smoke/flag/secret/git を集約 |
 | 12 | smoke / health check | partial | partial | partial | partial_ui | partial | 条件付きOK | /api/health, /api/scrape/health はUI可視。smoke suiteはscript |
@@ -94,6 +94,9 @@ Scope: UI (src/app) + Next API (src/app/api) + FastAPI router/script mapping inv
 - complete: 1,2,4,5,7,8
 - partial: 3,6,10,11,12,13
 - missing: 9
+
+補足:
+- #9 は実装未着手だが、画面/API/ジョブ管理/承認フロー/本番反映ガードの仕様は `docs/specs/model-redesign-workbench.md` で確定済み。
 
 ---
 

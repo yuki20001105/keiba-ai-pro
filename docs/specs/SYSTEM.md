@@ -209,3 +209,4 @@ the system shall 以下のパスのみ認証を免除する:
 | `docs/specs/scraping.md` | データ取得・スクレイピング |
 | `docs/specs/predict.md` | 予測・analyze_race エンドポイント |
 | `docs/specs/ui.md` | UI / predict-batch ページ |
+| `docs/specs/model-redesign-workbench.md` | モデル再設計ワークベンチ（提案→承認→再学習→反映ガード） |
