@@ -3,6 +3,8 @@ import { useState, useEffect } from 'react'
 import { Logo } from '@/components/Logo'
 import Link from 'next/link'
 import { authFetch } from '@/lib/auth-fetch'
+import { useAuth } from '@/contexts/AuthContext'
+import { PremiumRequiredNotice } from '@/components/PremiumRequiredNotice'
 
 type RaceItem = { race_id: string; race_name: string; venue: string; race_no: number; distance: number; track_type: string; num_horses: number }
 type RawData = { race_id: string; race_info_columns: string[]; horse_columns: string[]; race_info: Record<string, unknown>; horses: Record<string, unknown>[] }
@@ -39,6 +41,7 @@ function sortedCols(cols: string[]): string[] {
 }
 
 export default function DataViewPage() {
+  const { isPremium, loading: authLoading } = useAuth()
   const [date, setDate] = useState(todayStr())
   const [races, setRaces] = useState<RaceItem[]>([])
   const [racesLoading, setRacesLoading] = useState(false)
@@ -73,6 +76,11 @@ export default function DataViewPage() {
   }
 
   const loadRaceData = async (raceId: string) => {
+    if (!isPremium) {
+      setError('この機能は Premium または Admin のみ利用できます。')
+      return
+    }
+
     setSelectedRaceId(raceId)
     setDataLoading(true)
     setError('')
@@ -83,7 +91,13 @@ export default function DataViewPage() {
         authFetch(`/api/debug/race/${raceId}`),
         authFetch(`/api/debug/race/${raceId}/features`),
       ])
-      if (!rawRes.ok) { const e = await rawRes.json(); throw new Error(e.detail || `HTTP ${rawRes.status}`) }
+      if (!rawRes.ok) {
+        const e = await rawRes.json().catch(() => ({}))
+        const authMsg = rawRes.status === 401 || rawRes.status === 403
+          ? '権限不足: Premium または Admin が必要です。'
+          : null
+        throw new Error(authMsg || e.detail || `HTTP ${rawRes.status}`)
+      }
       const [raw, feat] = await Promise.all([rawRes.json(), featRes.ok ? featRes.json() : null])
       setRawData(raw)
       setFeatData(feat)
@@ -101,6 +115,9 @@ export default function DataViewPage() {
         <div className="flex items-center gap-4">
           <Logo href="/home" />
           <span className="text-sm text-[#888]">データ確認ビュー</span>
+          <span className="text-[10px] px-2 py-0.5 rounded border border-yellow-600/40 bg-yellow-500/20 text-yellow-400">
+            Premium 専用
+          </span>
         </div>
         <Link href="/home" className="flex items-center gap-1 text-xs text-[#555] hover:text-white transition-colors">
           <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -136,11 +153,12 @@ export default function DataViewPage() {
               <button
                 key={r.race_id}
                 onClick={() => loadRaceData(r.race_id)}
+                    disabled={!isPremium}
                 className={`w-full text-left px-4 py-3 border-b border-[#111] transition-colors ${
                   selectedRaceId === r.race_id
                     ? 'bg-[#1a1a1a] border-l-2 border-l-white'
                     : 'hover:bg-[#111] border-l-2 border-l-transparent'
-                }`}
+                    } disabled:opacity-50 disabled:cursor-not-allowed`}
               >
                 <div className="flex items-center justify-between mb-0.5">
                   <span className="text-xs text-[#888]">{r.venue}</span>
@@ -157,6 +175,15 @@ export default function DataViewPage() {
 
         {/* ── 右パネル: データ表示 ── */}
         <main className="flex-1 overflow-hidden flex flex-col">
+          {!authLoading && !isPremium && !selectedRaceId && (
+            <div className="p-4">
+              <PremiumRequiredNotice
+                title="デバッグデータ表示は Premium 専用です"
+                message="レース一覧の閲覧は可能ですが、レース詳細（生データ/特徴量）は Premium または Admin 権限が必要です。"
+              />
+            </div>
+          )}
+
           {!selectedRaceId && !dataLoading && (
             <div className="flex-1 flex items-center justify-center text-[#333] text-sm">
               ← 左のレースを選択してください

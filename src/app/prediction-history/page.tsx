@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback } from 'react'
 import Link from 'next/link'
 import { Logo } from '@/components/Logo'
 import { authFetch } from '@/lib/auth-fetch'
+import { useAuth } from '@/contexts/AuthContext'
+import { PremiumRequiredNotice } from '@/components/PremiumRequiredNotice'
 
 // ── 型定義 ────────────────────────────────────────────────────────────
 type PredictionEntry = {
@@ -183,12 +185,20 @@ function RaceCard({ race }: { race: RaceHistory }) {
 
 // ── メインページ ─────────────────────────────────────────────────────
 export default function PredictionHistoryPage() {
+  const { isPremium, loading: authLoading } = useAuth()
   const [races, setRaces] = useState<RaceHistory[]>([])
   const [stats, setStats] = useState<Stats | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
   const loadHistory = useCallback(async () => {
+    if (!isPremium) {
+      setRaces([])
+      setStats(null)
+      setError('この機能は Premium または Admin のみ利用できます。')
+      return
+    }
+
     setLoading(true)
     setError('')
     try {
@@ -196,8 +206,11 @@ export default function PredictionHistoryPage() {
         signal: AbortSignal.timeout(30_000),
       })
       if (!res.ok) {
-        const e = await res.json()
-        throw new Error(e.detail || `HTTP ${res.status}`)
+        const e = await res.json().catch(() => ({}))
+        const authMsg = res.status === 401 || res.status === 403
+          ? '権限不足: Premium または Admin が必要です。'
+          : null
+        throw new Error(authMsg || e.detail || `HTTP ${res.status}`)
       }
       const json = await res.json()
       setRaces(json.races ?? [])
@@ -207,9 +220,11 @@ export default function PredictionHistoryPage() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [isPremium])
 
-  useEffect(() => { loadHistory() }, [loadHistory])
+  useEffect(() => {
+    if (!authLoading) loadHistory()
+  }, [authLoading, loadHistory])
 
   const decidedRaces = races.filter(r => r.predictions.some(p => p.actual_finish !== null))
   const pendingRaces = races.filter(r => r.predictions.every(p => p.actual_finish === null))
@@ -221,14 +236,26 @@ export default function PredictionHistoryPage() {
         <div className="flex items-center gap-4">
           <Logo />
           <h1 className="text-base font-semibold text-[#ccc]">予測履歴</h1>
+          <span className="text-[10px] px-2 py-0.5 rounded border border-yellow-600/40 bg-yellow-500/20 text-yellow-400">
+            Premium 専用
+          </span>
         </div>
-        <button onClick={loadHistory} disabled={loading}
+        <button onClick={loadHistory} disabled={loading || !isPremium}
           className="text-xs px-3 py-1.5 rounded border border-[#333] text-[#888] hover:text-white hover:border-[#555] transition-colors disabled:opacity-40">
           {loading ? '読み込み中...' : '更新'}
         </button>
       </header>
 
       <div className="max-w-3xl mx-auto px-4 py-6">
+        {!authLoading && !isPremium && (
+          <div className="mb-4">
+            <PremiumRequiredNotice
+              title="予測履歴は Premium 専用です"
+              message="権限不足時は API を呼び出しません。Premium へアップグレードするか Admin 権限で利用してください。"
+            />
+          </div>
+        )}
+
         {/* エラー */}
         {error && (
           <div className="mb-4 text-sm text-red-400 bg-red-900/20 border border-red-900/40 rounded px-4 py-3">

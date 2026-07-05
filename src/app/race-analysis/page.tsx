@@ -10,6 +10,8 @@ import { RacePredictionPanel } from '@/components/RacePredictionPanel'
 import { RaceFeaturePanel } from '@/components/RaceFeaturePanel'
 import type { RacePredictResult, FeatureData } from '@/lib/race-analysis-types'
 import { authFetch } from '@/lib/auth-fetch'
+import { useAuth } from '@/contexts/AuthContext'
+import { PremiumRequiredNotice } from '@/components/PremiumRequiredNotice'
 
 // ── 結果照合タブの型 ─────────────────────────────────────────────────
 type PredictionLogEntry = {
@@ -38,6 +40,7 @@ type PredictionHistoryResult = {
 }
 
 export default function RaceAnalysisPage() {
+  const { isPremium } = useAuth()
   const searchParams = useSearchParams()
   const initialDate = searchParams.get('date') ?? todayStr()
   const initialRaceId = searchParams.get('race_id') ?? ''
@@ -53,6 +56,7 @@ export default function RaceAnalysisPage() {
   // 結果照合タブ
   const [resultData, setResultData] = useState<PredictionHistoryResult | null>(null)
   const [resultLoading, setResultLoading] = useState(false)
+  const [resultError, setResultError] = useState('')
 
   const [predictResult, setPredictResult] = useState<RacePredictResult | null>(null)
   const [featData, setFeatData] = useState<FeatureData | null>(null)
@@ -69,16 +73,31 @@ export default function RaceAnalysisPage() {
 
   // 結果照合データを取得
   const loadResultData = useCallback(async (raceId: string) => {
+    if (!isPremium) {
+      setResultData(null)
+      return
+    }
+
     setResultLoading(true)
     setResultData(null)
+    setResultError('')
     try {
       const res = await authFetch(`/api/prediction-history/${raceId}`, {
         signal: AbortSignal.timeout(15_000),
       })
-      if (res.ok) setResultData(await res.json())
-    } catch { }
+      if (!res.ok) {
+        const msg = res.status === 401 || res.status === 403
+          ? '権限不足: Premium または Admin が必要です。'
+          : `照合データ取得に失敗しました (HTTP ${res.status})`
+        setResultError(msg)
+        return
+      }
+      setResultData(await res.json())
+    } catch {
+      setResultError('照合データ取得に失敗しました。時間をおいて再試行してください。')
+    }
     finally { setResultLoading(false) }
-  }, [])
+  }, [isPremium])
 
   // モデル一覧を取得（初回のみ）
   useEffect(() => {
@@ -173,13 +192,14 @@ export default function RaceAnalysisPage() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         }),
-        authFetch(`/api/debug/race/${raceId}/features`),
+        isPremium ? authFetch(`/api/debug/race/${raceId}/features`) : Promise.resolve(null),
       ])
       if (!predRes.ok) {
         const e = await predRes.json()
         throw new Error(e.detail || `HTTP ${predRes.status}`)
       }
-      const [pred, feat] = await Promise.all([predRes.json(), featRes.ok ? featRes.json() : null])
+      const pred = await predRes.json()
+      const feat = featRes && featRes.ok ? await featRes.json() : null
       const now = Date.now()
       raceCache.set(cacheKey, { predictResult: pred, featData: feat, cachedAt: now })
       setPredictResult(pred)
@@ -197,7 +217,7 @@ export default function RaceAnalysisPage() {
         }
       } catch { }
     } finally { setDataLoading(false) }
-  }, [raceCache, selectedModelId])
+  }, [isPremium, raceCache, selectedModelId])
 
   const ri = predictResult?.race_info
   const preds = predictResult?.predictions ?? []
@@ -407,15 +427,18 @@ export default function RaceAnalysisPage() {
                 ] as const).map(t => (
                   <button
                     key={t.key}
+                    disabled={!isPremium && (t.key === 'features' || t.key === 'result')}
                     onClick={() => {
+                      if (!isPremium && (t.key === 'features' || t.key === 'result')) return
                       setTab(t.key)
                       if (t.key === 'result' && !resultData && !resultLoading) {
                         loadResultData(selectedRaceId)
                       }
                     }}
-                    className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition-colors ${tab === t.key ? 'border-white text-white' : 'border-transparent text-[#555] hover:text-[#888]'}`}
+                    className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition-colors ${tab === t.key ? 'border-white text-white' : 'border-transparent text-[#555] hover:text-[#888]'} disabled:opacity-40 disabled:cursor-not-allowed`}
                   >
                     {t.label}
+                    {!isPremium && (t.key === 'features' || t.key === 'result') ? ' (Premium)' : ''}
                   </button>
                 ))}
               </div>
@@ -423,18 +446,41 @@ export default function RaceAnalysisPage() {
               {/* タブコンテンツ */}
               {tab === 'predict' && <RacePredictionPanel result={predictResult} />}
               {tab === 'features' && (
-                featData
-                  ? <RaceFeaturePanel featData={featData} predictions={preds} />
-                  : <div className="flex-1 flex items-center justify-center text-[#555] text-sm">特徴量データがありません</div>
+                !isPremium ? (
+                  <div className="p-6">
+                    <PremiumRequiredNotice
+                      title="特徴量分析は Premium 専用です"
+                      message="権限不足時はデバッグ特徴量 API を呼び出しません。"
+                    />
+                  </div>
+                ) : featData ? (
+                  <RaceFeaturePanel featData={featData} predictions={preds} />
+                ) : (
+                  <div className="flex-1 flex items-center justify-center text-[#555] text-sm">特徴量データがありません</div>
+                )
               )}
               {tab === 'result' && (
                 <div className="flex-1 overflow-y-auto p-6">
-                  <ResultComparePanel
-                    raceId={selectedRaceId}
-                    data={resultData}
-                    loading={resultLoading}
-                    onRefresh={() => loadResultData(selectedRaceId)}
-                  />
+                  {!isPremium ? (
+                    <PremiumRequiredNotice
+                      title="結果照合は Premium 専用です"
+                      message="権限不足時は prediction-history API を呼び出しません。"
+                    />
+                  ) : (
+                    <>
+                      {resultError && (
+                        <div className="mb-4 p-3 bg-red-900/20 border border-red-800 rounded text-red-300 text-sm">
+                          {resultError}
+                        </div>
+                      )}
+                      <ResultComparePanel
+                        raceId={selectedRaceId}
+                        data={resultData}
+                        loading={resultLoading}
+                        onRefresh={() => loadResultData(selectedRaceId)}
+                      />
+                    </>
+                  )}
                 </div>
               )}
             </>

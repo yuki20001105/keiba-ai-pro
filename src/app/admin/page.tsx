@@ -119,11 +119,16 @@ export default function AdminDashboard() {
         {/* Header */}
         <header className="bg-slate-800/50 backdrop-blur-md border-b border-blue-500/20">
           <div className="container mx-auto px-6 py-4 flex justify-between items-center">
-            <Link href="/home">
-              <h1 className="text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-cyan-400 cursor-pointer">
-                🏇 競馬AI Pro - 管理者ダッシュボード
-              </h1>
-            </Link>
+            <div className="flex items-center gap-3">
+              <Link href="/home">
+                <h1 className="text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-cyan-400 cursor-pointer">
+                  🏇 競馬AI Pro - 管理者ダッシュボード
+                </h1>
+              </Link>
+              <span className="text-[10px] px-2 py-0.5 rounded border border-cyan-400/40 bg-cyan-500/15 text-cyan-300">
+                Admin 専用
+              </span>
+            </div>
             <Link href="/home" className="text-blue-400 hover:text-blue-300">
               ← ホームに戻る
             </Link>

@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback } from 'react'
 import Link from 'next/link'
 import { Logo } from '@/components/Logo'
 import { authFetch } from '@/lib/auth-fetch'
+import { useAuth } from '@/contexts/AuthContext'
+import { PremiumRequiredNotice } from '@/components/PremiumRequiredNotice'
 
 type Summary = {
   version: string
@@ -48,6 +50,7 @@ const TARGETS = ['win', 'place3', 'speed_deviation'] as const
 type Target = (typeof TARGETS)[number]
 
 export default function FeatureLabPage() {
+  const { isPremium, loading: authLoading } = useAuth()
   const [tab, setTab] = useState<'summary' | 'importance' | 'coverage'>('summary')
   const [target, setTarget] = useState<Target>('win')
   const [importanceType, setImportanceType] = useState<'gain' | 'split'>('gain')
@@ -63,20 +66,35 @@ export default function FeatureLabPage() {
   const [error, setError] = useState<string | null>(null)
 
   const fetchSummary = useCallback(async () => {
+    if (!isPremium) {
+      setError('この機能は Premium または Admin のみ利用できます。')
+      return
+    }
+
     setLoadingSummary(true)
     setError(null)
     try {
       const res = await authFetch('/api/features/summary', { signal: AbortSignal.timeout(30000) })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      if (!res.ok) {
+        const authMsg = res.status === 401 || res.status === 403
+          ? '権限不足: Premium または Admin が必要です。'
+          : null
+        throw new Error(authMsg || `HTTP ${res.status}`)
+      }
       setSummary(await res.json())
     } catch (e) {
       setError(e instanceof Error ? e.message : 'エラー')
     } finally {
       setLoadingSummary(false)
     }
-  }, [])
+  }, [isPremium])
 
   const fetchImportance = useCallback(async () => {
+    if (!isPremium) {
+      setError('この機能は Premium または Admin のみ利用できます。')
+      return
+    }
+
     setLoadingImportance(true)
     setError(null)
     try {
@@ -84,7 +102,10 @@ export default function FeatureLabPage() {
       const res = await authFetch(url, { signal: AbortSignal.timeout(30000) })
       if (!res.ok) {
         const d = await res.json().catch(() => ({}))
-        throw new Error(d.detail || `HTTP ${res.status}`)
+        const authMsg = res.status === 401 || res.status === 403
+          ? '権限不足: Premium または Admin が必要です。'
+          : null
+        throw new Error(authMsg || d.detail || `HTTP ${res.status}`)
       }
       setImportance(await res.json())
     } catch (e) {
@@ -92,16 +113,24 @@ export default function FeatureLabPage() {
     } finally {
       setLoadingImportance(false)
     }
-  }, [target, topN, importanceType])
+  }, [isPremium, target, topN, importanceType])
 
   const fetchCoverage = useCallback(async () => {
+    if (!isPremium) {
+      setError('この機能は Premium または Admin のみ利用できます。')
+      return
+    }
+
     setLoadingCoverage(true)
     setError(null)
     try {
       const res = await authFetch(`/api/features/coverage?target=${target}`, { signal: AbortSignal.timeout(30000) })
       if (!res.ok) {
         const d = await res.json().catch(() => ({}))
-        throw new Error(d.detail || `HTTP ${res.status}`)
+        const authMsg = res.status === 401 || res.status === 403
+          ? '権限不足: Premium または Admin が必要です。'
+          : null
+        throw new Error(authMsg || d.detail || `HTTP ${res.status}`)
       }
       setCoverage(await res.json())
     } catch (e) {
@@ -109,15 +138,18 @@ export default function FeatureLabPage() {
     } finally {
       setLoadingCoverage(false)
     }
-  }, [target])
+  }, [isPremium, target])
 
   // 初回ロード
-  useEffect(() => { fetchSummary() }, [fetchSummary])
+  useEffect(() => {
+    if (!authLoading) fetchSummary()
+  }, [authLoading, fetchSummary])
 
   useEffect(() => {
+    if (!isPremium) return
     if (tab === 'importance') fetchImportance()
     if (tab === 'coverage') fetchCoverage()
-  }, [tab, fetchImportance, fetchCoverage])
+  }, [isPremium, tab, fetchImportance, fetchCoverage])
 
   const maxImp = importance?.features[0]?.importance ?? 1
 
@@ -133,22 +165,33 @@ export default function FeatureLabPage() {
             学習
           </Link>
           <span className="text-sm text-[#888]">特徴量ラボ</span>
+          <span className="text-[10px] px-2 py-0.5 rounded border border-yellow-600/40 bg-yellow-500/20 text-yellow-400">
+            Premium 専用
+          </span>
         </div>
       </header>
 
       <main className="max-w-5xl mx-auto px-6 py-8 space-y-6">
+        {!authLoading && !isPremium && (
+          <PremiumRequiredNotice
+            title="特徴量ラボは Premium 専用です"
+            message="権限不足時は API を呼び出しません。Premium へアップグレードするか Admin 権限で利用してください。"
+          />
+        )}
+
         {/* ターゲット選択 */}
         <div className="flex items-center gap-3 flex-wrap">
           <span className="text-xs text-[#666]">ターゲット:</span>
           {TARGETS.map(t => (
             <button
               key={t}
+              disabled={!isPremium}
               onClick={() => setTarget(t)}
               className={`px-3 py-1.5 rounded text-xs transition-colors ${
                 target === t
                   ? 'bg-white text-black font-medium'
                   : 'bg-[#1a1a1a] text-[#888] hover:text-white border border-[#2a2a2a]'
-              }`}
+              } disabled:opacity-40 disabled:cursor-not-allowed`}
             >
               {t}
             </button>
@@ -161,12 +204,13 @@ export default function FeatureLabPage() {
             ([key, label]) => (
               <button
                 key={key}
+                disabled={!isPremium}
                 onClick={() => setTab(key)}
                 className={`px-4 py-2.5 text-xs transition-colors border-b-2 ${
                   tab === key
                     ? 'border-white text-white'
                     : 'border-transparent text-[#555] hover:text-[#888]'
-                }`}
+                } disabled:opacity-40 disabled:cursor-not-allowed`}
               >
                 {label}
               </button>
@@ -274,7 +318,7 @@ export default function FeatureLabPage() {
               </div>
               <button
                 onClick={fetchImportance}
-                disabled={loadingImportance}
+                disabled={loadingImportance || !isPremium}
                 className="px-3 py-1 text-xs bg-[#1a1a1a] border border-[#2a2a2a] rounded hover:border-[#444] disabled:opacity-40 transition-colors"
               >
                 {loadingImportance ? '取得中…' : '更新'}

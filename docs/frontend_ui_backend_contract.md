@@ -152,3 +152,40 @@ Design direction:
 - This document is inventory-only; no runtime behavior changes included.
 - No secrets/tokens are documented.
 - No DB, Supabase, or API contract mutation is performed by this change.
+
+## 11. Implementation Status (P0 UI Guard)
+
+Updated: 2026-07-05
+
+Implemented in frontend:
+- Premium guard context fields added:
+	- role, subscription_tier, isPremium, isAdmin (UI-side pre-check)
+- Common guard UI components added:
+	- src/components/LockedFeatureCard.tsx
+	- src/components/PremiumRequiredNotice.tsx
+	- src/components/AdminRequiredNotice.tsx
+
+Guarded screens (P0):
+- src/app/prediction-history/page.tsx
+	- Premium badge shown
+	- non-premium: refresh disabled, API not called, notice shown
+	- 401/403: explicit permission message
+- src/app/data-view/page.tsx
+	- Premium badge shown
+	- non-premium: race detail buttons disabled, debug APIs not called, notice shown
+	- 401/403: explicit permission message
+- src/app/feature-lab/page.tsx
+	- Premium badge shown
+	- non-premium: tab/target actions disabled, feature APIs not called, notice shown
+	- 401/403: explicit permission message
+- src/app/race-analysis/page.tsx
+	- non-premium: premium tabs (features/result) disabled
+	- non-premium: debug/features and prediction-history calls suppressed
+	- premium-only notices shown in locked tabs
+	- 401/403 on result API: explicit permission message
+- src/app/admin/page.tsx
+	- Admin badge shown in header
+
+Notes:
+- Backend authorization remains authoritative; UI guard is pre-check UX only.
+- API contracts and backend permission logic are unchanged.
