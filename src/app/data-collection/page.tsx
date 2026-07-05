@@ -8,6 +8,9 @@ import { authFetch } from '@/lib/auth-fetch'
 import { useJobPoller } from '@/hooks/useJobPoller'
 import { useBatchScrape } from '@/hooks/useBatchScrape'
 
+type ScrapeHealthStatus = 'healthy' | 'degraded' | 'unhealthy' | 'unknown'
+type LocalApiStatus = 'checking' | ScrapeHealthStatus
+
 export default function DataCollectionPage() {
   // 期間指定用
   const now = new Date()
@@ -55,15 +58,36 @@ export default function DataCollectionPage() {
     : profilingMessage ? inferProgress(profilingMessage) : 0
 
   // ローカルAPI稼働チェック
-  const [localApiStatus, setLocalApiStatus] = useState<'checking' | 'online' | 'offline'>('checking')
+  const [localApiStatus, setLocalApiStatus] = useState<LocalApiStatus>('checking')
+  const [localApiReason, setLocalApiReason] = useState('')
+
+  const statusMeta: Record<LocalApiStatus, { label: string; dotClass: string; textClass: string }> = {
+    checking: { label: '確認中', dotClass: 'bg-[#555] animate-pulse', textClass: 'text-[#555]' },
+    healthy: { label: '稼働中', dotClass: 'bg-[#4ade80]', textClass: 'text-[#4ade80]' },
+    degraded: { label: '不安定', dotClass: 'bg-[#facc15]', textClass: 'text-[#facc15]' },
+    unhealthy: { label: '停止中', dotClass: 'bg-[#f87171]', textClass: 'text-[#f87171]' },
+    unknown: { label: '確認不可', dotClass: 'bg-[#9ca3af]', textClass: 'text-[#9ca3af]' },
+  }
+
+  const isApiUnavailable = localApiStatus === 'unhealthy' || localApiStatus === 'unknown'
 
   const checkLocalApi = async () => {
     setLocalApiStatus('checking')
+    setLocalApiReason('')
     try {
-      const res = await authFetch('/api/scrape/status/__health_check__', { signal: AbortSignal.timeout(3000) })
-      setLocalApiStatus(res.status < 500 ? 'online' : 'offline')
+      const res = await authFetch('/api/scrape/health', { signal: AbortSignal.timeout(4000) })
+      const data = await res.json().catch(() => ({}))
+      const status = String(data?.status || '') as ScrapeHealthStatus
+      const resolved: ScrapeHealthStatus = ['healthy', 'degraded', 'unhealthy', 'unknown'].includes(status)
+        ? status
+        : res.ok
+          ? 'unknown'
+          : 'unhealthy'
+      setLocalApiStatus(resolved)
+      setLocalApiReason(typeof data?.reason === 'string' ? data.reason : '')
     } catch {
-      setLocalApiStatus('offline')
+      setLocalApiStatus('unknown')
+      setLocalApiReason('health check request failed')
     }
   }
 
@@ -173,11 +197,9 @@ export default function DataCollectionPage() {
           </Link>
           {/* コンパクトAPI状態 */}
           <div className="flex items-center gap-2 px-3 py-1.5 bg-[#111] border border-[#1e1e1e] rounded-full">
-            {localApiStatus === 'checking' && <span className="w-1.5 h-1.5 rounded-full bg-[#555] animate-pulse" />}
-            {localApiStatus === 'online'   && <span className="w-1.5 h-1.5 rounded-full bg-[#4ade80]" />}
-            {localApiStatus === 'offline'  && <span className="w-1.5 h-1.5 rounded-full bg-[#f87171]" />}
-            <span className={`text-xs font-medium ${localApiStatus === 'online' ? 'text-[#4ade80]' : localApiStatus === 'offline' ? 'text-[#f87171]' : 'text-[#555]'}`}>
-              ローカルAPI {localApiStatus === 'online' ? '起動中' : localApiStatus === 'offline' ? '停止中' : '確認中'}
+            <span className={`w-1.5 h-1.5 rounded-full ${statusMeta[localApiStatus].dotClass}`} />
+            <span className={`text-xs font-medium ${statusMeta[localApiStatus].textClass}`}>
+              ローカルAPI {statusMeta[localApiStatus].label}
             </span>
             <button onClick={checkLocalApi} className="text-[#444] hover:text-[#888] transition-colors ml-1">
               <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -191,12 +213,13 @@ export default function DataCollectionPage() {
 
       <main className="max-w-3xl mx-auto px-6 py-10 space-y-5">
         {/* API停止中の案内 */}
-        {localApiStatus === 'offline' && (
+        {isApiUnavailable && (
           <div className="bg-[#111] border border-[#332200] rounded-lg px-4 py-3 flex items-center gap-3">
             <span className="w-1.5 h-1.5 rounded-full bg-[#f87171] shrink-0" />
             <div className="flex-1 min-w-0">
-              <p className="text-xs text-[#f87171]">ローカルFastAPIが停止しています</p>
+              <p className="text-xs text-[#f87171]">スクレイプ API の状態を確認できません</p>
               <p className="text-xs text-[#555] mt-0.5">VS Code タスク「Start FastAPI」を実行するか、<code className="text-[#7dd3fc] font-mono">cd python-api; python main.py</code> を実行してください</p>
+              {localApiReason && <p className="text-xs text-[#666] mt-1">reason: {localApiReason}</p>}
             </div>
           </div>
         )}
@@ -254,9 +277,9 @@ export default function DataCollectionPage() {
 
             <button
               onClick={handlePeriodBatchScrape}
-              disabled={batchLoading || localApiStatus === 'offline'}
+              disabled={batchLoading || isApiUnavailable}
               className={`flex items-center gap-2 px-6 py-2.5 rounded-lg font-medium text-sm transition-colors ${
-                batchLoading || localApiStatus === 'offline'
+                batchLoading || isApiUnavailable
                   ? 'bg-[#222] text-[#555] cursor-not-allowed'
                   : 'bg-white text-black hover:bg-[#eee]'
               }`}
@@ -269,7 +292,7 @@ export default function DataCollectionPage() {
                   </svg>
                   取得中...
                 </>
-              ) : localApiStatus === 'offline' ? 'API停止中' : '取得開始'}
+              ) : isApiUnavailable ? 'API確認不可' : '取得開始'}
             </button>
           </div>
 

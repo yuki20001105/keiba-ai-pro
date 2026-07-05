@@ -17,6 +17,7 @@ from pathlib import Path
 
 import aiohttp
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 
 from app_config import ULTIMATE_DB, logger  # type: ignore
 from deps.auth import require_admin  # type: ignore
@@ -87,6 +88,56 @@ async def scrape_status(job_id: str):
         "result": job.get("result"),
         "error": job.get("error"),
     }
+
+
+@router.get("/api/scrape/health")
+async def scrape_health() -> dict | JSONResponse:
+    """スクレイプ系サービスのヘルスチェック（read-only, 契約固定）。"""
+    timestamp = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    try:
+        with _JOBS_LOCK:
+            _purge_old_jobs(_scrape_jobs)
+            statuses = [str(j.get("status", "unknown")) for j in _scrape_jobs.values()]
+
+        active_jobs = sum(1 for s in statuses if s in {"queued", "running"})
+        error_jobs = sum(1 for s in statuses if s == "error")
+
+        if error_jobs > 0:
+            return {
+                "success": True,
+                "status": "degraded",
+                "service": "scrape",
+                "timestamp": timestamp,
+                "reason": "recent scrape job errors detected",
+                "metrics": {
+                    "active_jobs": active_jobs,
+                    "error_jobs": error_jobs,
+                    "total_jobs": len(statuses),
+                },
+            }
+
+        return {
+            "success": True,
+            "status": "healthy",
+            "service": "scrape",
+            "timestamp": timestamp,
+            "metrics": {
+                "active_jobs": active_jobs,
+                "error_jobs": error_jobs,
+                "total_jobs": len(statuses),
+            },
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "success": False,
+                "status": "unhealthy",
+                "service": "scrape",
+                "timestamp": timestamp,
+                "reason": f"scrape service not reachable: {e}",
+            },
+        )
 
 
 @router.post("/api/scrape", response_model=ScrapeResponse)

@@ -49,7 +49,8 @@ Architecture (current):
 | data-view | /api/debug/race/[race_id]/features | GET /api/debug/race/{race_id}/features | premium required (backend) | production | UI guard missing |
 | prediction-history | /api/prediction-history | GET /api/prediction-history | premium required (backend) | production | UI guard missing |
 | data-collection | /api/scrape | POST /api/scrape (legacy sync) | login required/admin-intent | production | uses legacy sync endpoint |
-| data-collection | /api/scrape/status/[jobId] | GET /api/scrape/status/{job_id} | login required | production | used as health probe with fake id |
+| data-collection | /api/scrape/status/[jobId] | GET /api/scrape/status/{job_id} | login required | production | batch scrape polling endpoint |
+| data-collection | /api/scrape/health | GET /api/scrape/health | login required | production | dedicated health contract |
 | data-collection | /api/profiling | POST /api/profiling/start | login required | production | query/body contract should be documented |
 | data-collection | /api/profiling/status/[job_id] | GET /api/profiling/status/{job_id} | login required | production | none critical |
 | data-collection | /api/races/recent | GET /api/races/recent | login required | production | none critical |
@@ -108,12 +109,12 @@ Classification policy used here:
 
 ## 6. Health-Check and Runtime Probe Inventory
 
-| Current Implementation | Observation | Issue |
-|---|---|---|
-| data-collection page probes /api/scrape/status/__health_check__ | uses scrape status API with fake job id | not a real health contract |
-| /api/health route exists | true backend health endpoint | should be single source of truth |
+| Contract | Endpoint Chain | Response | Notes |
+|---|---|---|---|
+| scrape health check | UI -> /api/scrape/health -> FastAPI /api/scrape/health | { success, status, service, timestamp, reason? } | status: healthy / degraded / unhealthy / unknown |
+| app health check | UI -> /api/health -> FastAPI /health | existing app-level contract | keep as top-level service heartbeat |
 
-Recommendation:
+Current policy:
 - use dedicated health endpoints for service readiness/liveness checks,
 - do not overload business status APIs as health probes.
 
@@ -208,3 +209,23 @@ Changes made for verification stability:
 Known remaining debt (non-blocking):
 - current lint output includes warnings (unused vars, exhaustive-deps, unused-expressions) across existing files
 - warnings are preserved intentionally to avoid broad refactor in this sprint
+
+## 13. Implementation Status (P1 Health Check Contract)
+
+Updated: 2026-07-05
+
+Implemented:
+- FastAPI dedicated endpoint added: `GET /api/scrape/health`
+- Next.js proxy route added: `GET /api/scrape/health`
+- data-collection UI switched from fake job-id probe to health contract
+
+Health response contract:
+- `success`: boolean
+- `status`: `healthy | degraded | unhealthy | unknown`
+- `service`: `scrape`
+- `timestamp`: ISO8601 string
+- `reason`: optional string
+
+Notes:
+- Existing scrape job API (`/api/scrape/status/{job_id}`) remains unchanged for polling.
+- Health check is read-only; no DB mutation.
