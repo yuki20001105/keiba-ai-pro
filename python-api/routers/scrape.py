@@ -142,6 +142,95 @@ async def netkeiba_race_list(date: str):
         )
 
 
+@router.get("/api/netkeiba/race/preflight")
+async def netkeiba_race_preflight(race_id: str | None = None, date: str | None = None) -> dict:
+    """Write path preflight check for /api/netkeiba/race without performing any write."""
+    race_id_str = (race_id or "").strip()
+    date_str = (date or "").strip().replace("-", "")
+
+    base = {
+        "success": False,
+        "status": "unavailable",
+        "service": "netkeiba-race",
+        "race_id": race_id_str,
+        "can_scrape": False,
+        "can_write": False,
+        "write_performed": False,
+        "required_params": ["race_id"],
+        "provided_params": {
+            "race_id": bool(race_id_str),
+            "date": bool(date),
+        },
+        "reason": None,
+    }
+
+    if not race_id_str:
+        base["reason"] = "race_id is required"
+        raise HTTPException(status_code=400, detail=base)
+
+    if not re.fullmatch(r"\d{12}", race_id_str):
+        base["reason"] = "race_id must be 12 digits"
+        raise HTTPException(status_code=400, detail=base)
+
+    if date and not re.fullmatch(r"\d{8}", date_str):
+        base["reason"] = "date must be YYYYMMDD or YYYY-MM-DD format"
+        raise HTTPException(status_code=400, detail=base)
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                f"{_SCRAPE_SERVICE_URL}/scrape/ultimate",
+                headers={"Content-Type": "application/json"},
+                json={"race_id": race_id_str, "include_details": False},
+            ) as resp:
+                body_text = await resp.text()
+                parsed: dict | None = None
+                try:
+                    parsed = json.loads(body_text) if body_text else {}
+                except Exception:
+                    parsed = None
+
+                if resp.status >= 500:
+                    return {
+                        **base,
+                        "status": "unavailable",
+                        "reason": f"scrape service unavailable: HTTP {resp.status}",
+                    }
+
+                if resp.status >= 400:
+                    return {
+                        **base,
+                        "status": "degraded",
+                        "can_scrape": False,
+                        "reason": f"scrape service rejected request: HTTP {resp.status}",
+                    }
+
+                if isinstance(parsed, dict) and parsed.get("success") is True:
+                    return {
+                        **base,
+                        "success": True,
+                        "status": "ready",
+                        "can_scrape": True,
+                        "reason": None,
+                    }
+
+                return {
+                    **base,
+                    "status": "degraded",
+                    "can_scrape": False,
+                    "reason": "scrape service reachable but race data is not ready",
+                }
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {
+            **base,
+            "status": "unavailable",
+            "reason": f"scrape service not reachable: {e}",
+        }
+
+
 @router.get("/api/scrape/health")
 async def scrape_health() -> dict:
     """スクレイプ系サービスのヘルスチェック（read-only, 契約固定）。"""

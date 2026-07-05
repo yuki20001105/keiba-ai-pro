@@ -285,3 +285,34 @@ Not changed:
 
 Path after migration:
 - UI/Caller -> Next `/api/netkeiba/race-list` -> FastAPI `/api/netkeiba/race-list` -> Scrape Service `/scrape/race_list`.
+
+## 17. Implementation Status (P1-5 Write Path Decomposition + Preflight)
+
+Updated: 2026-07-05
+
+Implemented in this step:
+- Added FastAPI read-only endpoint: `GET /api/netkeiba/race/preflight`.
+- Preflight performs only:
+	- input validation (`race_id` required, 12-digit; optional `date` format check),
+	- scrape service reachability/probe,
+	- explicit readiness contract return.
+- Preflight never performs DB write/Supabase write (`can_write=false`, `write_performed=false`).
+
+Not changed in this step:
+- Next API `/api/netkeiba/race` write logic remains unchanged.
+- Direct Supabase write responsibility remains in Next route for now.
+- Existing UI flow and permission behavior are unchanged.
+
+Preflight response contract:
+- `success`: bool
+- `status`: `ready | degraded | unavailable`
+- `service`: `netkeiba-race`
+- `race_id`: string
+- `can_scrape`: bool
+- `can_write`: false (fixed in this phase)
+- `write_performed`: false (fixed in this phase)
+- `reason`: string | null
+
+Migration marker:
+- `/api/netkeiba/race` is now tracked as `migrationStatus=preflight-added`.
+- Next phase is dry-run orchestration without moving production writes yet.

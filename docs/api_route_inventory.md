@@ -1,6 +1,6 @@
 # API Route Inventory and Classification
 
-Updated: 2026-07-05
+Updated: 2026-07-05 (P1-5 preflight)
 Scope: Next.js API routes and FastAPI endpoints classification
 
 ## 1. Classification Rules
@@ -135,6 +135,7 @@ Scope: Next.js API routes and FastAPI endpoints classification
 - /api/predict (older inference endpoint kept available)
 - /api/train (synchronous training endpoint; operationally heavier than async start)
 - /api/netkeiba/race-list (read-only proxy to scrape service, introduced in P1-4)
+- /api/netkeiba/race/preflight (read-only preflight contract for write path decomposition, introduced in P1-5)
 
 ### internal
 
@@ -235,3 +236,63 @@ Migrated in P1-4:
 3. Move /api/netkeiba/race write responsibility to FastAPI while keeping Next route as temporary adapter.
 4. After usage confirmation, mark /api/netkeiba/race deprecated and remove direct Supabase writes from Next.
 5. For OCR path, define explicit auth contract first, then migrate Supabase writes behind FastAPI endpoint.
+
+## 7. P1-5 Write Path Decomposition (/api/netkeiba/race)
+
+Goal in this phase:
+- keep existing write behavior unchanged in Next route /api/netkeiba/race,
+- add read-only preflight contract in FastAPI,
+- clarify ownership before dry-run/write migration.
+
+### 7.1 Current /api/netkeiba/race responsibility split
+
+| Responsibility | Current Owner | Notes |
+|---|---|---|
+| input parsing (`raceId`, `userId`, `testOnly`) | Next API | request body contract currently defined in Next route |
+| scrape service call (`/scrape/ultimate`) | Next API direct | used both in testOnly and full write path |
+| Supabase write (`races`, `race_results`, `race_payouts`) | Next API direct | service-role/anon client in Next route |
+| auth gate | mixed | no route-local admin/premium gate in this route |
+| error mapping | Next API | 400/422/502/503/500 style mapping |
+
+### 7.2 New preflight contract (FastAPI, read-only)
+
+Endpoint:
+- GET /api/netkeiba/race/preflight?race_id=...&date=...
+
+Preflight guarantees:
+- validates input format (race_id required, 12-digit; date optional format check),
+- checks scrape service reachability,
+- does not execute DB write,
+- does not execute Supabase write,
+- returns explicit contract for ready/degraded/unavailable.
+
+Response shape (target contract):
+
+```json
+{
+	"success": true,
+	"status": "ready",
+	"service": "netkeiba-race",
+	"race_id": "202406010101",
+	"can_scrape": true,
+	"can_write": false,
+	"write_performed": false,
+	"reason": null
+}
+```
+
+Status semantics:
+- ready: scrape service reachable and race probe accepted,
+- degraded: scrape service reachable but request rejected or race unavailable,
+- unavailable: scrape service not reachable or upstream 5xx.
+
+### 7.3 Migration status
+
+| Route | riskLevel | migrationTarget | migrationStatus |
+|---|---|---|---|
+| /api/netkeiba/race | high | FastAPI write orchestration | preflight-added |
+
+Phase boundary (important):
+- this P1-5 step does not move write processing,
+- this P1-5 step does not remove Supabase direct writes,
+- write migration starts only after preflight + dry-run validation phase.
