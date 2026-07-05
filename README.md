@@ -832,6 +832,8 @@ feature flag ON の限定検証（永続化しない）:
 ```powershell
 cd C:\Users\yuki2\Documents\ws\keiba-ai-pro\python-api
 $env:NETKEIBA_RACE_WRITE_ENABLED = "true"
+$env:ALLOW_STAGING_WRITE = "true"
+$env:APP_ENV = "staging"
 ..\.venv\Scripts\python.exe main.py
 ```
 
@@ -847,6 +849,43 @@ enabled-mode 付き suite（任意）:
 ```powershell
 cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
 python-api\.venv\Scripts\python.exe scripts\run_keiba_smoke_suite.py --verify-write-guard-enabled
+```
+
+production 強制ブロック確認（任意）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro\python-api
+$env:NETKEIBA_RACE_WRITE_ENABLED = "true"
+$env:ALLOW_STAGING_WRITE = "true"
+$env:APP_ENV = "production"
+..\.venv\Scripts\python.exe main.py
+```
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_write_guard.py --expect-production-block
+```
+
+staging lock 不足ブロック確認（任意）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro\python-api
+$env:NETKEIBA_RACE_WRITE_ENABLED = "true"
+$env:ALLOW_STAGING_WRITE = "false"
+$env:APP_ENV = "staging"
+..\.venv\Scripts\python.exe main.py
+```
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_write_guard.py --expect-staging-lock-missing
+```
+
+suite optional:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\run_keiba_smoke_suite.py --verify-write-guard-production-block --verify-write-guard-staging-lock-missing
 ```
 
 **8) Notion output**
@@ -881,6 +920,8 @@ python-api\.venv\Scripts\python.exe scripts\run_keiba_smoke_suite.py --strict-pr
 - Payload contract diff結果JSON: `reports/netkeiba_race_payload_contract_diff.json`
 - Write guard smoke結果JSON: `reports/netkeiba_race_write_guard_smoke_result.json`
 - Write guard enabled検証結果JSON: `reports/netkeiba_race_write_guard_enabled_smoke_result.json`
+- Write guard production検証結果JSON: `reports/netkeiba_race_write_guard_production_smoke_result.json`
+- Write guard staging lock検証結果JSON: `reports/netkeiba_race_write_guard_staging_lock_smoke_result.json`
 - Smoke suite結果JSON: `reports/keiba_smoke_suite_result.json`
 - 監査ログ（任意）: `reports/e2e_logs/`
 

@@ -113,9 +113,17 @@ SUPABASE_DATA_ENABLED: bool = (
 NETKEIBA_RACE_WRITE_ENABLED: bool = _os.environ.get("NETKEIBA_RACE_WRITE_ENABLED", "false").lower() in (
     "true", "1", "yes"
 )
+ALLOW_STAGING_WRITE: bool = _os.environ.get("ALLOW_STAGING_WRITE", "false").lower() in (
+    "true", "1", "yes"
+)
+APP_ENV: str = (_os.environ.get("APP_ENV") or _os.environ.get("ENVIRONMENT") or "development").strip().lower()
+if APP_ENV not in {"development", "staging", "production"}:
+    APP_ENV = "development"
 if SUPABASE_ENABLED:
     logger.info(f"Supabase データ操作: {'有効' if SUPABASE_DATA_ENABLED else '無効（認証専用モード）'}")
 logger.info(f"netkeiba race write orchestration: {'有効' if NETKEIBA_RACE_WRITE_ENABLED else '無効（guarded）'}")
+logger.info(f"netkeiba staging write allowance: {'有効' if ALLOW_STAGING_WRITE else '無効（guarded）'}")
+logger.info(f"application environment: {APP_ENV}")
 
 
 # ── モデルヘルパー ──────────────────────────────────────────────────

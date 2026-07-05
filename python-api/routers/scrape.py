@@ -21,7 +21,13 @@ import aiohttp
 from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import JSONResponse
 
-from app_config import ULTIMATE_DB, NETKEIBA_RACE_WRITE_ENABLED, logger  # type: ignore
+from app_config import (  # type: ignore
+    ULTIMATE_DB,
+    NETKEIBA_RACE_WRITE_ENABLED,
+    ALLOW_STAGING_WRITE,
+    APP_ENV,
+    logger,
+)
 from deps.auth import require_admin  # type: ignore
 from models import ScrapeRequest, ScrapeResponse, RescrapeResponse  # type: ignore
 from scraping.constants import SCRAPE_HEADERS  # type: ignore
@@ -31,6 +37,8 @@ from scraping.storage import _save_race_to_ultimate_db  # type: ignore
 
 router = APIRouter()
 _SCRAPE_SERVICE_URL = os.environ.get("SCRAPE_SERVICE_URL", "http://localhost:8001")
+_WRITE_TARGET_TABLE_WHITELIST = {"races", "race_results", "race_payouts"}
+_WRITE_MAX_RECORDS_PER_TABLE = 500
 
 
 @router.post("/api/scrape/start")
@@ -324,6 +332,123 @@ def _build_payouts_preview(race_id: str, user_id: str, scrape_data: dict[str, An
     return payouts
 
 
+def _to_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "on"}
+    return bool(value)
+
+
+def _validate_writer_preview(preview: Any) -> dict[str, Any]:
+    issues: list[str] = []
+    summary = {
+        "tables_count": 0,
+        "total_records": 0,
+        "target_tables": [],
+        "max_records_per_table": _WRITE_MAX_RECORDS_PER_TABLE,
+    }
+
+    tables = preview.get("tables") if isinstance(preview, dict) else None
+    if not isinstance(tables, list) or not tables:
+        issues.append("preview.tables is required and must be a non-empty list")
+        return {"ok": False, "issues": issues, "summary": summary}
+
+    target_tables: list[str] = []
+    total_records = 0
+
+    for idx, table_info in enumerate(tables):
+        if not isinstance(table_info, dict):
+            issues.append(f"preview.tables[{idx}] must be an object")
+            continue
+
+        target_table = str(table_info.get("target_table") or "").strip()
+        if not target_table:
+            issues.append(f"preview.tables[{idx}].target_table is required")
+            continue
+
+        target_tables.append(target_table)
+
+        if target_table not in _WRITE_TARGET_TABLE_WHITELIST:
+            issues.append(f"target_table is not allowed: {target_table}")
+
+        try:
+            records_count = int(table_info.get("records_count") or 0)
+        except (TypeError, ValueError):
+            records_count = -1
+        if records_count < 0:
+            issues.append(f"records_count must be >= 0 for target_table={target_table}")
+            continue
+        if records_count > _WRITE_MAX_RECORDS_PER_TABLE:
+            issues.append(
+                f"records_count exceeds limit for target_table={target_table}: "
+                f"{records_count}>{_WRITE_MAX_RECORDS_PER_TABLE}"
+            )
+        total_records += records_count
+
+    summary["tables_count"] = len(target_tables)
+    summary["total_records"] = total_records
+    summary["target_tables"] = target_tables
+
+    return {
+        "ok": len(issues) == 0,
+        "issues": issues,
+        "summary": summary,
+    }
+
+
+def _build_guarded_writer_stub(
+    race_id: str,
+    preview_summary: dict[str, Any],
+    payload_contract_approved: bool,
+) -> dict[str, Any]:
+    timestamp = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return {
+        "status": "guarded-stub",
+        "write_performed": False,
+        "reason": "staging writer implementation is intentionally disabled in this phase",
+        "writer": {
+            "name": "staging_netkeiba_writer_stub",
+            "phase": "P1-11",
+            "target_tables_whitelist": sorted(_WRITE_TARGET_TABLE_WHITELIST),
+            "preview_summary": preview_summary,
+            "payload_contract_approved": payload_contract_approved,
+            "implementation": "no-op",
+            "todo": [
+                "snapshot backup before write",
+                "idempotency key validation",
+                "audit log persistence",
+                "duplicate prevention",
+                "rollback execution plan",
+            ],
+        },
+        "write_safety": {
+            "snapshot_required": True,
+            "audit_log_required": True,
+            "idempotency_key_required": True,
+            "duplicate_prevention_required": True,
+            "rollback_plan_required": True,
+            "table_whitelist_required": True,
+            "row_count_limit_required": True,
+            "snapshot": {
+                "snapshot_id": f"prewrite-{race_id}-{int(datetime.utcnow().timestamp())}",
+                "captured": False,
+                "phase": "design-only",
+                "captured_at": None,
+            },
+            "audit": {
+                "event_type": "netkeiba_race_write_guarded_stub",
+                "event_time": timestamp,
+                "phase": "P1-11",
+            },
+        },
+    }
+
+
 @router.post("/api/netkeiba/race/dry-run")
 async def netkeiba_race_dry_run(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
     """Simulate netkeiba race write orchestration and return write payload preview without performing any write."""
@@ -454,7 +579,7 @@ async def netkeiba_race_dry_run(payload: dict[str, Any] = Body(default={})) -> d
 
 @router.post("/api/netkeiba/race/write")
 async def netkeiba_race_write(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    """Guarded write endpoint. Default behavior is non-write until explicitly enabled and validated."""
+    """Guarded write endpoint. P1-11 adds staging-only design lock; actual write stays disabled."""
     race_id_raw = payload.get("race_id") if isinstance(payload, dict) else None
     if race_id_raw is None and isinstance(payload, dict):
         race_id_raw = payload.get("raceId")
@@ -465,19 +590,51 @@ async def netkeiba_race_write(payload: dict[str, Any] = Body(default={})) -> dic
         "status": "disabled",
         "service": "netkeiba-race-write",
         "race_id": race_id,
+        "app_env": APP_ENV,
         "can_write": False,
         "write_performed": False,
         "reason": "NETKEIBA_RACE_WRITE_ENABLED is false",
+        "guard_locks": {
+            "netkeiba_race_write_enabled": NETKEIBA_RACE_WRITE_ENABLED,
+            "allow_staging_write": ALLOW_STAGING_WRITE,
+            "app_env": APP_ENV,
+        },
     }
 
     if not NETKEIBA_RACE_WRITE_ENABLED:
         return base
 
-    confirm_write = bool(payload.get("confirm_write")) if isinstance(payload, dict) else False
+    if APP_ENV == "production":
+        return {
+            **base,
+            "status": "blocked",
+            "reason": "production write is forbidden in this phase",
+        }
+
+    if not ALLOW_STAGING_WRITE:
+        return {
+            **base,
+            "status": "blocked",
+            "reason": "ALLOW_STAGING_WRITE=true is required",
+        }
+
+    if APP_ENV != "staging":
+        return {
+            **base,
+            "status": "blocked",
+            "reason": "APP_ENV=staging is required",
+        }
+
+    confirm_write = _to_bool(payload.get("confirm_write") if isinstance(payload, dict) else None)
     dry_run_flag = payload.get("dry_run") if isinstance(payload, dict) else None
     if dry_run_flag is None and isinstance(payload, dict):
         dry_run_flag = payload.get("dryRun")
-    dry_run = True if dry_run_flag is None else bool(dry_run_flag)
+    dry_run = True if dry_run_flag is None else _to_bool(dry_run_flag)
+
+    payload_contract_flag = payload.get("payload_contract_approved") if isinstance(payload, dict) else None
+    if payload_contract_flag is None and isinstance(payload, dict):
+        payload_contract_flag = payload.get("payload_contract_ok")
+    payload_contract_approved = _to_bool(payload_contract_flag, default=False)
 
     if not confirm_write:
         return {
@@ -491,6 +648,13 @@ async def netkeiba_race_write(payload: dict[str, Any] = Body(default={})) -> dic
             **base,
             "status": "blocked",
             "reason": "dry_run=false is required for guarded write path",
+        }
+
+    if not payload_contract_approved:
+        return {
+            **base,
+            "status": "blocked",
+            "reason": "payload_contract_approved=true is required",
         }
 
     if not race_id or not re.fullmatch(r"\d{12}", race_id):
@@ -517,25 +681,36 @@ async def netkeiba_race_write(payload: dict[str, Any] = Body(default={})) -> dic
         }
 
     preview = dry_run_result.get("preview")
-    tables = preview.get("tables") if isinstance(preview, dict) else None
-    if not isinstance(tables, list) or not tables:
+    preview_validation = _validate_writer_preview(preview)
+    if not preview_validation.get("ok"):
         return {
             **base,
             "status": "blocked",
-            "reason": "payload preview is invalid",
+            "reason": "payload preview is invalid for staging writer",
+            "preview_validation": preview_validation,
         }
 
-    # P1-9: write path is intentionally guarded/no-op even when all conditions pass.
+    writer_stub = _build_guarded_writer_stub(
+        race_id=race_id,
+        preview_summary=preview_validation.get("summary") if isinstance(preview_validation, dict) else {},
+        payload_contract_approved=payload_contract_approved,
+    )
+
+    # P1-11: staging guard design is active, but actual write remains intentionally disabled.
     return {
         **base,
-        "status": "guarded-noop",
-        "reason": "write implementation is intentionally disabled in this phase",
+        "success": True,
+        "status": "guarded-stub",
+        "reason": "staging-only write guard passed; actual writer remains disabled in this phase",
         "can_write": True,
         "write_performed": False,
+        "payload_contract_approved": payload_contract_approved,
         "dry_run_preview": {
-            "tables_count": len(tables),
-            "target_tables": [str(t.get("target_table") or "") for t in tables if isinstance(t, dict)],
+            "tables_count": preview_validation["summary"]["tables_count"],
+            "target_tables": preview_validation["summary"]["target_tables"],
+            "total_records": preview_validation["summary"]["total_records"],
         },
+        "writer_stub": writer_stub,
     }
 
 

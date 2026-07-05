@@ -1,6 +1,6 @@
 # API Route Inventory and Classification
 
-Updated: 2026-07-05 (P1-5 preflight)
+Updated: 2026-07-05 (P1-11 staging write guard design)
 Scope: Next.js API routes and FastAPI endpoints classification
 
 ## 1. Classification Rules
@@ -530,3 +530,52 @@ Smoke suite integration:
 
 Migration marker update:
 - /api/netkeiba/race: `migrationStatus=write-guard-enabled-verified`
+
+## 13. P1-11 Staging-only Write Guard Design (No Actual Write)
+
+Goal in this phase:
+- add staging-only double lock design before actual write implementation,
+- keep production write strictly forbidden,
+- keep all branches at `write_performed=false`.
+
+Double lock (all required):
+- `NETKEIBA_RACE_WRITE_ENABLED=true`
+- `ALLOW_STAGING_WRITE=true`
+- `APP_ENV=staging`
+- request payload: `confirm_write=true`, `dry_run=false`, `payload_contract_approved=true`
+
+Hard safety checks before writer stub:
+- race_id must be valid 12-digit format,
+- dry-run must return `status=ready`,
+- preview payload target tables must pass whitelist check (`races`, `race_results`, `race_payouts`),
+- per-table records count must be within limit.
+
+Production policy:
+- if `APP_ENV=production`, response is `blocked`,
+- feature flags do not override this policy.
+
+Current boundary:
+- writer is still guarded stub (`status=guarded-stub`),
+- no DB write/Supabase write is executed in FastAPI,
+- `write_performed=false` remains mandatory.
+
+Safety requirements now explicit in response payload:
+- backup/snapshot requirement,
+- audit log requirement,
+- idempotency key requirement,
+- duplicate prevention requirement,
+- rollback plan requirement,
+- table whitelist + row count limit requirement.
+
+Smoke coverage updates:
+- default smoke: `scripts/smoke_netkeiba_race_write_guard.py`
+- staging-enabled matrix: `scripts/smoke_netkeiba_race_write_guard.py --expect-enabled`
+- production hard-block smoke: `--expect-production-block` (optional)
+- staging-lock-missing smoke: `--expect-staging-lock-missing` (optional)
+- suite optional steps:
+	- `--verify-write-guard-enabled`
+	- `--verify-write-guard-production-block`
+	- `--verify-write-guard-staging-lock-missing`
+
+Migration marker update:
+- /api/netkeiba/race: `migrationStatus=staging-write-guard-designed`

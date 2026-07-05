@@ -109,6 +109,16 @@ def main() -> int:
         action="store_true",
         help="Run additional write guard checks expecting NETKEIBA_RACE_WRITE_ENABLED=true",
     )
+    parser.add_argument(
+        "--verify-write-guard-production-block",
+        action="store_true",
+        help="Run write guard check expecting APP_ENV=production hard block branch",
+    )
+    parser.add_argument(
+        "--verify-write-guard-staging-lock-missing",
+        action="store_true",
+        help="Run write guard check expecting ALLOW_STAGING_WRITE=false block branch",
+    )
     args = parser.parse_args()
 
     token_args: list[str] = []
@@ -234,6 +244,44 @@ def main() -> int:
             "reason": wge_reason,
             "note": "Write guard enabled: all safety branches must keep write_performed=false",
             "log_tail": write_guard_enabled_log[-2000:],
+        }
+
+    if args.verify_write_guard_production_block:
+        write_guard_prod_rc, write_guard_prod_log = _run_step("write-guard-production", [
+            "scripts/smoke_netkeiba_race_write_guard.py",
+            "--expect-production-block",
+            "--race-id", args.race_id,
+            "--date", args.date,
+            "--fastapi-url", args.fastapi_url,
+            *token_args,
+        ])
+        write_guard_prod_report = _read_json(REPORTS_DIR / "netkeiba_race_write_guard_production_smoke_result.json")
+        wgp_result, wgp_reason = _classify_write_guard(write_guard_prod_report)
+        suite["steps"]["race_write_guard_production"] = {
+            "return_code": write_guard_prod_rc,
+            "result": wgp_result,
+            "reason": wgp_reason,
+            "note": "Write guard production lock: APP_ENV=production must always block writes",
+            "log_tail": write_guard_prod_log[-2000:],
+        }
+
+    if args.verify_write_guard_staging_lock_missing:
+        write_guard_staging_lock_rc, write_guard_staging_lock_log = _run_step("write-guard-staging-lock", [
+            "scripts/smoke_netkeiba_race_write_guard.py",
+            "--expect-staging-lock-missing",
+            "--race-id", args.race_id,
+            "--date", args.date,
+            "--fastapi-url", args.fastapi_url,
+            *token_args,
+        ])
+        write_guard_staging_lock_report = _read_json(REPORTS_DIR / "netkeiba_race_write_guard_staging_lock_smoke_result.json")
+        wgsl_result, wgsl_reason = _classify_write_guard(write_guard_staging_lock_report)
+        suite["steps"]["race_write_guard_staging_lock"] = {
+            "return_code": write_guard_staging_lock_rc,
+            "result": wgsl_result,
+            "reason": wgsl_reason,
+            "note": "Write guard staging lock: ALLOW_STAGING_WRITE must block when false",
+            "log_tail": write_guard_staging_lock_log[-2000:],
         }
 
     results = [str(v.get("result")) for v in suite["steps"].values()]

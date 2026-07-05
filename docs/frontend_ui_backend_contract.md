@@ -492,3 +492,46 @@ Operational commands (enabled verification):
 - start FastAPI process with temporary env var only
 - `python scripts/smoke_netkeiba_race_write_guard.py --expect-enabled`
 - `python scripts/run_keiba_smoke_suite.py --verify-write-guard-enabled`
+
+## 23. Implementation Status (P1-11 Staging-only Write Guard Design)
+
+Updated: 2026-07-05
+
+Implemented in this step:
+- FastAPI write orchestration lock extended with staging-only double lock:
+	- `NETKEIBA_RACE_WRITE_ENABLED=true`
+	- `ALLOW_STAGING_WRITE=true`
+	- `APP_ENV=staging`
+- Request-level hard gates added:
+	- `confirm_write=true`
+	- `dry_run=false`
+	- `payload_contract_approved=true`
+- Dry-run preview validator added for writer boundary:
+	- target table whitelist check
+	- records_count sanity and per-table upper limit check
+- Guarded writer stub added (`guarded-stub`):
+	- no-op writer interface placeholder
+	- explicit TODOs for snapshot/audit/idempotency/rollback
+
+Production safety rule:
+- `APP_ENV=production` always returns `blocked`
+- flags do not bypass production block
+
+Phase boundary (still no migration of actual write):
+- no FastAPI DB write
+- no FastAPI Supabase write
+- Next `/api/netkeiba/race` write path remains unchanged
+- UI route switching is not performed
+
+Smoke updates:
+- existing enabled matrix now validates `guarded-stub` path:
+	- `python scripts/smoke_netkeiba_race_write_guard.py --expect-enabled`
+- optional dedicated checks added:
+	- production hard block: `--expect-production-block`
+	- staging lock missing: `--expect-staging-lock-missing`
+- suite optional hooks:
+	- `--verify-write-guard-production-block`
+	- `--verify-write-guard-staging-lock-missing`
+
+Hard invariant:
+- any `write_performed=true` is fail
