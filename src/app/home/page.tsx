@@ -15,6 +15,7 @@ const FLOW_STEPS = [
 const EXTRA_ITEMS = [
   { href: '/race-analysis', label: '予測スコア詳細', desc: '馬ごとの予測スコア・特徴量を確認' },
   { href: '/prediction-history', label: '予測履歴', desc: '過去の予測と実際の着順を比較' },
+  { href: '/production-readiness', label: '本番前チェック', desc: 'health/smoke/flag を read-only で確認' },
 ]
 
 export default function HomePage() {

@@ -9,7 +9,7 @@ export type NextRouteMeta = {
   usesSupabaseDirectly?: boolean
   usesScrapeServiceDirectly?: boolean
   migrationTarget?: MigrationTarget
-  migrationStatus?: 'not-started' | 'in-progress' | 'preflight-added' | 'dry-run-added' | 'payload-diff-added' | 'write-guard-added' | 'write-guard-enabled-verified' | 'staging-write-guard-designed' | 'staging-writer-stub-added' | 'sandbox-write-added' | 'sandbox-precheck-added' | 'migrated'
+  migrationStatus?: 'not-started' | 'in-progress' | 'preflight-added' | 'dry-run-added' | 'payload-diff-added' | 'write-guard-added' | 'write-guard-enabled-verified' | 'staging-write-guard-designed' | 'staging-writer-stub-added' | 'sandbox-write-added' | 'sandbox-precheck-added' | 'sandbox-write-readback-added' | 'migrated'
   riskLevel?: RiskLevel
 }
 
@@ -17,6 +17,7 @@ export type NextRouteMeta = {
 export const NEXT_API_ROUTE_CLASSIFICATION: NextRouteMeta[] = [
   { route: '/api/health', classification: 'production', note: 'App heartbeat proxy', migrationTarget: 'keep-next-direct', riskLevel: 'low' },
   { route: '/api/scrape/health', classification: 'production', note: 'Dedicated scrape health contract', migrationTarget: 'keep-next-direct', riskLevel: 'low' },
+  { route: '/api/production-readiness', classification: 'production', note: 'Read-only production readiness checks (health/smoke/flags/git/secret scan)', migrationTarget: 'keep-next-direct', riskLevel: 'low' },
   { route: '/api/scrape/status/[jobId]', classification: 'production', note: 'Scrape job polling', migrationTarget: 'keep-next-direct', riskLevel: 'low' },
   { route: '/api/scrape', classification: 'deprecated', note: 'Compatibility alias to async scrape start', migrationTarget: 'fastapi-proxy', riskLevel: 'medium' },
   {
@@ -26,7 +27,7 @@ export const NEXT_API_ROUTE_CLASSIFICATION: NextRouteMeta[] = [
     usesSupabaseDirectly: true,
     usesScrapeServiceDirectly: true,
     migrationTarget: 'fastapi-staging-sandbox-write',
-    migrationStatus: 'sandbox-precheck-added',
+    migrationStatus: 'sandbox-write-readback-added',
     riskLevel: 'high',
   },
   {

@@ -1,6 +1,6 @@
 # API Route Inventory and Classification
 
-Updated: 2026-07-05 (P1-15 precheck ready verification)
+Updated: 2026-07-05 (P1-16 sandbox write-readback verification)
 Scope: Next.js API routes and FastAPI endpoints classification
 
 ## 1. Classification Rules
@@ -809,3 +809,60 @@ Safety confirmation:
 Gate status:
 - precheck readiness gate is satisfied for next phase planning,
 - write/readback remains intentionally out of scope for this phase.
+
+## 19. P1-16 Sandbox Write + Readback Verification (Sandbox Only)
+
+Goal in this phase:
+- execute actual write only to sandbox tables,
+- immediately verify written rows by sandbox readback,
+- keep production/base tables strictly out of write/readback scope.
+
+Implemented in this step:
+- `/api/netkeiba/race/write` sandbox path now performs readback verification after successful sandbox write.
+- readback scope is limited to:
+	- `sandbox_netkeiba_races`
+	- `sandbox_netkeiba_race_results`
+	- `sandbox_netkeiba_race_payouts`
+- readback key uses `race_id + idempotency_key` and verifies:
+	- `records_written` and readback count match,
+	- target tables are sandbox-only,
+	- `idempotency_key` match,
+	- `payload_hash` match,
+	- `audit_payload` presence.
+
+Mismatch behavior:
+- explicit response status: `sandbox-readback-mismatch`
+- reason: readback mismatch/failure detail
+- no fallback to production/base table readback.
+
+Safety behavior preserved:
+- precheck `ready` remains mandatory before any sandbox write,
+- `idempotency_key` required for sandbox write,
+- row-limit/table whitelist violations remain write-blocking,
+- default smoke/default suite remain non-write,
+- sandbox write-readback runs only with explicit opt-in flags.
+
+Migration marker update:
+- /api/netkeiba/race: `migrationStatus=sandbox-write-readback-added`
+
+## 20. UI Frontend Integration Final State
+
+Updated: 2026-07-05
+
+Completion scope considered done:
+- UI screens calling Next API routes,
+- Next API to FastAPI routing contracts,
+- Premium/Admin UI guard behavior,
+- dedicated health check contracts,
+- route classification and direct-path inventory,
+- smoke suite coverage for default non-write flows,
+- lint/build verification stability.
+
+Explicitly separate from UI integration completion:
+- P1-16 sandbox write-readback runtime actual pass,
+- upstream scrape service ready verification,
+- develop merge decision for sandbox write-readback PR.
+
+Safety note:
+- default UI/API flows do not perform sandbox write or production/base-table write,
+- runtime write-readback remains an explicit opt-in data-migration verification step.

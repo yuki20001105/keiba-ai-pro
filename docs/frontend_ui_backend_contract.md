@@ -270,6 +270,49 @@ Constraints preserved:
 - No DB write path removed.
 - No auth policy relaxed.
 
+## 22. Implementation Status (P0 Production Readiness Check)
+
+Updated: 2026-07-05
+
+Implemented:
+- New UI page: `src/app/production-readiness/page.tsx`
+- New Next API route: `src/app/api/production-readiness/route.ts`
+
+Purpose:
+- Provide pre-production checks for prediction/analysis/read-only operations from UI.
+- Explicitly exclude write operations (production/base write and sandbox write-readback).
+
+UI contract:
+- Card-based checklist with `pass | warn | fail | unknown`.
+- Single execution button with loading state.
+- Error summary displayed in-page.
+- Minimal JSON details only (no secret value exposure).
+- Premium/Admin guard on execution button.
+
+API contract (`POST /api/production-readiness`):
+- Executes only allowlisted checks:
+	- frontend build (`npm run build`)
+	- python compileall
+	- FastAPI health (`/health`)
+	- scrape health (`/api/scrape/health`)
+	- analyze_race smoke script
+	- smoke suite script (summary read)
+	- secret scan (`git grep -n -I "<notion-token-prefix>"`)
+	- git status notice parsing
+	- env flag checks (`APP_ENV`, write flags)
+- Returns aggregated checklist with per-item state and summary.
+
+Safety constraints:
+- No call to production/base write endpoints.
+- No sandbox write-readback execution in normal readiness check.
+- No `.env` value dump in response.
+- No service_role key operations are introduced.
+
+P0.5 auth-aware smoke handling:
+- `KEIBA_AUTH_BEARER_TOKEN` 未設定で認証必須 endpoint が `401/403` を返した場合、readiness は `auth-required` として `warn` 分類。
+- `KEIBA_AUTH_BEARER_TOKEN` 設定時は同 endpoint を通常の pass/fail 判定で評価。
+- readiness/smoke の要約にはトークン実値を含めない（presence のみ扱う）。
+
 ## 16. Implementation Status (P1-4 Read-only Proxy Migration)
 
 Updated: 2026-07-05
@@ -704,3 +747,56 @@ Explicitly not implemented in this step:
 Safety posture:
 - phase closed at precheck-ready confirmation,
 - write/readback remains deferred to a later phase.
+
+## 29. Implementation Status (P1-16 Sandbox Write + Readback Verification)
+
+Updated: 2026-07-05
+
+Implemented in this step:
+- FastAPI `/api/netkeiba/race/write` sandbox path now performs post-write readback verification.
+- Readback scope is sandbox tables only:
+	- `sandbox_netkeiba_races`
+	- `sandbox_netkeiba_race_results`
+	- `sandbox_netkeiba_race_payouts`
+- Verification key uses `race_id + idempotency_key` and checks:
+	- `records_written` vs readback count,
+	- sandbox-only target table enforcement,
+	- `idempotency_key` match,
+	- `payload_hash` match,
+	- `audit_payload` presence.
+
+Mismatch contract:
+- explicit status `sandbox-readback-mismatch` is returned when readback verification fails.
+
+Operational policy:
+- default smoke and default suite remain non-write.
+- write + readback is available only by explicit opt-in:
+	- `python scripts/smoke_netkeiba_race_write_guard.py --expect-sandbox-write-readback`
+	- `python scripts/run_keiba_smoke_suite.py --verify-write-guard-sandbox-write-readback`
+
+Safety constraints preserved:
+- production write remains blocked,
+- base tables (`races`, `race_results`, `race_payouts`) are not write/readback targets,
+- Next `/api/netkeiba/race` route and UI flow remain unchanged.
+
+## 30. UI Frontend Integration Final State
+
+Updated: 2026-07-05
+
+Completed and treated as stable:
+- UI page to Next API to FastAPI call chains,
+- Premium/Admin UI guard checks,
+- dedicated health check contracts,
+- route classification and direct-path inventory,
+- smoke suite baseline for default UI/API flows,
+- lint/build stabilization for frontend and API contract verification.
+
+Not included in UI integration completion:
+- P1-16 sandbox write-readback runtime actual pass,
+- upstream ready live-write verification,
+- sandbox write-readback PR merge decision,
+- production/base-table write migration.
+
+Operational rule:
+- default UI/API navigation stays non-write,
+- sandbox write-readback remains an explicit migration verification step handled separately.

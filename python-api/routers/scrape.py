@@ -680,6 +680,7 @@ def _insert_sandbox_record(
     idempotency_key: str,
     payload_hash: str,
     requested_at: str,
+    audit_payload_json: str,
 ) -> tuple[bool, str | None]:
     cols = _get_table_columns(conn, table_name)
     if "race_id" not in cols:
@@ -704,6 +705,9 @@ def _insert_sandbox_record(
     if "payload_hash" in cols:
         insert_cols.append("payload_hash")
         params.append(payload_hash)
+    if "audit_payload" in cols:
+        insert_cols.append("audit_payload")
+        params.append(audit_payload_json)
     if "requested_at" in cols:
         insert_cols.append("requested_at")
         params.append(requested_at)
@@ -724,9 +728,11 @@ def _write_preview_to_sandbox(
     idempotency_key: str,
     payload_hash: str,
     requested_at: str,
+    audit_payload: dict[str, Any],
 ) -> dict[str, Any]:
     conn = sqlite3.connect(str(ULTIMATE_DB))
     conn.row_factory = sqlite3.Row
+    audit_payload_json = json.dumps(audit_payload, ensure_ascii=False, separators=(",", ":"))
 
     missing_tables: list[str] = []
     target_tables: list[str] = []
@@ -776,6 +782,7 @@ def _write_preview_to_sandbox(
                     idempotency_key=idempotency_key,
                     payload_hash=payload_hash,
                     requested_at=requested_at,
+                    audit_payload_json=audit_payload_json,
                 )
                 if not ok:
                     conn.rollback()
@@ -815,6 +822,170 @@ def _write_preview_to_sandbox(
         "records_written": records_written,
         "records_written_total": int(sum(records_written.values())),
     }
+
+
+def _verify_sandbox_write_readback(
+    *,
+    race_id: str,
+    idempotency_key: str,
+    payload_hash: str,
+    records_written: dict[str, int],
+    target_tables: list[str],
+) -> dict[str, Any]:
+    sandbox_tables = set(_SANDBOX_TABLE_MAP.values())
+    normalized_targets = sorted(set(str(x or "") for x in target_tables if str(x or "")))
+    target_tables_sandbox_only = all(t in sandbox_tables for t in normalized_targets)
+
+    if not target_tables_sandbox_only:
+        return {
+            "ok": False,
+            "status": "sandbox-readback-mismatch",
+            "reason": "readback target tables must be sandbox tables only",
+            "target_tables": normalized_targets,
+            "target_tables_sandbox_only": False,
+            "records_readback": {},
+            "records_readback_total": 0,
+            "records_count_match": False,
+            "idempotency_key_match": False,
+            "payload_hash_match": False,
+            "audit_payload_present": False,
+            "table_reports": {},
+        }
+
+    conn = sqlite3.connect(str(ULTIMATE_DB))
+    conn.row_factory = sqlite3.Row
+
+    records_readback: dict[str, int] = {}
+    table_reports: dict[str, Any] = {}
+    records_count_match = True
+    idempotency_key_match = True
+    payload_hash_match = True
+    audit_payload_present = True
+    mismatch_tables: list[str] = []
+
+    try:
+        for table_name in normalized_targets:
+            if table_name not in sandbox_tables:
+                mismatch_tables.append(table_name)
+                records_count_match = False
+                idempotency_key_match = False
+                payload_hash_match = False
+                audit_payload_present = False
+                table_reports[table_name] = {
+                    "exists": False,
+                    "reason": "non-sandbox table is not allowed",
+                }
+                continue
+
+            exists = _table_exists(conn, table_name)
+            if not exists:
+                mismatch_tables.append(table_name)
+                records_count_match = False
+                idempotency_key_match = False
+                payload_hash_match = False
+                audit_payload_present = False
+                table_reports[table_name] = {
+                    "exists": False,
+                    "reason": "sandbox table is missing during readback",
+                }
+                continue
+
+            cols = _get_table_columns(conn, table_name)
+            required_cols = {"race_id", "idempotency_key", "payload_hash", "audit_payload"}
+            missing_cols = sorted(list(required_cols - cols))
+            if missing_cols:
+                mismatch_tables.append(table_name)
+                records_count_match = False
+                idempotency_key_match = False
+                payload_hash_match = False
+                audit_payload_present = False
+                table_reports[table_name] = {
+                    "exists": True,
+                    "missing_columns": missing_cols,
+                    "reason": "sandbox table schema is missing readback columns",
+                }
+                continue
+
+            expected_count = int(records_written.get(table_name, 0) or 0)
+            count_row = conn.execute(
+                f"SELECT COUNT(*) FROM {table_name} WHERE race_id=? AND idempotency_key=?",
+                (race_id, idempotency_key),
+            ).fetchone()
+            actual_count = int(count_row[0]) if count_row is not None else 0
+            records_readback[table_name] = actual_count
+
+            count_ok = actual_count == expected_count
+            records_count_match = records_count_match and count_ok
+
+            sample_limit = max(actual_count, 1)
+            rows = conn.execute(
+                f"SELECT idempotency_key, payload_hash, audit_payload FROM {table_name} WHERE race_id=? AND idempotency_key=? LIMIT ?",
+                (race_id, idempotency_key, sample_limit),
+            ).fetchall()
+
+            idem_ok = len(rows) == actual_count and all(str(r[0] or "") == idempotency_key for r in rows)
+            hash_ok = len(rows) == actual_count and all(str(r[1] or "") == payload_hash for r in rows)
+            audit_ok = len(rows) == actual_count and all(str(r[2] or "").strip() != "" for r in rows)
+
+            idempotency_key_match = idempotency_key_match and idem_ok
+            payload_hash_match = payload_hash_match and hash_ok
+            audit_payload_present = audit_payload_present and audit_ok
+
+            if not (count_ok and idem_ok and hash_ok and audit_ok):
+                mismatch_tables.append(table_name)
+
+            table_reports[table_name] = {
+                "exists": True,
+                "expected_count": expected_count,
+                "actual_count": actual_count,
+                "count_match": count_ok,
+                "idempotency_key_match": idem_ok,
+                "payload_hash_match": hash_ok,
+                "audit_payload_present": audit_ok,
+                "missing_columns": [],
+            }
+
+        ok = (
+            target_tables_sandbox_only
+            and records_count_match
+            and idempotency_key_match
+            and payload_hash_match
+            and audit_payload_present
+            and len(mismatch_tables) == 0
+        )
+
+        return {
+            "ok": ok,
+            "status": "sandbox-readback-ok" if ok else "sandbox-readback-mismatch",
+            "reason": None if ok else "sandbox readback verification mismatch",
+            "target_tables": normalized_targets,
+            "target_tables_sandbox_only": target_tables_sandbox_only,
+            "records_readback": records_readback,
+            "records_readback_total": int(sum(records_readback.values())),
+            "records_count_match": records_count_match,
+            "idempotency_key_match": idempotency_key_match,
+            "payload_hash_match": payload_hash_match,
+            "audit_payload_present": audit_payload_present,
+            "mismatch_tables": sorted(set(mismatch_tables)),
+            "table_reports": table_reports,
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "status": "sandbox-readback-mismatch",
+            "reason": f"sandbox readback failed safely: {e}",
+            "target_tables": normalized_targets,
+            "target_tables_sandbox_only": target_tables_sandbox_only,
+            "records_readback": records_readback,
+            "records_readback_total": int(sum(records_readback.values())) if records_readback else 0,
+            "records_count_match": False,
+            "idempotency_key_match": False,
+            "payload_hash_match": False,
+            "audit_payload_present": False,
+            "table_reports": table_reports,
+        }
+    finally:
+        conn.close()
 
 
 def _build_guarded_writer_stub(
@@ -1217,6 +1388,7 @@ async def netkeiba_race_write(payload: dict[str, Any] = Body(default={})) -> dic
             idempotency_key=client_idempotency_key,
             payload_hash=payload_hash,
             requested_at=requested_at,
+            audit_payload=audit_payload_preview if isinstance(audit_payload_preview, dict) else {},
         )
 
         if sandbox_result.get("ok") is not True:
@@ -1239,6 +1411,34 @@ async def netkeiba_race_write(payload: dict[str, Any] = Body(default={})) -> dic
                 "writer_stub": writer_stub,
             }
 
+        readback_result = _verify_sandbox_write_readback(
+            race_id=race_id,
+            idempotency_key=client_idempotency_key,
+            payload_hash=payload_hash,
+            records_written=sandbox_result.get("records_written", {}) if isinstance(sandbox_result.get("records_written"), dict) else {},
+            target_tables=sandbox_result.get("target_tables", []) if isinstance(sandbox_result.get("target_tables"), list) else [],
+        )
+
+        if readback_result.get("ok") is not True:
+            return {
+                **base,
+                "status": "sandbox-readback-mismatch",
+                "reason": str(readback_result.get("reason") or "sandbox readback verification mismatch"),
+                "can_write": True,
+                "write_performed": True,
+                "target_mode": "sandbox",
+                "sandbox_write": True,
+                "payload_contract_approved": payload_contract_approved,
+                "idempotency_key": client_idempotency_key,
+                "payload_hash": payload_hash,
+                "audit_payload": audit_payload_preview,
+                "target_tables": sandbox_result.get("target_tables", []),
+                "records_written": sandbox_result.get("records_written", {}),
+                "records_written_total": sandbox_result.get("records_written_total", 0),
+                "readback_verification": readback_result,
+                "sandbox_result": sandbox_result,
+            }
+
         return {
             **base,
             "success": True,
@@ -1255,6 +1455,7 @@ async def netkeiba_race_write(payload: dict[str, Any] = Body(default={})) -> dic
             "target_tables": sandbox_result.get("target_tables", []),
             "records_written": sandbox_result.get("records_written", {}),
             "records_written_total": sandbox_result.get("records_written_total", 0),
+            "readback_verification": readback_result,
             "dry_run_preview": {
                 "tables_count": preview_summary.get("tables_count", 0),
                 "target_tables": preview_summary.get("target_tables", []),

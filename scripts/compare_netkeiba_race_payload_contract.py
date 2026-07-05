@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +10,15 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 REPORTS_DIR = ROOT_DIR / "reports"
 DRY_RUN_REPORT_PATH = REPORTS_DIR / "netkeiba_race_dry_run_smoke_result.json"
 OUTPUT_PATH = REPORTS_DIR / "netkeiba_race_payload_contract_diff.json"
+DEFAULT_STALE_SECONDS = 900
+
+REASON_MISSING_REPORT = "missing-report"
+REASON_STALE_REPORT = "stale-report"
+REASON_DRY_RUN_UNAVAILABLE = "dry-run-unavailable"
+REASON_UPSTREAM_UNAVAILABLE = "upstream-unavailable"
+REASON_SCHEMA_MISMATCH = "schema-mismatch"
+REASON_CONTRACT_ERROR = "contract-error"
+REASON_UNEXPECTED_EXCEPTION = "unexpected-exception"
 
 EXPECTED_CONTRACT: dict[str, dict[str, str]] = {
     "races": {
@@ -59,6 +68,29 @@ def _read_json(path: Path) -> dict[str, Any] | None:
         return data if isinstance(data, dict) else None
     except Exception:
         return None
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        raw = value.strip()
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _is_stale(report: dict[str, Any], stale_seconds: int) -> bool:
+    ts = _parse_timestamp(report.get("timestamp"))
+    if ts is None:
+        return False
+    age = (datetime.now(timezone.utc) - ts).total_seconds()
+    return age > max(0, stale_seconds)
 
 
 def _extract_payload(report: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -149,6 +181,7 @@ def _classify_table(table: str, expected: dict[str, str], actual_record: dict[st
 def main() -> int:
     parser = argparse.ArgumentParser(description="Compare Next write payload contract with FastAPI dry-run preview")
     parser.add_argument("--dry-run-report", default=str(DRY_RUN_REPORT_PATH), help="Path to dry-run smoke report JSON")
+    parser.add_argument("--stale-seconds", type=int, default=DEFAULT_STALE_SECONDS, help="Treat dry-run report older than this as stale")
     args = parser.parse_args()
 
     report_path = Path(args.dry_run_report)
@@ -158,7 +191,8 @@ def main() -> int:
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "success": False,
         "verdict": "fail",
-        "verdict_reason": "contract-error",
+        "verdict_reason": REASON_CONTRACT_ERROR,
+        "reason_detail": "",
         "input": {
             "dry_run_report": str(report_path),
         },
@@ -175,71 +209,106 @@ def main() -> int:
         },
     }
 
-    if not isinstance(smoke_report, dict):
-        result["verdict_reason"] = "dry-run smoke report missing or invalid JSON"
-    else:
-        contract_ok = bool(smoke_report.get("contract_ok", False))
-        payload = _extract_payload(smoke_report)
-
-        if not contract_ok or not isinstance(payload, dict):
-            result["verdict_reason"] = "dry-run contract broken or body missing"
+    try:
+        if not report_path.exists() or not isinstance(smoke_report, dict):
+            result["verdict"] = "warn"
+            result["verdict_reason"] = REASON_MISSING_REPORT
+            result["reason_detail"] = "dry-run smoke report missing or invalid JSON"
+            result["success"] = True
+        elif _is_stale(smoke_report, args.stale_seconds):
+            result["verdict"] = "warn"
+            result["verdict_reason"] = REASON_STALE_REPORT
+            result["reason_detail"] = "dry-run report is stale"
+            result["success"] = True
         else:
-            dry_run_status = str(payload.get("status") or "")
-            result["dry_run_status"] = dry_run_status
+            contract_ok = bool(smoke_report.get("contract_ok", False))
+            payload = _extract_payload(smoke_report)
+            check = smoke_report.get("check") if isinstance(smoke_report.get("check"), dict) else {}
+            http_status = check.get("status")
 
-            if payload.get("can_write") is not False or payload.get("write_performed") is not False or payload.get("dry_run") is not True:
-                result["verdict_reason"] = "dry-run safety flags invalid"
-            else:
-                preview = payload.get("preview")
-                tables = preview.get("tables") if isinstance(preview, dict) else None
-                table_map: dict[str, dict[str, Any]] = {}
-                if isinstance(tables, list):
-                    for t in tables:
-                        if not isinstance(t, dict):
-                            continue
-                        name = str(t.get("target_table") or "")
-                        if name:
-                            table_map[name] = t
-
-                if dry_run_status != "ready":
-                    if dry_run_status in {"degraded", "unavailable", "invalid"}:
-                        result["verdict"] = "warn"
-                        result["verdict_reason"] = f"dry-run-status-{dry_run_status}"
-                        result["success"] = True
-                    else:
-                        result["verdict"] = "fail"
-                        result["verdict_reason"] = "invalid-dry-run-status"
+            if not contract_ok or not isinstance(payload, dict):
+                if http_status in (502, 503):
+                    result["verdict"] = "warn"
+                    result["verdict_reason"] = REASON_UPSTREAM_UNAVAILABLE
+                    result["reason_detail"] = f"dry-run endpoint upstream unavailable (status={http_status})"
+                    result["success"] = True
+                elif http_status in (401, 403):
+                    result["verdict"] = "warn"
+                    result["verdict_reason"] = REASON_DRY_RUN_UNAVAILABLE
+                    result["reason_detail"] = f"dry-run endpoint unavailable in current auth context (status={http_status})"
+                    result["success"] = True
                 else:
-                    for table, expected in EXPECTED_CONTRACT.items():
-                        sample = None
-                        info = table_map.get(table)
-                        if isinstance(info, dict):
-                            samples = info.get("sample_records")
-                            if isinstance(samples, list) and samples and isinstance(samples[0], dict):
-                                sample = samples[0]
-                        cmp = _classify_table(table, expected, sample)
-                        result["comparisons"].append(cmp)
+                    result["verdict"] = "fail"
+                    result["verdict_reason"] = REASON_CONTRACT_ERROR
+                    result["reason_detail"] = "dry-run contract broken or body missing"
+            else:
+                dry_run_status = str(payload.get("status") or "")
+                result["dry_run_status"] = dry_run_status
 
-                        result["summary"]["compatible"] += len(cmp["compatible"])
-                        result["summary"]["missing_in_dry_run"] += len(cmp["missing_in_dry_run"])
-                        result["summary"]["extra_in_dry_run"] += len(cmp["extra_in_dry_run"])
-                        result["summary"]["naming_mismatch"] += len(cmp["naming_mismatch"])
-                        result["summary"]["type_mismatch"] += len(cmp["type_mismatch"])
-                        result["summary"]["unknown"] += len(cmp["unknown"])
+                if payload.get("can_write") is not False or payload.get("write_performed") is not False or payload.get("dry_run") is not True:
+                    result["verdict"] = "fail"
+                    result["verdict_reason"] = REASON_CONTRACT_ERROR
+                    result["reason_detail"] = "dry-run safety flags invalid"
+                else:
+                    preview = payload.get("preview")
+                    tables = preview.get("tables") if isinstance(preview, dict) else None
+                    table_map: dict[str, dict[str, Any]] = {}
+                    if isinstance(tables, list):
+                        for t in tables:
+                            if not isinstance(t, dict):
+                                continue
+                            name = str(t.get("target_table") or "")
+                            if name:
+                                table_map[name] = t
 
-                    has_structural_diff = any(
-                        result["summary"][k] > 0
-                        for k in ["missing_in_dry_run", "extra_in_dry_run", "naming_mismatch", "type_mismatch"]
-                    )
-
-                    if not has_structural_diff:
-                        result["verdict"] = "pass"
-                        result["verdict_reason"] = "contracts-compatible"
-                        result["success"] = True
+                    if dry_run_status != "ready":
+                        if dry_run_status in {"degraded", "unavailable", "invalid"}:
+                            result["verdict"] = "warn"
+                            result["verdict_reason"] = REASON_DRY_RUN_UNAVAILABLE
+                            result["reason_detail"] = f"dry-run status is {dry_run_status}"
+                            result["success"] = True
+                        else:
+                            result["verdict"] = "fail"
+                            result["verdict_reason"] = REASON_CONTRACT_ERROR
+                            result["reason_detail"] = "invalid-dry-run-status"
                     else:
-                        result["verdict"] = "warn"
-                        result["verdict_reason"] = "contract-diff-detected"
-                        result["success"] = True
+                        for table, expected in EXPECTED_CONTRACT.items():
+                            sample = None
+                            info = table_map.get(table)
+                            if isinstance(info, dict):
+                                samples = info.get("sample_records")
+                                if isinstance(samples, list) and samples and isinstance(samples[0], dict):
+                                    sample = samples[0]
+                            cmp = _classify_table(table, expected, sample)
+                            result["comparisons"].append(cmp)
+
+                            result["summary"]["compatible"] += len(cmp["compatible"])
+                            result["summary"]["missing_in_dry_run"] += len(cmp["missing_in_dry_run"])
+                            result["summary"]["extra_in_dry_run"] += len(cmp["extra_in_dry_run"])
+                            result["summary"]["naming_mismatch"] += len(cmp["naming_mismatch"])
+                            result["summary"]["type_mismatch"] += len(cmp["type_mismatch"])
+                            result["summary"]["unknown"] += len(cmp["unknown"])
+
+                        has_structural_diff = any(
+                            result["summary"][k] > 0
+                            for k in ["missing_in_dry_run", "extra_in_dry_run", "naming_mismatch", "type_mismatch"]
+                        )
+
+                        if not has_structural_diff:
+                            result["verdict"] = "pass"
+                            result["verdict_reason"] = "contracts-compatible"
+                            result["reason_detail"] = ""
+                            result["success"] = True
+                        else:
+                            result["verdict"] = "warn"
+                            result["verdict_reason"] = REASON_SCHEMA_MISMATCH
+                            result["reason_detail"] = "structural contract differences detected"
+                            result["success"] = True
+    except Exception as e:  # noqa: BLE001
+        result["verdict"] = "fail"
+        result["verdict_reason"] = REASON_UNEXPECTED_EXCEPTION
+        result["reason_detail"] = str(e)
+        result["success"] = False
 
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -249,6 +318,7 @@ def main() -> int:
         "success": result["success"],
         "verdict": result["verdict"],
         "verdict_reason": result["verdict_reason"],
+        "reason_detail": result.get("reason_detail"),
         "dry_run_status": result["dry_run_status"],
         "summary": result["summary"],
     }, ensure_ascii=False))

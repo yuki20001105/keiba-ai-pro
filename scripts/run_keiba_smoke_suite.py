@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime
@@ -36,9 +37,14 @@ def _read_json(path: Path) -> dict[str, Any] | None:
         return None
 
 
-def _classify_preflight(report: dict[str, Any] | None) -> tuple[str, str]:
+def _classify_preflight(report: dict[str, Any] | None, token_provided: bool) -> tuple[str, str]:
     if not isinstance(report, dict):
         return "fail", "preflight report missing or invalid"
+
+    check = report.get("check") if isinstance(report.get("check"), dict) else {}
+    status = check.get("status")
+    if status in (401, 403) and not token_provided:
+        return "warn", "auth-required"
 
     verdict = str(report.get("verdict") or "")
     reason = str(report.get("verdict_reason") or "")
@@ -50,9 +56,14 @@ def _classify_preflight(report: dict[str, Any] | None) -> tuple[str, str]:
     return "fail", reason or "contract-error"
 
 
-def _classify_dry_run(report: dict[str, Any] | None) -> tuple[str, str]:
+def _classify_dry_run(report: dict[str, Any] | None, token_provided: bool) -> tuple[str, str]:
     if not isinstance(report, dict):
         return "fail", "dry-run report missing or invalid"
+
+    check = report.get("check") if isinstance(report.get("check"), dict) else {}
+    status = check.get("status")
+    if status in (401, 403) and not token_provided:
+        return "warn", "auth-required"
 
     verdict = str(report.get("verdict") or "")
     reason = str(report.get("verdict_reason") or "")
@@ -71,6 +82,21 @@ def _classify_payload_diff(report: dict[str, Any] | None) -> tuple[str, str]:
     verdict = str(report.get("verdict") or "")
     reason = str(report.get("verdict_reason") or "")
 
+    warn_reasons = {
+        "missing-report",
+        "stale-report",
+        "dry-run-unavailable",
+        "upstream-unavailable",
+        "schema-mismatch",
+    }
+
+    if reason in warn_reasons:
+        return "warn", reason
+    if reason == "contract-error":
+        return "fail", reason
+    if reason == "unexpected-exception":
+        return "fail", reason
+
     if verdict == "pass":
         return "pass", reason or "contracts-compatible"
     if verdict == "warn":
@@ -78,9 +104,14 @@ def _classify_payload_diff(report: dict[str, Any] | None) -> tuple[str, str]:
     return "fail", reason or "contract-error"
 
 
-def _classify_write_guard(report: dict[str, Any] | None) -> tuple[str, str]:
+def _classify_write_guard(report: dict[str, Any] | None, token_provided: bool) -> tuple[str, str]:
     if not isinstance(report, dict):
         return "fail", "write-guard report missing or invalid"
+
+    check = report.get("check") if isinstance(report.get("check"), dict) else {}
+    status = check.get("status")
+    if status in (401, 403) and not token_provided:
+        return "warn", "auth-required"
 
     verdict = str(report.get("verdict") or "")
     reason = str(report.get("verdict_reason") or "")
@@ -125,6 +156,11 @@ def main() -> int:
         help="Run explicit sandbox write smoke (disabled by default)",
     )
     parser.add_argument(
+        "--verify-write-guard-sandbox-write-readback",
+        action="store_true",
+        help="Run explicit sandbox write + readback smoke (disabled by default)",
+    )
+    parser.add_argument(
         "--verify-write-guard-production-block",
         action="store_true",
         help="Run write guard check expecting APP_ENV=production hard block branch",
@@ -136,9 +172,13 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    token_from_env = os.getenv("KEIBA_AUTH_BEARER_TOKEN", "").strip()
+    effective_token = args.auth_token.strip() or token_from_env
     token_args: list[str] = []
-    if args.auth_token.strip():
-        token_args = ["--auth-token", args.auth_token.strip()]
+    if effective_token:
+        token_args = ["--auth-token", effective_token]
+
+    token_provided = bool(effective_token)
 
     suite: dict[str, Any] = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -148,10 +188,26 @@ def main() -> int:
 
     analyze_rc, analyze_log = _run_step("analyze-race", [
         "scripts/smoke_analyze_race_api.py",
+        *token_args,
     ])
+    analyze_report = _read_json(REPORTS_DIR / "analyze_race_smoke_result.json")
+    analyze_status = analyze_report.get("http_status") if isinstance(analyze_report, dict) else None
+    analyze_verdict = str(analyze_report.get("verdict") or "") if isinstance(analyze_report, dict) else ""
+    analyze_auth_required = bool(analyze_report.get("auth_required")) if isinstance(analyze_report, dict) else False
+    if analyze_verdict == "pass":
+        analyze_result = "pass"
+        analyze_reason = "ok"
+    elif analyze_auth_required and analyze_status in (401, 403) and not token_provided:
+        analyze_result = "warn"
+        analyze_reason = "auth-required"
+    else:
+        analyze_result = "fail"
+        analyze_reason = str(analyze_report.get("validation") or "analyze-race-smoke-failed") if isinstance(analyze_report, dict) else "analyze-race-smoke-failed"
+
     suite["steps"]["analyze_race"] = {
         "return_code": analyze_rc,
-        "result": "pass" if analyze_rc == 0 else "fail",
+        "result": analyze_result,
+        "reason": analyze_reason,
         "note": "analyze_race API smoke",
         "log_tail": analyze_log[-2000:],
     }
@@ -163,9 +219,21 @@ def main() -> int:
         "--next-url", args.next_url,
         *token_args,
     ])
+    race_list_report = _read_json(REPORTS_DIR / "netkeiba_race_list_proxy_smoke_result.json")
+    race_list_result = "pass" if race_list_rc == 0 else "fail"
+    race_list_reason = "ok" if race_list_rc == 0 else "request-failed"
+    if isinstance(race_list_report, dict):
+        checks = race_list_report.get("checks") if isinstance(race_list_report.get("checks"), dict) else {}
+        fa_status = checks.get("fastapi", {}).get("status") if isinstance(checks.get("fastapi"), dict) else None
+        nx_status = checks.get("next", {}).get("status") if isinstance(checks.get("next"), dict) else None
+        if fa_status in (401, 403) and nx_status in (401, 403) and not token_provided:
+            race_list_result = "warn"
+            race_list_reason = "auth-required"
+
     suite["steps"]["race_list_proxy"] = {
         "return_code": race_list_rc,
-        "result": "pass" if race_list_rc == 0 else "fail",
+        "result": race_list_result,
+        "reason": race_list_reason,
         "note": "Next -> FastAPI race-list proxy smoke",
         "log_tail": race_list_log[-2000:],
     }
@@ -182,7 +250,7 @@ def main() -> int:
 
     preflight_rc, preflight_log = _run_step("race-preflight", preflight_args)
     preflight_report = _read_json(REPORTS_DIR / "netkeiba_race_preflight_smoke_result.json")
-    pf_result, pf_reason = _classify_preflight(preflight_report)
+    pf_result, pf_reason = _classify_preflight(preflight_report, token_provided=token_provided)
     suite["steps"]["race_preflight"] = {
         "return_code": preflight_rc,
         "result": pf_result,
@@ -203,7 +271,7 @@ def main() -> int:
 
     dry_run_rc, dry_run_log = _run_step("race-dry-run", dry_run_args)
     dry_run_report = _read_json(REPORTS_DIR / "netkeiba_race_dry_run_smoke_result.json")
-    dr_result, dr_reason = _classify_dry_run(dry_run_report)
+    dr_result, dr_reason = _classify_dry_run(dry_run_report, token_provided=token_provided)
     suite["steps"]["race_dry_run"] = {
         "return_code": dry_run_rc,
         "result": dr_result,
@@ -233,7 +301,7 @@ def main() -> int:
         *token_args,
     ])
     write_guard_report = _read_json(REPORTS_DIR / "netkeiba_race_write_guard_smoke_result.json")
-    wg_result, wg_reason = _classify_write_guard(write_guard_report)
+    wg_result, wg_reason = _classify_write_guard(write_guard_report, token_provided=token_provided)
     suite["steps"]["race_write_guard"] = {
         "return_code": write_guard_rc,
         "result": wg_result,
@@ -252,7 +320,7 @@ def main() -> int:
             *token_args,
         ])
         write_guard_enabled_report = _read_json(REPORTS_DIR / "netkeiba_race_write_guard_enabled_smoke_result.json")
-        wge_result, wge_reason = _classify_write_guard(write_guard_enabled_report)
+        wge_result, wge_reason = _classify_write_guard(write_guard_enabled_report, token_provided=token_provided)
         suite["steps"]["race_write_guard_enabled"] = {
             "return_code": write_guard_enabled_rc,
             "result": wge_result,
@@ -271,7 +339,7 @@ def main() -> int:
             *token_args,
         ])
         write_guard_flag_only_report = _read_json(REPORTS_DIR / "netkeiba_race_write_guard_flag_only_smoke_result.json")
-        wgfo_result, wgfo_reason = _classify_write_guard(write_guard_flag_only_report)
+        wgfo_result, wgfo_reason = _classify_write_guard(write_guard_flag_only_report, token_provided=token_provided)
         suite["steps"]["race_write_guard_flag_only"] = {
             "return_code": write_guard_flag_only_rc,
             "result": wgfo_result,
@@ -290,7 +358,7 @@ def main() -> int:
             *token_args,
         ])
         write_guard_sandbox_precheck_report = _read_json(REPORTS_DIR / "netkeiba_race_write_guard_sandbox_precheck_smoke_result.json")
-        wgsp_result, wgsp_reason = _classify_write_guard(write_guard_sandbox_precheck_report)
+        wgsp_result, wgsp_reason = _classify_write_guard(write_guard_sandbox_precheck_report, token_provided=token_provided)
         suite["steps"]["race_write_guard_sandbox_precheck"] = {
             "return_code": write_guard_sandbox_precheck_rc,
             "result": wgsp_result,
@@ -309,13 +377,32 @@ def main() -> int:
             *token_args,
         ])
         write_guard_sandbox_report = _read_json(REPORTS_DIR / "netkeiba_race_write_guard_sandbox_write_smoke_result.json")
-        wgs_result, wgs_reason = _classify_write_guard(write_guard_sandbox_report)
+        wgs_result, wgs_reason = _classify_write_guard(write_guard_sandbox_report, token_provided=token_provided)
         suite["steps"]["race_write_guard_sandbox_write"] = {
             "return_code": write_guard_sandbox_rc,
             "result": wgs_result,
             "reason": wgs_reason,
             "note": "Explicit sandbox write smoke (run only with explicit opt-in)",
             "log_tail": write_guard_sandbox_log[-2000:],
+        }
+
+    if args.verify_write_guard_sandbox_write_readback:
+        write_guard_sandbox_rb_rc, write_guard_sandbox_rb_log = _run_step("write-guard-sandbox-write-readback", [
+            "scripts/smoke_netkeiba_race_write_guard.py",
+            "--expect-sandbox-write-readback",
+            "--race-id", args.race_id,
+            "--date", args.date,
+            "--fastapi-url", args.fastapi_url,
+            *token_args,
+        ])
+        write_guard_sandbox_rb_report = _read_json(REPORTS_DIR / "netkeiba_race_write_guard_sandbox_write_readback_smoke_result.json")
+        wgsrb_result, wgsrb_reason = _classify_write_guard(write_guard_sandbox_rb_report, token_provided=token_provided)
+        suite["steps"]["race_write_guard_sandbox_write_readback"] = {
+            "return_code": write_guard_sandbox_rb_rc,
+            "result": wgsrb_result,
+            "reason": wgsrb_reason,
+            "note": "Explicit sandbox write + readback smoke (run only with explicit opt-in)",
+            "log_tail": write_guard_sandbox_rb_log[-2000:],
         }
 
     if args.verify_write_guard_production_block:
@@ -328,7 +415,7 @@ def main() -> int:
             *token_args,
         ])
         write_guard_prod_report = _read_json(REPORTS_DIR / "netkeiba_race_write_guard_production_smoke_result.json")
-        wgp_result, wgp_reason = _classify_write_guard(write_guard_prod_report)
+        wgp_result, wgp_reason = _classify_write_guard(write_guard_prod_report, token_provided=token_provided)
         suite["steps"]["race_write_guard_production"] = {
             "return_code": write_guard_prod_rc,
             "result": wgp_result,
@@ -347,7 +434,7 @@ def main() -> int:
             *token_args,
         ])
         write_guard_staging_lock_report = _read_json(REPORTS_DIR / "netkeiba_race_write_guard_staging_lock_smoke_result.json")
-        wgsl_result, wgsl_reason = _classify_write_guard(write_guard_staging_lock_report)
+        wgsl_result, wgsl_reason = _classify_write_guard(write_guard_staging_lock_report, token_provided=token_provided)
         suite["steps"]["race_write_guard_staging_lock"] = {
             "return_code": write_guard_staging_lock_rc,
             "result": wgsl_result,
