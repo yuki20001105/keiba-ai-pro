@@ -590,6 +590,8 @@ Kelly % = (p × odds - 1) / (odds - 1)
   - git status 注意
   - write flag / APP_ENV safety
 4. pass / warn / fail / unknown をカード表示
+  - 認証トークン未設定時の 401/403 は auth-required (warn) として表示
+  - KEIBA_AUTH_BEARER_TOKEN 設定時は認証必須 smoke を通常の pass/fail で評価
 5. write API は呼ばない（sandbox write-readback は別管理）
 ```
 
@@ -766,6 +768,19 @@ python scripts/run_keiba_notebook_e2e.py --mode audit
 git grep -n -I "<notion-token-prefix>"
 git status --short
 ```
+
+認証必須 endpoint を厳密評価する場合:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+$env:KEIBA_AUTH_BEARER_TOKEN="<bearer-token>"
+python scripts/run_keiba_smoke_suite.py
+python scripts/smoke_analyze_race_api.py
+```
+
+注意:
+- `KEIBA_AUTH_BEARER_TOKEN` の値はログや JSON summary に出力しない
+- トークン未設定時の 401/403 は auth-required として warn 分類
 
 **UI での本番前チェック手順**
 

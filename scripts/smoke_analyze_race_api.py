@@ -12,10 +12,12 @@ What it does:
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 import urllib.error
 import urllib.request
+import argparse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Tuple
@@ -43,12 +45,15 @@ def get_latest_race_id(db_path: Path) -> str:
     return str(row[0])
 
 
-def call_analyze_race_api(race_id: str) -> Tuple[int, Dict[str, Any]]:
+def call_analyze_race_api(race_id: str, bearer_token: str | None = None) -> Tuple[int, Dict[str, Any]]:
     payload = json.dumps({"race_id": race_id}).encode("utf-8")
+    headers: Dict[str, str] = {"Content-Type": "application/json; charset=utf-8"}
+    if bearer_token:
+        headers["Authorization"] = f"Bearer {bearer_token}"
     req = urllib.request.Request(
         API_URL,
         data=payload,
-        headers={"Content-Type": "application/json; charset=utf-8"},
+        headers=headers,
         method="POST",
     )
 
@@ -75,23 +80,26 @@ def call_analyze_race_api(race_id: str) -> Tuple[int, Dict[str, Any]]:
         ) from e
 
 
-def validate_response(status: int, payload: Dict[str, Any]) -> Tuple[bool, str, int]:
+def validate_response(status: int, payload: Dict[str, Any], token_provided: bool) -> Tuple[bool, str, str, int]:
+    if status in (401, 403) and not token_provided:
+        return True, "warn", "auth-required", 0
+
     if status != 200:
-        return False, f"HTTP status is not 200 (got {status})", 0
+        return False, "fail", f"HTTP status is not 200 (got {status})", 0
 
     success = bool(payload.get("success", False))
     if not success:
-        return False, "response.success is not true", 0
+        return False, "fail", "response.success is not true", 0
 
     predictions = payload.get("predictions")
     if not isinstance(predictions, list):
-        return False, "response.predictions is not a list", 0
+        return False, "fail", "response.predictions is not a list", 0
 
     count = len(predictions)
     if count <= 0:
-        return False, "response.predictions is empty", count
+        return False, "fail", "response.predictions is empty", count
 
-    return True, "ok", count
+    return True, "pass", "ok", count
 
 
 def save_result(result: Dict[str, Any], output_path: Path) -> None:
@@ -103,6 +111,13 @@ def save_result(result: Dict[str, Any], output_path: Path) -> None:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Smoke test for /api/analyze_race")
+    parser.add_argument("--auth-token", default="", help="Optional Bearer token")
+    args = parser.parse_args()
+
+    token = args.auth_token.strip() or os.getenv("KEIBA_AUTH_BEARER_TOKEN", "").strip()
+    token_provided = bool(token)
+
     started_at = datetime.now(timezone.utc).isoformat()
     result: Dict[str, Any] = {
         "started_at": started_at,
@@ -110,19 +125,22 @@ def main() -> int:
         "db_path": str(DB_PATH),
         "output_path": str(OUTPUT_PATH),
         "success": False,
+        "token_provided": token_provided,
     }
 
     try:
         race_id = get_latest_race_id(DB_PATH)
         result["race_id"] = race_id
 
-        status, response_payload = call_analyze_race_api(race_id)
+        status, response_payload = call_analyze_race_api(race_id, bearer_token=token if token else None)
         result["http_status"] = status
         result["response"] = response_payload
 
-        ok, reason, predictions_count = validate_response(status, response_payload)
+        ok, verdict, reason, predictions_count = validate_response(status, response_payload, token_provided=token_provided)
         result["success"] = ok
+        result["verdict"] = verdict
         result["validation"] = reason
+        result["auth_required"] = reason == "auth-required"
         result["predictions_count"] = predictions_count
         result["response_success"] = bool(response_payload.get("success", False))
         race_info = response_payload.get("race_info")
@@ -133,6 +151,9 @@ def main() -> int:
 
         print(f"race_id: {race_id}")
         print(f"HTTP status: {status}")
+        print(f"verdict: {result.get('verdict', 'unknown')}")
+        if result.get("auth_required"):
+            print("note: auth required (set KEIBA_AUTH_BEARER_TOKEN or --auth-token)")
         print(f"success: {result['response_success']}")
         print(f"predictions_count: {predictions_count}")
         print(f"output file path: {OUTPUT_PATH}")
@@ -142,6 +163,7 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001
         result["error"] = str(e)
         result["success"] = False
+        result["verdict"] = "fail"
         try:
             save_result(result, OUTPUT_PATH)
         except Exception:

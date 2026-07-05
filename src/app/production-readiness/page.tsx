@@ -185,7 +185,8 @@ export default function ProductionReadinessPage() {
             <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-4">
               <h3 className="text-sm font-medium">運用メモ</h3>
               <ul className="mt-2 text-xs text-[#777] space-y-1">
-                <li>- smoke suite の認証失敗 (401) は環境依存で別管理してください。</li>
+                <li>- 認証トークン未設定時の 401/403 は auth-required として WARN 扱いです。</li>
+                <li>- KEIBA_AUTH_BEARER_TOKEN を設定すると認証必須 smoke を通常の pass/fail で評価します。</li>
                 <li>- secret 値は表示しません。出力は要約のみです。</li>
                 <li>- secret scan は Notion token prefix を対象に実行します。</li>
                 <li>- DB/reports/metadata を staged していないか、git status 注意カードで確認してください。</li>

@@ -308,6 +308,11 @@ Safety constraints:
 - No `.env` value dump in response.
 - No service_role key operations are introduced.
 
+P0.5 auth-aware smoke handling:
+- `KEIBA_AUTH_BEARER_TOKEN` 未設定で認証必須 endpoint が `401/403` を返した場合、readiness は `auth-required` として `warn` 分類。
+- `KEIBA_AUTH_BEARER_TOKEN` 設定時は同 endpoint を通常の pass/fail 判定で評価。
+- readiness/smoke の要約にはトークン実値を含めない（presence のみ扱う）。
+
 ## 16. Implementation Status (P1-4 Read-only Proxy Migration)
 
 Updated: 2026-07-05

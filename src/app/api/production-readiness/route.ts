@@ -38,6 +38,7 @@ const SAFE_ENV_KEYS = [
   'ALLOW_STAGING_WRITE',
   'ML_API_URL',
   'FASTAPI_URL',
+  'KEIBA_AUTH_BEARER_TOKEN',
 ]
 
 const NOTION_PREFIX = ['nt', 'n_'].join('')
@@ -322,11 +323,23 @@ export async function POST() {
 
   const analyzeSmokeRun = await runAllowlisted('smoke_analyze_race')
   const analyzeSmokeReport = readJsonIfExists(path.join(REPORTS_DIR, 'analyze_race_smoke_result.json'))
+  const analyzeStatus = Number(analyzeSmokeReport?.http_status ?? 0)
+  const analyzeAuthRequired = Boolean(analyzeSmokeReport?.auth_required)
+  const analyzeTokenProvided = Boolean(analyzeSmokeReport?.token_provided)
+  const analyzeState: CheckState = analyzeSmokeRun.ok
+    ? 'pass'
+    : (analyzeAuthRequired && [401, 403].includes(analyzeStatus) && !analyzeTokenProvided)
+      ? 'warn'
+      : 'fail'
   checks.push({
     id: 'analyze_race_smoke',
     label: 'analyze_race smoke',
-    state: analyzeSmokeRun.ok ? 'pass' : 'warn',
-    summary: analyzeSmokeRun.ok ? 'analyze_race smoke 成功' : 'analyze_race smoke は警告で終了 (認証/環境要因の可能性)',
+    state: analyzeState,
+    summary: analyzeSmokeRun.ok
+      ? 'analyze_race smoke 成功'
+      : (analyzeAuthRequired && [401, 403].includes(analyzeStatus) && !analyzeTokenProvided)
+        ? '認証トークン未設定のため auth-required (warn)'
+        : 'analyze_race smoke 失敗',
     durationMs: analyzeSmokeRun.durationMs,
     details: {
       exit_code: analyzeSmokeRun.code,
@@ -343,13 +356,26 @@ export async function POST() {
   const smokeSuiteRun = await runAllowlisted('smoke_suite')
   const smokeSuiteReport = readJsonIfExists(path.join(REPORTS_DIR, 'keiba_smoke_suite_result.json'))
   const smokeSummary = smokeSuiteReport?.summary
+  const smokeAnalyzeStep = smokeSuiteReport?.steps && typeof smokeSuiteReport.steps === 'object'
+    ? (smokeSuiteReport.steps as Record<string, unknown>).analyze_race
+    : null
+  const smokeAnalyzeReason = smokeAnalyzeStep && typeof smokeAnalyzeStep === 'object'
+    ? String((smokeAnalyzeStep as Record<string, unknown>).reason ?? '')
+    : ''
+  const smokeState: CheckState = smokeSuiteRun.ok
+    ? 'pass'
+    : smokeAnalyzeReason === 'auth-required'
+      ? 'warn'
+      : normalizeSmokeState(smokeSummary)
   checks.push({
     id: 'smoke_suite_summary',
     label: 'smoke suite summary',
-    state: smokeSuiteRun.ok ? 'pass' : normalizeSmokeState(smokeSummary),
+    state: smokeState,
     summary: smokeSuiteRun.ok
       ? 'smoke suite 成功'
-      : `smoke suite: ${String(smokeSummary ?? 'unknown')} (認証要件を別管理で確認)`,
+      : smokeAnalyzeReason === 'auth-required'
+        ? `smoke suite: auth-required (warn)`
+        : `smoke suite: ${String(smokeSummary ?? 'unknown')}`,
     durationMs: smokeSuiteRun.durationMs,
     details: {
       exit_code: smokeSuiteRun.code,
@@ -367,7 +393,7 @@ export async function POST() {
     id: 'secret_scan',
     label: 'secret scan (Notion token prefix)',
     state: secretPass ? 'pass' : 'fail',
-    summary: secretPass ? 'ntn_ の検出なし' : 'ntn_ が検出されました',
+    summary: secretPass ? 'Notion token prefix の検出なし' : 'Notion token prefix が検出されました',
     durationMs: secretScan.durationMs,
     details: {
       exit_code: secretScan.code,

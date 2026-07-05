@@ -251,5 +251,6 @@ Next API routeは存在するが、主要業務UI導線で未使用/非表示の
 
 ## 12. 検証実行メモ (今回コミット範囲外)
 
-- smoke suite は認証401に起因して fail しており、UI棚卸しドキュメントとは別管理とする。
+- 認証トークン未設定時の smoke 401/403 は `auth-required` として warn 扱い。
+- `KEIBA_AUTH_BEARER_TOKEN` 設定時は認証必須 smoke を通常の pass/fail で評価する。
 - 失敗詳細は reports 側の生成物に記録されるが、本コミットには含めない。
