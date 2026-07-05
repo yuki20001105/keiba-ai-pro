@@ -722,6 +722,10 @@ Notebook E2E audit
   ↓
 Analyze Race API smoke
   ↓
+Race-list proxy smoke
+  ↓
+Race preflight smoke
+  ↓
 Notion output
 ```
 
@@ -745,17 +749,62 @@ cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
 python-api\.venv\Scripts\python.exe scripts\smoke_analyze_race_api.py
 ```
 
-**3) Notion output**
+**3) Race-list proxy smoke**
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_list_proxy.py
+```
+
+**4) Race preflight smoke (contract-only mode)**
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_preflight.py
+```
+
+判定ルール（preflight）:
+- ready: PASS
+- degraded: WARN
+- unavailable: WARN (環境によってはSKIP相当)
+- contract error: FAIL
+
+strict モード（non-ready も fail）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_preflight.py --fail-on-nonready
+```
+
+**5) Notion output**
 
 ```powershell
 cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
 python-api\.venv\Scripts\python.exe scripts\upload_to_notion.py
 ```
 
+**統合実行（Smoke Suite）**
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\run_keiba_smoke_suite.py
+```
+
+strict preflight で統合実行する場合:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\run_keiba_smoke_suite.py --strict-preflight
+```
+
 ### 生成物の保存先
 
 - Notebook実行済みファイル: `reports/e2e_notebooks/`
 - Notebook E2E結果JSON: `reports/keiba_notebook_e2e_result.json`
+- Analyze Race smoke結果JSON: `reports/analyze_race_smoke_result.json`
+- Race-list proxy smoke結果JSON: `reports/netkeiba_race_list_proxy_smoke_result.json`
+- Race preflight smoke結果JSON: `reports/netkeiba_race_preflight_smoke_result.json`
+- Smoke suite結果JSON: `reports/keiba_smoke_suite_result.json`
 - 監査ログ（任意）: `reports/e2e_logs/`
 
 ---

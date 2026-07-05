@@ -316,3 +316,38 @@ Preflight response contract:
 Migration marker:
 - `/api/netkeiba/race` is now tracked as `migrationStatus=preflight-added`.
 - Next phase is dry-run orchestration without moving production writes yet.
+
+## 18. Implementation Status (P1-6 Preflight Smoke Integration)
+
+Updated: 2026-07-05
+
+Implemented in this step:
+- Preflight smoke verdict policy was clarified for operations/CI candidate.
+- Added optional strict mode for preflight smoke (`--fail-on-nonready`).
+- Added operational smoke suite runner: `scripts/run_keiba_smoke_suite.py`.
+
+Preflight smoke verdict contract:
+- `ready` -> pass
+- `degraded` -> warn
+- `unavailable` -> warn (or skip-equivalent in CI)
+- contract error -> fail
+
+Hard fail conditions:
+- invalid/non-JSON contract payload
+- missing required keys
+- `can_write != false`
+- `write_performed != false`
+- invalid preflight status value
+
+Operational commands:
+- Single preflight contract check:
+	- `python scripts/smoke_netkeiba_race_preflight.py`
+- Strict preflight check:
+	- `python scripts/smoke_netkeiba_race_preflight.py --fail-on-nonready`
+- Combined smoke suite:
+	- `python scripts/run_keiba_smoke_suite.py`
+
+Safety constraints preserved:
+- no DB write added
+- no Supabase write migration performed
+- `/api/netkeiba/race` existing write path unchanged

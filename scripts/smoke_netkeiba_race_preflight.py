@@ -63,27 +63,64 @@ def _is_contract_ok(status: int, obj: dict[str, Any] | None) -> bool:
     return True
 
 
+def _extract_payload(obj: dict[str, Any] | None) -> dict[str, Any] | None:
+    if isinstance(obj, dict) and isinstance(obj.get("detail"), dict):
+        return obj["detail"]
+    if isinstance(obj, dict):
+        return obj
+    return None
+
+
+def _classify_verdict(contract_ok: bool, preflight_status: str | None, fail_on_nonready: bool) -> tuple[str, str]:
+    if not contract_ok:
+        return "fail", "contract-error"
+
+    if preflight_status == "ready":
+        return "pass", "ready"
+
+    if preflight_status in {"degraded", "unavailable"}:
+        if fail_on_nonready:
+            return "fail", f"nonready-{preflight_status}"
+        return "warn", preflight_status
+
+    return "fail", "invalid-status"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Smoke test for netkeiba race preflight contract")
     parser.add_argument("--race-id", default="202406010101", help="12-digit race id")
     parser.add_argument("--date", default=datetime.now().strftime("%Y%m%d"), help="YYYYMMDD or YYYY-MM-DD")
     parser.add_argument("--fastapi-url", default="http://127.0.0.1:8000", help="FastAPI base URL")
     parser.add_argument("--auth-token", default="", help="Optional Bearer token")
+    parser.add_argument(
+        "--fail-on-nonready",
+        action="store_true",
+        help="Treat degraded/unavailable as fail (default: warn and pass for CI contract mode)",
+    )
     args = parser.parse_args()
 
     token = args.auth_token.strip() or None
     endpoint = f"{args.fastapi_url}/api/netkeiba/race/preflight?race_id={args.race_id}&date={args.date}"
 
     status, payload, err = _http_json(endpoint, token=token)
-    ok = _is_contract_ok(status, payload)
+    contract_ok = _is_contract_ok(status, payload)
+    view = _extract_payload(payload)
+    preflight_status = view.get("status") if isinstance(view, dict) else None
+    verdict, reason = _classify_verdict(contract_ok, preflight_status, args.fail_on_nonready)
+    ok = verdict != "fail"
 
     result = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "mode": "strict" if args.fail_on_nonready else "contract-only",
         "success": ok,
+        "contract_ok": contract_ok,
+        "verdict": verdict,
+        "verdict_reason": reason,
+        "preflight_status": preflight_status,
         "check": {
             "url": endpoint,
             "status": status,
-            "ok": ok,
+            "ok": contract_ok,
             "error": err,
             "body": payload,
         },
@@ -97,6 +134,10 @@ def main() -> int:
     print(json.dumps({
         "result_file": str(out_file),
         "success": ok,
+        "contract_ok": contract_ok,
+        "verdict": verdict,
+        "verdict_reason": reason,
+        "preflight_status": preflight_status,
         "status": status,
     }, ensure_ascii=False))
 

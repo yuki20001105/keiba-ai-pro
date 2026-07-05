@@ -296,3 +296,40 @@ Phase boundary (important):
 - this P1-5 step does not move write processing,
 - this P1-5 step does not remove Supabase direct writes,
 - write migration starts only after preflight + dry-run validation phase.
+
+## 8. P1-6 Preflight Smoke Operational Rule
+
+Objective:
+- keep smoke check reusable for local audit and CI candidate,
+- fail only when contract is broken,
+- do not fail only because downstream scrape service is unavailable.
+
+Target script:
+- `scripts/smoke_netkeiba_race_preflight.py`
+
+Output file:
+- `reports/netkeiba_race_preflight_smoke_result.json`
+
+Verdict policy:
+
+| preflight status | smoke verdict | default CI treatment |
+|---|---|---|
+| ready | pass | PASS |
+| degraded | warn | WARN |
+| unavailable | warn | WARN/SKIP |
+| contract error | fail | FAIL |
+
+Contract error examples (must fail):
+- response is not valid JSON contract,
+- required keys are missing (`service`, `race_id`, `can_scrape`, `can_write`, `write_performed`),
+- `can_write` is true,
+- `write_performed` is true,
+- invalid status value outside `ready/degraded/unavailable`.
+
+Execution modes:
+- default (`contract-only`): degraded/unavailable are warning-level and process exits success,
+- strict mode (`--fail-on-nonready`): degraded/unavailable are treated as fail.
+
+Recommended CI usage:
+- use default mode for shared environment where scrape service may not be started,
+- use strict mode only in environments where scrape service readiness is guaranteed.
