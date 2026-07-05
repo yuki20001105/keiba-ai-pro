@@ -82,6 +82,21 @@ def _classify_payload_diff(report: dict[str, Any] | None) -> tuple[str, str]:
     verdict = str(report.get("verdict") or "")
     reason = str(report.get("verdict_reason") or "")
 
+    warn_reasons = {
+        "missing-report",
+        "stale-report",
+        "dry-run-unavailable",
+        "upstream-unavailable",
+        "schema-mismatch",
+    }
+
+    if reason in warn_reasons:
+        return "warn", reason
+    if reason == "contract-error":
+        return "fail", reason
+    if reason == "unexpected-exception":
+        return "fail", reason
+
     if verdict == "pass":
         return "pass", reason or "contracts-compatible"
     if verdict == "warn":
