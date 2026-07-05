@@ -18,6 +18,26 @@
       "justMyCode": false
     },
     {
+      // Production safe 起動。0.0.0.0 ではなく localhost に限定し、write 系は無効化する
+      "name": "FastAPI (production safe)",
+      "type": "debugpy",
+      "request": "launch",
+      "preLaunchTask": "Kill Port 8000",
+      "module": "uvicorn",
+      "args": ["main:app", "--host", "127.0.0.1", "--port", "8000"],
+      "python": "${workspaceFolder}/python-api/.venv/Scripts/python.exe",
+      "cwd": "${workspaceFolder}/python-api",
+      "env": {
+        "APP_ENV": "production",
+        "ALLOW_STAGING_WRITE": "false",
+        "NETKEIBA_RACE_WRITE_ENABLED": "false",
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONPATH": "${workspaceFolder}/keiba;${workspaceFolder}/python-api"
+      },
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
       // F5 でデバッグ起動。ポート3000を先に解放してから起動する
       "name": "Next.js (npm run dev)",
       "type": "node",
@@ -33,12 +53,34 @@
         "action": "openExternally"
       }
     }
+    {
+      // Production safe UI 起動。ビルド後に start し、localhost:3000 を開く
+      "name": "Next.js (production safe)",
+      "type": "node",
+      "request": "launch",
+      "preLaunchTask": "Prepare Next.js (Production Safe)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "start"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "serverReadyAction": {
+        "pattern": "Local:\\s+https?://\\S+",
+        "uriFormat": "http://localhost:3000",
+        "action": "openExternally"
+      }
+    }
   ],
   "compounds": [
     {
       // 両方同時起動。各設定の preLaunchTask (Kill Port 8000 / 3000) が個別に実行される
       "name": "All Servers (FastAPI + Next.js)",
       "configurations": ["FastAPI (python-api)", "Next.js (npm run dev)"],
+      "stopAll": true
+    },
+    {
+      // Production safe 起動。Next は build -> start、FastAPI は localhost 限定で起動する
+      "name": "Production Safe Run",
+      "configurations": ["FastAPI (production safe)", "Next.js (production safe)"],
       "stopAll": true
     }
   ]
