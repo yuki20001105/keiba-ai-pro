@@ -17,6 +17,7 @@ const EXTRA_ITEMS = [
   { href: '/prediction-history', label: '予測履歴', desc: '過去の予測と実際の着順を比較' },
   { href: '/production-readiness', label: '本番前チェック', desc: 'health/smoke/flag を read-only で確認' },
   { href: '/notion-report', label: 'Notionレポート出力', desc: 'Premium/Admin向けに preview -> send を実行' },
+  { href: '/model-redesign-workbench', label: 'モデル再設計ワークベンチ', desc: 'read-only / preview 中心のMVP' },
 ]
 
 export default function HomePage() {

@@ -351,6 +351,47 @@ Security constraints:
 - No `service_role` key is used in this route.
 - Read-only policy is preserved (no production/base table write).
 
+## 24. Implementation Status (P1 Model Redesign Workbench MVP)
+
+Updated: 2026-07-06
+
+Implemented:
+- New UI page: `src/app/model-redesign-workbench/page.tsx`
+- New Next API route: `src/app/api/model-redesign/summary/route.ts`
+
+Purpose:
+- Provide a read-only / preview-first Model Redesign Workbench MVP.
+- Expose active-model snapshot, evaluation metrics, feature warnings, and improvement preview without retrain execution.
+
+UI contract:
+- Premium/Admin guard on view.
+- Sections:
+	- active model summary
+	- metrics (RMSE / AUC / Spearman / 的中率 / ROI)
+	- feature importance
+	- correlation / duplicate warnings
+	- removal candidates
+	- improvement preview
+- retrain and active-model-switch controls are disabled (`not-implemented`).
+- link to Notion output UI (`/notion-report`).
+
+API contract (`GET /api/model-redesign/summary`):
+- Server-side Bearer auth + Premium/Admin role check.
+- Read-only allowlist sources only:
+	- `python-api/models/.active_model.json`
+	- `docs/reports/feature_analysis.json`
+	- latest `docs/reports/iter_*_metrics.json`
+	- `reports/roi_report.csv` (optional)
+- Path-like inputs are forbidden (`path`, `filePath`, `reportPath`, `sourcePath`).
+- Missing data is returned as `warn` (`config-missing` or `data-missing`).
+
+Safety constraints:
+- No retrain execution.
+- No active model mutation.
+- No `.joblib` create/overwrite.
+- No production/base table write.
+- No secret/env value exposure in response.
+
 ## 16. Implementation Status (P1-4 Read-only Proxy Migration)
 
 Updated: 2026-07-05

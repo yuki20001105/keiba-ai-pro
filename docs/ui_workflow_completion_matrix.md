@@ -83,7 +83,7 @@ Scope: UI (src/app) + Next API (src/app/api) + FastAPI router/script mapping inv
 | 6 | モデル評価 | yes | partial | partial | partial_ui | partial | 条件付きOK | AUC/logloss/履歴ROIは表示。高度評価(反復比較)はUI外 |
 | 7 | 予測 | yes | yes | yes | complete_ui | complete | OK | /predict-batch, /race-analysis |
 | 8 | 予測結果の分析 | yes | yes | yes | complete_ui | complete | OK (Premium含む) | /prediction-history + /race-analysis result tab + /dashboard |
-| 9 | モデル再設計・改善提案 | no (専用画面なし) | no (UI) | no (UI) | script_only | missing (spec-defined) | NG | optimizer.py / notebooks 依存。仕様: docs/specs/model-redesign-workbench.md |
+| 9 | モデル再設計・改善提案 | yes (MVP) | partial (read-only preview) | yes (preview) | partial_ui | partial | 条件付きOK | /model-redesign-workbench + /api/model-redesign/summary。再学習/切替は未実装 |
 | 10 | Notionレポート出力 | yes | yes (Premium/Admin) | yes | partial_ui | partial | 条件付きOK | /notion-report + /api/notion-report で preview -> send。token未設定時は config-missing/warn |
 | 11 | 本番運用前チェック | yes | yes (read-only scope) | yes | partial_ui | partial | 条件付きOK | /production-readiness で health/smoke/flag/secret/git を集約 |
 | 12 | smoke / health check | partial | partial | partial | partial_ui | partial | 条件付きOK | /api/health, /api/scrape/health はUI可視。smoke suiteはscript |
@@ -92,11 +92,11 @@ Scope: UI (src/app) + Next API (src/app/api) + FastAPI router/script mapping inv
 要約判定:
 
 - complete: 1,2,4,5,7,8
-- partial: 3,6,10,11,12,13
-- missing: 9
+- partial: 3,6,9,10,11,12,13
+- missing: none
 
 補足:
-- #9 は実装未着手だが、画面/API/ジョブ管理/承認フロー/本番反映ガードの仕様は `docs/specs/model-redesign-workbench.md` で確定済み。
+- #9 は read-only / preview 中心の MVP 実装済み。再学習実行と active model 切替は未実装で別フェーズ。
 
 ---
 
@@ -128,9 +128,10 @@ Next API routeは存在するが、主要業務UI導線で未使用/非表示の
 
 ## 5. Script/Notebookでしかできない機能一覧 (script_only)
 
-- 反復最適化と改善提案生成:
-  - python-api/training/optimizer.py
-  - 出力: docs/reports/iter_*_metrics.json (recommendations)
+- 反復最適化と改善提案生成 (実行系):
+   - python-api/training/optimizer.py
+   - 出力: docs/reports/iter_*_metrics.json (recommendations)
+   - MVP UI は read-only preview のみ（実行は未実装）
 - Notebook E2E監査:
   - scripts/run_keiba_notebook_e2e.py
 - 本番前 smoke suite:
@@ -177,10 +178,10 @@ Next API routeは存在するが、主要業務UI導線で未使用/非表示の
 
 優先度高:
 
-1. モデル再設計ワークベンチ
-   - 目的: 改善提案生成 -> 反映候補比較 -> 再学習起動 -> 評価比較
-2. Notionレポート出力画面
+1. Notionレポート出力画面
    - 目的: 学習/評価/予測分析結果をテンプレ化してexport
+2. モデル再設計ワークベンチ（実行フェーズ）
+   - 目的: 承認フロー付き再学習起動と反映制御
 優先度中:
 
 3. API-only運用機能のAdmin画面

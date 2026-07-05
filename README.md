@@ -1146,6 +1146,21 @@ UI の安全条件:
 - 非 Premium/Admin は API 直叩きでも `403`
 - 任意ファイルパス指定は不可（reportType allowlist のみ）
 
+**8.6) Model Redesign Workbench (MVP / read-only)**
+
+```
+1. /model-redesign-workbench を開く
+2. active model summary / metrics / feature warnings / 改善提案 preview を確認
+3. 必要に応じて /notion-report へ遷移して共有
+```
+
+MVP 制約:
+- 再学習実行は未実装（disabled）
+- active model 切替は未実装（disabled）
+- production/base table write は行わない
+- `.active_model.json` は自動変更しない
+- `.joblib` 作成/上書きは行わない
+
 **統合実行（Smoke Suite）**
 
 ```powershell
