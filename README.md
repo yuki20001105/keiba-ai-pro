@@ -735,6 +735,45 @@ Write guard smoke
 Notion output
 ```
 
+### 検証・本番 runbook
+
+**検証時に実行するコマンド**
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+npm run lint
+npm run build
+python -m compileall -q python-api scripts
+python scripts/run_keiba_smoke_suite.py
+python scripts/smoke_analyze_race_api.py
+python scripts/run_keiba_notebook_e2e.py --mode audit
+git grep -n -I "secret-prefix-check"
+git status --short
+```
+
+**本番運用ルール**
+
+- `NETKEIBA_RACE_WRITE_ENABLED=false`
+- `ALLOW_STAGING_WRITE=false`
+- `APP_ENV=production`
+- production/base table write は禁止
+- sandbox write は本番で実行しない
+- default smoke / default suite では write を実行しない
+- UI / 予測 / analyze_race / health check / read-only API のみ本番利用可
+
+**P1-16 sandbox runtime 確認コマンド**
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python scripts/smoke_netkeiba_race_write_guard.py --expect-sandbox-precheck
+python scripts/smoke_netkeiba_race_write_guard.py --expect-sandbox-write-readback
+```
+
+注意:
+- P1-16 sandbox write-readback actual pass は upstream ready 後の別管理
+- production/base table write はこの手順に含めない
+- DB / reports JSON / metadata は Git 管理対象に含めない
+
 **1) Notebook E2E audit**
 
 ```powershell
