@@ -3,6 +3,21 @@
 Updated: 2026-07-05 (P1-16 sandbox write-readback verification)
 Scope: Next.js API routes and FastAPI endpoints classification
 
+## P1-16 Actual Runtime Pass Record (Staging Sandbox)
+
+Verification scope (explicit run only):
+- sandbox-precheck: pass
+- sandbox-write-readback: pass
+- write_performed=true only when sandbox write-readback was explicitly executed
+- target_mode=sandbox for write-readback execution
+- readback target tables: sandbox tables only
+- production/base table write: none
+- suite result: success=true, summary=warn
+
+Operational notes:
+- Staging FastAPI and local scrape stub used only for runtime verification are stopped after checks.
+- Generated `reports/*.json`, model artifacts, DB artifacts, and `.env*` are excluded from commits.
+
 ## 1. Classification Rules
 
 - production: actively used in current UI/user flow and considered stable contract
