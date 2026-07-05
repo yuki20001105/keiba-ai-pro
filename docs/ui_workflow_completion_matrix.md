@@ -37,6 +37,7 @@ Scope: UI (src/app) + Next API (src/app/api) + FastAPI router/script mapping inv
 | /predict-batch | 一括予測/購入/エクスポート | 日付, venue filter, model選択, 予測実行, odds refresh, 購入記録, JSON/CSV export | /api/races/by-date, /api/analyze-race, /api/realtime-odds/refresh, /api/realtime-odds/[race_id], /api/purchase, /api/export/bet-list |
 | /race-analysis | 単レース予測詳細/結果照合 | 日付, レース選択, モデル選択, predict/features/resultタブ | /api/races/by-date, /api/analyze-race, /api/models, /api/debug/race/[race_id]/features, /api/prediction-history/[race_id], /api/races/[race_id]/horses |
 | /prediction-history (Premium) | 予測分析/成績追跡 | 更新, レース一覧, race-analysisへの遷移 | /api/prediction-history |
+| /production-readiness (Premium/Admin) | 本番前 read-only チェック | 実行ボタン, pass/warn/fail表示, 結果要約JSON | /api/production-readiness |
 | /dashboard | 購入履歴/損益分析 | 結果入力(hit/miss,payout), delete, ソート | /api/purchase-history, /api/purchase/[id], /api/statistics, /api/data-stats |
 | /admin (AdminOnly) | 管理運用 | user role変更, stats確認 | Supabase profiles直接 + /api/data-stats |
 | /login | 認証 | login/signup タブ, email/password submit | Supabase Auth SDK 直接 |
@@ -66,6 +67,7 @@ Scope: UI (src/app) + Next API (src/app/api) + FastAPI router/script mapping inv
 | 購入記録 | /predict-batch | POST /api/purchase | POST /api/purchase | 結果入力はdashboard |
 | 購入結果更新/削除 | /dashboard | PATCH/DELETE /api/purchase/[id] | PATCH/DELETE /api/purchase/{id} | UI完結 |
 | 損益統計 | /dashboard | GET /api/statistics | GET /api/statistics | UIグラフ表示 |
+| 本番前チェック実行 | /production-readiness | POST /api/production-readiness | health fetch + allowlist command 実行 (read-only) | write API は呼ばない |
 
 ---
 
@@ -83,15 +85,15 @@ Scope: UI (src/app) + Next API (src/app/api) + FastAPI router/script mapping inv
 | 8 | 予測結果の分析 | yes | yes | yes | complete_ui | complete | OK (Premium含む) | /prediction-history + /race-analysis result tab + /dashboard |
 | 9 | モデル再設計・改善提案 | no (専用画面なし) | no (UI) | no (UI) | script_only | missing | NG | optimizer.py / notebooks 依存 |
 | 10 | Notionレポート出力 | no | no (UI) | no | script_only | missing | NG | UI/Next/FastAPIに Notion export 導線なし |
-| 11 | 本番運用前チェック | no (専用画面なし) | no (UI) | no | script_only | missing | NG | lint/build/compileall/smoke はCLI運用 |
+| 11 | 本番運用前チェック | yes | yes (read-only scope) | yes | partial_ui | partial | 条件付きOK | /production-readiness で health/smoke/flag/secret/git を集約 |
 | 12 | smoke / health check | partial | partial | partial | partial_ui | partial | 条件付きOK | /api/health, /api/scrape/health はUI可視。smoke suiteはscript |
 | 13 | 権限ガード | yes | yes | yes | partial_ui | partial | OK | AuthContext, AdminOnly, Premium制御はあるが一部backend依存 |
 
 要約判定:
 
 - complete: 1,2,4,5,7,8
-- partial: 3,6,12,13
-- missing: 9,10,11
+- partial: 3,6,11,12,13
+- missing: 9,10
 
 ---
 
@@ -174,31 +176,26 @@ Next API routeは存在するが、主要業務UI導線で未使用/非表示の
    - 目的: 改善提案生成 -> 反映候補比較 -> 再学習起動 -> 評価比較
 2. Notionレポート出力画面
    - 目的: 学習/評価/予測分析結果をテンプレ化してexport
-3. 本番前チェック画面
-   - 目的: lint/build/compileall/smoke の実行結果をread-only集約
-
 優先度中:
 
-4. API-only運用機能のAdmin画面
+3. API-only運用機能のAdmin画面
    - scrape repair/rescrape-incomplete/backfill/debug-race-ids
-5. Profiling結果ビュー画面
+4. Profiling結果ビュー画面
    - /api/profiling/html/[job_id] をUIで参照
 
 ---
 
 ## 9. 次に実装すべきUI機能の優先順位
 
-1. P0: モデル再設計・改善提案 UI
+1. P1: モデル再設計・改善提案 UI
    - optimizer結果の可視化
    - 採用/却下の意思決定フロー
    - 再学習ジョブ連携
-2. P0: 本番前チェック UI (read-only orchestrator)
-   - health + smoke summary + build metadata 表示
-3. P1: Notionレポート出力 UI
+2. P2: Notionレポート出力 UI
    - 出力対象/期間/テンプレ選択
    - secretはserver-side envのみ
-4. P1: Profiling report viewer
-5. P2: API-only admin utilities の安全な集約 (role=admin + explicit confirm)
+3. P2: Profiling report viewer
+4. P3: API-only admin utilities の安全な集約 (role=admin + explicit confirm)
 
 ---
 
@@ -232,7 +229,25 @@ Next API routeは存在するが、主要業務UI導線で未使用/非表示の
 - UIとAPIの接続基盤は完成。
 - 予測/分析系UIは本番運用確認フェーズにある。
 - ただし、データ取得 -> 学習 -> 再設計 -> Notion出力までの全業務が UI 完結とはまだ断定できない。
-- 現在は、CLI/Notebook依存の業務 (再設計, Notion出力, 本番前総合チェック) が残っている。
+- 現在は、CLI/Notebook依存の業務 (再設計, Notion出力) が残っている。
+
+## 13. P0実装更新 (2026-07-05)
+
+- 本番前チェック画面 `/production-readiness` を追加。
+- Next API `/api/production-readiness` を追加。
+- チェック対象:
+   - Frontend build
+   - FastAPI health
+   - scrape health
+   - analyze_race smoke
+   - smoke suite summary
+   - secret scan (Notion token prefix)
+   - git status 注意
+   - write flag (`NETKEIBA_RACE_WRITE_ENABLED=false`, `ALLOW_STAGING_WRITE=false`)
+   - APP_ENV safety
+   - sandbox write-readback 別管理確認
+   - production/base table write 禁止確認
+- 実行は allowlist command のみ。write系 endpoint は呼ばない。
 
 ## 12. 検証実行メモ (今回コミット範囲外)
 

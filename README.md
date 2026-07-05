@@ -569,12 +569,28 @@ Kelly % = (p × odds - 1) / (odds - 1)
 ### データ収集画面 (`/data-collection`)
 
 ```
-1. ローカルFastAPI稼働チェック → GET /api/scrape/status/__health_check__
+1. ローカルFastAPI稼働チェック → GET /api/scrape/health
 2. 期間指定入力 (開始年月〜終了年月)
 3. [データ取得開始] → POST /api/scrape (ジョブ開始)
    → GET /api/scrape/status/{job_id} ポーリング (3秒間隔)
 4. 取得済みデータ確認 → GET /api/races/recent?limit=50 (1回だけ)
 5. 詳細表示 → GET /api/races/{race_id}/horses (ML推論なし・軽量)
+```
+
+### 本番前チェック画面 (`/production-readiness`)
+
+```
+1. Premium/Admin 権限で [本番前チェックを実行]
+2. POST /api/production-readiness
+3. read-only checks を順次実行
+  - Frontend build
+  - FastAPI health / scrape health
+  - analyze_race smoke / smoke suite summary
+  - secret scan (Notion token prefix)
+  - git status 注意
+  - write flag / APP_ENV safety
+4. pass / warn / fail / unknown をカード表示
+5. write API は呼ばない（sandbox write-readback は別管理）
 ```
 
 ### 学習画面 (`/train`)
@@ -747,8 +763,18 @@ python -m compileall -q python-api scripts
 python scripts/run_keiba_smoke_suite.py
 python scripts/smoke_analyze_race_api.py
 python scripts/run_keiba_notebook_e2e.py --mode audit
-git grep -n -I "secret-prefix-check"
+git grep -n -I "<notion-token-prefix>"
 git status --short
+```
+
+**UI での本番前チェック手順**
+
+```
+1. /production-readiness を開く
+2. [本番前チェックを実行] を押す
+3. fail/warn があるカードの summary を確認
+4. write flag が false であることを確認
+5. sandbox write-readback は別管理であることを確認
 ```
 
 **本番運用ルール**

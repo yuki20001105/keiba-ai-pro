@@ -270,6 +270,44 @@ Constraints preserved:
 - No DB write path removed.
 - No auth policy relaxed.
 
+## 22. Implementation Status (P0 Production Readiness Check)
+
+Updated: 2026-07-05
+
+Implemented:
+- New UI page: `src/app/production-readiness/page.tsx`
+- New Next API route: `src/app/api/production-readiness/route.ts`
+
+Purpose:
+- Provide pre-production checks for prediction/analysis/read-only operations from UI.
+- Explicitly exclude write operations (production/base write and sandbox write-readback).
+
+UI contract:
+- Card-based checklist with `pass | warn | fail | unknown`.
+- Single execution button with loading state.
+- Error summary displayed in-page.
+- Minimal JSON details only (no secret value exposure).
+- Premium/Admin guard on execution button.
+
+API contract (`POST /api/production-readiness`):
+- Executes only allowlisted checks:
+	- frontend build (`npm run build`)
+	- python compileall
+	- FastAPI health (`/health`)
+	- scrape health (`/api/scrape/health`)
+	- analyze_race smoke script
+	- smoke suite script (summary read)
+	- secret scan (`git grep -n -I "<notion-token-prefix>"`)
+	- git status notice parsing
+	- env flag checks (`APP_ENV`, write flags)
+- Returns aggregated checklist with per-item state and summary.
+
+Safety constraints:
+- No call to production/base write endpoints.
+- No sandbox write-readback execution in normal readiness check.
+- No `.env` value dump in response.
+- No service_role key operations are introduced.
+
 ## 16. Implementation Status (P1-4 Read-only Proxy Migration)
 
 Updated: 2026-07-05

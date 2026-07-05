@@ -17,6 +17,7 @@ export type NextRouteMeta = {
 export const NEXT_API_ROUTE_CLASSIFICATION: NextRouteMeta[] = [
   { route: '/api/health', classification: 'production', note: 'App heartbeat proxy', migrationTarget: 'keep-next-direct', riskLevel: 'low' },
   { route: '/api/scrape/health', classification: 'production', note: 'Dedicated scrape health contract', migrationTarget: 'keep-next-direct', riskLevel: 'low' },
+  { route: '/api/production-readiness', classification: 'production', note: 'Read-only production readiness checks (health/smoke/flags/git/secret scan)', migrationTarget: 'keep-next-direct', riskLevel: 'low' },
   { route: '/api/scrape/status/[jobId]', classification: 'production', note: 'Scrape job polling', migrationTarget: 'keep-next-direct', riskLevel: 'low' },
   { route: '/api/scrape', classification: 'deprecated', note: 'Compatibility alias to async scrape start', migrationTarget: 'fastapi-proxy', riskLevel: 'medium' },
   {
