@@ -313,6 +313,44 @@ P0.5 auth-aware smoke handling:
 - `KEIBA_AUTH_BEARER_TOKEN` 設定時は同 endpoint を通常の pass/fail 判定で評価。
 - readiness/smoke の要約にはトークン実値を含めない（presence のみ扱う）。
 
+## 23. Implementation Status (P2 Notion Report Output UI)
+
+Updated: 2026-07-05
+
+Implemented:
+- New UI page: `src/app/notion-report/page.tsx`
+- New Next API route: `src/app/api/notion-report/route.ts`
+
+Purpose:
+- Promote Notion export from script-only to Premium/Admin UI flow.
+- Support `preview -> send` while keeping Notion secrets server-side only.
+
+UI contract:
+- Report type selector (fixed allowlist):
+	- `feature analysis`
+	- `smoke suite summary`
+	- `production readiness summary`
+	- `model evaluation summary`
+- Preview generation button.
+- Notion send button (enabled after preview).
+- Result state badge (`pass | warn | fail`) and code display.
+- Config missing state (`config-missing`) shown as `warn`.
+
+API contract (`/api/notion-report`):
+- `GET`: returns report type list and Notion config status.
+- `POST` with `action=preview|send` and allowlisted `reportType` only.
+- No arbitrary file path parameter is accepted.
+- Server-side auth guard:
+	- non-authenticated: `401`
+	- non-Premium/Admin: `403`
+
+Security constraints:
+- `NOTION_TOKEN` and `NOTION_PARENT_PAGE_ID` are read only on server-side.
+- Token values are never returned in JSON and never rendered in UI.
+- Error strings are sanitized before response.
+- No `service_role` key is used in this route.
+- Read-only policy is preserved (no production/base table write).
+
 ## 16. Implementation Status (P1-4 Read-only Proxy Migration)
 
 Updated: 2026-07-05

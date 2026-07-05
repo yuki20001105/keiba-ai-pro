@@ -1130,6 +1130,21 @@ cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
 python-api\.venv\Scripts\python.exe scripts\upload_to_notion.py
 ```
 
+**8.5) Notion output (Premium/Admin UI)**
+
+```
+1. /notion-report を開く
+2. レポート種別を選択
+3. [preview 生成] で内容確認
+4. [Notion へ送信] で送信
+```
+
+UI の安全条件:
+- `NOTION_TOKEN` / `NOTION_PARENT_PAGE_ID` は server-side env のみで利用
+- token 実値は画面・レスポンス・ログに出力しない
+- 非 Premium/Admin は API 直叩きでも `403`
+- 任意ファイルパス指定は不可（reportType allowlist のみ）
+
 **統合実行（Smoke Suite）**
 
 ```powershell

@@ -16,6 +16,7 @@ const EXTRA_ITEMS = [
   { href: '/race-analysis', label: '予測スコア詳細', desc: '馬ごとの予測スコア・特徴量を確認' },
   { href: '/prediction-history', label: '予測履歴', desc: '過去の予測と実際の着順を比較' },
   { href: '/production-readiness', label: '本番前チェック', desc: 'health/smoke/flag を read-only で確認' },
+  { href: '/notion-report', label: 'Notionレポート出力', desc: 'Premium/Admin向けに preview -> send を実行' },
 ]
 
 export default function HomePage() {
@@ -171,15 +172,3 @@ export default function HomePage() {
     </div>
   )
 }
-
-        <div className="mt-6 pt-6 border-t border-[#1e1e1e]">
-          <Link
-            href="/data-collection"
-            className="flex items-center justify-center gap-2 w-full py-3 bg-white text-black text-sm font-medium rounded-lg hover:bg-[#eee] transition-colors"
-          >
-            Step 01 から始める
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-            </svg>
-          </Link>
-        </div>

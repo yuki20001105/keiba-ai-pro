@@ -84,7 +84,7 @@ Scope: UI (src/app) + Next API (src/app/api) + FastAPI router/script mapping inv
 | 7 | 予測 | yes | yes | yes | complete_ui | complete | OK | /predict-batch, /race-analysis |
 | 8 | 予測結果の分析 | yes | yes | yes | complete_ui | complete | OK (Premium含む) | /prediction-history + /race-analysis result tab + /dashboard |
 | 9 | モデル再設計・改善提案 | no (専用画面なし) | no (UI) | no (UI) | script_only | missing | NG | optimizer.py / notebooks 依存 |
-| 10 | Notionレポート出力 | no | no (UI) | no | script_only | missing | NG | UI/Next/FastAPIに Notion export 導線なし |
+| 10 | Notionレポート出力 | yes | yes (Premium/Admin) | yes | partial_ui | partial | 条件付きOK | /notion-report + /api/notion-report で preview -> send。token未設定時は config-missing/warn |
 | 11 | 本番運用前チェック | yes | yes (read-only scope) | yes | partial_ui | partial | 条件付きOK | /production-readiness で health/smoke/flag/secret/git を集約 |
 | 12 | smoke / health check | partial | partial | partial | partial_ui | partial | 条件付きOK | /api/health, /api/scrape/health はUI可視。smoke suiteはscript |
 | 13 | 権限ガード | yes | yes | yes | partial_ui | partial | OK | AuthContext, AdminOnly, Premium制御はあるが一部backend依存 |
@@ -92,8 +92,8 @@ Scope: UI (src/app) + Next API (src/app/api) + FastAPI router/script mapping inv
 要約判定:
 
 - complete: 1,2,4,5,7,8
-- partial: 3,6,11,12,13
-- missing: 9,10
+- partial: 3,6,10,11,12,13
+- missing: 9
 
 ---
 
@@ -135,7 +135,9 @@ Next API routeは存在するが、主要業務UI導線で未使用/非表示の
   - scripts/smoke_*.py
 - compile/lint/build 一括品質ゲート運用 (CLI)
 - Notion向け出力処理:
-  - 現行コードベースにはUI導線なし (Next/FastAPI route未実装)
+   - `/notion-report` + `/api/notion-report` で UI 導線あり
+   - reportType は allowlist 固定（任意ファイルパス指定なし）
+   - token は server-side env のみ（UI/レスポンスで実値非表示）
 
 ---
 
