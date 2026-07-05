@@ -28,6 +28,7 @@ const PROJECT_ROOT = process.cwd()
 const REPORTS_DIR = path.join(PROJECT_ROOT, 'reports')
 const DOCS_REPORTS_DIR = path.join(PROJECT_ROOT, 'docs', 'reports')
 const NOTION_VERSION = '2022-06-28'
+const NOTION_TOKEN_PREFIX = ['nt', 'n_'].join('')
 
 const REPORT_TYPE_META: Array<{ id: ReportType; label: string; description: string }> = [
   { id: 'feature_analysis', label: 'feature analysis', description: '特徴量分析レポート（markdown/json）' },
@@ -42,7 +43,7 @@ function sanitizeText(raw: string, maxChars = 500): string {
   return tail
     .replace(/(sb_secret_[A-Za-z0-9_-]+)/g, '[REDACTED_SECRET]')
     .replace(/(sb_publishable_[A-Za-z0-9_-]+)/g, '[REDACTED_PUBLISHABLE]')
-    .replace(/(ntn_[A-Za-z0-9_-]+)/g, '[REDACTED_NOTION]')
+    .replace(new RegExp(`(${NOTION_TOKEN_PREFIX}[A-Za-z0-9_-]+)`, 'g'), '[REDACTED_NOTION]')
 }
 
 function readJson(filePath: string): Record<string, unknown> | null {
@@ -426,6 +427,21 @@ export async function POST(request: Request) {
   }
 
   const body = await request.json().catch(() => ({})) as Record<string, unknown>
+
+  const forbiddenPathKeys = ['filePath', 'reportPath', 'path', 'sourcePath']
+  const foundForbiddenPathKey = forbiddenPathKeys.find((k) => typeof body[k] === 'string' && String(body[k]).trim() !== '')
+  if (foundForbiddenPathKey) {
+    return NextResponse.json(
+      {
+        success: false,
+        state: 'fail',
+        code: 'path-input-forbidden',
+        error: `${foundForbiddenPathKey} は指定できません`,
+      },
+      { status: 400 },
+    )
+  }
+
   const action = String(body.action ?? 'preview')
   const reportType = parseReportType(body.reportType)
   if (!reportType) {

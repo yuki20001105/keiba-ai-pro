@@ -123,6 +123,21 @@ def _classify_write_guard(report: dict[str, Any] | None, token_provided: bool) -
     return "fail", reason or "contract-error"
 
 
+def _classify_notion_report(report: dict[str, Any] | None, token_provided: bool) -> tuple[str, str]:
+    if not isinstance(report, dict):
+        return "fail", "notion-report missing or invalid"
+
+    verdict = str(report.get("verdict") or "")
+    if not token_provided and verdict == "warn":
+        return "warn", "auth-required"
+
+    if verdict == "pass":
+        return "pass", "ok"
+    if verdict == "warn":
+        return "warn", "partial-verification"
+    return "fail", "notion-report-smoke-failed"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run keiba smoke checks as an operational suite")
     parser.add_argument("--date", default=datetime.now().strftime("%Y%m%d"), help="YYYYMMDD for race-list/preflight checks")
@@ -308,6 +323,21 @@ def main() -> int:
         "reason": wg_reason,
         "note": "Write guard: default disabled is pass, contract-error is fail",
         "log_tail": write_guard_log[-2000:],
+    }
+
+    notion_report_rc, notion_report_log = _run_step("notion-report", [
+        "scripts/smoke_notion_report_api.py",
+        "--next-url", args.next_url,
+        *token_args,
+    ])
+    notion_report_report = _read_json(REPORTS_DIR / "notion_report_smoke_result.json")
+    nr_result, nr_reason = _classify_notion_report(notion_report_report, token_provided=token_provided)
+    suite["steps"]["notion_report"] = {
+        "return_code": notion_report_rc,
+        "result": nr_result,
+        "reason": nr_reason,
+        "note": "Notion UI/API smoke: preview, send/config-missing, 403, no token exposure, path forbidden",
+        "log_tail": notion_report_log[-2000:],
     }
 
     if args.verify_write_guard_enabled:
