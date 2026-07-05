@@ -733,7 +733,15 @@ def _fe_lap(df: pd.DataFrame) -> pd.DataFrame:
     _DISTS = [200, 400, 600, 800, 1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400]
 
     def _lap_get(x, dist):
-        d = _json_fe.loads(x) if isinstance(x, str) else (x or {})
+        if isinstance(x, str):
+            try:
+                d = _json_fe.loads(x)
+            except Exception:
+                d = {}
+        elif isinstance(x, dict):
+            d = x
+        else:
+            d = {}
         return d.get(dist) if d.get(dist) is not None else d.get(str(dist))
 
     if 'lap_cumulative' in df.columns:
@@ -1182,7 +1190,12 @@ def _feh_running_style(
 # Public API
 # ===========================================================================
 
-def add_derived_features(df: pd.DataFrame, full_history_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+def add_derived_features(
+    df: pd.DataFrame,
+    full_history_df: Optional[pd.DataFrame] = None,
+    training_df: Optional[pd.DataFrame] = None,
+    speed_figures_df: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
     """データフレームに派生特徴量を追加する（公開 API）。
 
     内部的には以下の順序でパイプラインを実行する:
@@ -1200,10 +1213,17 @@ def add_derived_features(df: pd.DataFrame, full_history_df: Optional[pd.DataFram
     Args:
         df: 現在のレースデータ。
         full_history_df: 過去データ全体（統計計算用）。省略時は step 1/10 をスキップ。
+        training_df: 旧API互換引数（未使用）。
+        speed_figures_df: 旧API互換引数（未使用）。
 
     Returns:
         pd.DataFrame: 派生特徴量が追加されたデータフレーム。
     """
+    # 旧Notebook互換: 以前の呼び出しで渡される引数を受け取るが、
+    # 現行パイプラインでは full_history_df を統計計算の入力として使用する。
+    _ = training_df
+    _ = speed_figures_df
+
     df = df.copy()
     if full_history_df is not None:
         df = _fe_days_from_history(df, full_history_df)

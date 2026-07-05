@@ -186,6 +186,7 @@ async def _build_race_dates_from_calendar(
 # ジョブストア（メモリ上 + SQLite二重管理）
 # ============================================================
 _scrape_jobs: dict = {}
+_CANCEL_FLAGS: dict[str, bool] = {}
 _MAX_JOBS = 50
 # スレッドセーフな _scrape_jobs アクセスのためのロック
 # （FastAPI メインスレッドと scrape バックグラウンドスレッドが同時にアクセスするため）

@@ -108,6 +108,11 @@ regen_*.txt
 verify_result.txt
 patch_log*.txt
 dev-server.log
+reports/analyze_race_smoke_result.json
+reports/e2e_notebooks/
+reports/e2e_debug/
+reports/e2e_logs/
+reports/keiba_notebook_e2e_result.json
 
 # Local notebook workspace
 notebooks/
