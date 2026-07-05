@@ -158,15 +158,24 @@ def main() -> int:
     parser.add_argument("--fastapi-url", default="http://127.0.0.1:8000", help="FastAPI base URL")
     parser.add_argument("--auth-token", default="", help="Optional Bearer token")
     parser.add_argument("--expect-enabled", action="store_true", help="Run enabled-guard matrix checks")
+    parser.add_argument("--expect-flag-only", action="store_true", help="Expect NETKEIBA_RACE_WRITE_ENABLED=true only branch to be blocked")
     parser.add_argument("--expect-production-block", action="store_true", help="Expect APP_ENV=production hard block branch")
     parser.add_argument("--expect-staging-lock-missing", action="store_true", help="Expect ALLOW_STAGING_WRITE=false block branch")
     parser.add_argument("--stub-scrape-port", type=int, default=8001, help="Port for local stub scrape service in enabled checks")
     args = parser.parse_args()
 
+    mode_count = sum(1 for x in [args.expect_enabled, args.expect_flag_only, args.expect_production_block, args.expect_staging_lock_missing] if x)
+    if mode_count > 1:
+        print(json.dumps({
+            "success": False,
+            "error": "choose only one mode: --expect-enabled, --expect-flag-only, --expect-production-block, --expect-staging-lock-missing",
+        }, ensure_ascii=False))
+        return 2
+
     endpoint = f"{args.fastapi_url}/api/netkeiba/race/write"
     token = args.auth_token.strip() or None
 
-    if not args.expect_enabled and not args.expect_production_block and not args.expect_staging_lock_missing:
+    if not args.expect_enabled and not args.expect_flag_only and not args.expect_production_block and not args.expect_staging_lock_missing:
         payload = {
             "race_id": args.race_id,
             "date": args.date,
@@ -196,6 +205,41 @@ def main() -> int:
             },
         }
         out_name = "netkeiba_race_write_guard_smoke_result.json"
+    elif args.expect_flag_only:
+        payload = {
+            "race_id": args.race_id,
+            "date": args.date,
+            "confirm_write": True,
+            "dry_run": False,
+            "payload_contract_approved": True,
+            "user_id": "guard-smoke-user",
+        }
+        run = _run_check(endpoint, payload, token)
+        body = run.get("body") if isinstance(run, dict) else None
+        reason_text = str(body.get("reason") or "") if isinstance(body, dict) else ""
+        status_ok = run.get("response_status") == "blocked"
+        reason_ok = "ALLOW_STAGING_WRITE=true is required" in reason_text
+        success = bool(run.get("contract_ok")) and status_ok and reason_ok and run.get("write_performed") is False
+
+        result = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "mode": "expect-flag-only",
+            "success": success,
+            "verdict": "pass" if success else "fail",
+            "verdict_reason": "flag-only-blocked" if success else "flag-only-check-failed",
+            "check": {
+                "url": endpoint,
+                "request": payload,
+                "status": run.get("status"),
+                "response_status": run.get("response_status"),
+                "contract_ok": run.get("contract_ok"),
+                "write_performed": run.get("write_performed"),
+                "reason": reason_text,
+                "error": run.get("error"),
+                "body": body,
+            },
+        }
+        out_name = "netkeiba_race_write_guard_flag_only_smoke_result.json"
     elif args.expect_production_block:
         payload = {
             "race_id": args.race_id,

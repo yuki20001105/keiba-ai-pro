@@ -116,7 +116,7 @@ NETKEIBA_RACE_WRITE_ENABLED: bool = _os.environ.get("NETKEIBA_RACE_WRITE_ENABLED
 ALLOW_STAGING_WRITE: bool = _os.environ.get("ALLOW_STAGING_WRITE", "false").lower() in (
     "true", "1", "yes"
 )
-APP_ENV: str = (_os.environ.get("APP_ENV") or _os.environ.get("ENVIRONMENT") or "development").strip().lower()
+APP_ENV: str = (_os.environ.get("APP_ENV") or "development").strip().lower()
 if APP_ENV not in {"development", "staging", "production"}:
     APP_ENV = "development"
 if SUPABASE_ENABLED:

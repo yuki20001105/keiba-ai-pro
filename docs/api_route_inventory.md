@@ -544,6 +544,10 @@ Double lock (all required):
 - `APP_ENV=staging`
 - request payload: `confirm_write=true`, `dry_run=false`, `payload_contract_approved=true`
 
+Flag-only expected behavior:
+- when only `NETKEIBA_RACE_WRITE_ENABLED=true`, request is still `blocked`
+- `write_performed=false` remains mandatory
+
 Hard safety checks before writer stub:
 - race_id must be valid 12-digit format,
 - dry-run must return `status=ready`,
@@ -570,10 +574,12 @@ Safety requirements now explicit in response payload:
 Smoke coverage updates:
 - default smoke: `scripts/smoke_netkeiba_race_write_guard.py`
 - staging-enabled matrix: `scripts/smoke_netkeiba_race_write_guard.py --expect-enabled`
+- flag-only blocked smoke: `--expect-flag-only` (optional)
 - production hard-block smoke: `--expect-production-block` (optional)
 - staging-lock-missing smoke: `--expect-staging-lock-missing` (optional)
 - suite optional steps:
 	- `--verify-write-guard-enabled`
+	- `--verify-write-guard-flag-only`
 	- `--verify-write-guard-production-block`
 	- `--verify-write-guard-staging-lock-missing`
 

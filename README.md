@@ -851,6 +851,21 @@ cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
 python-api\.venv\Scripts\python.exe scripts\run_keiba_smoke_suite.py --verify-write-guard-enabled
 ```
 
+flag-only blocked 確認（任意）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro\python-api
+$env:NETKEIBA_RACE_WRITE_ENABLED = "true"
+$env:ALLOW_STAGING_WRITE = "false"
+$env:APP_ENV = "development"
+..\.venv\Scripts\python.exe main.py
+```
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_write_guard.py --expect-flag-only
+```
+
 production 強制ブロック確認（任意）:
 
 ```powershell
@@ -885,7 +900,7 @@ suite optional:
 
 ```powershell
 cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
-python-api\.venv\Scripts\python.exe scripts\run_keiba_smoke_suite.py --verify-write-guard-production-block --verify-write-guard-staging-lock-missing
+python-api\.venv\Scripts\python.exe scripts\run_keiba_smoke_suite.py --verify-write-guard-flag-only --verify-write-guard-production-block --verify-write-guard-staging-lock-missing
 ```
 
 **8) Notion output**
@@ -920,6 +935,7 @@ python-api\.venv\Scripts\python.exe scripts\run_keiba_smoke_suite.py --strict-pr
 - Payload contract diff結果JSON: `reports/netkeiba_race_payload_contract_diff.json`
 - Write guard smoke結果JSON: `reports/netkeiba_race_write_guard_smoke_result.json`
 - Write guard enabled検証結果JSON: `reports/netkeiba_race_write_guard_enabled_smoke_result.json`
+- Write guard flag-only検証結果JSON: `reports/netkeiba_race_write_guard_flag_only_smoke_result.json`
 - Write guard production検証結果JSON: `reports/netkeiba_race_write_guard_production_smoke_result.json`
 - Write guard staging lock検証結果JSON: `reports/netkeiba_race_write_guard_staging_lock_smoke_result.json`
 - Smoke suite結果JSON: `reports/keiba_smoke_suite_result.json`

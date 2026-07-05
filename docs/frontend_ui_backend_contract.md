@@ -527,9 +527,11 @@ Smoke updates:
 - existing enabled matrix now validates `guarded-stub` path:
 	- `python scripts/smoke_netkeiba_race_write_guard.py --expect-enabled`
 - optional dedicated checks added:
+	- flag-only block: `--expect-flag-only`
 	- production hard block: `--expect-production-block`
 	- staging lock missing: `--expect-staging-lock-missing`
 - suite optional hooks:
+	- `--verify-write-guard-flag-only`
 	- `--verify-write-guard-production-block`
 	- `--verify-write-guard-staging-lock-missing`
 
