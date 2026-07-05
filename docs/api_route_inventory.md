@@ -57,7 +57,7 @@ Scope: Next.js API routes and FastAPI endpoints classification
 | /api/ai-correct | OpenAI/Gemini | optional OCR post-process flow |
 | /api/ocr | Vision/OCR service | optional OCR flow |
 | /api/netkeiba/calendar | external scrape service | utility/integration route |
-| /api/netkeiba/race-list | external scrape service | utility/integration route |
+| /api/netkeiba/race-list | FastAPI /api/netkeiba/race-list | migrated read-only proxy route (P1-4) |
 | /api/netkeiba/race | external scrape + Supabase write | mixed write path (not canonical) |
 | /api/stripe/create-checkout | Stripe | billing flow not in current core UI |
 | /api/stripe/portal | Stripe | billing flow not in current core UI |
@@ -134,6 +134,7 @@ Scope: Next.js API routes and FastAPI endpoints classification
 
 - /api/predict (older inference endpoint kept available)
 - /api/train (synchronous training endpoint; operationally heavier than async start)
+- /api/netkeiba/race-list (read-only proxy to scrape service, introduced in P1-4)
 
 ### internal
 
@@ -183,7 +184,10 @@ Scope: Next.js API routes and FastAPI endpoints classification
 | Route | Direct Dependency | Current Decision | riskLevel | Why |
 |---|---|---|---|---|
 | /api/netkeiba/race | POST /scrape/ultimate | migrate to FastAPI | high | write path and scrape path are coupled in one route |
-| /api/netkeiba/race-list | POST /scrape/race_list | migrate to FastAPI | medium | read-only integration; suitable first candidate for proxy migration |
+
+Migrated in P1-4:
+- /api/netkeiba/race-list is no longer calling `SCRAPE_SERVICE_URL` directly from Next API.
+- Path is now: Next `/api/netkeiba/race-list` -> FastAPI `/api/netkeiba/race-list` -> Scrape Service `/scrape/race_list`.
 
 ### 5.3 Responsibility matrix for direct paths
 
@@ -204,8 +208,11 @@ Scope: Next.js API routes and FastAPI endpoints classification
 
 - /api/netkeiba/race
 	- reason: mixed scrape + write path in Next layer; should converge to FastAPI-owned write/audit path.
+
+#### migration in progress
+
 - /api/netkeiba/race-list
-	- reason: read-only direct scrape call is low-risk first migration candidate to FastAPI proxy.
+	- status: migrated to FastAPI proxy in P1-4; keep monitoring and error telemetry before reclassifying to production.
 
 #### experimental
 

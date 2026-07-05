@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import time
 import uuid
@@ -28,6 +29,7 @@ from scraping.race import scrape_race_full  # type: ignore
 from scraping.storage import _save_race_to_ultimate_db  # type: ignore
 
 router = APIRouter()
+_SCRAPE_SERVICE_URL = os.environ.get("SCRAPE_SERVICE_URL", "http://localhost:8001")
 
 
 @router.post("/api/scrape/start")
@@ -88,6 +90,56 @@ async def scrape_status(job_id: str):
         "result": job.get("result"),
         "error": job.get("error"),
     }
+
+
+@router.get("/api/netkeiba/race-list")
+async def netkeiba_race_list(date: str):
+    """Scrape Service の race_list を FastAPI 経由で read-only プロキシする。"""
+    date_str = (date or "").strip().replace("-", "")
+    if not re.fullmatch(r"\d{8}", date_str):
+        raise HTTPException(status_code=400, detail="date は YYYY-MM-DD または YYYYMMDD 形式で指定してください")
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                f"{_SCRAPE_SERVICE_URL}/scrape/race_list",
+                headers={"Content-Type": "application/json"},
+                json={"kaisai_date": date_str},
+            ) as resp:
+                body_text = await resp.text()
+                if resp.status >= 400:
+                    return JSONResponse(
+                        status_code=502,
+                        content={
+                            "success": False,
+                            "error": "scrape service returned error",
+                            "status_code": resp.status,
+                            "detail": body_text[:500],
+                        },
+                    )
+        data = json.loads(body_text) if body_text else {}
+        races = data.get("races") if isinstance(data, dict) else []
+        if not isinstance(races, list):
+            races = []
+        return {
+            "success": True,
+            "date": date_str,
+            "raceIds": races,
+            "count": len(races),
+            "source": "fastapi_proxy",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "success": False,
+                "error": "failed to fetch race list from scrape service",
+                "detail": str(e),
+            },
+        )
 
 
 @router.get("/api/scrape/health")

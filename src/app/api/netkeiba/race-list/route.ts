@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { SCRAPE_SERVICE_URL } from '@/lib/backend-url'
+import { SCRAPE_API_URL as ML_API_URL } from '@/lib/backend-url'
 
 /**
  * 特定日のレースID一覧を取得
- * Python APIのスクレイピングサービス（undetected_chromedriver使用）を利用
+ * FastAPI の read-only プロキシ経由で取得
  */
 export async function POST(request: NextRequest) {
   try {
@@ -21,31 +21,26 @@ export async function POST(request: NextRequest) {
     
     console.log(`[race-list] Fetching race list for date: ${dateStr}`)
 
-    // Python APIの/scrape/race_listエンドポイントを呼び出し
-    // このAPIはundetected_chromedriverを使用してJavaScript動的生成に対応
-    const response = await fetch(`${SCRAPE_SERVICE_URL}/scrape/race_list`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        kaisai_date: dateStr
-      })
+    const authHeader = request.headers.get('Authorization') || ''
+    const response = await fetch(`${ML_API_URL}/api/netkeiba/race-list?date=${encodeURIComponent(dateStr)}`, {
+      method: 'GET',
+      headers: authHeader ? { Authorization: authHeader } : {},
+      signal: AbortSignal.timeout(20_000),
     })
 
     if (!response.ok) {
-      const errorText = await response.text()
-      console.error(`[race-list] Python API error: ${response.status} - ${errorText}`)
-      throw new Error(`Python API returned ${response.status}`)
+      const errorData = await response.json().catch(() => ({}))
+      return NextResponse.json(
+        { error: errorData.error || errorData.detail || `HTTP ${response.status}` },
+        { status: response.status }
+      )
     }
 
     const data = await response.json()
-    
-    console.log(`[race-list] Response from Python API:`, data)
-    console.log(`[race-list] Found ${data.races?.length || 0} races for ${dateStr}`)
+    const raceIds = data.raceIds || data.races || []
 
-    // Python APIのレスポンス形式: { races: [...], source: "scraping" }
-    const raceIds = data.races || []
+    console.log(`[race-list] Response from FastAPI proxy:`, data)
+    console.log(`[race-list] Found ${raceIds?.length || 0} races for ${dateStr}`)
 
     return NextResponse.json({ 
       raceIds,

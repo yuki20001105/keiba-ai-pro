@@ -269,3 +269,19 @@ Constraints preserved:
 - No existing route behavior changed.
 - No DB write path removed.
 - No auth policy relaxed.
+
+## 16. Implementation Status (P1-4 Read-only Proxy Migration)
+
+Updated: 2026-07-05
+
+Implemented:
+- `/api/netkeiba/race-list` Next API route migrated from direct Scrape Service call to FastAPI proxy path.
+- FastAPI read-only endpoint added: `GET /api/netkeiba/race-list?date=YYYYMMDD`.
+- Existing Next API response shape (`{ raceIds, count }`) preserved.
+
+Not changed:
+- `/api/netkeiba/race` write path (Supabase write) remains unchanged in this step.
+- No new DB write behavior introduced.
+
+Path after migration:
+- UI/Caller -> Next `/api/netkeiba/race-list` -> FastAPI `/api/netkeiba/race-list` -> Scrape Service `/scrape/race_list`.

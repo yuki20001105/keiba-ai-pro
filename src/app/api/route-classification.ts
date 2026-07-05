@@ -30,10 +30,10 @@ export const NEXT_API_ROUTE_CLASSIFICATION: NextRouteMeta[] = [
   {
     route: '/api/netkeiba/race-list',
     classification: 'experimental',
-    note: 'Read-only scrape service direct call',
-    usesScrapeServiceDirectly: true,
+    note: 'Read-only route migrated to FastAPI proxy (migration in progress)',
+    usesScrapeServiceDirectly: false,
     migrationTarget: 'fastapi-proxy',
-    riskLevel: 'medium',
+    riskLevel: 'low',
   },
   {
     route: '/api/ocr',
