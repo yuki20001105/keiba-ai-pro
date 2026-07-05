@@ -243,3 +243,29 @@ Next API lightweight metadata source:
 Policy:
 - Do not delete routes in the same sprint as classification.
 - Mark deprecated/unused first, then remove only after caller migration is complete.
+
+## 15. Implementation Status (P1-3 Direct Path Inventory)
+
+Updated: 2026-07-05
+
+Implemented in this step:
+- Direct dependency inventory added for:
+	- Supabase direct write routes
+	- Scrape service direct call routes
+- Responsibility split documented (auth, DB write, log/audit, failure handling)
+- Migration buckets documented:
+	- keep for now
+	- migrate to FastAPI
+	- experimental
+	- deprecated candidate
+	- internal only
+- Route metadata extended with direct dependency and risk fields
+
+Reference:
+- `docs/api_route_inventory.md` section 5 and section 6
+- `src/app/api/route-classification.ts`
+
+Constraints preserved:
+- No existing route behavior changed.
+- No DB write path removed.
+- No auth policy relaxed.

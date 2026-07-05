@@ -168,3 +168,63 @@ Scope: Next.js API routes and FastAPI endpoints classification
 2. Migrate naming of Next scrape start route to explicit /api/scrape/start (keeping /api/scrape alias during transition).
 3. Review mixed path route /api/netkeiba/race and converge writes to FastAPI-centric path.
 4. Decide lifecycle for /api/predict and /api/train sync endpoints (retain vs deprecate).
+
+## 5. Direct Supabase / Scrape Service Path Inventory (P1-3)
+
+### 5.1 Supabase direct routes (Next API writes)
+
+| Route | Direct Dependency | Current Decision | riskLevel | Why |
+|---|---|---|---|---|
+| /api/netkeiba/race | Supabase service-role/anon client | migrate to FastAPI | high | Next route owns data write and validation; ownership is split from FastAPI audit path |
+| /api/ocr | Supabase profiles/ocr_usage write | keep for now | medium | OCR feature is optional and currently isolated; migrate after API ownership contract is prepared |
+
+### 5.2 Scrape service direct routes (Next API -> SCRAPE_SERVICE_URL)
+
+| Route | Direct Dependency | Current Decision | riskLevel | Why |
+|---|---|---|---|---|
+| /api/netkeiba/race | POST /scrape/ultimate | migrate to FastAPI | high | write path and scrape path are coupled in one route |
+| /api/netkeiba/race-list | POST /scrape/race_list | migrate to FastAPI | medium | read-only integration; suitable first candidate for proxy migration |
+
+### 5.3 Responsibility matrix for direct paths
+
+| Route | Auth check owner | DB update owner | Log/Audit owner | Failure handling owner |
+|---|---|---|---|---|
+| /api/netkeiba/race | Next API (input-only checks, no explicit JWT gate) | Next API (Supabase direct write) | Next API console logs | Next API response payload |
+| /api/netkeiba/race-list | Next API (input-only checks) | none (read-only) | Next API console logs | Next API response payload |
+| /api/ocr | Next API (userId-based checks, no backend JWT contract) | Next API (Supabase direct write) | Next API console logs | Next API response payload |
+
+### 5.4 Classification buckets requested in P1-3
+
+#### keep for now
+
+- /api/ocr
+	- reason: optional feature path, isolated blast radius, migration should be bundled with OCR auth contract cleanup.
+
+#### migrate to FastAPI
+
+- /api/netkeiba/race
+	- reason: mixed scrape + write path in Next layer; should converge to FastAPI-owned write/audit path.
+- /api/netkeiba/race-list
+	- reason: read-only direct scrape call is low-risk first migration candidate to FastAPI proxy.
+
+#### experimental
+
+- /api/netkeiba/race
+- /api/netkeiba/race-list
+- /api/ocr
+
+#### deprecated candidate
+
+- /api/netkeiba/race (after FastAPI-owned write path and caller migration)
+
+#### internal only
+
+- none newly designated in this P1-3 slice; classification remains as defined in section 2.
+
+## 6. Safe Migration Steps (Next sprint)
+
+1. Add FastAPI read-only proxy contract for race-list retrieval and switch /api/netkeiba/race-list to it.
+2. Introduce FastAPI-owned write contract for scraped race persistence (single owner of DB writes).
+3. Move /api/netkeiba/race write responsibility to FastAPI while keeping Next route as temporary adapter.
+4. After usage confirmation, mark /api/netkeiba/race deprecated and remove direct Supabase writes from Next.
+5. For OCR path, define explicit auth contract first, then migrate Supabase writes behind FastAPI endpoint.
