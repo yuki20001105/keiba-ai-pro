@@ -889,6 +889,27 @@ P1-15 実施結果（手動DDL適用後の ready 確認）:
 - このフェーズでは sandbox write/readback は実施していない
 - default suite は引き続き write 非実行
 
+P1-16 実施内容（sandbox write 後 readback 検証）:
+- sandbox write 成功直後に sandbox table 限定で readback 検証を実施
+- readback 対象:
+  - `sandbox_netkeiba_races`
+  - `sandbox_netkeiba_race_results`
+  - `sandbox_netkeiba_race_payouts`
+- readback 検証キー: `race_id + idempotency_key`
+- 検証項目:
+  - `records_written` と readback count 一致
+  - target table が sandbox 限定
+  - `idempotency_key` 一致
+  - `payload_hash` 一致
+  - `audit_payload` 存在
+- 不一致時は `status=sandbox-readback-mismatch`
+
+禁止事項（継続）:
+- production write は禁止
+- base table (`races`, `race_results`, `race_payouts`) への write/readback は禁止
+- default smoke/default suite で write 実行しない
+- sandbox write/readback は明示オプション時のみ
+
 feature flag ON の限定検証（永続化しない）:
 
 ```powershell
@@ -989,6 +1010,18 @@ python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_write_guard.py -
 - この smoke は default 実行には含めない
 - sandbox table が未作成の場合は stopped/warn が正常
 
+sandbox write + readback smoke（明示実行時のみ）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_write_guard.py --expect-sandbox-write-readback
+```
+
+注意:
+- この smoke は default 実行には含めない
+- precheck 未ready時は stopped/warn が正常
+- readback 不一致時は `sandbox-readback-mismatch` を返す
+
 sandbox precheck smoke（read-only, 明示実行時のみ）:
 
 ```powershell
@@ -1001,6 +1034,13 @@ suite optional（precheck + sandbox write を明示実行）:
 ```powershell
 cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
 python-api\.venv\Scripts\python.exe scripts\run_keiba_smoke_suite.py --verify-write-guard-sandbox-precheck --verify-write-guard-sandbox-write
+```
+
+suite optional（sandbox write + readback を明示実行）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\run_keiba_smoke_suite.py --verify-write-guard-sandbox-write-readback
 ```
 
 **8) Notion output**
@@ -1040,6 +1080,7 @@ python-api\.venv\Scripts\python.exe scripts\run_keiba_smoke_suite.py --strict-pr
 - Write guard staging lock検証結果JSON: `reports/netkeiba_race_write_guard_staging_lock_smoke_result.json`
 - Write guard sandbox precheck検証結果JSON: `reports/netkeiba_race_write_guard_sandbox_precheck_smoke_result.json`
 - Write guard sandbox write検証結果JSON: `reports/netkeiba_race_write_guard_sandbox_write_smoke_result.json`
+- Write guard sandbox write-readback検証結果JSON: `reports/netkeiba_race_write_guard_sandbox_write_readback_smoke_result.json`
 - Smoke suite結果JSON: `reports/keiba_smoke_suite_result.json`
 - 監査ログ（任意）: `reports/e2e_logs/`
 

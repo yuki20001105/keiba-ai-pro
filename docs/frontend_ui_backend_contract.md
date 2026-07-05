@@ -704,3 +704,34 @@ Explicitly not implemented in this step:
 Safety posture:
 - phase closed at precheck-ready confirmation,
 - write/readback remains deferred to a later phase.
+
+## 29. Implementation Status (P1-16 Sandbox Write + Readback Verification)
+
+Updated: 2026-07-05
+
+Implemented in this step:
+- FastAPI `/api/netkeiba/race/write` sandbox path now performs post-write readback verification.
+- Readback scope is sandbox tables only:
+	- `sandbox_netkeiba_races`
+	- `sandbox_netkeiba_race_results`
+	- `sandbox_netkeiba_race_payouts`
+- Verification key uses `race_id + idempotency_key` and checks:
+	- `records_written` vs readback count,
+	- sandbox-only target table enforcement,
+	- `idempotency_key` match,
+	- `payload_hash` match,
+	- `audit_payload` presence.
+
+Mismatch contract:
+- explicit status `sandbox-readback-mismatch` is returned when readback verification fails.
+
+Operational policy:
+- default smoke and default suite remain non-write.
+- write + readback is available only by explicit opt-in:
+	- `python scripts/smoke_netkeiba_race_write_guard.py --expect-sandbox-write-readback`
+	- `python scripts/run_keiba_smoke_suite.py --verify-write-guard-sandbox-write-readback`
+
+Safety constraints preserved:
+- production write remains blocked,
+- base tables (`races`, `race_results`, `race_payouts`) are not write/readback targets,
+- Next `/api/netkeiba/race` route and UI flow remain unchanged.

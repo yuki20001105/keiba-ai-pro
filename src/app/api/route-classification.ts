@@ -9,7 +9,7 @@ export type NextRouteMeta = {
   usesSupabaseDirectly?: boolean
   usesScrapeServiceDirectly?: boolean
   migrationTarget?: MigrationTarget
-  migrationStatus?: 'not-started' | 'in-progress' | 'preflight-added' | 'dry-run-added' | 'payload-diff-added' | 'write-guard-added' | 'write-guard-enabled-verified' | 'staging-write-guard-designed' | 'staging-writer-stub-added' | 'sandbox-write-added' | 'sandbox-precheck-added' | 'migrated'
+  migrationStatus?: 'not-started' | 'in-progress' | 'preflight-added' | 'dry-run-added' | 'payload-diff-added' | 'write-guard-added' | 'write-guard-enabled-verified' | 'staging-write-guard-designed' | 'staging-writer-stub-added' | 'sandbox-write-added' | 'sandbox-precheck-added' | 'sandbox-write-readback-added' | 'migrated'
   riskLevel?: RiskLevel
 }
 
@@ -26,7 +26,7 @@ export const NEXT_API_ROUTE_CLASSIFICATION: NextRouteMeta[] = [
     usesSupabaseDirectly: true,
     usesScrapeServiceDirectly: true,
     migrationTarget: 'fastapi-staging-sandbox-write',
-    migrationStatus: 'sandbox-precheck-added',
+    migrationStatus: 'sandbox-write-readback-added',
     riskLevel: 'high',
   },
   {
