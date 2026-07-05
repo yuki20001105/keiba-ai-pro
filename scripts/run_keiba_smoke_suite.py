@@ -64,6 +64,20 @@ def _classify_dry_run(report: dict[str, Any] | None) -> tuple[str, str]:
     return "fail", reason or "contract-error"
 
 
+def _classify_payload_diff(report: dict[str, Any] | None) -> tuple[str, str]:
+    if not isinstance(report, dict):
+        return "fail", "payload-diff report missing or invalid"
+
+    verdict = str(report.get("verdict") or "")
+    reason = str(report.get("verdict_reason") or "")
+
+    if verdict == "pass":
+        return "pass", reason or "contracts-compatible"
+    if verdict == "warn":
+        return "warn", reason or "contract-diff-detected"
+    return "fail", reason or "contract-error"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run keiba smoke checks as an operational suite")
     parser.add_argument("--date", default=datetime.now().strftime("%Y%m%d"), help="YYYYMMDD for race-list/preflight checks")
@@ -152,6 +166,19 @@ def main() -> int:
         "reason": dr_reason,
         "note": "Dry-run contract: ready=pass, degraded/unavailable/invalid=warn, contract-error=fail",
         "log_tail": dry_run_log[-2000:],
+    }
+
+    payload_diff_rc, payload_diff_log = _run_step("payload-diff", [
+        "scripts/compare_netkeiba_race_payload_contract.py",
+    ])
+    payload_diff_report = _read_json(REPORTS_DIR / "netkeiba_race_payload_contract_diff.json")
+    pd_result, pd_reason = _classify_payload_diff(payload_diff_report)
+    suite["steps"]["payload_contract_diff"] = {
+        "return_code": payload_diff_rc,
+        "result": pd_result,
+        "reason": pd_reason,
+        "note": "Payload contract diff: pass/warn unless contract-error",
+        "log_tail": payload_diff_log[-2000:],
     }
 
     results = [str(v.get("result")) for v in suite["steps"].values()]

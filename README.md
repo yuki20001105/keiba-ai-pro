@@ -728,6 +728,8 @@ Race preflight smoke
   ↓
 Race dry-run smoke
   ↓
+Payload contract diff
+  ↓
 Notion output
 ```
 
@@ -799,7 +801,19 @@ cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
 python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_dry_run.py --fail-on-nonready
 ```
 
-**6) Notion output**
+**6) Payload contract diff**
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\compare_netkeiba_race_payload_contract.py
+```
+
+判定ルール（payload diff）:
+- pass: contracts-compatible
+- warn: contract-diff-detected / dry-run non-ready
+- fail: contract-error only
+
+**7) Notion output**
 
 ```powershell
 cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
@@ -828,6 +842,7 @@ python-api\.venv\Scripts\python.exe scripts\run_keiba_smoke_suite.py --strict-pr
 - Race-list proxy smoke結果JSON: `reports/netkeiba_race_list_proxy_smoke_result.json`
 - Race preflight smoke結果JSON: `reports/netkeiba_race_preflight_smoke_result.json`
 - Race dry-run smoke結果JSON: `reports/netkeiba_race_dry_run_smoke_result.json`
+- Payload contract diff結果JSON: `reports/netkeiba_race_payload_contract_diff.json`
 - Smoke suite結果JSON: `reports/keiba_smoke_suite_result.json`
 - 監査ログ（任意）: `reports/e2e_logs/`
 

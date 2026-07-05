@@ -386,3 +386,41 @@ Operational commands:
 - `python scripts/smoke_netkeiba_race_dry_run.py`
 - `python scripts/smoke_netkeiba_race_dry_run.py --fail-on-nonready`
 - `python scripts/run_keiba_smoke_suite.py`
+
+## 20. Implementation Status (P1-8 Payload Contract Diff)
+
+Updated: 2026-07-05
+
+Implemented in this step:
+- Added contract diff script:
+	- `scripts/compare_netkeiba_race_payload_contract.py`
+- Compared contracts:
+	- Next `/api/netkeiba/race` write payload shape (static contract)
+	- FastAPI `/api/netkeiba/race/dry-run` preview payload
+- Added diff output:
+	- `reports/netkeiba_race_payload_contract_diff.json`
+- Added smoke suite step:
+	- `payload_contract_diff`
+
+Diff categories:
+- compatible
+- missing_in_dry_run
+- extra_in_dry_run
+- naming_mismatch
+- type_mismatch
+- unknown
+
+Verdict policy:
+- pass: contracts-compatible
+- warn: contract diff detected or dry-run non-ready
+- fail: contract error only
+
+Safety constraints preserved:
+- no DB write performed
+- no Supabase write performed
+- Next `/api/netkeiba/race` write path unchanged
+
+Operational commands:
+- `python scripts/smoke_netkeiba_race_dry_run.py`
+- `python scripts/compare_netkeiba_race_payload_contract.py`
+- `python scripts/run_keiba_smoke_suite.py`

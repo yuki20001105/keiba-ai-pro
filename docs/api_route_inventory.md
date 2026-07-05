@@ -397,3 +397,49 @@ Dry-run smoke:
 Migration marker update:
 - /api/netkeiba/race: `migrationStatus=dry-run-added`
 - write path remains in Next route until later phase.
+
+## 10. P1-8 Payload Contract Diff (Next write vs FastAPI dry-run preview)
+
+Goal in this phase:
+- compare payload structures before write migration,
+- keep write path unchanged,
+- detect structural risk early (missing fields, type drift, naming drift).
+
+Compared targets:
+- Next write payload contract (static shape from `/api/netkeiba/race`)
+	- `races`
+	- `race_results`
+	- `race_payouts`
+- FastAPI dry-run preview payload (`/api/netkeiba/race/dry-run` response preview)
+	- `preview.tables[].target_table`
+	- `records_count`
+	- `sample_records`
+
+Comparison script:
+- `scripts/compare_netkeiba_race_payload_contract.py`
+
+Input:
+- `reports/netkeiba_race_dry_run_smoke_result.json`
+
+Output:
+- `reports/netkeiba_race_payload_contract_diff.json`
+
+Diff categories:
+- `compatible`
+- `missing_in_dry_run`
+- `extra_in_dry_run`
+- `naming_mismatch`
+- `type_mismatch`
+- `unknown`
+
+Verdict policy (initial migration phase):
+- `pass`: ready + no structural diff
+- `warn`: structural diff exists, or dry-run status is non-ready (`degraded/unavailable/invalid`)
+- `fail`: contract broken (dry-run report missing, invalid contract flags, invalid status)
+
+Operational stance:
+- warn findings are migration backlog, not auto-migration blockers in this phase,
+- fail findings indicate contract/safety break and must be fixed before write migration.
+
+Migration marker update:
+- /api/netkeiba/race: `migrationStatus=payload-diff-added`
