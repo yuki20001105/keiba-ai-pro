@@ -1180,6 +1180,19 @@ python-api\.venv\Scripts\python.exe scripts\smoke_notion_report_api.py
 - `KEIBA_AUTH_BEARER_TOKEN_NONPREMIUM` を設定すると non-Premium/Admin の 403 検証を実施
 - send は `sent` または `config-missing/warn` を許容
 
+**Model redesign workbench smoke**
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_model_redesign_workbench.py
+```
+
+補足:
+- `KEIBA_AUTH_BEARER_TOKEN` 未設定時は `auth-required` として warn
+- `KEIBA_AUTH_BEARER_TOKEN_NONPREMIUM` 未設定時の non-Premium 403 検証は warn 扱い
+- path系入力 (`filePath`, `reportPath`, `modelPath`, `path`, `sourcePath`) は拒否されることを検証
+- retrain / active model switch action は `not-implemented` または `disabled` を検証
+
 strict preflight で統合実行する場合:
 
 ```powershell

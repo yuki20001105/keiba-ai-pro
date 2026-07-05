@@ -138,6 +138,21 @@ def _classify_notion_report(report: dict[str, Any] | None, token_provided: bool)
     return "fail", "notion-report-smoke-failed"
 
 
+def _classify_model_redesign_workbench(report: dict[str, Any] | None, token_provided: bool) -> tuple[str, str]:
+    if not isinstance(report, dict):
+        return "fail", "model-redesign-workbench missing or invalid"
+
+    verdict = str(report.get("verdict") or "")
+    if not token_provided and verdict == "warn":
+        return "warn", "auth-required"
+
+    if verdict == "pass":
+        return "pass", "ok"
+    if verdict == "warn":
+        return "warn", "partial-verification"
+    return "fail", "model-redesign-workbench-smoke-failed"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run keiba smoke checks as an operational suite")
     parser.add_argument("--date", default=datetime.now().strftime("%Y%m%d"), help="YYYYMMDD for race-list/preflight checks")
@@ -338,6 +353,21 @@ def main() -> int:
         "reason": nr_reason,
         "note": "Notion UI/API smoke: preview, send/config-missing, 403, no token exposure, path forbidden",
         "log_tail": notion_report_log[-2000:],
+    }
+
+    model_redesign_rc, model_redesign_log = _run_step("model-redesign-workbench", [
+        "scripts/smoke_model_redesign_workbench.py",
+        "--next-url", args.next_url,
+        *token_args,
+    ])
+    model_redesign_report = _read_json(REPORTS_DIR / "model_redesign_workbench_smoke_result.json")
+    mr_result, mr_reason = _classify_model_redesign_workbench(model_redesign_report, token_provided=token_provided)
+    suite["steps"]["model_redesign_workbench"] = {
+        "return_code": model_redesign_rc,
+        "result": mr_result,
+        "reason": mr_reason,
+        "note": "Model redesign workbench smoke: auth, read-only guard, path forbidden, action blocked, no artifact mutation",
+        "log_tail": model_redesign_log[-2000:],
     }
 
     if args.verify_write_guard_enabled:

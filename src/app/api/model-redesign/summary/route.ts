@@ -150,6 +150,11 @@ function toMetric(value: number | null, missingNote: string): NumericMetric {
   return { value, status: 'pass', note: 'ok' }
 }
 
+function getForbiddenPathKey(searchParams: URLSearchParams): string | null {
+  const forbiddenPathKeys = ['path', 'filePath', 'reportPath', 'modelPath', 'sourcePath']
+  return forbiddenPathKeys.find((k) => searchParams.get(k)) || null
+}
+
 export async function GET(request: Request) {
   const authz = await authorizePremiumOrAdmin(request)
   if (!authz.ok) {
@@ -157,8 +162,7 @@ export async function GET(request: Request) {
   }
 
   const searchParams = new URL(request.url).searchParams
-  const forbiddenPathKeys = ['path', 'filePath', 'reportPath', 'sourcePath']
-  const foundForbidden = forbiddenPathKeys.find((k) => searchParams.get(k))
+  const foundForbidden = getForbiddenPathKey(searchParams)
   if (foundForbidden) {
     return NextResponse.json({
       success: false,
@@ -304,4 +308,59 @@ export async function GET(request: Request) {
       production_write: false,
     },
   })
+}
+
+export async function POST(request: Request) {
+  const authz = await authorizePremiumOrAdmin(request)
+  if (!authz.ok) {
+    return NextResponse.json({ success: false, error: authz.error || 'authorization failed' }, { status: authz.status })
+  }
+
+  const searchParams = new URL(request.url).searchParams
+  const foundForbidden = getForbiddenPathKey(searchParams)
+  if (foundForbidden) {
+    return NextResponse.json({
+      success: false,
+      state: 'fail',
+      code: 'path-input-forbidden',
+      error: `${foundForbidden} は指定できません`,
+    }, { status: 400 })
+  }
+
+  let payload: Record<string, unknown> = {}
+  try {
+    const body = await request.json()
+    if (typeof body === 'object' && body != null) payload = body as Record<string, unknown>
+  } catch {
+    payload = {}
+  }
+
+  const bodyForbiddenKeys = ['path', 'filePath', 'reportPath', 'modelPath', 'sourcePath']
+  const bodyForbidden = bodyForbiddenKeys.find((k) => payload[k])
+  if (bodyForbidden) {
+    return NextResponse.json({
+      success: false,
+      state: 'fail',
+      code: 'path-input-forbidden',
+      error: `${bodyForbidden} は指定できません`,
+    }, { status: 400 })
+  }
+
+  const action = String(payload.action || '')
+  if (action === 'retrain' || action === 'retrain_dry_run' || action === 'active_model_switch') {
+    return NextResponse.json({
+      success: false,
+      state: 'warn',
+      code: 'not-implemented',
+      action,
+      message: 'MVPでは未実装です',
+    }, { status: 501 })
+  }
+
+  return NextResponse.json({
+    success: false,
+    state: 'warn',
+    code: 'disabled',
+    message: 'POST actions are disabled in read-only MVP',
+  }, { status: 405 })
 }

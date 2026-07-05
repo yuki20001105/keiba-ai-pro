@@ -83,7 +83,7 @@ Scope: UI (src/app) + Next API (src/app/api) + FastAPI router/script mapping inv
 | 6 | モデル評価 | yes | partial | partial | partial_ui | partial | 条件付きOK | AUC/logloss/履歴ROIは表示。高度評価(反復比較)はUI外 |
 | 7 | 予測 | yes | yes | yes | complete_ui | complete | OK | /predict-batch, /race-analysis |
 | 8 | 予測結果の分析 | yes | yes | yes | complete_ui | complete | OK (Premium含む) | /prediction-history + /race-analysis result tab + /dashboard |
-| 9 | モデル再設計・改善提案 | yes (MVP) | partial (read-only preview) | yes (preview) | partial_ui | partial | 条件付きOK | /model-redesign-workbench + /api/model-redesign/summary。再学習/切替は未実装 |
+| 9 | モデル再設計・改善提案 | yes (MVP) | partial (read-only preview) | yes (preview) | partial_ui | partial | 条件付きOK | /model-redesign-workbench + /api/model-redesign/summary。専用smoke + E2Eでread-onlyガード回帰防止 |
 | 10 | Notionレポート出力 | yes | yes (Premium/Admin) | yes | partial_ui | partial | 条件付きOK | /notion-report + /api/notion-report で preview -> send。token未設定時は config-missing/warn |
 | 11 | 本番運用前チェック | yes | yes (read-only scope) | yes | partial_ui | partial | 条件付きOK | /production-readiness で health/smoke/flag/secret/git を集約 |
 | 12 | smoke / health check | partial | partial | partial | partial_ui | partial | 条件付きOK | /api/health, /api/scrape/health はUI可視。smoke suiteはscript |
@@ -97,6 +97,7 @@ Scope: UI (src/app) + Next API (src/app/api) + FastAPI router/script mapping inv
 
 補足:
 - #9 は read-only / preview 中心の MVP 実装済み。再学習実行と active model 切替は未実装で別フェーズ。
+- #9 の回帰防止として `scripts/smoke_model_redesign_workbench.py` と `e2e/model-redesign-workbench.spec.ts` を追加済み。
 
 ---
 
@@ -137,6 +138,7 @@ Next API routeは存在するが、主要業務UI導線で未使用/非表示の
 - 本番前 smoke suite:
   - scripts/run_keiba_smoke_suite.py
   - scripts/smoke_*.py
+   - model redesign workbench smoke: scripts/smoke_model_redesign_workbench.py
 - compile/lint/build 一括品質ゲート運用 (CLI)
 - Notion向け出力処理:
    - `/notion-report` + `/api/notion-report` で UI 導線あり

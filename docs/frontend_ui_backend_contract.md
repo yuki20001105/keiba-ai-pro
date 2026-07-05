@@ -375,15 +375,18 @@ UI contract:
 - retrain and active-model-switch controls are disabled (`not-implemented`).
 - link to Notion output UI (`/notion-report`).
 
-API contract (`GET /api/model-redesign/summary`):
+API contract (`/api/model-redesign/summary`):
 - Server-side Bearer auth + Premium/Admin role check.
 - Read-only allowlist sources only:
 	- `python-api/models/.active_model.json`
 	- `docs/reports/feature_analysis.json`
 	- latest `docs/reports/iter_*_metrics.json`
 	- `reports/roi_report.csv` (optional)
-- Path-like inputs are forbidden (`path`, `filePath`, `reportPath`, `sourcePath`).
+- Path-like inputs are forbidden (`path`, `filePath`, `reportPath`, `modelPath`, `sourcePath`).
 - Missing data is returned as `warn` (`config-missing` or `data-missing`).
+- `POST` action execution is disabled for MVP:
+	- retrain / active-model-switch actions return `not-implemented`
+	- other POST actions return `disabled`
 
 Safety constraints:
 - No retrain execution.
@@ -391,6 +394,20 @@ Safety constraints:
 - No `.joblib` create/overwrite.
 - No production/base table write.
 - No secret/env value exposure in response.
+
+MVP smoke / regression line:
+- Script: `scripts/smoke_model_redesign_workbench.py`
+- Output JSON: `reports/model_redesign_workbench_smoke_result.json`
+- Coverage:
+	- unauth `401`
+	- auth missing -> `auth-required/warn`
+	- non-premium optional `403`
+	- path-input forbidden checks
+	- retrain / switch action blocked (`not-implemented` or `disabled`)
+	- response secret exposure guard
+	- `.active_model.json` unchanged
+	- `.joblib` / metadata / reports (except smoke output) unchanged
+- Integrated into `scripts/run_keiba_smoke_suite.py` as `model_redesign_workbench` step.
 
 ## 16. Implementation Status (P1-4 Read-only Proxy Migration)
 
