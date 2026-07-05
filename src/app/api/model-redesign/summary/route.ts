@@ -20,6 +20,22 @@ type NumericMetric = {
   note: string
 }
 
+type DryRunPeriod = {
+  start: string | null
+  end: string | null
+}
+
+type DryRunPayload = {
+  action?: unknown
+  target?: unknown
+  model_type?: unknown
+  train_period?: unknown
+  validation_period?: unknown
+  selected_features?: unknown
+  removed_features?: unknown
+  [key: string]: unknown
+}
+
 const PROJECT_ROOT = process.cwd()
 const MODELS_DIR = path.join(PROJECT_ROOT, 'python-api', 'models')
 const ACTIVE_MODEL_PATH = path.join(MODELS_DIR, '.active_model.json')
@@ -153,6 +169,106 @@ function toMetric(value: number | null, missingNote: string): NumericMetric {
 function getForbiddenPathKey(searchParams: URLSearchParams): string | null {
   const forbiddenPathKeys = ['path', 'filePath', 'reportPath', 'modelPath', 'sourcePath']
   return forbiddenPathKeys.find((k) => searchParams.get(k)) || null
+}
+
+function sanitizePeriod(value: unknown): DryRunPeriod | null {
+  if (typeof value !== 'object' || value == null) return null
+  const raw = value as Record<string, unknown>
+  const start = typeof raw.start === 'string' && raw.start.trim() ? raw.start.trim() : null
+  const end = typeof raw.end === 'string' && raw.end.trim() ? raw.end.trim() : null
+  return { start, end }
+}
+
+function toStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((x): x is string => typeof x === 'string' && x.trim().length > 0).map((x) => x.trim())
+}
+
+function parseDateTokens(text: string): string[] {
+  const matches = text.match(/\d{8}/g)
+  return matches ? matches.slice(0, 4) : []
+}
+
+function buildDryRunPreview(payload: DryRunPayload): Record<string, unknown> {
+  const activeModelJson = readJson(ACTIVE_MODEL_PATH)
+  const featureAnalysis = readJson(FEATURE_ANALYSIS_PATH)
+
+  const activeModelId = String(activeModelJson?.model_id || '')
+  const dateTokens = parseDateTokens(activeModelId)
+
+  const inferredTrainPeriod: DryRunPeriod = {
+    start: dateTokens[0] || null,
+    end: dateTokens[1] || null,
+  }
+  const inferredValidationPeriod: DryRunPeriod = {
+    start: dateTokens[2] || null,
+    end: dateTokens[2] || null,
+  }
+
+  const payloadTrainPeriod = sanitizePeriod(payload.train_period)
+  const payloadValidationPeriod = sanitizePeriod(payload.validation_period)
+
+  const featureRows = Array.isArray(featureAnalysis?.features)
+    ? featureAnalysis.features.filter((x) => typeof x === 'object' && x != null) as Array<Record<string, unknown>>
+    : []
+
+  const defaultSelectedFeatures = featureRows
+    .map((row) => String(row.feature || ''))
+    .filter(Boolean)
+    .slice(0, 60)
+
+  const defaultRemovedFeatures = featureRows
+    .filter((row) => String(row.op_class || '').includes('削除'))
+    .map((row) => String(row.feature || ''))
+    .filter(Boolean)
+    .slice(0, 20)
+
+  const selectedFeatures = toStringArray(payload.selected_features)
+  const removedFeatures = toStringArray(payload.removed_features)
+
+  const selected = selectedFeatures.length > 0 ? selectedFeatures : defaultSelectedFeatures
+  const removed = removedFeatures.length > 0 ? removedFeatures : defaultRemovedFeatures
+
+  const selectedSet = new Set(selected)
+  const finalFeatureCount = selected.filter((f) => !removed.includes(f)).length
+
+  const target = typeof payload.target === 'string' && payload.target.trim() ? payload.target.trim() : 'win'
+  const modelType = typeof payload.model_type === 'string' && payload.model_type.trim() ? payload.model_type.trim() : 'lightgbm'
+
+  const trainPeriod = payloadTrainPeriod ?? inferredTrainPeriod
+  const validationPeriod = payloadValidationPeriod ?? inferredValidationPeriod
+
+  const expectedOutputs = [
+    'python-api/models/<new_model_id>.joblib (planned, dry-run only)',
+    'python-api/models/<new_model_id>.metadata.json (planned, dry-run only)',
+    'docs/reports/model_retrain_preview.json (planned, dry-run only)',
+  ]
+
+  const safetyChecks = [
+    { key: 'read_only_mode', status: 'pass', note: 'actual retrain execution is disabled' },
+    { key: 'joblib_write_blocked', status: 'pass', note: '.joblib is not created/overwritten in dry-run' },
+    { key: 'active_model_immutable', status: 'pass', note: '.active_model.json is unchanged' },
+    { key: 'production_write_blocked', status: 'pass', note: 'production/base table write is not called' },
+    { key: 'path_input_rejected', status: 'pass', note: 'path-like inputs are forbidden' },
+  ]
+
+  return {
+    target,
+    model_type: modelType,
+    train_period: trainPeriod,
+    validation_period: validationPeriod,
+    feature_count: finalFeatureCount,
+    selected_features: selected,
+    removed_features: removed.filter((f) => selectedSet.has(f) || removedFeatures.length > 0),
+    expected_outputs: expectedOutputs,
+    estimated_runtime: {
+      unit: 'minute',
+      min: 8,
+      max: 25,
+      note: 'Dataset size and selected feature count dependent (preview estimate)',
+    },
+    safety_checks: safetyChecks,
+  }
 }
 
 export async function GET(request: Request) {
@@ -347,7 +463,25 @@ export async function POST(request: Request) {
   }
 
   const action = String(payload.action || '')
-  if (action === 'retrain' || action === 'retrain_dry_run' || action === 'active_model_switch') {
+  if (action === 'retrain_dry_run') {
+    const preview = buildDryRunPreview(payload)
+    return NextResponse.json({
+      success: true,
+      state: 'pass',
+      code: 'dry-run-preview',
+      action,
+      generated_at: new Date().toISOString(),
+      dry_run_preview: preview,
+      guard: {
+        read_only_mode: true,
+        retrain_execution: 'disabled',
+        active_model_switch: 'not-implemented',
+        production_write: false,
+      },
+    })
+  }
+
+  if (action === 'retrain' || action === 'active_model_switch') {
     return NextResponse.json({
       success: false,
       state: 'warn',

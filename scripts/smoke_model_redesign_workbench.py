@@ -7,8 +7,8 @@ Checks:
 3. Premium/Admin token request returns pass or warn(data/config-missing).
 4. Optional non-premium token returns 403.
 5. Arbitrary path-like inputs are rejected.
-6. retrain actions are not-implemented/disabled.
-7. active model switch actions are not-implemented/disabled.
+6. retrain dry-run preview is available for Premium/Admin.
+7. retrain/action switch operations stay not-implemented/disabled.
 8. Responses do not expose token/secret/env values.
 9. .active_model.json is unchanged.
 10. joblib/metadata/reports are not created/overwritten by this smoke.
@@ -36,6 +36,7 @@ MODELS_DIR = ROOT_DIR / "python-api" / "models"
 REPORTS_DIR = ROOT_DIR / "reports"
 
 PATH_KEYS = ["filePath", "reportPath", "modelPath", "path", "sourcePath"]
+NOTION_TOKEN_PREFIX = ''.join(["nt", "n_"])
 
 
 def _http_json(
@@ -101,7 +102,7 @@ def _save(result: dict[str, Any]) -> None:
 
 def _contains_secret(text: str, secrets: list[str]) -> bool:
     lowered = text.lower()
-    if "ntn_" in lowered:
+    if NOTION_TOKEN_PREFIX in lowered:
         return True
     for value in secrets:
         if value and value in text:
@@ -125,8 +126,37 @@ def _check_path_forbidden(api_url: str, token: str) -> tuple[bool, list[dict[str
     return ok, details, all_text
 
 
+def _check_dry_run_preview(api_url: str, token: str) -> tuple[bool, dict[str, Any], str]:
+    status, body, parsed = _http_json("POST", api_url, token=token, payload={"action": "retrain_dry_run"})
+    code = str(parsed.get("code", ""))
+    preview = parsed.get("dry_run_preview") if isinstance(parsed.get("dry_run_preview"), dict) else {}
+
+    required_keys = {
+        "target",
+        "model_type",
+        "train_period",
+        "validation_period",
+        "feature_count",
+        "selected_features",
+        "removed_features",
+        "expected_outputs",
+        "estimated_runtime",
+        "safety_checks",
+    }
+    has_required = required_keys.issubset(set(preview.keys())) if isinstance(preview, dict) else False
+    ok = status == 200 and bool(parsed.get("success")) and code == "dry-run-preview" and has_required
+
+    details = {
+        "status": status,
+        "code": code,
+        "success": bool(parsed.get("success")),
+        "has_required_fields": has_required,
+    }
+    return ok, details, body
+
+
 def _check_not_implemented_actions(api_url: str, token: str) -> tuple[bool, list[dict[str, Any]], str]:
-    actions = ["retrain", "retrain_dry_run", "active_model_switch"]
+    actions = ["retrain", "active_model_switch"]
     details: list[dict[str, Any]] = []
     all_text = ""
     ok = True
@@ -239,6 +269,14 @@ def main() -> int:
                 "result": "pass" if path_ok else "fail",
                 "reason": "rejected" if path_ok else "not-rejected",
                 "details": path_details,
+            }
+
+            dry_run_ok, dry_run_details, dry_run_text = _check_dry_run_preview(api_url, premium_token)
+            response_text += dry_run_text
+            result["checks"]["dry_run_preview"] = {
+                "result": "pass" if dry_run_ok else "fail",
+                "reason": "preview-ready" if dry_run_ok else "dry-run-preview-invalid",
+                "details": dry_run_details,
             }
 
             action_ok, action_details, action_text = _check_not_implemented_actions(api_url, premium_token)

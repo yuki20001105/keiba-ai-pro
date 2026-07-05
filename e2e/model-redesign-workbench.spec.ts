@@ -39,8 +39,39 @@ async function mockFreeAuth(page: Page) {
 }
 
 async function mockSummaryApi(page: Page) {
-  await page.route('/api/model-redesign/summary**', route =>
-    route.fulfill({
+  await page.route('/api/model-redesign/summary**', route => {
+    if (route.request().method() === 'POST') {
+      return route.fulfill({
+        status: 200,
+        json: {
+          success: true,
+          state: 'pass',
+          code: 'dry-run-preview',
+          action: 'retrain_dry_run',
+          generated_at: '2026-07-06T00:00:00.000Z',
+          dry_run_preview: {
+            target: 'win',
+            model_type: 'lightgbm',
+            train_period: { start: '20240101', end: '20251231' },
+            validation_period: { start: '20260101', end: '20260131' },
+            feature_count: 42,
+            selected_features: ['f_speed', 'f_pace'],
+            removed_features: ['f_dup'],
+            expected_outputs: ['python-api/models/<new_model_id>.joblib (planned, dry-run only)'],
+            estimated_runtime: { unit: 'minute', min: 8, max: 25, note: 'preview estimate' },
+            safety_checks: [{ key: 'read_only_mode', status: 'pass', note: 'execution blocked' }],
+          },
+          guard: {
+            read_only_mode: true,
+            retrain_execution: 'disabled',
+            active_model_switch: 'not-implemented',
+            production_write: false,
+          },
+        },
+      })
+    }
+
+    return route.fulfill({
       status: 200,
       json: {
         success: true,
@@ -91,7 +122,7 @@ async function mockSummaryApi(page: Page) {
         },
       },
     })
-  )
+  })
 }
 
 test.describe('モデル再設計ワークベンチ', () => {
@@ -115,6 +146,14 @@ test.describe('モデル再設計ワークベンチ', () => {
     await expect(switchButton).toBeDisabled()
 
     await expect(page.getByRole('link', { name: 'Notion出力UIへ' })).toBeVisible()
+
+    await page.getByRole('button', { name: '再学習 dry-run preview' }).click()
+    await expect(page.getByText('Retrain Dry-run Preview')).toBeVisible()
+    await expect(page.getByText('target: win')).toBeVisible()
+    await expect(page.getByText('model_type: lightgbm')).toBeVisible()
+    await expect(page.getByText('feature_count: 42')).toBeVisible()
+    await expect(page.getByText('expected_outputs')).toBeVisible()
+    await expect(page.getByText('safety_checks')).toBeVisible()
   })
 
   test('非Premium/Admin は権限不足表示になる', async ({ page }) => {

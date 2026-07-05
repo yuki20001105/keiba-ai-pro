@@ -62,6 +62,32 @@ type SummaryResponse = {
   }
 }
 
+type DryRunPreviewResponse = {
+  success: boolean
+  state: UiState
+  code: string
+  action: string
+  generated_at: string
+  dry_run_preview: {
+    target: string
+    model_type: string
+    train_period: { start: string | null; end: string | null }
+    validation_period: { start: string | null; end: string | null }
+    feature_count: number
+    selected_features: string[]
+    removed_features: string[]
+    expected_outputs: string[]
+    estimated_runtime: { unit: string; min: number; max: number; note: string }
+    safety_checks: Array<{ key: string; status: string; note: string }>
+  }
+  guard: {
+    read_only_mode: boolean
+    retrain_execution: string
+    active_model_switch: string
+    production_write: boolean
+  }
+}
+
 function stateClass(state: UiState): string {
   if (state === 'pass') return 'text-emerald-300 border-emerald-800/50'
   if (state === 'warn') return 'text-yellow-300 border-yellow-800/50'
@@ -81,6 +107,9 @@ export default function ModelRedesignWorkbenchPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [summary, setSummary] = useState<SummaryResponse | null>(null)
+  const [dryRunLoading, setDryRunLoading] = useState(false)
+  const [dryRunError, setDryRunError] = useState('')
+  const [dryRunPreview, setDryRunPreview] = useState<DryRunPreviewResponse | null>(null)
 
   useEffect(() => {
     if (authLoading || !canView) return
@@ -117,6 +146,29 @@ export default function ModelRedesignWorkbenchPage() {
     [summary],
   )
 
+  const runDryRunPreview = async () => {
+    if (!canView) return
+    setDryRunLoading(true)
+    setDryRunError('')
+    try {
+      const response = await authFetch('/api/model-redesign/summary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify({ action: 'retrain_dry_run' }),
+        signal: AbortSignal.timeout(120000),
+      })
+      const data = await response.json().catch(() => ({})) as Partial<DryRunPreviewResponse> & { error?: string }
+      if (!response.ok || !data.success || data.code !== 'dry-run-preview') {
+        throw new Error(data.error || `dry-run preview failed: HTTP ${response.status}`)
+      }
+      setDryRunPreview(data as DryRunPreviewResponse)
+    } catch (e: unknown) {
+      setDryRunError(e instanceof Error ? e.message : 'dry-run preview に失敗しました')
+    } finally {
+      setDryRunLoading(false)
+    }
+  }
+
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-white">
       <header className="border-b border-[#1e1e1e] px-6 py-4 flex items-center justify-between">
@@ -150,6 +202,14 @@ export default function ModelRedesignWorkbenchPage() {
 
           <div className="mt-4 flex flex-wrap items-center gap-3">
             <button
+              onClick={() => { void runDryRunPreview() }}
+              disabled={!canView || dryRunLoading}
+              className="px-4 py-2.5 rounded bg-[#0e8f5b] text-white text-sm font-medium hover:bg-[#11a86b] transition-colors disabled:bg-[#2a2a2a] disabled:text-[#888] disabled:cursor-not-allowed"
+              title="学習は実行せず、設定プレビューのみ返却します"
+            >
+              {dryRunLoading ? 'dry-run preview 実行中...' : '再学習 dry-run preview'}
+            </button>
+            <button
               disabled
               className="px-4 py-2.5 rounded bg-[#2a2a2a] text-[#888] text-sm font-medium cursor-not-allowed"
               title="MVPでは未実装"
@@ -174,6 +234,11 @@ export default function ModelRedesignWorkbenchPage() {
           {error && (
             <div className="mt-4 p-3 bg-red-900/20 border border-red-800 rounded text-sm text-red-300">
               {error}
+            </div>
+          )}
+          {dryRunError && (
+            <div className="mt-4 p-3 bg-red-900/20 border border-red-800 rounded text-sm text-red-300">
+              {dryRunError}
             </div>
           )}
         </div>
@@ -263,6 +328,56 @@ export default function ModelRedesignWorkbenchPage() {
                 </div>
               </div>
             </div>
+
+            {dryRunPreview && (
+              <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-4">
+                <h2 className="text-sm font-medium">Retrain Dry-run Preview</h2>
+                <p className="text-[11px] text-[#666] mt-1">
+                  generated: {new Date(dryRunPreview.generated_at).toLocaleString('ja-JP')} / code: {dryRunPreview.code}
+                </p>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3 text-xs">
+                  <div className="bg-[#0f0f0f] border border-[#202020] rounded p-3">target: {dryRunPreview.dry_run_preview.target}</div>
+                  <div className="bg-[#0f0f0f] border border-[#202020] rounded p-3">model_type: {dryRunPreview.dry_run_preview.model_type}</div>
+                  <div className="bg-[#0f0f0f] border border-[#202020] rounded p-3">train_period: {dryRunPreview.dry_run_preview.train_period.start || 'N/A'} - {dryRunPreview.dry_run_preview.train_period.end || 'N/A'}</div>
+                  <div className="bg-[#0f0f0f] border border-[#202020] rounded p-3">validation_period: {dryRunPreview.dry_run_preview.validation_period.start || 'N/A'} - {dryRunPreview.dry_run_preview.validation_period.end || 'N/A'}</div>
+                  <div className="bg-[#0f0f0f] border border-[#202020] rounded p-3">feature_count: {dryRunPreview.dry_run_preview.feature_count}</div>
+                  <div className="bg-[#0f0f0f] border border-[#202020] rounded p-3">estimated_runtime: {dryRunPreview.dry_run_preview.estimated_runtime.min}-{dryRunPreview.dry_run_preview.estimated_runtime.max} {dryRunPreview.dry_run_preview.estimated_runtime.unit}</div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-4">
+                  <div>
+                    <h3 className="text-xs text-[#aaa] mb-2">selected_features</h3>
+                    <ul className="text-xs text-[#bbb] space-y-1 list-disc list-inside max-h-[170px] overflow-auto">
+                      {dryRunPreview.dry_run_preview.selected_features.slice(0, 40).map((f) => <li key={f}>{f}</li>)}
+                    </ul>
+                  </div>
+                  <div>
+                    <h3 className="text-xs text-[#aaa] mb-2">removed_features</h3>
+                    <ul className="text-xs text-[#bbb] space-y-1 list-disc list-inside max-h-[170px] overflow-auto">
+                      {dryRunPreview.dry_run_preview.removed_features.length === 0
+                        ? <li>候補なし</li>
+                        : dryRunPreview.dry_run_preview.removed_features.map((f) => <li key={f}>{f}</li>)}
+                    </ul>
+                  </div>
+                  <div>
+                    <h3 className="text-xs text-[#aaa] mb-2">expected_outputs</h3>
+                    <ul className="text-xs text-[#bbb] space-y-1 list-disc list-inside max-h-[170px] overflow-auto">
+                      {dryRunPreview.dry_run_preview.expected_outputs.map((o, i) => <li key={`${i}-${o}`}>{o}</li>)}
+                    </ul>
+                  </div>
+                </div>
+
+                <div className="mt-4">
+                  <h3 className="text-xs text-[#aaa] mb-2">safety_checks</h3>
+                  <ul className="text-xs text-[#bbb] space-y-1 list-disc list-inside">
+                    {dryRunPreview.dry_run_preview.safety_checks.map((s) => (
+                      <li key={s.key}>{s.key}: {s.status} ({s.note})</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            )}
           </>
         )}
       </main>
