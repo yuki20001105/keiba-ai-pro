@@ -104,6 +104,11 @@ def main() -> int:
         action="store_true",
         help="Fail suite when preflight status is degraded/unavailable (default: warn only)",
     )
+    parser.add_argument(
+        "--verify-write-guard-enabled",
+        action="store_true",
+        help="Run additional write guard checks expecting NETKEIBA_RACE_WRITE_ENABLED=true",
+    )
     args = parser.parse_args()
 
     token_args: list[str] = []
@@ -211,6 +216,25 @@ def main() -> int:
         "note": "Write guard: default disabled is pass, contract-error is fail",
         "log_tail": write_guard_log[-2000:],
     }
+
+    if args.verify_write_guard_enabled:
+        write_guard_enabled_rc, write_guard_enabled_log = _run_step("write-guard-enabled", [
+            "scripts/smoke_netkeiba_race_write_guard.py",
+            "--expect-enabled",
+            "--race-id", args.race_id,
+            "--date", args.date,
+            "--fastapi-url", args.fastapi_url,
+            *token_args,
+        ])
+        write_guard_enabled_report = _read_json(REPORTS_DIR / "netkeiba_race_write_guard_enabled_smoke_result.json")
+        wge_result, wge_reason = _classify_write_guard(write_guard_enabled_report)
+        suite["steps"]["race_write_guard_enabled"] = {
+            "return_code": write_guard_enabled_rc,
+            "result": wge_result,
+            "reason": wge_reason,
+            "note": "Write guard enabled: all safety branches must keep write_performed=false",
+            "log_tail": write_guard_enabled_log[-2000:],
+        }
 
     results = [str(v.get("result")) for v in suite["steps"].values()]
     has_fail = any(r == "fail" for r in results)

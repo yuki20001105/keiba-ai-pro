@@ -498,3 +498,35 @@ Write guard smoke:
 
 Migration marker update:
 - /api/netkeiba/race: `migrationStatus=write-guard-added`
+
+## 12. P1-10 Guarded Path Verification with Feature Flag ON
+
+Goal in this phase:
+- verify safety branches when `NETKEIBA_RACE_WRITE_ENABLED=true` in a limited local environment,
+- ensure no accidental write path execution,
+- keep `write_performed=false` invariant across all tested branches.
+
+Verification scope (flag enabled process):
+- confirm missing (`confirm_write=false`) => `blocked`
+- dry_run mismatch (`dry_run=true`) => `blocked`
+- invalid `race_id` => `invalid`
+- all guards satisfied => `guarded-noop` (still no write in this phase)
+
+Mandatory invariant:
+- every branch must return `write_performed=false`
+- any `write_performed=true` must be treated as FAIL
+
+Execution model:
+- use temporary process env var only (`NETKEIBA_RACE_WRITE_ENABLED=true`)
+- do not persist this in `.env` or committed files
+
+Enabled-mode smoke:
+- script: `scripts/smoke_netkeiba_race_write_guard.py --expect-enabled`
+- output: `reports/netkeiba_race_write_guard_enabled_smoke_result.json`
+
+Smoke suite integration:
+- optional step: `--verify-write-guard-enabled`
+- default suite remains flag-off compatible.
+
+Migration marker update:
+- /api/netkeiba/race: `migrationStatus=write-guard-enabled-verified`

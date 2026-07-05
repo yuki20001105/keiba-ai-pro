@@ -459,3 +459,36 @@ Write guard smoke:
 Operational commands:
 - `python scripts/smoke_netkeiba_race_write_guard.py`
 - `python scripts/run_keiba_smoke_suite.py`
+
+## 22. Implementation Status (P1-10 Enabled Guard Verification)
+
+Updated: 2026-07-05
+
+Implemented in this step:
+- Extended write guard smoke with enabled-mode matrix:
+	- `scripts/smoke_netkeiba_race_write_guard.py --expect-enabled`
+- Added enabled-mode report:
+	- `reports/netkeiba_race_write_guard_enabled_smoke_result.json`
+- Added optional smoke suite step:
+	- `scripts/run_keiba_smoke_suite.py --verify-write-guard-enabled`
+
+Validated branches (flag ON process):
+- `confirm_write=false` -> `blocked`
+- `dry_run=true` -> `blocked`
+- invalid `race_id` -> `invalid`
+- all preconditions met -> `guarded-noop`
+
+Hard invariant:
+- all branches must keep `write_performed=false`
+- any `write_performed=true` is fail
+
+Safety constraints preserved:
+- no Supabase write executed
+- no DB write executed
+- Next `/api/netkeiba/race` write path unchanged
+- no UI route switch
+
+Operational commands (enabled verification):
+- start FastAPI process with temporary env var only
+- `python scripts/smoke_netkeiba_race_write_guard.py --expect-enabled`
+- `python scripts/run_keiba_smoke_suite.py --verify-write-guard-enabled`

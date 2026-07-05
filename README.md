@@ -827,6 +827,28 @@ python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_write_guard.py
 - warn: blocked / guarded-noop / invalid
 - fail: contract-error
 
+feature flag ON の限定検証（永続化しない）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro\python-api
+$env:NETKEIBA_RACE_WRITE_ENABLED = "true"
+..\.venv\Scripts\python.exe main.py
+```
+
+別ターミナルで enabled-mode smoke:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_write_guard.py --expect-enabled
+```
+
+enabled-mode 付き suite（任意）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\run_keiba_smoke_suite.py --verify-write-guard-enabled
+```
+
 **8) Notion output**
 
 ```powershell
@@ -858,6 +880,7 @@ python-api\.venv\Scripts\python.exe scripts\run_keiba_smoke_suite.py --strict-pr
 - Race dry-run smoke結果JSON: `reports/netkeiba_race_dry_run_smoke_result.json`
 - Payload contract diff結果JSON: `reports/netkeiba_race_payload_contract_diff.json`
 - Write guard smoke結果JSON: `reports/netkeiba_race_write_guard_smoke_result.json`
+- Write guard enabled検証結果JSON: `reports/netkeiba_race_write_guard_enabled_smoke_result.json`
 - Smoke suite結果JSON: `reports/keiba_smoke_suite_result.json`
 - 監査ログ（任意）: `reports/e2e_logs/`
 
