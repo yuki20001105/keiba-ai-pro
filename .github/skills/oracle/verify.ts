@@ -9,8 +9,8 @@ import {
   apiGet,
   pass, fail, warn, skip, runCheck, requireAuth, buildResult, runIfMain,
   AUTH_TOKEN,
-} from '../_shared/verify-utils.ts'
-import type { Check, SkillVerifyResult } from '../_shared/verify-utils.ts'
+} from '../_shared/verify-utils'
+import type { Check, SkillVerifyResult } from '../_shared/verify-utils'
 
 export const SKILL       = 'oracle'
 export const AGENT       = 'Oracle（オラクル）'

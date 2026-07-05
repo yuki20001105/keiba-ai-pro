@@ -9,8 +9,8 @@ import {
   apiGet, appGet,
   pass, fail, warn, skip, runCheck, requireAuth, buildResult, runIfMain,
   API_URL, APP_URL, AUTH_TOKEN,
-} from '../_shared/verify-utils.ts'
-import type { Check, SkillVerifyResult } from '../_shared/verify-utils.ts'
+} from '../_shared/verify-utils'
+import type { Check, SkillVerifyResult } from '../_shared/verify-utils'
 
 export const SKILL       = 'sysop'
 export const AGENT       = 'Sysop（システムオプ）'
@@ -100,8 +100,8 @@ export async function verify(): Promise<SkillVerifyResult> {
       if (status === 401) return warn('Supabase 接続確認 (GET /api/auth/me)', `HTTP 401 — トークン無効または期限切れ`, Date.now() - t)
       if (status === 404) return warn('Supabase 接続確認 (GET /api/auth/me)', `エンドポイント未実装`, Date.now() - t)
       if (status !== 200) return fail('Supabase 接続確認 (GET /api/auth/me)', `HTTP ${status}`, Date.now() - t)
-      const d = data as Record<string, unknown>
-      const email = d?.email ?? d?.user?.email ?? '?'
+      const d = data as { email?: string; user?: { email?: string } }
+      const email = d.email ?? d.user?.email ?? '?'
       return pass('Supabase 接続確認 (GET /api/auth/me)', `email=${email}  Supabase接続OK`, Date.now() - t)
     }))
   }

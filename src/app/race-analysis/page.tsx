@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect, useCallback } from 'react'
+import { Suspense, useState, useEffect, useCallback } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { Logo } from '@/components/Logo'
 import Link from 'next/link'
@@ -40,6 +40,14 @@ type PredictionHistoryResult = {
 }
 
 export default function RaceAnalysisPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-[#0a0a0a] text-[#555] flex items-center justify-center">読み込み中...</div>}>
+      <RaceAnalysisPageContent />
+    </Suspense>
+  )
+}
+
+function RaceAnalysisPageContent() {
   const { isPremium } = useAuth()
   const searchParams = useSearchParams()
   const initialDate = searchParams.get('date') ?? todayStr()

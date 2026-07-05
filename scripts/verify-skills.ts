@@ -14,15 +14,15 @@
  *   KEIBA_APP_URL      Next.js URL (デフォルト: http://localhost:3000)
  *   KEIBA_AUTH_TOKEN   Bearer トークン（未設定時は認証不要チェックのみ実施）
  */
-import { printResult } from '../.github/skills/_shared/verify-utils.ts'
-import type { SkillVerifyResult } from '../.github/skills/_shared/verify-utils.ts'
+import { printResult } from '../.github/skills/_shared/verify-utils'
+import type { SkillVerifyResult } from '../.github/skills/_shared/verify-utils'
 
-import { verify as verifyHarvester, SKILL as HARVESTER_SKILL } from '../.github/skills/harvester/verify.ts'
-import { verify as verifyTrainer,   SKILL as TRAINER_SKILL   } from '../.github/skills/trainer/verify.ts'
-import { verify as verifyOracle,    SKILL as ORACLE_SKILL    } from '../.github/skills/oracle/verify.ts'
-import { verify as verifyLedger,    SKILL as LEDGER_SKILL    } from '../.github/skills/ledger/verify.ts'
-import { verify as verifySysop,     SKILL as SYSOP_SKILL     } from '../.github/skills/sysop/verify.ts'
-import { verify as verifyJobs,      SKILL as JOBS_SKILL      } from '../.github/skills/jobs/verify.ts'
+import { verify as verifyHarvester, SKILL as HARVESTER_SKILL } from '../.github/skills/harvester/verify'
+import { verify as verifyTrainer,   SKILL as TRAINER_SKILL   } from '../.github/skills/trainer/verify'
+import { verify as verifyOracle,    SKILL as ORACLE_SKILL    } from '../.github/skills/oracle/verify'
+import { verify as verifyLedger,    SKILL as LEDGER_SKILL    } from '../.github/skills/ledger/verify'
+import { verify as verifySysop,     SKILL as SYSOP_SKILL     } from '../.github/skills/sysop/verify'
+import { verify as verifyJobs,      SKILL as JOBS_SKILL      } from '../.github/skills/jobs/verify'
 
 // ── カラー定数 ──────────────────────────────────────────────────────────────
 const C = {

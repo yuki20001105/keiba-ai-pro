@@ -11,7 +11,7 @@
     "dev:all": "concurrently --names \"NEXT,API\" -c \"cyan,magenta\" \"npm run dev\" \"npm run dev:api\"",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint \"src/**/*.{js,jsx,ts,tsx}\" \"scripts/**/*.ts\" \".github/skills/**/*.ts\"",
     "up": "powershell -ExecutionPolicy Bypass -File ./scripts/start-all.ps1",
     "down": "powershell -ExecutionPolicy Bypass -File ./scripts/stop-all.ps1",
     "test": "vitest run",
@@ -45,6 +45,7 @@
     "zod": "^3.22.4"
   },
   "devDependencies": {
+    "@eslint/eslintrc": "^3.3.5",
     "@playwright/test": "^1.59.1",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",
@@ -57,6 +58,8 @@
     "autoprefixer": "^10.0.1",
     "concurrently": "^9.2.1",
     "dotenv": "^17.4.2",
+    "eslint": "^9.39.4",
+    "eslint-config-next": "^16.2.10",
     "jsdom": "^29.0.2",
     "postcss": "^8",
     "tailwindcss": "^3.3.0",

@@ -12,8 +12,8 @@ import {
   apiGet, appGet,
   pass, fail, warn, skip, runCheck, requireAuth, buildResult, runIfMain,
   API_URL, APP_URL, AUTH_TOKEN, printResult,
-} from '../_shared/verify-utils.ts'
-import type { Check, SkillVerifyResult } from '../_shared/verify-utils.ts'
+} from '../_shared/verify-utils'
+import type { Check, SkillVerifyResult } from '../_shared/verify-utils'
 
 export const SKILL       = 'jobs'
 export const AGENT       = 'Jobs（ジョブズ / オーケストレーター）'

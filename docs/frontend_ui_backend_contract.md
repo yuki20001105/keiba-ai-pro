@@ -189,3 +189,22 @@ Guarded screens (P0):
 Notes:
 - Backend authorization remains authoritative; UI guard is pre-check UX only.
 - API contracts and backend permission logic are unchanged.
+
+## 12. Verification Baseline (P0.5)
+
+Updated: 2026-07-05
+
+Status:
+- `npm run build`: pass
+- `npm run lint`: runs successfully (warnings-only baseline)
+
+Changes made for verification stability:
+- lint script migrated from `next lint` to ESLint CLI (Next 16 compatible)
+- flat config introduced via `eslint-config-next/core-web-vitals` + `eslint-config-next/typescript`
+- lint target narrowed to frontend/source and skill verification TS files to avoid scanning embedded Python environments
+- `.ts` import extension issues fixed in skill verification scripts and aggregator script
+- `/race-analysis` build blocker fixed by wrapping `useSearchParams()` usage in a Suspense boundary
+
+Known remaining debt (non-blocking):
+- current lint output includes warnings (unused vars, exhaustive-deps, unused-expressions) across existing files
+- warnings are preserved intentionally to avoid broad refactor in this sprint
