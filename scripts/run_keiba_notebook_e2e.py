@@ -17,17 +17,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-NOTEBOOK_FILES = [
-    "00_config.ipynb",
-    "01_data_collection.ipynb",
-    "02_data_validation.ipynb",
-    "03_feature_engineering.ipynb",
-    "04_feature_analysis.ipynb",
-    "05_model_training.ipynb",
-    "06_prediction.ipynb",
-    "07_evaluation.ipynb",
-    "08_reporting.ipynb",
-]
+IGNORED_NOTEBOOK_PARTS = {
+    ".git",
+    ".venv",
+    "__pycache__",
+    "node_modules",
+    "reports",
+    "test-results",
+}
 
 
 def utc_now_iso() -> str:
@@ -51,6 +48,19 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def discover_notebooks(root: Path) -> list[Path]:
+    notebooks: list[Path] = []
+    for path in sorted(root.rglob("*.ipynb")):
+        try:
+            rel = path.relative_to(root)
+        except ValueError:
+            continue
+        if any(part in IGNORED_NOTEBOOK_PARTS for part in rel.parts):
+            continue
+        notebooks.append(rel)
+    return notebooks
+
+
 def mode_env(mode: str) -> dict[str, str]:
     if mode == "audit":
         return {"AUDIT_MODE": "1", "FAST_MODE": "1"}
@@ -58,6 +68,15 @@ def mode_env(mode: str) -> dict[str, str]:
 
 
 def resolve_jupyter_command() -> list[str]:
+    project_root = repo_root()
+    venv_python_candidates = [
+        project_root / "python-api" / ".venv" / "Scripts" / "python.exe",
+        project_root / ".venv" / "Scripts" / "python.exe",
+    ]
+    for python_exe in venv_python_candidates:
+        if python_exe.exists():
+            return [str(python_exe), "-m", "jupyter"]
+
     jupyter = shutil.which("jupyter")
     if jupyter:
         return [jupyter]
@@ -157,9 +176,16 @@ def main() -> int:
         "env": mode_env(args.mode),
     }
 
+    notebook_files = discover_notebooks(root)
+
+    if not notebook_files:
+        raise FileNotFoundError(
+            "No notebook files found under the repository root outside ignored directories"
+        )
+
     print("Executed notebooks (planned):")
-    for nb_name in NOTEBOOK_FILES:
-        print(f"- {nb_name}")
+    for nb_path in notebook_files:
+        print(f"- {nb_path.as_posix()}")
 
     env = os.environ.copy()
     env.update(mode_env(args.mode))
@@ -171,21 +197,21 @@ def main() -> int:
     env["PYTHONPATH"] = os.pathsep.join(python_paths)
 
     try:
-        for nb_name in NOTEBOOK_FILES:
-            nb_path = notebooks_dir / nb_name
+        for rel_nb_path in notebook_files:
+            nb_path = root / rel_nb_path
             if not nb_path.exists():
                 raise FileNotFoundError(f"Notebook not found: {nb_path}")
 
-            print(f"\n[RUN] {nb_name}")
+            print(f"\n[RUN] {rel_nb_path.as_posix()}")
             row = run_single_notebook(jupyter_cmd, nb_path, output_dir, env)
             result["executed_notebooks"].append(row)
 
             status = row["status"]
             elapsed = row["elapsed_seconds"]
-            print(f"[RESULT] {nb_name}: {status} ({elapsed}s)")
+            print(f"[RESULT] {rel_nb_path.as_posix()}: {status} ({elapsed}s)")
 
             if status != "success":
-                result["failed_notebook"] = nb_name
+                result["failed_notebook"] = rel_nb_path.as_posix()
                 break
 
     except Exception as e:  # noqa: BLE001
