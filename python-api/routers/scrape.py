@@ -59,6 +59,13 @@ def _is_text_type_compatible(type_decl: str) -> bool:
     return any(x in t for x in ("TEXT", "CHAR", "CLOB", "JSON", "VARCHAR", "NCHAR", "NVARCHAR", "STRING"))
 
 
+def _is_timestamp_type_compatible(type_decl: str) -> bool:
+    t = (type_decl or "").strip().upper()
+    if not t:
+        return True
+    return any(x in t for x in ("TEXT", "DATETIME", "TIMESTAMP", "DATE", "NUMERIC", "INTEGER", "REAL"))
+
+
 def _get_table_column_types(conn: sqlite3.Connection, table_name: str) -> dict[str, str]:
     rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
     out: dict[str, str] = {}
@@ -93,6 +100,13 @@ def _run_sandbox_precheck() -> dict[str, Any]:
         "sandbox_netkeiba_race_results",
         "sandbox_netkeiba_race_payouts",
     ]
+    required_columns_common = [
+        "race_id",
+        "created_at",
+        "idempotency_key",
+        "payload_hash",
+        "audit_payload",
+    ]
     base = {
         "success": False,
         "status": "unavailable",
@@ -101,6 +115,10 @@ def _run_sandbox_precheck() -> dict[str, Any]:
         "write_performed": False,
         "tables": {},
         "expected_tables": expected_tables,
+        "required_columns": {
+            "common": required_columns_common,
+            "payload": "data|payload",
+        },
         "row_limits": dict(_WRITE_ROW_LIMITS),
         "reason": None,
     }
@@ -134,7 +152,7 @@ def _run_sandbox_precheck() -> dict[str, Any]:
             }
 
             if not exists:
-                report["missing_columns"] = ["race_id", "data|payload"]
+                report["missing_columns"] = [*required_columns_common, "data|payload"]
                 missing_any = True
                 table_reports[sandbox_table] = report
                 continue
@@ -143,8 +161,9 @@ def _run_sandbox_precheck() -> dict[str, Any]:
             cols = set(col_types.keys())
 
             missing_cols: list[str] = []
-            if "race_id" not in cols:
-                missing_cols.append("race_id")
+            for col in required_columns_common:
+                if col not in cols:
+                    missing_cols.append(col)
 
             payload_col = "data" if "data" in cols else ("payload" if "payload" in cols else "")
             if not payload_col:
@@ -153,6 +172,14 @@ def _run_sandbox_precheck() -> dict[str, Any]:
             type_mismatches: list[str] = []
             if "race_id" in col_types and not _is_text_type_compatible(col_types.get("race_id") or ""):
                 type_mismatches.append(f"race_id:{col_types.get('race_id')}")
+            if "idempotency_key" in col_types and not _is_text_type_compatible(col_types.get("idempotency_key") or ""):
+                type_mismatches.append(f"idempotency_key:{col_types.get('idempotency_key')}")
+            if "payload_hash" in col_types and not _is_text_type_compatible(col_types.get("payload_hash") or ""):
+                type_mismatches.append(f"payload_hash:{col_types.get('payload_hash')}")
+            if "audit_payload" in col_types and not _is_text_type_compatible(col_types.get("audit_payload") or ""):
+                type_mismatches.append(f"audit_payload:{col_types.get('audit_payload')}")
+            if "created_at" in col_types and not _is_timestamp_type_compatible(col_types.get("created_at") or ""):
+                type_mismatches.append(f"created_at:{col_types.get('created_at')}")
             if payload_col and payload_col in col_types and not _is_text_type_compatible(col_types.get(payload_col) or ""):
                 type_mismatches.append(f"{payload_col}:{col_types.get(payload_col)}")
 

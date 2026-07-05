@@ -657,3 +657,30 @@ Safety constraints preserved:
 - base table write is forbidden in this phase
 - Next `/api/netkeiba/race` write path unchanged
 - UI flow unchanged
+
+## 27. Implementation Status (P1-14.5 Sandbox DDL / Migration Plan)
+
+Updated: 2026-07-05
+
+Implemented in this step:
+- added sandbox-only DDL artifact for manual migration:
+	- `docs/migrations/netkeiba_sandbox_tables.sql`
+- aligned precheck required columns with migration plan:
+	- `race_id`
+	- `data|payload`
+	- `created_at`
+	- `idempotency_key`
+	- `payload_hash`
+	- `audit_payload`
+- rollback/drop sequence documented in SQL comments.
+
+Important constraints:
+- no DB auto-apply logic was added,
+- no Supabase write was added,
+- no production/base table DDL was added,
+- no UI flow change,
+- no Next write route change.
+
+Ready gate before P1-15:
+- precheck must return `status=ready` for all sandbox tables,
+- while `stopped`/`warn`, write/readback implementation must not proceed.

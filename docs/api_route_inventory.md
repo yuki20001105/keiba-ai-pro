@@ -1,6 +1,6 @@
 # API Route Inventory and Classification
 
-Updated: 2026-07-05 (P1-14 sandbox precheck added)
+Updated: 2026-07-05 (P1-14.5 sandbox DDL/migration plan)
 Scope: Next.js API routes and FastAPI endpoints classification
 
 ## 1. Classification Rules
@@ -742,3 +742,46 @@ Smoke/suite updates:
 
 Migration marker update:
 - /api/netkeiba/race: `migrationStatus=sandbox-precheck-added`
+
+## 17. P1-14.5 Sandbox Table DDL / Migration Plan (Manual-only)
+
+Goal in this phase:
+- keep sandbox precheck read-only,
+- define sandbox table schema explicitly,
+- avoid write/readback expansion until precheck becomes `ready`.
+
+DDL artifact:
+- `docs/migrations/netkeiba_sandbox_tables.sql`
+
+Target tables (sandbox only):
+- `sandbox_netkeiba_races`
+- `sandbox_netkeiba_race_results`
+- `sandbox_netkeiba_race_payouts`
+
+Required columns aligned with precheck:
+- `race_id`
+- `data` or `payload`
+- `created_at`
+- `idempotency_key`
+- `payload_hash`
+- `audit_payload`
+
+Migration safety policy:
+- manual apply only (no auto-apply endpoint/script added),
+- production/base tables are not altered,
+- no Supabase write is involved,
+- no production write permission is changed.
+
+Rollback/drop plan:
+- included in SQL file as manual drop sequence,
+- drops sandbox tables only in reverse dependency-safe order.
+
+Precheck `ready` condition (for next phase gate):
+- all 3 sandbox tables exist,
+- required columns are present,
+- type compatibility check passes,
+- base-table reference scan is clean.
+
+Operational next-step gate:
+- while precheck is `stopped` or `warn`, do not start write/readback implementation.
+- proceed to P1-15 only after precheck is consistently `ready`.

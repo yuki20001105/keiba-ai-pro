@@ -855,6 +855,32 @@ P1-14 sandbox precheck（read-only）:
 - precheck は常に `write_performed=false`
 - sandbox table 未存在は stopped/warn（hard fail ではない）
 
+P1-14.5 sandbox DDL / migration plan（手動適用のみ）:
+- DDLファイル: `docs/migrations/netkeiba_sandbox_tables.sql`
+- 対象は sandbox table のみ（本番テーブルは変更しない）
+- 自動適用処理は追加しない
+
+手動適用（SQLite, 例）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe -c "import sqlite3,pathlib; db=pathlib.Path('keiba/data/keiba_ultimate.db'); sql=pathlib.Path('docs/migrations/netkeiba_sandbox_tables.sql').read_text(encoding='utf-8'); con=sqlite3.connect(str(db)); con.executescript(sql); con.commit(); con.close(); print('applied:', db)"
+```
+
+rollback / drop（手動）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe -c "import sqlite3,pathlib; db=pathlib.Path('keiba/data/keiba_ultimate.db'); con=sqlite3.connect(str(db)); con.executescript('BEGIN; DROP TABLE IF EXISTS sandbox_netkeiba_race_payouts; DROP TABLE IF EXISTS sandbox_netkeiba_race_results; DROP TABLE IF EXISTS sandbox_netkeiba_races; COMMIT;'); con.close(); print('dropped sandbox tables from:', db)"
+```
+
+precheck ready 条件（P1-15 着手ゲート）:
+- 3 sandbox table がすべて存在
+- 必須カラムが揃っている
+- 型互換チェックが通る
+- base table reference 検知がない
+- `status=ready` になるまで write/readback には進まない
+
 feature flag ON の限定検証（永続化しない）:
 
 ```powershell
