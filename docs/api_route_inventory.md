@@ -136,6 +136,7 @@ Scope: Next.js API routes and FastAPI endpoints classification
 - /api/train (synchronous training endpoint; operationally heavier than async start)
 - /api/netkeiba/race-list (read-only proxy to scrape service, introduced in P1-4)
 - /api/netkeiba/race/preflight (read-only preflight contract for write path decomposition, introduced in P1-5)
+- /api/netkeiba/race/dry-run (write orchestration simulation without write, introduced in P1-7)
 
 ### internal
 
@@ -333,3 +334,66 @@ Execution modes:
 Recommended CI usage:
 - use default mode for shared environment where scrape service may not be started,
 - use strict mode only in environments where scrape service readiness is guaranteed.
+
+## 9. P1-7 Dry-run Orchestration (/api/netkeiba/race/dry-run)
+
+Goal in this phase:
+- simulate FastAPI-owned write orchestration,
+- keep existing Next write route unchanged,
+- generate write payload preview only,
+- execute no DB/Supabase write.
+
+Endpoint:
+- POST /api/netkeiba/race/dry-run
+
+Input contract (current):
+- race_id (required, 12-digit)
+- date (optional, YYYYMMDD or YYYY-MM-DD)
+- user_id (optional, preview-only)
+
+Dry-run guarantees:
+- `can_write=false`
+- `write_performed=false`
+- `dry_run=true`
+- no write side effect
+
+Response contract (target):
+
+```json
+{
+	"success": true,
+	"status": "ready",
+	"service": "netkeiba-race",
+	"race_id": "202406010101",
+	"can_scrape": true,
+	"can_write": false,
+	"write_performed": false,
+	"dry_run": true,
+	"preview": {
+		"tables": [
+			{ "target_table": "races", "records_count": 1, "sample_records": [] },
+			{ "target_table": "race_results", "records_count": 18, "sample_records": [] },
+			{ "target_table": "race_payouts", "records_count": 8, "sample_records": [] }
+		]
+	},
+	"reason": null
+}
+```
+
+Status semantics:
+- ready: scrape service reachable and preview successfully generated,
+- degraded: scrape reachable but upstream rejection/data issue,
+- unavailable: scrape service not reachable or upstream 5xx,
+- invalid: request parameter format invalid.
+
+Dry-run smoke:
+- script: `scripts/smoke_netkeiba_race_dry_run.py`
+- output: `reports/netkeiba_race_dry_run_smoke_result.json`
+- verdict policy:
+	- ready => pass
+	- degraded/unavailable/invalid => warn
+	- contract error => fail
+
+Migration marker update:
+- /api/netkeiba/race: `migrationStatus=dry-run-added`
+- write path remains in Next route until later phase.

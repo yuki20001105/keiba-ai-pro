@@ -50,6 +50,20 @@ def _classify_preflight(report: dict[str, Any] | None) -> tuple[str, str]:
     return "fail", reason or "contract-error"
 
 
+def _classify_dry_run(report: dict[str, Any] | None) -> tuple[str, str]:
+    if not isinstance(report, dict):
+        return "fail", "dry-run report missing or invalid"
+
+    verdict = str(report.get("verdict") or "")
+    reason = str(report.get("verdict_reason") or "")
+
+    if verdict == "pass":
+        return "pass", reason or "ready"
+    if verdict == "warn":
+        return "warn", reason or "non-ready"
+    return "fail", reason or "contract-error"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run keiba smoke checks as an operational suite")
     parser.add_argument("--date", default=datetime.now().strftime("%Y%m%d"), help="YYYYMMDD for race-list/preflight checks")
@@ -117,6 +131,27 @@ def main() -> int:
         "reason": pf_reason,
         "note": "Contract check: ready=pass, degraded/unavailable=warn, contract-error=fail",
         "log_tail": preflight_log[-2000:],
+    }
+
+    dry_run_args = [
+        "scripts/smoke_netkeiba_race_dry_run.py",
+        "--race-id", args.race_id,
+        "--date", args.date,
+        "--fastapi-url", args.fastapi_url,
+        *token_args,
+    ]
+    if args.strict_preflight:
+        dry_run_args.append("--fail-on-nonready")
+
+    dry_run_rc, dry_run_log = _run_step("race-dry-run", dry_run_args)
+    dry_run_report = _read_json(REPORTS_DIR / "netkeiba_race_dry_run_smoke_result.json")
+    dr_result, dr_reason = _classify_dry_run(dry_run_report)
+    suite["steps"]["race_dry_run"] = {
+        "return_code": dry_run_rc,
+        "result": dr_result,
+        "reason": dr_reason,
+        "note": "Dry-run contract: ready=pass, degraded/unavailable/invalid=warn, contract-error=fail",
+        "log_tail": dry_run_log[-2000:],
     }
 
     results = [str(v.get("result")) for v in suite["steps"].values()]

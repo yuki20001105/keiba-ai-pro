@@ -15,9 +15,10 @@ import time
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import aiohttp
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import JSONResponse
 
 from app_config import ULTIMATE_DB, logger  # type: ignore
@@ -223,6 +224,226 @@ async def netkeiba_race_preflight(race_id: str | None = None, date: str | None =
                 }
     except HTTPException:
         raise
+    except Exception as e:
+        return {
+            **base,
+            "status": "unavailable",
+            "reason": f"scrape service not reachable: {e}",
+        }
+
+
+def _build_race_record_preview(race_id: str, user_id: str, scrape_data: dict[str, Any]) -> dict[str, Any]:
+    race_info = scrape_data.get("race_info") if isinstance(scrape_data, dict) else {}
+    if not isinstance(race_info, dict):
+        race_info = {}
+
+    return {
+        "race_id": race_id,
+        "race_name": race_info.get("race_name") or "",
+        "venue": race_info.get("venue") or "",
+        "distance": race_info.get("distance") or 0,
+        "track_type": race_info.get("track_type") or "",
+        "weather": race_info.get("weather") or "",
+        "field_condition": race_info.get("field_condition") or "",
+        "user_id": user_id,
+    }
+
+
+def _build_results_preview(race_id: str, user_id: str, scrape_data: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_results = scrape_data.get("results") if isinstance(scrape_data, dict) else []
+    if not isinstance(raw_results, list):
+        return []
+
+    results: list[dict[str, Any]] = []
+
+    def _to_int(value: Any) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    def _to_float(value: Any) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    for result in raw_results:
+        if not isinstance(result, dict):
+            continue
+        sex_age = str(result.get("sex_age") or "")
+        sex = sex_age[:1] if sex_age else ""
+        age_text = sex_age[1:] if len(sex_age) > 1 else ""
+        try:
+            age = int(age_text) if age_text else 0
+        except ValueError:
+            age = 0
+
+        results.append(
+            {
+                "race_id": race_id,
+                "finish_position": _to_int(result.get("finish_position") or 0),
+                "bracket_number": _to_int(result.get("bracket_number") or 0),
+                "horse_number": _to_int(result.get("horse_number") or 0),
+                "horse_name": str(result.get("horse_name") or ""),
+                "sex": sex,
+                "age": age,
+                "jockey_weight": _to_float(result.get("jockey_weight") or 0),
+                "jockey_name": str(result.get("jockey_name") or ""),
+                "finish_time": str(result.get("finish_time") or ""),
+                "odds": _to_float(result.get("odds") or 0),
+                "popularity": _to_int(result.get("popularity") or 0),
+                "user_id": user_id,
+            }
+        )
+
+    return results
+
+
+def _build_payouts_preview(race_id: str, user_id: str, scrape_data: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_payouts = scrape_data.get("payouts") if isinstance(scrape_data, dict) else []
+    if not isinstance(raw_payouts, list):
+        return []
+
+    payouts: list[dict[str, Any]] = []
+    for payout in raw_payouts:
+        if not isinstance(payout, dict):
+            continue
+        amount_str = str(payout.get("amount") or payout.get("payout") or "0")
+        amount = int(re.sub(r"[^0-9]", "", amount_str) or "0")
+        payouts.append(
+            {
+                "race_id": race_id,
+                "bet_type": str(payout.get("type") or payout.get("bet_type") or ""),
+                "combination": str(payout.get("numbers") or payout.get("combination") or ""),
+                "payout": amount,
+                "user_id": user_id,
+            }
+        )
+
+    return payouts
+
+
+@router.post("/api/netkeiba/race/dry-run")
+async def netkeiba_race_dry_run(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Simulate netkeiba race write orchestration and return write payload preview without performing any write."""
+    race_id_raw = payload.get("race_id") if isinstance(payload, dict) else None
+    if race_id_raw is None and isinstance(payload, dict):
+        race_id_raw = payload.get("raceId")
+
+    race_id = str(race_id_raw or "").strip()
+    date_raw = str(payload.get("date") or "").strip() if isinstance(payload, dict) else ""
+    date_str = date_raw.replace("-", "")
+
+    user_id_raw = payload.get("user_id") if isinstance(payload, dict) else None
+    if user_id_raw is None and isinstance(payload, dict):
+        user_id_raw = payload.get("userId")
+    user_id = str(user_id_raw or "dry-run-user")
+
+    base = {
+        "success": False,
+        "status": "unavailable",
+        "service": "netkeiba-race",
+        "race_id": race_id,
+        "can_scrape": False,
+        "can_write": False,
+        "write_performed": False,
+        "dry_run": True,
+        "required_params": ["race_id"],
+        "provided_params": {
+            "race_id": bool(race_id),
+            "date": bool(date_raw),
+            "user_id": bool(user_id_raw),
+        },
+        "reason": None,
+    }
+
+    if not race_id:
+        return {**base, "status": "invalid", "reason": "race_id is required"}
+
+    if not re.fullmatch(r"\d{12}", race_id):
+        return {**base, "status": "invalid", "reason": "race_id must be 12 digits"}
+
+    if date_raw and not re.fullmatch(r"\d{8}", date_str):
+        return {**base, "status": "invalid", "reason": "date must be YYYYMMDD or YYYY-MM-DD format"}
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                f"{_SCRAPE_SERVICE_URL}/scrape/ultimate",
+                headers={"Content-Type": "application/json"},
+                json={"race_id": race_id, "include_details": False},
+            ) as resp:
+                body_text = await resp.text()
+                parsed: dict[str, Any] | None = None
+                try:
+                    parsed_any = json.loads(body_text) if body_text else {}
+                    parsed = parsed_any if isinstance(parsed_any, dict) else None
+                except Exception:
+                    parsed = None
+
+                if resp.status >= 500:
+                    return {
+                        **base,
+                        "status": "unavailable",
+                        "reason": f"scrape service unavailable: HTTP {resp.status}",
+                    }
+
+                if resp.status >= 400:
+                    return {
+                        **base,
+                        "status": "degraded",
+                        "reason": f"scrape service rejected request: HTTP {resp.status}",
+                    }
+
+                if not isinstance(parsed, dict):
+                    return {
+                        **base,
+                        "status": "degraded",
+                        "reason": "scrape service returned invalid JSON payload",
+                    }
+
+                if parsed.get("success") is not True:
+                    return {
+                        **base,
+                        "status": "degraded",
+                        "reason": str(parsed.get("error") or "scrape service did not return success"),
+                    }
+
+                race_record = _build_race_record_preview(race_id, user_id, parsed)
+                results = _build_results_preview(race_id, user_id, parsed)
+                payouts = _build_payouts_preview(race_id, user_id, parsed)
+
+                preview = {
+                    "tables": [
+                        {
+                            "target_table": "races",
+                            "records_count": 1,
+                            "sample_records": [race_record],
+                        },
+                        {
+                            "target_table": "race_results",
+                            "records_count": len(results),
+                            "sample_records": results[:3],
+                        },
+                        {
+                            "target_table": "race_payouts",
+                            "records_count": len(payouts),
+                            "sample_records": payouts[:3],
+                        },
+                    ],
+                    "source": "scrape_service",
+                }
+
+                return {
+                    **base,
+                    "success": True,
+                    "status": "ready",
+                    "can_scrape": True,
+                    "preview": preview,
+                    "reason": None,
+                }
     except Exception as e:
         return {
             **base,

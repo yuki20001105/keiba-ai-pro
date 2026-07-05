@@ -351,3 +351,38 @@ Safety constraints preserved:
 - no DB write added
 - no Supabase write migration performed
 - `/api/netkeiba/race` existing write path unchanged
+
+## 19. Implementation Status (P1-7 Dry-run Orchestration)
+
+Updated: 2026-07-05
+
+Implemented in this step:
+- Added FastAPI endpoint: `POST /api/netkeiba/race/dry-run`.
+- Dry-run performs:
+	- input validation,
+	- scrape service reachability/probe,
+	- write payload preview generation for `races`, `race_results`, `race_payouts`.
+
+Dry-run fixed safety contract:
+- `can_write=false`
+- `write_performed=false`
+- `dry_run=true`
+
+Not changed in this step:
+- Next API `/api/netkeiba/race` existing Supabase write flow remains unchanged.
+- No DB/Supabase write is executed by the new FastAPI dry-run endpoint.
+
+Dry-run smoke and suite integration:
+- Added script: `scripts/smoke_netkeiba_race_dry_run.py`
+- Added output: `reports/netkeiba_race_dry_run_smoke_result.json`
+- Integrated into suite: `scripts/run_keiba_smoke_suite.py`
+
+Dry-run smoke verdict:
+- `ready` -> pass
+- `degraded | unavailable | invalid` -> warn
+- contract error -> fail
+
+Operational commands:
+- `python scripts/smoke_netkeiba_race_dry_run.py`
+- `python scripts/smoke_netkeiba_race_dry_run.py --fail-on-nonready`
+- `python scripts/run_keiba_smoke_suite.py`

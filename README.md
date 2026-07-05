@@ -726,6 +726,8 @@ Race-list proxy smoke
   ↓
 Race preflight smoke
   ↓
+Race dry-run smoke
+  ↓
 Notion output
 ```
 
@@ -776,7 +778,28 @@ cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
 python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_preflight.py --fail-on-nonready
 ```
 
-**5) Notion output**
+**5) Race dry-run smoke (contract-only mode)**
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_dry_run.py
+```
+
+判定ルール（dry-run）:
+- ready: PASS
+- degraded: WARN
+- unavailable: WARN (環境によってはSKIP相当)
+- invalid: WARN
+- contract error: FAIL
+
+strict モード（non-ready も fail）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_dry_run.py --fail-on-nonready
+```
+
+**6) Notion output**
 
 ```powershell
 cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
@@ -804,6 +827,7 @@ python-api\.venv\Scripts\python.exe scripts\run_keiba_smoke_suite.py --strict-pr
 - Analyze Race smoke結果JSON: `reports/analyze_race_smoke_result.json`
 - Race-list proxy smoke結果JSON: `reports/netkeiba_race_list_proxy_smoke_result.json`
 - Race preflight smoke結果JSON: `reports/netkeiba_race_preflight_smoke_result.json`
+- Race dry-run smoke結果JSON: `reports/netkeiba_race_dry_run_smoke_result.json`
 - Smoke suite結果JSON: `reports/keiba_smoke_suite_result.json`
 - 監査ログ（任意）: `reports/e2e_logs/`
 
