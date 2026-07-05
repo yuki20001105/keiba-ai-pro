@@ -574,3 +574,40 @@ Safety constraints preserved:
 - no UI route switch
 - no `.env` persistence/commit
 - any `write_performed=true` remains fail
+
+## 25. Implementation Status (P1-13 Staging Sandbox-only Write)
+
+Updated: 2026-07-05
+
+Implemented in this step:
+- added explicit sandbox write adapter under guarded endpoint.
+- actual write is allowed only when all staging + request locks are satisfied and `sandbox_write=true` + `target_mode=sandbox` are provided.
+- write destination is restricted to sandbox tables only:
+	- `sandbox_netkeiba_races`
+	- `sandbox_netkeiba_race_results`
+	- `sandbox_netkeiba_race_payouts`
+- base tables (`races`, `race_results`, `race_payouts`) are not used for actual write in this phase.
+- if sandbox table is missing or schema is not writable, endpoint returns `stopped` with explicit reason and keeps `write_performed=false`.
+
+Additional safety constraints:
+- row limits remain enforced (`1/30/100`)
+- whitelist remains enforced
+- idempotency key is mandatory for sandbox write intent
+- production remains always blocked
+
+Response behavior:
+- success path: `status=sandbox-written`, `write_performed=true`, includes `target_mode`, `target_tables`, `records_written`, `idempotency_key`, `audit_payload`
+- non-success path: `blocked` or `stopped` with `write_performed=false`
+
+Smoke updates:
+- new explicit mode:
+	- `python scripts/smoke_netkeiba_race_write_guard.py --expect-sandbox-write`
+- default smoke/suite remains non-write by default
+- suite optional sandbox step:
+	- `--verify-write-guard-sandbox-write`
+
+Safety constraints preserved:
+- Next `/api/netkeiba/race` write path unchanged
+- no UI route switch
+- no `.env` commit
+- token/secret not exposed

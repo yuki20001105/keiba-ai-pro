@@ -115,6 +115,11 @@ def main() -> int:
         help="Run write guard check expecting NETKEIBA_RACE_WRITE_ENABLED=true only branch to be blocked",
     )
     parser.add_argument(
+        "--verify-write-guard-sandbox-write",
+        action="store_true",
+        help="Run explicit sandbox write smoke (disabled by default)",
+    )
+    parser.add_argument(
         "--verify-write-guard-production-block",
         action="store_true",
         help="Run write guard check expecting APP_ENV=production hard block branch",
@@ -268,6 +273,25 @@ def main() -> int:
             "reason": wgfo_reason,
             "note": "Write guard flag-only: NETKEIBA_RACE_WRITE_ENABLED only must stay blocked",
             "log_tail": write_guard_flag_only_log[-2000:],
+        }
+
+    if args.verify_write_guard_sandbox_write:
+        write_guard_sandbox_rc, write_guard_sandbox_log = _run_step("write-guard-sandbox-write", [
+            "scripts/smoke_netkeiba_race_write_guard.py",
+            "--expect-sandbox-write",
+            "--race-id", args.race_id,
+            "--date", args.date,
+            "--fastapi-url", args.fastapi_url,
+            *token_args,
+        ])
+        write_guard_sandbox_report = _read_json(REPORTS_DIR / "netkeiba_race_write_guard_sandbox_write_smoke_result.json")
+        wgs_result, wgs_reason = _classify_write_guard(write_guard_sandbox_report)
+        suite["steps"]["race_write_guard_sandbox_write"] = {
+            "return_code": write_guard_sandbox_rc,
+            "result": wgs_result,
+            "reason": wgs_reason,
+            "note": "Explicit sandbox write smoke (run only with explicit opt-in)",
+            "log_tail": write_guard_sandbox_log[-2000:],
         }
 
     if args.verify_write_guard_production_block:

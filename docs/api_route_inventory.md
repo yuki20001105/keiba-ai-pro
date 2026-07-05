@@ -1,6 +1,6 @@
 # API Route Inventory and Classification
 
-Updated: 2026-07-05 (P1-12 staging writer stub)
+Updated: 2026-07-05 (P1-13 sandbox write adapter)
 Scope: Next.js API routes and FastAPI endpoints classification
 
 ## 1. Classification Rules
@@ -638,3 +638,57 @@ Smoke contract updates:
 
 Migration marker update:
 - /api/netkeiba/race: `migrationStatus=staging-writer-stub-added`
+
+## 15. P1-13 Staging Sandbox-only Write (No Production Table Write)
+
+Goal in this phase:
+- allow first actual write only to sandbox tables in staging,
+- keep production and base tables protected,
+- keep default flows non-write.
+
+Sandbox write scope:
+- target mode must be explicit:
+	- `sandbox_write=true`
+	- `target_mode=sandbox`
+- required locks remain:
+	- `NETKEIBA_RACE_WRITE_ENABLED=true`
+	- `ALLOW_STAGING_WRITE=true`
+	- `APP_ENV=staging`
+	- `confirm_write=true`
+	- `dry_run=false`
+	- valid `race_id`
+	- `payload_contract_approved=true`
+	- `idempotency_key` present
+
+Allowed write destination in this phase:
+- `sandbox_netkeiba_races`
+- `sandbox_netkeiba_race_results`
+- `sandbox_netkeiba_race_payouts`
+
+Forbidden destination:
+- base tables (`races`, `race_results`, `race_payouts`) are not used for actual write.
+
+Safety behavior:
+- if sandbox tables are missing -> `status=stopped` (warn) with explicit table list,
+- if row limit exceeds -> `blocked`,
+- if whitelist mismatch -> `blocked`,
+- if production -> always `blocked`.
+
+Write result semantics:
+- `sandbox-written` only when sandbox write succeeds,
+- only this case allows `write_performed=true`,
+- response includes:
+	- `target_mode=sandbox`
+	- target table list
+	- records written
+	- idempotency key
+	- audit payload (preview data)
+
+Operational policy:
+- default smoke/suite does not run sandbox write,
+- sandbox write check runs only with explicit option:
+	- `scripts/smoke_netkeiba_race_write_guard.py --expect-sandbox-write`
+	- suite optional: `--verify-write-guard-sandbox-write`
+
+Migration marker update:
+- /api/netkeiba/race: `migrationStatus=sandbox-write-added`

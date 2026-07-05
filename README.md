@@ -834,6 +834,12 @@ P1-12 writer-stub 契約（enabled 時）:
 - idempotency key と payload hash をレスポンスで確認
 - audit payload preview をレスポンスで確認（永続保存はしない）
 
+P1-13 sandbox write（明示実行時のみ）:
+- `sandbox_write=true` + `target_mode=sandbox` 指定時のみ sandbox write 候補
+- 対象は sandbox table 限定（本体テーブルへの write 禁止）
+- production では常に blocked
+- sandbox table 未存在時は stopped（warn）
+
 feature flag ON の限定検証（永続化しない）:
 
 ```powershell
@@ -915,6 +921,25 @@ cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
 python-api\.venv\Scripts\python.exe scripts\run_keiba_smoke_suite.py --verify-write-guard-flag-only --verify-write-guard-production-block --verify-write-guard-staging-lock-missing
 ```
 
+sandbox write smoke（明示実行時のみ）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro\python-api
+$env:NETKEIBA_RACE_WRITE_ENABLED = "true"
+$env:ALLOW_STAGING_WRITE = "true"
+$env:APP_ENV = "staging"
+..\.venv\Scripts\python.exe main.py
+```
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_write_guard.py --expect-sandbox-write
+```
+
+注意:
+- この smoke は default 実行には含めない
+- sandbox table が未作成の場合は stopped/warn が正常
+
 **8) Notion output**
 
 ```powershell
@@ -950,6 +975,7 @@ python-api\.venv\Scripts\python.exe scripts\run_keiba_smoke_suite.py --strict-pr
 - Write guard flag-only検証結果JSON: `reports/netkeiba_race_write_guard_flag_only_smoke_result.json`
 - Write guard production検証結果JSON: `reports/netkeiba_race_write_guard_production_smoke_result.json`
 - Write guard staging lock検証結果JSON: `reports/netkeiba_race_write_guard_staging_lock_smoke_result.json`
+- Write guard sandbox write検証結果JSON: `reports/netkeiba_race_write_guard_sandbox_write_smoke_result.json`
 - Smoke suite結果JSON: `reports/keiba_smoke_suite_result.json`
 - 監査ログ（任意）: `reports/e2e_logs/`
 
