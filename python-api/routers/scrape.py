@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -44,6 +45,193 @@ _WRITE_ROW_LIMITS = {
     "race_results": 30,
     "race_payouts": 100,
 }
+_SANDBOX_TABLE_MAP = {
+    "races": "sandbox_netkeiba_races",
+    "race_results": "sandbox_netkeiba_race_results",
+    "race_payouts": "sandbox_netkeiba_race_payouts",
+}
+
+
+def _is_text_type_compatible(type_decl: str) -> bool:
+    t = (type_decl or "").strip().upper()
+    if not t:
+        return True
+    return any(x in t for x in ("TEXT", "CHAR", "CLOB", "JSON", "VARCHAR", "NCHAR", "NVARCHAR", "STRING"))
+
+
+def _is_timestamp_type_compatible(type_decl: str) -> bool:
+    t = (type_decl or "").strip().upper()
+    if not t:
+        return True
+    return any(x in t for x in ("TEXT", "DATETIME", "TIMESTAMP", "DATE", "NUMERIC", "INTEGER", "REAL"))
+
+
+def _get_table_column_types(conn: sqlite3.Connection, table_name: str) -> dict[str, str]:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    out: dict[str, str] = {}
+    for row in rows:
+        if not isinstance(row, tuple) or len(row) < 3:
+            continue
+        col = str(row[1])
+        decl = str(row[2] or "")
+        out[col] = decl
+    return out
+
+
+def _detect_base_table_references(conn: sqlite3.Connection, table_name: str) -> list[str]:
+    rows = conn.execute(
+        "SELECT type, name, sql FROM sqlite_master WHERE tbl_name=? AND sql IS NOT NULL",
+        (table_name,),
+    ).fetchall()
+    found: list[str] = []
+    for row in rows:
+        if not isinstance(row, tuple) or len(row) < 3:
+            continue
+        sql = str(row[2] or "").lower()
+        for base_table in _WRITE_TARGET_TABLE_WHITELIST:
+            if re.search(rf"\b{re.escape(base_table.lower())}\b", sql):
+                found.append(base_table)
+    return sorted(set(found))
+
+
+def _run_sandbox_precheck() -> dict[str, Any]:
+    expected_tables = [
+        "sandbox_netkeiba_races",
+        "sandbox_netkeiba_race_results",
+        "sandbox_netkeiba_race_payouts",
+    ]
+    required_columns_common = [
+        "race_id",
+        "created_at",
+        "idempotency_key",
+        "payload_hash",
+        "audit_payload",
+    ]
+    base = {
+        "success": False,
+        "status": "unavailable",
+        "service": "netkeiba-race-sandbox-precheck",
+        "target_mode": "sandbox",
+        "write_performed": False,
+        "tables": {},
+        "expected_tables": expected_tables,
+        "required_columns": {
+            "common": required_columns_common,
+            "payload": "data|payload",
+        },
+        "row_limits": dict(_WRITE_ROW_LIMITS),
+        "reason": None,
+    }
+
+    try:
+        conn = sqlite3.connect(str(ULTIMATE_DB))
+        conn.row_factory = sqlite3.Row
+    except Exception as e:
+        return {
+            **base,
+            "status": "unavailable",
+            "reason": f"failed to open db safely: {e}",
+        }
+
+    table_reports: dict[str, Any] = {}
+    missing_any = False
+    incompatible_any = False
+    try:
+        for base_table, sandbox_table in _SANDBOX_TABLE_MAP.items():
+            exists = _table_exists(conn, sandbox_table)
+            row_limit = int(_WRITE_ROW_LIMITS.get(base_table, 0))
+            report = {
+                "exists": exists,
+                "schema_compatible": False,
+                "missing_columns": [],
+                "type_mismatches": [],
+                "row_limit": row_limit,
+                "row_limit_supported": False,
+                "references_base_tables": [],
+                "payload_column": None,
+            }
+
+            if not exists:
+                report["missing_columns"] = [*required_columns_common, "data|payload"]
+                missing_any = True
+                table_reports[sandbox_table] = report
+                continue
+
+            col_types = _get_table_column_types(conn, sandbox_table)
+            cols = set(col_types.keys())
+
+            missing_cols: list[str] = []
+            for col in required_columns_common:
+                if col not in cols:
+                    missing_cols.append(col)
+
+            payload_col = "data" if "data" in cols else ("payload" if "payload" in cols else "")
+            if not payload_col:
+                missing_cols.append("data|payload")
+
+            type_mismatches: list[str] = []
+            if "race_id" in col_types and not _is_text_type_compatible(col_types.get("race_id") or ""):
+                type_mismatches.append(f"race_id:{col_types.get('race_id')}")
+            if "idempotency_key" in col_types and not _is_text_type_compatible(col_types.get("idempotency_key") or ""):
+                type_mismatches.append(f"idempotency_key:{col_types.get('idempotency_key')}")
+            if "payload_hash" in col_types and not _is_text_type_compatible(col_types.get("payload_hash") or ""):
+                type_mismatches.append(f"payload_hash:{col_types.get('payload_hash')}")
+            if "audit_payload" in col_types and not _is_text_type_compatible(col_types.get("audit_payload") or ""):
+                type_mismatches.append(f"audit_payload:{col_types.get('audit_payload')}")
+            if "created_at" in col_types and not _is_timestamp_type_compatible(col_types.get("created_at") or ""):
+                type_mismatches.append(f"created_at:{col_types.get('created_at')}")
+            if payload_col and payload_col in col_types and not _is_text_type_compatible(col_types.get(payload_col) or ""):
+                type_mismatches.append(f"{payload_col}:{col_types.get(payload_col)}")
+
+            refs = _detect_base_table_references(conn, sandbox_table)
+            schema_ok = len(missing_cols) == 0 and len(type_mismatches) == 0 and len(refs) == 0
+            if not schema_ok:
+                incompatible_any = True
+
+            report.update(
+                {
+                    "schema_compatible": schema_ok,
+                    "missing_columns": missing_cols,
+                    "type_mismatches": type_mismatches,
+                    "row_limit_supported": schema_ok,
+                    "references_base_tables": refs,
+                    "payload_column": payload_col or None,
+                }
+            )
+            table_reports[sandbox_table] = report
+
+        if missing_any:
+            status = "stopped"
+            reason = "sandbox tables are missing"
+        elif incompatible_any:
+            status = "warn"
+            reason = "sandbox table schema is not fully compatible"
+        else:
+            status = "ready"
+            reason = None
+
+        return {
+            **base,
+            "success": True,
+            "status": status,
+            "tables": table_reports,
+            "reason": reason,
+        }
+    except Exception as e:
+        return {
+            **base,
+            "status": "unavailable",
+            "tables": table_reports,
+            "reason": f"sandbox precheck failed safely: {e}",
+        }
+    finally:
+        conn.close()
+
+
+@router.get("/api/netkeiba/race/sandbox/precheck")
+async def netkeiba_race_sandbox_precheck() -> dict[str, Any]:
+    """Read-only precheck for sandbox write readiness. No write/readback is executed."""
+    return _run_sandbox_precheck()
 
 
 @router.post("/api/scrape/start")
@@ -455,6 +643,173 @@ def _build_audit_payload_preview(
     }
 
 
+def _extract_idempotency_key(payload: dict[str, Any]) -> str:
+    raw = payload.get("idempotency_key")
+    if raw is None:
+        raw = payload.get("idempotencyKey")
+    return str(raw or "").strip()
+
+
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _get_table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {str(r[1]) for r in rows if isinstance(r, tuple) and len(r) > 1}
+
+
+def _insert_sandbox_record(
+    conn: sqlite3.Connection,
+    *,
+    table_name: str,
+    record: dict[str, Any],
+    race_id: str,
+    app_env: str,
+    idempotency_key: str,
+    payload_hash: str,
+    requested_at: str,
+) -> tuple[bool, str | None]:
+    cols = _get_table_columns(conn, table_name)
+    if "race_id" not in cols:
+        return False, f"sandbox table missing race_id column: {table_name}"
+
+    payload_col = "data" if "data" in cols else ("payload" if "payload" in cols else None)
+    if payload_col is None:
+        return False, f"sandbox table missing data/payload column: {table_name}"
+
+    insert_cols: list[str] = ["race_id", payload_col]
+    params: list[Any] = [race_id, json.dumps(record, ensure_ascii=False)]
+
+    if "app_env" in cols:
+        insert_cols.append("app_env")
+        params.append(app_env)
+    if "target_mode" in cols:
+        insert_cols.append("target_mode")
+        params.append("sandbox")
+    if "idempotency_key" in cols:
+        insert_cols.append("idempotency_key")
+        params.append(idempotency_key)
+    if "payload_hash" in cols:
+        insert_cols.append("payload_hash")
+        params.append(payload_hash)
+    if "requested_at" in cols:
+        insert_cols.append("requested_at")
+        params.append(requested_at)
+    if "created_at" in cols:
+        insert_cols.append("created_at")
+        params.append(requested_at)
+
+    placeholders = ", ".join(["?"] * len(insert_cols))
+    sql = f"INSERT INTO {table_name} ({', '.join(insert_cols)}) VALUES ({placeholders})"
+    conn.execute(sql, params)
+    return True, None
+
+
+def _write_preview_to_sandbox(
+    *,
+    race_id: str,
+    preview_tables: list[dict[str, Any]],
+    idempotency_key: str,
+    payload_hash: str,
+    requested_at: str,
+) -> dict[str, Any]:
+    conn = sqlite3.connect(str(ULTIMATE_DB))
+    conn.row_factory = sqlite3.Row
+
+    missing_tables: list[str] = []
+    target_tables: list[str] = []
+    for table in preview_tables:
+        target = str(table.get("target_table") or "")
+        sandbox_table = _SANDBOX_TABLE_MAP.get(target)
+        if sandbox_table is None:
+            continue
+        target_tables.append(sandbox_table)
+        if not _table_exists(conn, sandbox_table):
+            missing_tables.append(sandbox_table)
+
+    if missing_tables:
+        conn.close()
+        return {
+            "ok": False,
+            "status": "stopped",
+            "reason": "sandbox tables are missing",
+            "missing_tables": sorted(set(missing_tables)),
+            "target_tables": sorted(set(target_tables)),
+            "records_written": {},
+            "records_written_total": 0,
+        }
+
+    records_written: dict[str, int] = {}
+    try:
+        for table in preview_tables:
+            target = str(table.get("target_table") or "")
+            sandbox_table = _SANDBOX_TABLE_MAP.get(target)
+            if sandbox_table is None:
+                continue
+
+            records = table.get("records")
+            if not isinstance(records, list):
+                records = []
+
+            count = 0
+            for record in records:
+                if not isinstance(record, dict):
+                    continue
+                ok, err = _insert_sandbox_record(
+                    conn,
+                    table_name=sandbox_table,
+                    record=record,
+                    race_id=race_id,
+                    app_env=APP_ENV,
+                    idempotency_key=idempotency_key,
+                    payload_hash=payload_hash,
+                    requested_at=requested_at,
+                )
+                if not ok:
+                    conn.rollback()
+                    return {
+                        "ok": False,
+                        "status": "stopped",
+                        "reason": err or "sandbox table schema is not writable",
+                        "missing_tables": [],
+                        "target_tables": sorted(set(target_tables)),
+                        "records_written": records_written,
+                        "records_written_total": int(sum(records_written.values())),
+                    }
+                count += 1
+            records_written[sandbox_table] = count
+
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        return {
+            "ok": False,
+            "status": "stopped",
+            "reason": f"sandbox write failed safely: {e}",
+            "missing_tables": [],
+            "target_tables": sorted(set(target_tables)),
+            "records_written": records_written,
+            "records_written_total": int(sum(records_written.values())),
+        }
+    finally:
+        conn.close()
+
+    return {
+        "ok": True,
+        "status": "sandbox-written",
+        "reason": "sandbox write completed",
+        "missing_tables": [],
+        "target_tables": sorted(set(target_tables)),
+        "records_written": records_written,
+        "records_written_total": int(sum(records_written.values())),
+    }
+
+
 def _build_guarded_writer_stub(
     race_id: str,
     preview_summary: dict[str, Any],
@@ -621,16 +976,19 @@ async def netkeiba_race_dry_run(payload: dict[str, Any] = Body(default={})) -> d
                         {
                             "target_table": "races",
                             "records_count": 1,
+                            "records": [race_record],
                             "sample_records": [race_record],
                         },
                         {
                             "target_table": "race_results",
                             "records_count": len(results),
+                            "records": results,
                             "sample_records": results[:3],
                         },
                         {
                             "target_table": "race_payouts",
                             "records_count": len(payouts),
+                            "records": payouts,
                             "sample_records": payouts[:3],
                         },
                     ],
@@ -655,7 +1013,7 @@ async def netkeiba_race_dry_run(payload: dict[str, Any] = Body(default={})) -> d
 
 @router.post("/api/netkeiba/race/write")
 async def netkeiba_race_write(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    """Guarded write endpoint. P1-11 adds staging-only design lock; actual write stays disabled."""
+    """Guarded write endpoint. P1-13 enables explicit sandbox-only writes under strict staging locks."""
     race_id_raw = payload.get("race_id") if isinstance(payload, dict) else None
     if race_id_raw is None and isinstance(payload, dict):
         race_id_raw = payload.get("raceId")
@@ -712,6 +1070,16 @@ async def netkeiba_race_write(payload: dict[str, Any] = Body(default={})) -> dic
         payload_contract_flag = payload.get("payload_contract_ok")
     payload_contract_approved = _to_bool(payload_contract_flag, default=False)
 
+    sandbox_write_flag = payload.get("sandbox_write") if isinstance(payload, dict) else None
+    if sandbox_write_flag is None and isinstance(payload, dict):
+        sandbox_write_flag = payload.get("sandboxWrite")
+    sandbox_write = _to_bool(sandbox_write_flag, default=False)
+
+    target_mode_raw = payload.get("target_mode") if isinstance(payload, dict) else None
+    if target_mode_raw is None and isinstance(payload, dict):
+        target_mode_raw = payload.get("targetMode")
+    target_mode = str(target_mode_raw or "").strip().lower()
+
     if not confirm_write:
         return {
             **base,
@@ -731,6 +1099,20 @@ async def netkeiba_race_write(payload: dict[str, Any] = Body(default={})) -> dic
             **base,
             "status": "blocked",
             "reason": "payload_contract_approved=true is required",
+        }
+
+    if target_mode and target_mode != "sandbox":
+        return {
+            **base,
+            "status": "blocked",
+            "reason": "target_mode must be sandbox",
+        }
+
+    if target_mode == "sandbox" and not sandbox_write:
+        return {
+            **base,
+            "status": "blocked",
+            "reason": "sandbox_write=true is required when target_mode=sandbox",
         }
 
     if not race_id or not re.fullmatch(r"\d{12}", race_id):
@@ -770,6 +1152,16 @@ async def netkeiba_race_write(payload: dict[str, Any] = Body(default={})) -> dic
     payload_hash = _build_payload_hash(payload if isinstance(payload, dict) else {}, preview_summary if isinstance(preview_summary, dict) else {})
     idempotency_key = _build_idempotency_key(race_id, payload_hash)
     requested_at = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    client_idempotency_key = _extract_idempotency_key(payload if isinstance(payload, dict) else {})
+
+    if sandbox_write and not client_idempotency_key:
+        return {
+            **base,
+            "status": "blocked",
+            "reason": "idempotency_key is required for sandbox write",
+            "target_mode": "sandbox",
+            "sandbox_write": True,
+        }
 
     writer_stub = _build_guarded_writer_stub(
         race_id=race_id,
@@ -784,6 +1176,87 @@ async def netkeiba_race_write(payload: dict[str, Any] = Body(default={})) -> dic
 
     audit_payload_preview = writer_stub.get("writer", {}).get("audit_payload_preview") if isinstance(writer_stub, dict) else None
 
+    if sandbox_write and target_mode == "sandbox":
+        sandbox_precheck = _run_sandbox_precheck()
+        if str(sandbox_precheck.get("status") or "") != "ready":
+            precheck_status = str(sandbox_precheck.get("status") or "stopped")
+            return {
+                **base,
+                "status": precheck_status if precheck_status in {"stopped", "warn", "unavailable"} else "stopped",
+                "reason": str(sandbox_precheck.get("reason") or "sandbox precheck is not ready"),
+                "target_mode": "sandbox",
+                "sandbox_write": True,
+                "idempotency_key": client_idempotency_key,
+                "payload_hash": payload_hash,
+                "audit_payload_preview": audit_payload_preview,
+                "dry_run_preview": {
+                    "tables_count": preview_summary.get("tables_count", 0),
+                    "target_tables": preview_summary.get("target_tables", []),
+                    "total_records": preview_summary.get("total_records", 0),
+                    "row_limits": preview_summary.get("row_limits", {}),
+                },
+                "sandbox_precheck": sandbox_precheck,
+                "writer_stub": writer_stub,
+            }
+
+        preview = dry_run_result.get("preview")
+        tables = preview.get("tables") if isinstance(preview, dict) else None
+        if not isinstance(tables, list):
+            tables = []
+
+        sandbox_result = _write_preview_to_sandbox(
+            race_id=race_id,
+            preview_tables=[t for t in tables if isinstance(t, dict)],
+            idempotency_key=client_idempotency_key,
+            payload_hash=payload_hash,
+            requested_at=requested_at,
+        )
+
+        if sandbox_result.get("ok") is not True:
+            return {
+                **base,
+                "status": str(sandbox_result.get("status") or "stopped"),
+                "reason": str(sandbox_result.get("reason") or "sandbox write not executed"),
+                "target_mode": "sandbox",
+                "sandbox_write": True,
+                "idempotency_key": client_idempotency_key,
+                "payload_hash": payload_hash,
+                "audit_payload_preview": audit_payload_preview,
+                "dry_run_preview": {
+                    "tables_count": preview_summary.get("tables_count", 0),
+                    "target_tables": preview_summary.get("target_tables", []),
+                    "total_records": preview_summary.get("total_records", 0),
+                    "row_limits": preview_summary.get("row_limits", {}),
+                },
+                "sandbox_result": sandbox_result,
+                "writer_stub": writer_stub,
+            }
+
+        return {
+            **base,
+            "success": True,
+            "status": "sandbox-written",
+            "reason": "sandbox write completed under staging guard",
+            "can_write": True,
+            "write_performed": True,
+            "target_mode": "sandbox",
+            "sandbox_write": True,
+            "payload_contract_approved": payload_contract_approved,
+            "idempotency_key": client_idempotency_key,
+            "payload_hash": payload_hash,
+            "audit_payload": audit_payload_preview,
+            "target_tables": sandbox_result.get("target_tables", []),
+            "records_written": sandbox_result.get("records_written", {}),
+            "records_written_total": sandbox_result.get("records_written_total", 0),
+            "dry_run_preview": {
+                "tables_count": preview_summary.get("tables_count", 0),
+                "target_tables": preview_summary.get("target_tables", []),
+                "total_records": preview_summary.get("total_records", 0),
+                "row_limits": preview_summary.get("row_limits", {}),
+            },
+            "sandbox_result": sandbox_result,
+        }
+
     # P1-11: staging guard design is active, but actual write remains intentionally disabled.
     return {
         **base,
@@ -792,6 +1265,8 @@ async def netkeiba_race_write(payload: dict[str, Any] = Body(default={})) -> dic
         "reason": "staging-only write guard passed; actual writer remains disabled in this phase",
         "can_write": True,
         "write_performed": False,
+        "target_mode": "stub",
+        "sandbox_write": False,
         "payload_contract_approved": payload_contract_approved,
         "idempotency_key": idempotency_key,
         "payload_hash": payload_hash,

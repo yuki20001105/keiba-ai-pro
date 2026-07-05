@@ -10,7 +10,7 @@ from typing import Any
 from urllib import error, request
 
 
-VALID_STATUSES = {"disabled", "blocked", "guarded-noop", "guarded-stub", "invalid"}
+VALID_STATUSES = {"disabled", "blocked", "guarded-noop", "guarded-stub", "invalid", "stopped", "sandbox-written"}
 _TABLE_WHITELIST = {"races", "race_results", "race_payouts"}
 _ROW_LIMITS = {
     "races": 1,
@@ -43,6 +43,30 @@ def _http_json(url: str, payload: dict[str, Any], token: str | None = None) -> t
         return 0, None, str(e)
 
 
+def _http_get_json(url: str, token: str | None = None) -> tuple[int, dict[str, Any] | None, str | None]:
+    headers: dict[str, str] = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    req = request.Request(url=url, method="GET", headers=headers)
+    try:
+        with request.urlopen(req, timeout=20) as resp:
+            status = resp.getcode()
+            body = resp.read().decode("utf-8", errors="replace")
+            parsed = json.loads(body) if body else {}
+            return status, parsed, None
+    except error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        parsed = None
+        try:
+            parsed = json.loads(body) if body else {}
+        except Exception:
+            parsed = {"raw": body}
+        return e.code, parsed, str(e)
+    except Exception as e:
+        return 0, None, str(e)
+
+
 def _is_contract_ok(status: int, body: dict[str, Any] | None) -> bool:
     if status not in (200, 400, 401, 403, 503):
         return False
@@ -56,12 +80,17 @@ def _is_contract_ok(status: int, body: dict[str, Any] | None) -> bool:
     if body.get("service") != "netkeiba-race-write":
         return False
 
-    if body.get("write_performed") is not False:
-        return False
-
     st = body.get("status")
     if not isinstance(st, str) or st not in VALID_STATUSES:
         return False
+
+    write_performed = body.get("write_performed")
+    if st == "sandbox-written":
+        if write_performed is not True:
+            return False
+    else:
+        if write_performed is not False:
+            return False
 
     return True
 
@@ -73,11 +102,62 @@ def _classify(contract_ok: bool, body: dict[str, Any] | None) -> tuple[str, str]
     st = str(body.get("status") or "") if isinstance(body, dict) else ""
     if st == "disabled":
         return "pass", "write-disabled-default"
+    if st == "sandbox-written":
+        return "pass", "sandbox-write-performed"
     if st == "guarded-stub":
         return "pass", "staging-guarded-stub"
+    if st == "stopped":
+        return "warn", "sandbox-write-stopped"
     if st in {"blocked", "guarded-noop", "invalid"}:
         return "warn", st
     return "fail", "invalid-status"
+
+
+def _is_sandbox_precheck_contract_ok(status: int, body: dict[str, Any] | None) -> bool:
+    if status not in (200, 401, 403, 503):
+        return False
+    if not isinstance(body, dict):
+        return False
+
+    required = ["service", "status", "target_mode", "write_performed", "tables", "reason"]
+    if not all(k in body for k in required):
+        return False
+
+    if body.get("service") != "netkeiba-race-sandbox-precheck":
+        return False
+    if body.get("target_mode") != "sandbox":
+        return False
+    if body.get("write_performed") is not False:
+        return False
+
+    st = str(body.get("status") or "")
+    if st not in {"ready", "stopped", "warn", "unavailable"}:
+        return False
+
+    tables = body.get("tables")
+    if not isinstance(tables, dict):
+        return False
+
+    expected = {
+        "sandbox_netkeiba_races",
+        "sandbox_netkeiba_race_results",
+        "sandbox_netkeiba_race_payouts",
+    }
+    for name in expected:
+        t = tables.get(name)
+        if not isinstance(t, dict):
+            return False
+        for k in ["exists", "schema_compatible", "missing_columns", "type_mismatches", "row_limit_supported", "references_base_tables"]:
+            if k not in t:
+                return False
+        if not isinstance(t.get("missing_columns"), list):
+            return False
+        if not isinstance(t.get("type_mismatches"), list):
+            return False
+        if not isinstance(t.get("references_base_tables"), list):
+            return False
+
+    return True
 
 
 class _StubScrapeHandler(BaseHTTPRequestHandler):
@@ -229,24 +309,27 @@ def main() -> int:
     parser.add_argument("--auth-token", default="", help="Optional Bearer token")
     parser.add_argument("--expect-enabled", action="store_true", help="Run enabled-guard matrix checks")
     parser.add_argument("--expect-flag-only", action="store_true", help="Expect NETKEIBA_RACE_WRITE_ENABLED=true only branch to be blocked")
+    parser.add_argument("--expect-sandbox-precheck", action="store_true", help="Run read-only sandbox precheck contract check")
+    parser.add_argument("--expect-sandbox-write", action="store_true", help="Run explicit sandbox write check")
     parser.add_argument("--expect-production-block", action="store_true", help="Expect APP_ENV=production hard block branch")
     parser.add_argument("--expect-staging-lock-missing", action="store_true", help="Expect ALLOW_STAGING_WRITE=false block branch")
     parser.add_argument("--limit-test-race-id", default="202406019999", help="Race id used for row-limit exceeded case in enabled checks")
     parser.add_argument("--stub-scrape-port", type=int, default=8001, help="Port for local stub scrape service in enabled checks")
     args = parser.parse_args()
 
-    mode_count = sum(1 for x in [args.expect_enabled, args.expect_flag_only, args.expect_production_block, args.expect_staging_lock_missing] if x)
+    mode_count = sum(1 for x in [args.expect_enabled, args.expect_flag_only, args.expect_sandbox_precheck, args.expect_sandbox_write, args.expect_production_block, args.expect_staging_lock_missing] if x)
     if mode_count > 1:
         print(json.dumps({
             "success": False,
-            "error": "choose only one mode: --expect-enabled, --expect-flag-only, --expect-production-block, --expect-staging-lock-missing",
+            "error": "choose only one mode: --expect-enabled, --expect-flag-only, --expect-sandbox-precheck, --expect-sandbox-write, --expect-production-block, --expect-staging-lock-missing",
         }, ensure_ascii=False))
         return 2
 
     endpoint = f"{args.fastapi_url}/api/netkeiba/race/write"
+    precheck_endpoint = f"{args.fastapi_url}/api/netkeiba/race/sandbox/precheck"
     token = args.auth_token.strip() or None
 
-    if not args.expect_enabled and not args.expect_flag_only and not args.expect_production_block and not args.expect_staging_lock_missing:
+    if not args.expect_enabled and not args.expect_flag_only and not args.expect_sandbox_precheck and not args.expect_sandbox_write and not args.expect_production_block and not args.expect_staging_lock_missing:
         payload = {
             "race_id": args.race_id,
             "date": args.date,
@@ -276,6 +359,100 @@ def main() -> int:
             },
         }
         out_name = "netkeiba_race_write_guard_smoke_result.json"
+    elif args.expect_sandbox_precheck:
+        status, body, err = _http_get_json(precheck_endpoint, token=token)
+        contract_ok = _is_sandbox_precheck_contract_ok(status, body)
+        response_status = str(body.get("status") or "") if isinstance(body, dict) else ""
+
+        verdict = "pass" if response_status == "ready" else ("warn" if response_status in {"stopped", "warn", "unavailable"} else "fail")
+        if response_status == "ready":
+            verdict_reason = "sandbox-precheck-ready"
+        elif response_status == "stopped":
+            verdict_reason = "sandbox-precheck-stopped"
+        elif response_status == "warn":
+            verdict_reason = "sandbox-precheck-warn"
+        elif response_status == "unavailable":
+            verdict_reason = "sandbox-precheck-unavailable"
+        else:
+            verdict_reason = "sandbox-precheck-check-failed"
+
+        success = contract_ok and verdict != "fail"
+        result = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "mode": "expect-sandbox-precheck",
+            "success": success,
+            "verdict": verdict,
+            "verdict_reason": verdict_reason,
+            "check": {
+                "url": precheck_endpoint,
+                "status": status,
+                "response_status": response_status,
+                "contract_ok": contract_ok,
+                "write_performed": body.get("write_performed") if isinstance(body, dict) else None,
+                "error": err,
+                "body": body,
+            },
+        }
+        out_name = "netkeiba_race_write_guard_sandbox_precheck_smoke_result.json"
+    elif args.expect_sandbox_write:
+        payload = {
+            "race_id": args.race_id,
+            "date": args.date,
+            "confirm_write": True,
+            "dry_run": False,
+            "payload_contract_approved": True,
+            "sandbox_write": True,
+            "target_mode": "sandbox",
+            "idempotency_key": f"smoke-{args.race_id}",
+            "user_id": "guard-smoke-user",
+        }
+        run = _run_check(endpoint, payload, token)
+        body = run.get("body") if isinstance(run, dict) else None
+        response_status = str(run.get("response_status") or "")
+        write_performed = run.get("write_performed")
+        dry_run_status = str(body.get("dry_run_status") or "") if isinstance(body, dict) else ""
+
+        sandbox_written_ok = response_status == "sandbox-written" and write_performed is True
+        stopped_ok = response_status == "stopped" and write_performed is False
+        precondition_unavailable_ok = response_status == "blocked" and dry_run_status == "unavailable" and write_performed is False
+        status_ok = sandbox_written_ok or stopped_ok or precondition_unavailable_ok
+
+        contract_ok = bool(run.get("contract_ok"))
+        success = contract_ok and status_ok
+        verdict = "pass" if sandbox_written_ok else ("warn" if (stopped_ok or precondition_unavailable_ok) else "fail")
+        verdict_reason = (
+            "sandbox-write-performed"
+            if sandbox_written_ok
+            else ("sandbox-write-stopped" if stopped_ok else ("sandbox-precondition-unavailable" if precondition_unavailable_ok else "sandbox-write-check-failed"))
+        )
+
+        contract_details = {
+            "target_mode": str(body.get("target_mode") or "") if isinstance(body, dict) else "",
+            "idempotency_key_present": bool(body.get("idempotency_key")) if isinstance(body, dict) else False,
+            "audit_payload_present": isinstance(body.get("audit_payload") if isinstance(body, dict) else None, dict)
+            or isinstance(body.get("audit_payload_preview") if isinstance(body, dict) else None, dict),
+            "records_written_present": isinstance(body.get("records_written") if isinstance(body, dict) else None, dict),
+        }
+
+        result = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "mode": "expect-sandbox-write",
+            "success": success,
+            "verdict": verdict,
+            "verdict_reason": verdict_reason,
+            "check": {
+                "url": endpoint,
+                "request": payload,
+                "status": run.get("status"),
+                "response_status": response_status,
+                "contract_ok": contract_ok,
+                "write_performed": write_performed,
+                "error": run.get("error"),
+                "body": body,
+            },
+            "contract_details": contract_details,
+        }
+        out_name = "netkeiba_race_write_guard_sandbox_write_smoke_result.json"
     elif args.expect_flag_only:
         payload = {
             "race_id": args.race_id,

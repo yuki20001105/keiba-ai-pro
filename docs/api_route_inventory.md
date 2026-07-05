@@ -1,6 +1,6 @@
 # API Route Inventory and Classification
 
-Updated: 2026-07-05 (P1-12 staging writer stub)
+Updated: 2026-07-05 (P1-14.5 sandbox DDL/migration plan)
 Scope: Next.js API routes and FastAPI endpoints classification
 
 ## 1. Classification Rules
@@ -638,3 +638,150 @@ Smoke contract updates:
 
 Migration marker update:
 - /api/netkeiba/race: `migrationStatus=staging-writer-stub-added`
+
+## 15. P1-13 Staging Sandbox-only Write (No Production Table Write)
+
+Goal in this phase:
+- allow first actual write only to sandbox tables in staging,
+- keep production and base tables protected,
+- keep default flows non-write.
+
+Sandbox write scope:
+- target mode must be explicit:
+	- `sandbox_write=true`
+	- `target_mode=sandbox`
+- required locks remain:
+	- `NETKEIBA_RACE_WRITE_ENABLED=true`
+	- `ALLOW_STAGING_WRITE=true`
+	- `APP_ENV=staging`
+	- `confirm_write=true`
+	- `dry_run=false`
+	- valid `race_id`
+	- `payload_contract_approved=true`
+	- `idempotency_key` present
+
+Allowed write destination in this phase:
+- `sandbox_netkeiba_races`
+- `sandbox_netkeiba_race_results`
+- `sandbox_netkeiba_race_payouts`
+
+Forbidden destination:
+- base tables (`races`, `race_results`, `race_payouts`) are not used for actual write.
+
+Safety behavior:
+- if sandbox tables are missing -> `status=stopped` (warn) with explicit table list,
+- if row limit exceeds -> `blocked`,
+- if whitelist mismatch -> `blocked`,
+- if production -> always `blocked`.
+
+Write result semantics:
+- `sandbox-written` only when sandbox write succeeds,
+- only this case allows `write_performed=true`,
+- response includes:
+	- `target_mode=sandbox`
+	- target table list
+	- records written
+	- idempotency key
+	- audit payload (preview data)
+
+Operational policy:
+- default smoke/suite does not run sandbox write,
+- sandbox write check runs only with explicit option:
+	- `scripts/smoke_netkeiba_race_write_guard.py --expect-sandbox-write`
+	- suite optional: `--verify-write-guard-sandbox-write`
+
+Migration marker update:
+- /api/netkeiba/race: `migrationStatus=sandbox-write-added`
+
+## 16. P1-14 Sandbox Table Existence + Schema Compatibility Precheck (Read-only)
+
+Goal in this phase:
+- validate sandbox write readiness without any write/readback,
+- verify sandbox table existence and schema compatibility,
+- keep write safety contracts strict.
+
+Precheck endpoint:
+- `GET /api/netkeiba/race/sandbox/precheck`
+
+Expected sandbox tables (only):
+- `sandbox_netkeiba_races`
+- `sandbox_netkeiba_race_results`
+- `sandbox_netkeiba_race_payouts`
+
+Precheck checks (read-only only):
+- table existence,
+- required columns (`race_id` and `data|payload`),
+- text-type compatibility for required columns,
+- row-limit support metadata (`races<=1`, `race_results<=30`, `race_payouts<=100`),
+- base table reference detection in sandbox table SQL objects.
+
+Precheck response contract:
+- `service=netkeiba-race-sandbox-precheck`
+- `target_mode=sandbox`
+- `write_performed=false` (fixed)
+- `status=ready|stopped|warn|unavailable`
+- table-level report with:
+	- `exists`
+	- `schema_compatible`
+	- `missing_columns`
+	- `type_mismatches`
+	- `row_limit_supported`
+	- `references_base_tables`
+
+Safety behavior:
+- base tables (`races`, `race_results`, `race_payouts`) are not precheck targets,
+- missing sandbox table is not hard fail (`stopped`/`warn` contract),
+- contract violation only is treated as fail in smoke.
+
+Smoke/suite updates:
+- new smoke mode:
+	- `scripts/smoke_netkeiba_race_write_guard.py --expect-sandbox-precheck`
+- suite optional precheck step:
+	- `--verify-write-guard-sandbox-precheck`
+- both are explicit opt-in and remain excluded from default suite.
+
+Migration marker update:
+- /api/netkeiba/race: `migrationStatus=sandbox-precheck-added`
+
+## 17. P1-14.5 Sandbox Table DDL / Migration Plan (Manual-only)
+
+Goal in this phase:
+- keep sandbox precheck read-only,
+- define sandbox table schema explicitly,
+- avoid write/readback expansion until precheck becomes `ready`.
+
+DDL artifact:
+- `docs/migrations/netkeiba_sandbox_tables.sql`
+
+Target tables (sandbox only):
+- `sandbox_netkeiba_races`
+- `sandbox_netkeiba_race_results`
+- `sandbox_netkeiba_race_payouts`
+
+Required columns aligned with precheck:
+- `race_id`
+- `data` or `payload`
+- `created_at`
+- `idempotency_key`
+- `payload_hash`
+- `audit_payload`
+
+Migration safety policy:
+- manual apply only (no auto-apply endpoint/script added),
+- production/base tables are not altered,
+- no Supabase write is involved,
+- no production write permission is changed.
+
+Rollback/drop plan:
+- included in SQL file as manual drop sequence,
+- drops sandbox tables only in reverse dependency-safe order.
+
+Precheck `ready` condition (for next phase gate):
+- all 3 sandbox tables exist,
+- required columns are present,
+- type compatibility check passes,
+- base-table reference scan is clean.
+
+Operational next-step gate:
+- while precheck is `stopped` or `warn`, do not start write/readback implementation.
+- proceed to P1-15 only after precheck is consistently `ready`.

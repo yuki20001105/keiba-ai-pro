@@ -834,6 +834,53 @@ P1-12 writer-stub 契約（enabled 時）:
 - idempotency key と payload hash をレスポンスで確認
 - audit payload preview をレスポンスで確認（永続保存はしない）
 
+P1-13 sandbox write（明示実行時のみ）:
+- `sandbox_write=true` + `target_mode=sandbox` 指定時のみ sandbox write 候補
+- 対象は sandbox table 限定（本体テーブルへの write 禁止）
+- production では常に blocked
+- sandbox table 未存在時は stopped（warn）
+
+P1-14 sandbox precheck（read-only）:
+- `GET /api/netkeiba/race/sandbox/precheck` で sandbox readiness を確認
+- 対象テーブル:
+  - `sandbox_netkeiba_races`
+  - `sandbox_netkeiba_race_results`
+  - `sandbox_netkeiba_race_payouts`
+- 確認内容:
+  - table existence
+  - required column existence (`race_id`, `data|payload`)
+  - type compatibility
+  - row-limit support metadata
+  - base table references が無いこと
+- precheck は常に `write_performed=false`
+- sandbox table 未存在は stopped/warn（hard fail ではない）
+
+P1-14.5 sandbox DDL / migration plan（手動適用のみ）:
+- DDLファイル: `docs/migrations/netkeiba_sandbox_tables.sql`
+- 対象は sandbox table のみ（本番テーブルは変更しない）
+- 自動適用処理は追加しない
+
+手動適用（SQLite, 例）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe -c "import sqlite3,pathlib; db=pathlib.Path('keiba/data/keiba_ultimate.db'); sql=pathlib.Path('docs/migrations/netkeiba_sandbox_tables.sql').read_text(encoding='utf-8'); con=sqlite3.connect(str(db)); con.executescript(sql); con.commit(); con.close(); print('applied:', db)"
+```
+
+rollback / drop（手動）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe -c "import sqlite3,pathlib; db=pathlib.Path('keiba/data/keiba_ultimate.db'); con=sqlite3.connect(str(db)); con.executescript('BEGIN; DROP TABLE IF EXISTS sandbox_netkeiba_race_payouts; DROP TABLE IF EXISTS sandbox_netkeiba_race_results; DROP TABLE IF EXISTS sandbox_netkeiba_races; COMMIT;'); con.close(); print('dropped sandbox tables from:', db)"
+```
+
+precheck ready 条件（P1-15 着手ゲート）:
+- 3 sandbox table がすべて存在
+- 必須カラムが揃っている
+- 型互換チェックが通る
+- base table reference 検知がない
+- `status=ready` になるまで write/readback には進まない
+
 feature flag ON の限定検証（永続化しない）:
 
 ```powershell
@@ -915,6 +962,39 @@ cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
 python-api\.venv\Scripts\python.exe scripts\run_keiba_smoke_suite.py --verify-write-guard-flag-only --verify-write-guard-production-block --verify-write-guard-staging-lock-missing
 ```
 
+sandbox write smoke（明示実行時のみ）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro\python-api
+$env:NETKEIBA_RACE_WRITE_ENABLED = "true"
+$env:ALLOW_STAGING_WRITE = "true"
+$env:APP_ENV = "staging"
+..\.venv\Scripts\python.exe main.py
+```
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_write_guard.py --expect-sandbox-write
+```
+
+注意:
+- この smoke は default 実行には含めない
+- sandbox table が未作成の場合は stopped/warn が正常
+
+sandbox precheck smoke（read-only, 明示実行時のみ）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_write_guard.py --expect-sandbox-precheck
+```
+
+suite optional（precheck + sandbox write を明示実行）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\run_keiba_smoke_suite.py --verify-write-guard-sandbox-precheck --verify-write-guard-sandbox-write
+```
+
 **8) Notion output**
 
 ```powershell
@@ -950,6 +1030,8 @@ python-api\.venv\Scripts\python.exe scripts\run_keiba_smoke_suite.py --strict-pr
 - Write guard flag-only検証結果JSON: `reports/netkeiba_race_write_guard_flag_only_smoke_result.json`
 - Write guard production検証結果JSON: `reports/netkeiba_race_write_guard_production_smoke_result.json`
 - Write guard staging lock検証結果JSON: `reports/netkeiba_race_write_guard_staging_lock_smoke_result.json`
+- Write guard sandbox precheck検証結果JSON: `reports/netkeiba_race_write_guard_sandbox_precheck_smoke_result.json`
+- Write guard sandbox write検証結果JSON: `reports/netkeiba_race_write_guard_sandbox_write_smoke_result.json`
 - Smoke suite結果JSON: `reports/keiba_smoke_suite_result.json`
 - 監査ログ（任意）: `reports/e2e_logs/`
 
