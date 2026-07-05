@@ -11,19 +11,21 @@ What it does:
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
+import re
 import sqlite3
 import sys
 import urllib.error
 import urllib.request
-import argparse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT_DIR / "keiba" / "data" / "keiba_ultimate.db"
+MODELS_DIR = ROOT_DIR / "python-api" / "models"
 OUTPUT_PATH = Path("reports") / "analyze_race_smoke_result.json"
 API_URL = "http://127.0.0.1:8000/api/analyze_race"
 REQUEST_TIMEOUT_SECONDS = 300
@@ -45,8 +47,32 @@ def get_latest_race_id(db_path: Path) -> str:
     return str(row[0])
 
 
-def call_analyze_race_api(race_id: str, bearer_token: str | None = None) -> Tuple[int, Dict[str, Any]]:
-    payload = json.dumps({"race_id": race_id}).encode("utf-8")
+def list_local_models() -> list[str]:
+    if not MODELS_DIR.exists():
+        return []
+    models = sorted(MODELS_DIR.glob("model_*.joblib"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return [p.stem for p in models]
+
+
+def parse_mismatch_model(detail: str) -> str | None:
+    m = re.search(r"モデル '([^']+)'", detail)
+    if not m:
+        return None
+    name = m.group(1).strip()
+    if name.endswith(".joblib"):
+        name = name[:-7]
+    return name or None
+
+
+def call_analyze_race_api(
+    race_id: str,
+    bearer_token: str | None = None,
+    model_id: str | None = None,
+) -> Tuple[int, Dict[str, Any]]:
+    body: Dict[str, Any] = {"race_id": race_id}
+    if model_id:
+        body["model_id"] = model_id
+    payload = json.dumps(body).encode("utf-8")
     headers: Dict[str, str] = {"Content-Type": "application/json; charset=utf-8"}
     if bearer_token:
         headers["Authorization"] = f"Bearer {bearer_token}"
@@ -84,6 +110,11 @@ def validate_response(status: int, payload: Dict[str, Any], token_provided: bool
     if status in (401, 403) and not token_provided:
         return True, "warn", "auth-required", 0
 
+    if status == 500:
+        detail = str(payload.get("detail") or "")
+        if "必要な特徴量が計算されていません" in detail:
+            return False, "fail", "model-feature-mismatch", 0
+
     if status != 200:
         return False, "fail", f"HTTP status is not 200 (got {status})", 0
 
@@ -113,10 +144,12 @@ def save_result(result: Dict[str, Any], output_path: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Smoke test for /api/analyze_race")
     parser.add_argument("--auth-token", default="", help="Optional Bearer token")
+    parser.add_argument("--model-id", default="", help="Optional explicit model_id")
     args = parser.parse_args()
 
     token = args.auth_token.strip() or os.getenv("KEIBA_AUTH_BEARER_TOKEN", "").strip()
     token_provided = bool(token)
+    requested_model_id = args.model_id.strip() or None
 
     started_at = datetime.now(timezone.utc).isoformat()
     result: Dict[str, Any] = {
@@ -126,17 +159,66 @@ def main() -> int:
         "output_path": str(OUTPUT_PATH),
         "success": False,
         "token_provided": token_provided,
+        "requested_model_id": requested_model_id,
     }
 
     try:
         race_id = get_latest_race_id(DB_PATH)
         result["race_id"] = race_id
 
-        status, response_payload = call_analyze_race_api(race_id, bearer_token=token if token else None)
+        status, response_payload = call_analyze_race_api(
+            race_id,
+            bearer_token=token if token else None,
+            model_id=requested_model_id,
+        )
         result["http_status"] = status
         result["response"] = response_payload
 
-        ok, verdict, reason, predictions_count = validate_response(status, response_payload, token_provided=token_provided)
+        ok, verdict, reason, predictions_count = validate_response(
+            status,
+            response_payload,
+            token_provided=token_provided,
+        )
+        result["attempted_models"] = [requested_model_id or "<default>"]
+
+        if not ok and reason == "model-feature-mismatch" and requested_model_id is None:
+            detail = str(response_payload.get("detail") or "")
+            mismatch_model = parse_mismatch_model(detail)
+            fallback_attempts: list[Dict[str, Any]] = []
+            for candidate in [m for m in list_local_models() if m != mismatch_model]:
+                c_status, c_payload = call_analyze_race_api(
+                    race_id,
+                    bearer_token=token if token else None,
+                    model_id=candidate,
+                )
+                c_ok, c_verdict, c_reason, c_count = validate_response(
+                    c_status,
+                    c_payload,
+                    token_provided=token_provided,
+                )
+                fallback_attempts.append(
+                    {
+                        "model_id": candidate,
+                        "status": c_status,
+                        "ok": c_ok,
+                        "reason": c_reason,
+                        "predictions_count": c_count,
+                    }
+                )
+                result["attempted_models"].append(candidate)
+                if c_ok:
+                    status, response_payload = c_status, c_payload
+                    ok, verdict, reason, predictions_count = c_ok, c_verdict, c_reason, c_count
+                    result["http_status"] = status
+                    result["response"] = response_payload
+                    result["fallback_used"] = True
+                    result["fallback_model_id"] = candidate
+                    break
+
+            result["fallback_attempts"] = fallback_attempts
+            if not result.get("fallback_used"):
+                result["fallback_used"] = False
+
         result["success"] = ok
         result["verdict"] = verdict
         result["validation"] = reason
@@ -152,6 +234,8 @@ def main() -> int:
         print(f"race_id: {race_id}")
         print(f"HTTP status: {status}")
         print(f"verdict: {result.get('verdict', 'unknown')}")
+        if result.get("fallback_used"):
+            print(f"fallback model used: {result.get('fallback_model_id')}")
         if result.get("auth_required"):
             print("note: auth required (set KEIBA_AUTH_BEARER_TOKEN or --auth-token)")
         print(f"success: {result['response_success']}")
