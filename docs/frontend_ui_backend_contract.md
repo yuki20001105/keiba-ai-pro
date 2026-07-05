@@ -684,3 +684,23 @@ Important constraints:
 Ready gate before P1-15:
 - precheck must return `status=ready` for all sandbox tables,
 - while `stopped`/`warn`, write/readback implementation must not proceed.
+
+## 28. Implementation Status (P1-15 Precheck Ready Verification)
+
+Updated: 2026-07-05
+
+Implemented in this step:
+- sandbox DDL was applied manually in local sandbox/staging DB context,
+- FastAPI restarted after apply,
+- precheck smoke confirmed `ready/pass`:
+	- `python scripts/smoke_netkeiba_race_write_guard.py --expect-sandbox-precheck`
+	- verdict: `pass` (`sandbox-precheck-ready`)
+
+Explicitly not implemented in this step:
+- sandbox write execution,
+- write-after-readback verification,
+- any production/base table change.
+
+Safety posture:
+- phase closed at precheck-ready confirmation,
+- write/readback remains deferred to a later phase.

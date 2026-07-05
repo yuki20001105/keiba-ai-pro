@@ -70,11 +70,12 @@ def _get_table_column_types(conn: sqlite3.Connection, table_name: str) -> dict[s
     rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
     out: dict[str, str] = {}
     for row in rows:
-        if not isinstance(row, tuple) or len(row) < 3:
+        try:
+            col = str(row[1])
+            decl = str(row[2] or "")
+            out[col] = decl
+        except Exception:
             continue
-        col = str(row[1])
-        decl = str(row[2] or "")
-        out[col] = decl
     return out
 
 
@@ -660,7 +661,13 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
 
 def _get_table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
     rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
-    return {str(r[1]) for r in rows if isinstance(r, tuple) and len(r) > 1}
+    cols: set[str] = set()
+    for r in rows:
+        try:
+            cols.add(str(r[1]))
+        except Exception:
+            continue
+    return cols
 
 
 def _insert_sandbox_record(

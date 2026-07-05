@@ -881,6 +881,14 @@ precheck ready 条件（P1-15 着手ゲート）:
 - base table reference 検知がない
 - `status=ready` になるまで write/readback には進まない
 
+P1-15 実施結果（手動DDL適用後の ready 確認）:
+- `docs/migrations/netkeiba_sandbox_tables.sql` を手動適用
+- FastAPI 再起動後に precheck smoke を実行
+- `python scripts/smoke_netkeiba_race_write_guard.py --expect-sandbox-precheck`
+  - 結果: `verdict=pass` / `verdict_reason=sandbox-precheck-ready`
+- このフェーズでは sandbox write/readback は実施していない
+- default suite は引き続き write 非実行
+
 feature flag ON の限定検証（永続化しない）:
 
 ```powershell

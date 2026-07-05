@@ -1,6 +1,6 @@
 # API Route Inventory and Classification
 
-Updated: 2026-07-05 (P1-14.5 sandbox DDL/migration plan)
+Updated: 2026-07-05 (P1-15 precheck ready verification)
 Scope: Next.js API routes and FastAPI endpoints classification
 
 ## 1. Classification Rules
@@ -785,3 +785,27 @@ Precheck `ready` condition (for next phase gate):
 Operational next-step gate:
 - while precheck is `stopped` or `warn`, do not start write/readback implementation.
 - proceed to P1-15 only after precheck is consistently `ready`.
+
+## 18. P1-15 Manual DDL Apply + Precheck Ready Verification (No Write)
+
+Goal in this phase:
+- apply sandbox DDL manually in sandbox/staging DB,
+- verify precheck transitions to `ready/pass`,
+- stop before sandbox write/readback.
+
+Executed in this phase:
+- manual DDL apply from `docs/migrations/netkeiba_sandbox_tables.sql`,
+- FastAPI restart,
+- smoke verification:
+	- `python scripts/smoke_netkeiba_race_write_guard.py --expect-sandbox-precheck`
+	- result: `verdict=pass`, `verdict_reason=sandbox-precheck-ready`.
+
+Safety confirmation:
+- no sandbox write execution,
+- no readback implementation,
+- no production/base table DDL update,
+- default suite remained non-write (`python scripts/run_keiba_smoke_suite.py`).
+
+Gate status:
+- precheck readiness gate is satisfied for next phase planning,
+- write/readback remains intentionally out of scope for this phase.
