@@ -714,6 +714,51 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 4. /predict-batch ページで当日レース予測
 ```
 
+### keibaAI 実行ガイド（Notebook E2E / API Smoke / Notion）
+
+日次の実行確認は、以下の順番を推奨します。
+
+```
+Notebook E2E audit
+  ↓
+Analyze Race API smoke
+  ↓
+Notion output
+```
+
+**1) Notebook E2E audit**
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\run_keiba_notebook_e2e.py --mode audit
+```
+
+結果確認:
+
+```powershell
+Get-Content reports\keiba_notebook_e2e_result.json -Raw
+```
+
+**2) Analyze Race API smoke**
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_analyze_race_api.py
+```
+
+**3) Notion output**
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\upload_to_notion.py
+```
+
+### 生成物の保存先
+
+- Notebook実行済みファイル: `reports/e2e_notebooks/`
+- Notebook E2E結果JSON: `reports/keiba_notebook_e2e_result.json`
+- 監査ログ（任意）: `reports/e2e_logs/`
+
 ---
 
 ## 11. ディレクトリ構成
