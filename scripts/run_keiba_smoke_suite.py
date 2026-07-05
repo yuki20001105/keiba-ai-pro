@@ -78,6 +78,20 @@ def _classify_payload_diff(report: dict[str, Any] | None) -> tuple[str, str]:
     return "fail", reason or "contract-error"
 
 
+def _classify_write_guard(report: dict[str, Any] | None) -> tuple[str, str]:
+    if not isinstance(report, dict):
+        return "fail", "write-guard report missing or invalid"
+
+    verdict = str(report.get("verdict") or "")
+    reason = str(report.get("verdict_reason") or "")
+
+    if verdict == "pass":
+        return "pass", reason or "write-disabled-default"
+    if verdict == "warn":
+        return "warn", reason or "guarded"
+    return "fail", reason or "contract-error"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run keiba smoke checks as an operational suite")
     parser.add_argument("--date", default=datetime.now().strftime("%Y%m%d"), help="YYYYMMDD for race-list/preflight checks")
@@ -179,6 +193,23 @@ def main() -> int:
         "reason": pd_reason,
         "note": "Payload contract diff: pass/warn unless contract-error",
         "log_tail": payload_diff_log[-2000:],
+    }
+
+    write_guard_rc, write_guard_log = _run_step("write-guard", [
+        "scripts/smoke_netkeiba_race_write_guard.py",
+        "--race-id", args.race_id,
+        "--date", args.date,
+        "--fastapi-url", args.fastapi_url,
+        *token_args,
+    ])
+    write_guard_report = _read_json(REPORTS_DIR / "netkeiba_race_write_guard_smoke_result.json")
+    wg_result, wg_reason = _classify_write_guard(write_guard_report)
+    suite["steps"]["race_write_guard"] = {
+        "return_code": write_guard_rc,
+        "result": wg_result,
+        "reason": wg_reason,
+        "note": "Write guard: default disabled is pass, contract-error is fail",
+        "log_tail": write_guard_log[-2000:],
     }
 
     results = [str(v.get("result")) for v in suite["steps"].values()]

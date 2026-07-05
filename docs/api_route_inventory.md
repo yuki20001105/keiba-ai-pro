@@ -443,3 +443,58 @@ Operational stance:
 
 Migration marker update:
 - /api/netkeiba/race: `migrationStatus=payload-diff-added`
+
+## 11. P1-9 Guarded Write Orchestration (/api/netkeiba/race/write)
+
+Goal in this phase:
+- add FastAPI write orchestration entrypoint,
+- keep default behavior non-write,
+- require explicit multi-gate confirmation for any future write path,
+- keep existing Next write route unchanged.
+
+Endpoint:
+- POST /api/netkeiba/race/write
+
+Feature flag:
+- `NETKEIBA_RACE_WRITE_ENABLED=false` (default)
+
+Default behavior (flag=false):
+- write is rejected,
+- explicit JSON response is returned,
+- `write_performed=false` is guaranteed.
+
+Disabled response contract example:
+
+```json
+{
+	"success": false,
+	"status": "disabled",
+	"service": "netkeiba-race-write",
+	"write_performed": false,
+	"reason": "NETKEIBA_RACE_WRITE_ENABLED is false"
+}
+```
+
+Guard conditions (all required before future write can run):
+- feature flag is true
+- `confirm_write=true`
+- `dry_run=false`
+- valid `race_id`
+- dry-run precondition status is `ready`
+- preview payload is valid
+
+P1-9 implementation boundary:
+- even when all guards are satisfied, endpoint currently returns guarded no-op,
+- actual write is intentionally not executed in this phase,
+- `write_performed=false` remains guaranteed.
+
+Write guard smoke:
+- script: `scripts/smoke_netkeiba_race_write_guard.py`
+- output: `reports/netkeiba_race_write_guard_smoke_result.json`
+- verdict policy:
+	- default disabled -> pass
+	- blocked/guarded-noop/invalid -> warn
+	- contract error -> fail
+
+Migration marker update:
+- /api/netkeiba/race: `migrationStatus=write-guard-added`

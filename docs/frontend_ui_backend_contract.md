@@ -424,3 +424,38 @@ Operational commands:
 - `python scripts/smoke_netkeiba_race_dry_run.py`
 - `python scripts/compare_netkeiba_race_payload_contract.py`
 - `python scripts/run_keiba_smoke_suite.py`
+
+## 21. Implementation Status (P1-9 Guarded Write Orchestration)
+
+Updated: 2026-07-05
+
+Implemented in this step:
+- Added FastAPI endpoint:
+	- `POST /api/netkeiba/race/write`
+- Added feature flag guard:
+	- `NETKEIBA_RACE_WRITE_ENABLED=false` (default)
+- Added strict gate checks:
+	- flag enabled
+	- `confirm_write=true`
+	- `dry_run=false`
+	- valid `race_id`
+	- dry-run ready + valid preview
+
+Default safety behavior:
+- write is rejected when flag is off
+- `write_performed=false` guaranteed
+- explicit disabled JSON contract returned
+
+Phase boundary:
+- actual write execution remains guarded/no-op in this phase
+- Next `/api/netkeiba/race` existing write path unchanged
+- no DB/Supabase write migration performed
+
+Write guard smoke:
+- Added script: `scripts/smoke_netkeiba_race_write_guard.py`
+- Added output: `reports/netkeiba_race_write_guard_smoke_result.json`
+- Added suite step: `race_write_guard`
+
+Operational commands:
+- `python scripts/smoke_netkeiba_race_write_guard.py`
+- `python scripts/run_keiba_smoke_suite.py`

@@ -21,7 +21,7 @@ import aiohttp
 from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import JSONResponse
 
-from app_config import ULTIMATE_DB, logger  # type: ignore
+from app_config import ULTIMATE_DB, NETKEIBA_RACE_WRITE_ENABLED, logger  # type: ignore
 from deps.auth import require_admin  # type: ignore
 from models import ScrapeRequest, ScrapeResponse, RescrapeResponse  # type: ignore
 from scraping.constants import SCRAPE_HEADERS  # type: ignore
@@ -450,6 +450,93 @@ async def netkeiba_race_dry_run(payload: dict[str, Any] = Body(default={})) -> d
             "status": "unavailable",
             "reason": f"scrape service not reachable: {e}",
         }
+
+
+@router.post("/api/netkeiba/race/write")
+async def netkeiba_race_write(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Guarded write endpoint. Default behavior is non-write until explicitly enabled and validated."""
+    race_id_raw = payload.get("race_id") if isinstance(payload, dict) else None
+    if race_id_raw is None and isinstance(payload, dict):
+        race_id_raw = payload.get("raceId")
+    race_id = str(race_id_raw or "").strip()
+
+    base = {
+        "success": False,
+        "status": "disabled",
+        "service": "netkeiba-race-write",
+        "race_id": race_id,
+        "can_write": False,
+        "write_performed": False,
+        "reason": "NETKEIBA_RACE_WRITE_ENABLED is false",
+    }
+
+    if not NETKEIBA_RACE_WRITE_ENABLED:
+        return base
+
+    confirm_write = bool(payload.get("confirm_write")) if isinstance(payload, dict) else False
+    dry_run_flag = payload.get("dry_run") if isinstance(payload, dict) else None
+    if dry_run_flag is None and isinstance(payload, dict):
+        dry_run_flag = payload.get("dryRun")
+    dry_run = True if dry_run_flag is None else bool(dry_run_flag)
+
+    if not confirm_write:
+        return {
+            **base,
+            "status": "blocked",
+            "reason": "confirm_write=true is required",
+        }
+
+    if dry_run:
+        return {
+            **base,
+            "status": "blocked",
+            "reason": "dry_run=false is required for guarded write path",
+        }
+
+    if not race_id or not re.fullmatch(r"\d{12}", race_id):
+        return {
+            **base,
+            "status": "invalid",
+            "reason": "race_id must be 12 digits",
+        }
+
+    dry_run_result = await netkeiba_race_dry_run(payload)
+    if not isinstance(dry_run_result, dict):
+        return {
+            **base,
+            "status": "invalid",
+            "reason": "dry-run response is invalid",
+        }
+
+    if dry_run_result.get("status") != "ready":
+        return {
+            **base,
+            "status": "blocked",
+            "reason": f"preconditions not ready: dry-run status={dry_run_result.get('status')}",
+            "dry_run_status": dry_run_result.get("status"),
+        }
+
+    preview = dry_run_result.get("preview")
+    tables = preview.get("tables") if isinstance(preview, dict) else None
+    if not isinstance(tables, list) or not tables:
+        return {
+            **base,
+            "status": "blocked",
+            "reason": "payload preview is invalid",
+        }
+
+    # P1-9: write path is intentionally guarded/no-op even when all conditions pass.
+    return {
+        **base,
+        "status": "guarded-noop",
+        "reason": "write implementation is intentionally disabled in this phase",
+        "can_write": True,
+        "write_performed": False,
+        "dry_run_preview": {
+            "tables_count": len(tables),
+            "target_tables": [str(t.get("target_table") or "") for t in tables if isinstance(t, dict)],
+        },
+    }
 
 
 @router.get("/api/scrape/health")

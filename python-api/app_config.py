@@ -110,8 +110,12 @@ SUPABASE_DATA_ENABLED: bool = (
     SUPABASE_ENABLED
     and _os.environ.get("SUPABASE_DATA_ENABLED", "false").lower() in ("true", "1", "yes")
 )
+NETKEIBA_RACE_WRITE_ENABLED: bool = _os.environ.get("NETKEIBA_RACE_WRITE_ENABLED", "false").lower() in (
+    "true", "1", "yes"
+)
 if SUPABASE_ENABLED:
     logger.info(f"Supabase データ操作: {'有効' if SUPABASE_DATA_ENABLED else '無効（認証専用モード）'}")
+logger.info(f"netkeiba race write orchestration: {'有効' if NETKEIBA_RACE_WRITE_ENABLED else '無効（guarded）'}")
 
 
 # ── モデルヘルパー ──────────────────────────────────────────────────

@@ -9,7 +9,7 @@ export type NextRouteMeta = {
   usesSupabaseDirectly?: boolean
   usesScrapeServiceDirectly?: boolean
   migrationTarget?: MigrationTarget
-  migrationStatus?: 'not-started' | 'in-progress' | 'preflight-added' | 'dry-run-added' | 'payload-diff-added' | 'migrated'
+  migrationStatus?: 'not-started' | 'in-progress' | 'preflight-added' | 'dry-run-added' | 'payload-diff-added' | 'write-guard-added' | 'migrated'
   riskLevel?: RiskLevel
 }
 
@@ -22,11 +22,11 @@ export const NEXT_API_ROUTE_CLASSIFICATION: NextRouteMeta[] = [
   {
     route: '/api/netkeiba/race',
     classification: 'experimental',
-    note: 'Mixed external scrape + Supabase write path (write kept in Next, payload-diff comparison added)',
+    note: 'Mixed external scrape + Supabase write path (write kept in Next, guarded write endpoint added in FastAPI)',
     usesSupabaseDirectly: true,
     usesScrapeServiceDirectly: true,
     migrationTarget: 'fastapi-owned-write',
-    migrationStatus: 'payload-diff-added',
+    migrationStatus: 'write-guard-added',
     riskLevel: 'high',
   },
   {
