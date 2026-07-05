@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -74,7 +74,13 @@ def _parse_timestamp(value: Any) -> datetime | None:
     if not isinstance(value, str) or not value.strip():
         return None
     try:
-        return datetime.fromisoformat(value)
+        raw = value.strip()
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
     except Exception:
         return None
 
@@ -83,7 +89,7 @@ def _is_stale(report: dict[str, Any], stale_seconds: int) -> bool:
     ts = _parse_timestamp(report.get("timestamp"))
     if ts is None:
         return False
-    age = (datetime.now() - ts).total_seconds()
+    age = (datetime.now(timezone.utc) - ts).total_seconds()
     return age > max(0, stale_seconds)
 
 

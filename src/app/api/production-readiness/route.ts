@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { spawn } from 'child_process'
 import fs from 'fs'
 import path from 'path'
+import { createClient } from '@supabase/supabase-js'
 
 export const runtime = 'nodejs'
 export const maxDuration = 300
@@ -42,6 +43,12 @@ const SAFE_ENV_KEYS = [
 ]
 
 const NOTION_PREFIX = ['nt', 'n_'].join('')
+
+type AuthzResult = {
+  ok: boolean
+  status: 200 | 401 | 403 | 503
+  error?: string
+}
 
 function toBoolFlag(value: string | undefined, fallback = false): boolean {
   if (value == null) return fallback
@@ -238,6 +245,58 @@ function safeEnvSnapshot(): Record<string, string> {
   return out
 }
 
+async function authorizeReadinessExecution(request: Request): Promise<AuthzResult> {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || ''
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
+  if (!supabaseUrl || !supabaseAnonKey) {
+    return { ok: false, status: 503, error: 'Supabase設定が不足しています' }
+  }
+
+  const authHeader = request.headers.get('Authorization') || ''
+  if (!authHeader.startsWith('Bearer ')) {
+    return { ok: false, status: 401, error: '認証が必要です' }
+  }
+
+  const token = authHeader.slice('Bearer '.length).trim()
+  if (!token) {
+    return { ok: false, status: 401, error: '認証が必要です' }
+  }
+
+  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    global: {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    },
+  })
+
+  const { data: userData, error: userError } = await supabase.auth.getUser()
+  if (userError || !userData.user) {
+    return { ok: false, status: 401, error: '認証が必要です' }
+  }
+
+  const { data: profile, error: profileError } = await supabase
+    .from('profiles')
+    .select('role, subscription_tier')
+    .eq('id', userData.user.id)
+    .single()
+
+  if (profileError || !profile) {
+    return { ok: false, status: 403, error: '権限がありません' }
+  }
+
+  const role = String((profile as Record<string, unknown>).role || '').toLowerCase()
+  const tier = String((profile as Record<string, unknown>).subscription_tier || '').toLowerCase()
+  const isAdmin = role === 'admin'
+  const isPremium = isAdmin || tier === 'premium'
+
+  if (!isPremium) {
+    return { ok: false, status: 403, error: '権限がありません' }
+  }
+
+  return { ok: true, status: 200 }
+}
+
 export async function GET() {
   const appEnv = String(process.env.APP_ENV ?? '').trim() || 'unknown'
   const netkeibaWrite = toBoolFlag(process.env.NETKEIBA_RACE_WRITE_ENABLED, false)
@@ -258,7 +317,15 @@ export async function GET() {
   })
 }
 
-export async function POST() {
+export async function POST(request: Request) {
+  const authz = await authorizeReadinessExecution(request)
+  if (!authz.ok) {
+    return NextResponse.json(
+      { success: false, error: authz.error || 'authorization failed' },
+      { status: authz.status },
+    )
+  }
+
   const checks: CheckItem[] = []
   const mlApiBase = process.env.ML_API_URL || process.env.FASTAPI_URL || 'http://127.0.0.1:8000'
 
