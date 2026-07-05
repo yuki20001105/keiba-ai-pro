@@ -229,3 +229,17 @@ Health response contract:
 Notes:
 - Existing scrape job API (`/api/scrape/status/{job_id}`) remains unchanged for polling.
 - Health check is read-only; no DB mutation.
+
+## 14. Route Classification Reference (P1-2)
+
+Updated: 2026-07-05
+
+Detailed inventory and classification moved to:
+- `docs/api_route_inventory.md`
+
+Next API lightweight metadata source:
+- `src/app/api/route-classification.ts`
+
+Policy:
+- Do not delete routes in the same sprint as classification.
+- Mark deprecated/unused first, then remove only after caller migration is complete.
