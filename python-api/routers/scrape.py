@@ -8,6 +8,7 @@ POST /api/rescrape_incomplete
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -38,7 +39,11 @@ from scraping.storage import _save_race_to_ultimate_db  # type: ignore
 router = APIRouter()
 _SCRAPE_SERVICE_URL = os.environ.get("SCRAPE_SERVICE_URL", "http://localhost:8001")
 _WRITE_TARGET_TABLE_WHITELIST = {"races", "race_results", "race_payouts"}
-_WRITE_MAX_RECORDS_PER_TABLE = 500
+_WRITE_ROW_LIMITS = {
+    "races": 1,
+    "race_results": 30,
+    "race_payouts": 100,
+}
 
 
 @router.post("/api/scrape/start")
@@ -350,7 +355,7 @@ def _validate_writer_preview(preview: Any) -> dict[str, Any]:
         "tables_count": 0,
         "total_records": 0,
         "target_tables": [],
-        "max_records_per_table": _WRITE_MAX_RECORDS_PER_TABLE,
+        "row_limits": dict(_WRITE_ROW_LIMITS),
     }
 
     tables = preview.get("tables") if isinstance(preview, dict) else None
@@ -383,10 +388,13 @@ def _validate_writer_preview(preview: Any) -> dict[str, Any]:
         if records_count < 0:
             issues.append(f"records_count must be >= 0 for target_table={target_table}")
             continue
-        if records_count > _WRITE_MAX_RECORDS_PER_TABLE:
+        row_limit = _WRITE_ROW_LIMITS.get(target_table)
+        if row_limit is None:
+            issues.append(f"row_limit is undefined for target_table={target_table}")
+        elif records_count > row_limit:
             issues.append(
                 f"records_count exceeds limit for target_table={target_table}: "
-                f"{records_count}>{_WRITE_MAX_RECORDS_PER_TABLE}"
+                f"{records_count}>{row_limit}"
             )
         total_records += records_count
 
@@ -401,26 +409,93 @@ def _validate_writer_preview(preview: Any) -> dict[str, Any]:
     }
 
 
+def _build_payload_hash(payload: dict[str, Any], preview_summary: dict[str, Any]) -> str:
+    hash_seed = {
+        "race_id": str(payload.get("race_id") or payload.get("raceId") or ""),
+        "date": str(payload.get("date") or ""),
+        "confirm_write": _to_bool(payload.get("confirm_write")),
+        "dry_run": _to_bool(payload.get("dry_run"), default=True),
+        "payload_contract_approved": _to_bool(payload.get("payload_contract_approved") or payload.get("payload_contract_ok")),
+        "user_id": str(payload.get("user_id") or payload.get("userId") or ""),
+        "target_tables": preview_summary.get("target_tables") if isinstance(preview_summary, dict) else [],
+        "total_records": preview_summary.get("total_records") if isinstance(preview_summary, dict) else 0,
+    }
+    raw = json.dumps(hash_seed, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _build_idempotency_key(race_id: str, payload_hash: str) -> str:
+    return f"netkeiba_race:{race_id}:{payload_hash[:16]}"
+
+
+def _build_audit_payload_preview(
+    *,
+    race_id: str,
+    requested_at: str,
+    app_env: str,
+    dry_run: bool,
+    confirm_write: bool,
+    target_tables: list[str],
+    records_count: int,
+    payload_hash: str,
+    write_performed: bool,
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "race_id": race_id,
+        "requested_at": requested_at,
+        "app_env": app_env,
+        "dry_run": dry_run,
+        "confirm_write": confirm_write,
+        "target_tables": target_tables,
+        "records_count": records_count,
+        "payload_hash": payload_hash,
+        "write_performed": write_performed,
+        "reason": reason,
+    }
+
+
 def _build_guarded_writer_stub(
     race_id: str,
     preview_summary: dict[str, Any],
     payload_contract_approved: bool,
+    idempotency_key: str,
+    payload_hash: str,
+    requested_at: str,
+    confirm_write: bool,
+    dry_run: bool,
 ) -> dict[str, Any]:
-    timestamp = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    audit_payload_preview = _build_audit_payload_preview(
+        race_id=race_id,
+        requested_at=requested_at,
+        app_env=APP_ENV,
+        dry_run=dry_run,
+        confirm_write=confirm_write,
+        target_tables=list(preview_summary.get("target_tables") or []),
+        records_count=int(preview_summary.get("total_records") or 0),
+        payload_hash=payload_hash,
+        write_performed=False,
+        reason="staging writer implementation is intentionally disabled in this phase",
+    )
     return {
         "status": "guarded-stub",
         "write_performed": False,
         "reason": "staging writer implementation is intentionally disabled in this phase",
         "writer": {
             "name": "staging_netkeiba_writer_stub",
-            "phase": "P1-11",
+            "phase": "P1-12",
             "target_tables_whitelist": sorted(_WRITE_TARGET_TABLE_WHITELIST),
+            "row_limits": dict(_WRITE_ROW_LIMITS),
             "preview_summary": preview_summary,
             "payload_contract_approved": payload_contract_approved,
+            "idempotency_key": idempotency_key,
+            "payload_hash": payload_hash,
+            "requested_at": requested_at,
+            "audit_payload_preview": audit_payload_preview,
             "implementation": "no-op",
             "todo": [
                 "snapshot backup before write",
-                "idempotency key validation",
+                "idempotency key persistence and duplicate guard",
                 "audit log persistence",
                 "duplicate prevention",
                 "rollback execution plan",
@@ -437,13 +512,14 @@ def _build_guarded_writer_stub(
             "snapshot": {
                 "snapshot_id": f"prewrite-{race_id}-{int(datetime.utcnow().timestamp())}",
                 "captured": False,
-                "phase": "design-only",
+                "phase": "design-only-no-persist",
                 "captured_at": None,
             },
             "audit": {
                 "event_type": "netkeiba_race_write_guarded_stub",
-                "event_time": timestamp,
-                "phase": "P1-11",
+                "event_time": requested_at,
+                "phase": "P1-12",
+                "persisted": False,
             },
         },
     }
@@ -690,11 +766,23 @@ async def netkeiba_race_write(payload: dict[str, Any] = Body(default={})) -> dic
             "preview_validation": preview_validation,
         }
 
+    preview_summary = preview_validation.get("summary") if isinstance(preview_validation, dict) else {}
+    payload_hash = _build_payload_hash(payload if isinstance(payload, dict) else {}, preview_summary if isinstance(preview_summary, dict) else {})
+    idempotency_key = _build_idempotency_key(race_id, payload_hash)
+    requested_at = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
     writer_stub = _build_guarded_writer_stub(
         race_id=race_id,
-        preview_summary=preview_validation.get("summary") if isinstance(preview_validation, dict) else {},
+        preview_summary=preview_summary if isinstance(preview_summary, dict) else {},
         payload_contract_approved=payload_contract_approved,
+        idempotency_key=idempotency_key,
+        payload_hash=payload_hash,
+        requested_at=requested_at,
+        confirm_write=confirm_write,
+        dry_run=dry_run,
     )
+
+    audit_payload_preview = writer_stub.get("writer", {}).get("audit_payload_preview") if isinstance(writer_stub, dict) else None
 
     # P1-11: staging guard design is active, but actual write remains intentionally disabled.
     return {
@@ -705,10 +793,14 @@ async def netkeiba_race_write(payload: dict[str, Any] = Body(default={})) -> dic
         "can_write": True,
         "write_performed": False,
         "payload_contract_approved": payload_contract_approved,
+        "idempotency_key": idempotency_key,
+        "payload_hash": payload_hash,
+        "audit_payload_preview": audit_payload_preview,
         "dry_run_preview": {
-            "tables_count": preview_validation["summary"]["tables_count"],
-            "target_tables": preview_validation["summary"]["target_tables"],
-            "total_records": preview_validation["summary"]["total_records"],
+            "tables_count": preview_summary.get("tables_count", 0),
+            "target_tables": preview_summary.get("target_tables", []),
+            "total_records": preview_summary.get("total_records", 0),
+            "row_limits": preview_summary.get("row_limits", {}),
         },
         "writer_stub": writer_stub,
     }

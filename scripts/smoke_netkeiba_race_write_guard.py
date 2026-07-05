@@ -11,6 +11,12 @@ from urllib import error, request
 
 
 VALID_STATUSES = {"disabled", "blocked", "guarded-noop", "guarded-stub", "invalid"}
+_TABLE_WHITELIST = {"races", "race_results", "race_payouts"}
+_ROW_LIMITS = {
+    "races": 1,
+    "race_results": 30,
+    "race_payouts": 100,
+}
 
 
 def _http_json(url: str, payload: dict[str, Any], token: str | None = None) -> tuple[int, dict[str, Any] | None, str | None]:
@@ -91,6 +97,27 @@ class _StubScrapeHandler(BaseHTTPRequestHandler):
             req = {}
 
         race_id = str(req.get("race_id") or "202406010101")
+        too_many_results = race_id.endswith("9999")
+        results_count = 31 if too_many_results else 1
+
+        results = []
+        for i in range(results_count):
+            horse_no = i + 1
+            results.append(
+                {
+                    "finish_position": horse_no,
+                    "bracket_number": min(8, ((horse_no - 1) % 8) + 1),
+                    "horse_number": horse_no,
+                    "horse_name": f"stub-{race_id}-{horse_no}",
+                    "sex_age": "牡3",
+                    "jockey_weight": 55.0,
+                    "jockey_name": "stub jockey",
+                    "finish_time": "1:34.5",
+                    "odds": 2.5,
+                    "popularity": horse_no,
+                }
+            )
+
         resp = {
             "success": True,
             "race_info": {
@@ -101,20 +128,7 @@ class _StubScrapeHandler(BaseHTTPRequestHandler):
                 "weather": "晴",
                 "field_condition": "良",
             },
-            "results": [
-                {
-                    "finish_position": 1,
-                    "bracket_number": 1,
-                    "horse_number": 1,
-                    "horse_name": f"stub-{race_id}",
-                    "sex_age": "牡3",
-                    "jockey_weight": 55.0,
-                    "jockey_name": "stub jockey",
-                    "finish_time": "1:34.5",
-                    "odds": 2.5,
-                    "popularity": 1,
-                }
-            ],
+            "results": results,
             "payouts": [
                 {"type": "単勝", "numbers": "1", "amount": "250円"}
             ],
@@ -151,6 +165,62 @@ def _run_check(endpoint: str, payload: dict[str, Any], token: str | None) -> dic
     }
 
 
+def _is_writer_stub_contract_ok(body: dict[str, Any] | None) -> tuple[bool, list[str]]:
+    errors: list[str] = []
+    if not isinstance(body, dict):
+        return False, ["body is not an object"]
+
+    if body.get("status") != "guarded-stub":
+        errors.append("status is not guarded-stub")
+
+    if body.get("write_performed") is not False:
+        errors.append("write_performed must be false")
+
+    idempotency_key = str(body.get("idempotency_key") or "")
+    if not idempotency_key.startswith("netkeiba_race:"):
+        errors.append("idempotency_key prefix is invalid")
+
+    payload_hash = str(body.get("payload_hash") or "")
+    if len(payload_hash) != 64:
+        errors.append("payload_hash length is invalid")
+
+    dry_preview = body.get("dry_run_preview") if isinstance(body.get("dry_run_preview"), dict) else {}
+    target_tables = dry_preview.get("target_tables") if isinstance(dry_preview.get("target_tables"), list) else []
+    if not target_tables:
+        errors.append("dry_run_preview.target_tables is missing")
+    else:
+        if any(t not in _TABLE_WHITELIST for t in target_tables):
+            errors.append("target_tables includes non-whitelisted table")
+
+    row_limits = dry_preview.get("row_limits") if isinstance(dry_preview.get("row_limits"), dict) else {}
+    for table, limit in _ROW_LIMITS.items():
+        if int(row_limits.get(table, -1)) != limit:
+            errors.append(f"row_limits mismatch for {table}")
+
+    writer_stub = body.get("writer_stub") if isinstance(body.get("writer_stub"), dict) else {}
+    writer = writer_stub.get("writer") if isinstance(writer_stub.get("writer"), dict) else {}
+    if writer.get("implementation") != "no-op":
+        errors.append("writer implementation must be no-op")
+
+    audit_preview = body.get("audit_payload_preview") if isinstance(body.get("audit_payload_preview"), dict) else {}
+    required_audit_fields = {
+        "race_id",
+        "requested_at",
+        "app_env",
+        "dry_run",
+        "confirm_write",
+        "target_tables",
+        "records_count",
+        "payload_hash",
+        "write_performed",
+        "reason",
+    }
+    if not required_audit_fields.issubset(set(audit_preview.keys())):
+        errors.append("audit_payload_preview missing required fields")
+
+    return len(errors) == 0, errors
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Smoke test for netkeiba race write guard contract")
     parser.add_argument("--race-id", default="202406010101", help="12-digit race id")
@@ -161,6 +231,7 @@ def main() -> int:
     parser.add_argument("--expect-flag-only", action="store_true", help="Expect NETKEIBA_RACE_WRITE_ENABLED=true only branch to be blocked")
     parser.add_argument("--expect-production-block", action="store_true", help="Expect APP_ENV=production hard block branch")
     parser.add_argument("--expect-staging-lock-missing", action="store_true", help="Expect ALLOW_STAGING_WRITE=false block branch")
+    parser.add_argument("--limit-test-race-id", default="202406019999", help="Race id used for row-limit exceeded case in enabled checks")
     parser.add_argument("--stub-scrape-port", type=int, default=8001, help="Port for local stub scrape service in enabled checks")
     args = parser.parse_args()
 
@@ -366,6 +437,18 @@ def main() -> int:
                 },
                 "expected_status": "guarded-stub",
             },
+            {
+                "name": "row-limit-exceeded",
+                "request": {
+                    "race_id": args.limit_test_race_id,
+                    "date": args.date,
+                    "confirm_write": True,
+                    "dry_run": False,
+                    "payload_contract_approved": True,
+                    "user_id": "guard-smoke-user",
+                },
+                "expected_status": "blocked",
+            },
         ]
 
         checks: list[dict[str, Any]] = []
@@ -395,7 +478,18 @@ def main() -> int:
         guarded_case = next((c for c in checks if c["name"] == "all-conditions-met"), None)
         guarded_can_write = guarded_case.get("can_write") if isinstance(guarded_case, dict) else None
         guarded_flag_ok = guarded_can_write is True
+        guarded_body = guarded_case.get("body") if isinstance(guarded_case, dict) else None
+        guarded_contract_ok, guarded_contract_errors = _is_writer_stub_contract_ok(guarded_body if isinstance(guarded_body, dict) else None)
         all_ok = all_ok and guarded_flag_ok
+        all_ok = all_ok and guarded_contract_ok
+
+        limit_case = next((c for c in checks if c["name"] == "row-limit-exceeded"), None)
+        limit_body = limit_case.get("body") if isinstance(limit_case, dict) else None
+        preview_validation = limit_body.get("preview_validation") if isinstance(limit_body, dict) else None
+        preview_issues = preview_validation.get("issues") if isinstance(preview_validation, dict) else []
+        has_limit_issue = any("records_count exceeds limit" in str(x) for x in preview_issues) if isinstance(preview_issues, list) else False
+        row_limit_block_ok = isinstance(limit_case, dict) and limit_case.get("actual_status") == "blocked" and has_limit_issue
+        all_ok = all_ok and row_limit_block_ok
 
         result = {
             "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -412,6 +506,9 @@ def main() -> int:
             "invariants": {
                 "all_write_performed_false": all(c["write_performed"] is False for c in checks),
                 "guarded_stub_can_write_true": guarded_flag_ok,
+                "guarded_stub_contract_ok": guarded_contract_ok,
+                "row_limit_block_ok": row_limit_block_ok,
+                "guarded_stub_contract_errors": guarded_contract_errors,
             },
         }
         out_name = "netkeiba_race_write_guard_enabled_smoke_result.json"

@@ -537,3 +537,40 @@ Smoke updates:
 
 Hard invariant:
 - any `write_performed=true` is fail
+
+## 24. Implementation Status (P1-12 Staging Writer Stub + Audit/Idempotency)
+
+Updated: 2026-07-05
+
+Implemented in this step:
+- staging writer stub contract expanded while keeping no-op behavior:
+	- `status=guarded-stub`
+	- `write_performed=false`
+	- no FastAPI DB/Supabase write
+- table whitelist enforced in preview validation:
+	- `races`, `race_results`, `race_payouts`
+- row count limits enforced:
+	- `races <= 1`
+	- `race_results <= 30`
+	- `race_payouts <= 100`
+- idempotency design added (preview only):
+	- payload hash generated from guarded request + preview summary
+	- idempotency key format: `netkeiba_race:{race_id}:{payload_hash_prefix}`
+- audit payload preview added (no persistence):
+	- race_id, requested_at, app_env, dry_run, confirm_write
+	- target_tables, records_count, payload_hash, write_performed, reason
+- snapshot/rollback requirement metadata kept explicit and non-persistent.
+
+Smoke updates:
+- enabled mode (`--expect-enabled`) now includes writer-stub contract checks:
+	- whitelist/table metadata validation
+	- row-limit contract validation
+	- idempotency key/payload hash format validation
+	- audit payload preview required fields validation
+	- row-limit exceeded blocked case validation
+
+Safety constraints preserved:
+- Next `/api/netkeiba/race` write path unchanged
+- no UI route switch
+- no `.env` persistence/commit
+- any `write_performed=true` remains fail

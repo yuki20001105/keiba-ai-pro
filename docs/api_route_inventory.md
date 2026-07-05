@@ -1,6 +1,6 @@
 # API Route Inventory and Classification
 
-Updated: 2026-07-05 (P1-11 staging write guard design)
+Updated: 2026-07-05 (P1-12 staging writer stub)
 Scope: Next.js API routes and FastAPI endpoints classification
 
 ## 1. Classification Rules
@@ -585,3 +585,56 @@ Smoke coverage updates:
 
 Migration marker update:
 - /api/netkeiba/race: `migrationStatus=staging-write-guard-designed`
+
+## 14. P1-12 Staging Writer Stub + Audit/Idempotency Design (No Write)
+
+Goal in this phase:
+- keep actual write disabled,
+- define writer boundary contract for staging execution readiness,
+- make idempotency/audit/limits explicit in API response.
+
+P1-12 writer-stub design:
+- writer remains no-op (`status=guarded-stub`, `write_performed=false`),
+- preview payload validation includes:
+	- table whitelist (`races`, `race_results`, `race_payouts`),
+	- row count limits:
+		- `races <= 1`
+		- `race_results <= 30`
+		- `race_payouts <= 100`
+- non-whitelisted table or limit exceed => `blocked`.
+
+Idempotency design (preview only):
+- payload hash is generated from guarded write request + preview summary,
+- idempotency key format:
+	- `netkeiba_race:{race_id}:{payload_hash_prefix}`
+- key is returned in response for future persistence design,
+- no idempotency persistence is executed in this phase.
+
+Audit payload preview (no persistence in this phase):
+- `race_id`
+- `requested_at`
+- `app_env`
+- `dry_run`
+- `confirm_write`
+- `target_tables`
+- `records_count`
+- `payload_hash`
+- `write_performed`
+- `reason`
+
+Rollback/snapshot requirement:
+- snapshot backup is required before any future actual write,
+- rollback execution plan is required,
+- both are returned as requirement metadata only in this phase,
+- no snapshot/audit persistence is executed.
+
+Smoke contract updates:
+- `--expect-enabled` now verifies:
+	- guarded-stub contract,
+	- whitelist/row-limit metadata,
+	- audit payload preview required fields,
+	- idempotency key/payload hash format,
+	- row-limit exceeded path is blocked.
+
+Migration marker update:
+- /api/netkeiba/race: `migrationStatus=staging-writer-stub-added`

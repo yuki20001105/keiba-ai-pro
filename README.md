@@ -827,6 +827,13 @@ python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_write_guard.py
 - warn: blocked / guarded-noop / invalid
 - fail: contract-error
 
+P1-12 writer-stub 契約（enabled 時）:
+- guarded-stub でも write_performed は常に false
+- table whitelist: races / race_results / race_payouts
+- row limit: races<=1, race_results<=30, race_payouts<=100
+- idempotency key と payload hash をレスポンスで確認
+- audit payload preview をレスポンスで確認（永続保存はしない）
+
 feature flag ON の限定検証（永続化しない）:
 
 ```powershell
@@ -843,6 +850,11 @@ $env:APP_ENV = "staging"
 cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
 python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_write_guard.py --expect-enabled
 ```
+
+enabled-mode では次を追加確認:
+- guarded-stub 契約が成立
+- row-limit 超過ケースが blocked
+- audit/idempotency の必須フィールドが存在
 
 enabled-mode 付き suite（任意）:
 
