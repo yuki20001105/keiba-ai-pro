@@ -6,7 +6,9 @@ import sqlite3
 import pandas as pd
 import numpy as np
 import json
+import time
 from pathlib import Path
+from functools import lru_cache
 
 # 会場コード → 会場名 マップ（旧データでコードが数字のまま保存されているケースを学習時に解決）
 _VENUE_MAP = {
@@ -24,6 +26,102 @@ _VENUE_MAP = {
     '60': '佐賀',
     '65': '帯広(ばんえい)', '66': '中津',
 }
+
+
+def _repo_root_from_db_path(db_path: Path) -> Path:
+    """Infer repository root from db path (.../keiba/data/keiba_ultimate.db)."""
+    p = Path(db_path).resolve()
+    # Expected: <repo>/keiba/data/keiba_ultimate.db
+    return p.parents[2] if len(p.parents) >= 3 else p.parent
+
+
+def _optimize_dataframe_memory(df: pd.DataFrame) -> pd.DataFrame:
+    """Lightweight memory optimization for notebook audit usage."""
+    out = df.copy()
+    for col in out.columns:
+        s = out[col]
+        if pd.api.types.is_integer_dtype(s):
+            out[col] = pd.to_numeric(s, downcast="integer")
+        elif pd.api.types.is_float_dtype(s):
+            out[col] = pd.to_numeric(s, downcast="float")
+        elif pd.api.types.is_object_dtype(s):
+            # Keep object dtype to preserve notebook logic relying on Series.any() etc.
+            continue
+    return out
+
+
+def _save_training_cache(df: pd.DataFrame, cache_dir: Path, prefer_parquet: bool = True) -> Path | None:
+    """Persist training cache for faster notebook replay."""
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    parquet_path = cache_dir / "ultimate_frame.parquet"
+    csv_path = cache_dir / "ultimate_frame.csv"
+
+    if prefer_parquet:
+        try:
+            df.to_parquet(parquet_path, index=False)
+            return parquet_path
+        except Exception:
+            pass
+
+    try:
+        df.to_csv(csv_path, index=False)
+        return csv_path
+    except Exception:
+        return None
+
+
+@lru_cache(maxsize=4)
+def _cached_load_ultimate_training_frame(db_path_str: str) -> pd.DataFrame:
+    return load_ultimate_training_frame(Path(db_path_str))
+
+
+def load_ultimate_training_frame_cached(
+    db_path: Path,
+    cache_dir: Path | None = None,
+    prefer_parquet: bool = True,
+    profile: bool = False,
+    optimize_memory: bool = False,
+) -> pd.DataFrame:
+    """Cached loader compatible with notebook audit call signature."""
+    stage_profile = {}
+    t0 = time.perf_counter()
+
+    cache_path = None
+    if cache_dir is not None:
+        cache_dir = Path(cache_dir)
+        cache_path = cache_dir / "ultimate_frame.parquet"
+        if prefer_parquet and cache_path.exists():
+            try:
+                df_cached = pd.read_parquet(cache_path)
+                if profile:
+                    stage_profile["read_cache"] = round(time.perf_counter() - t0, 3)
+                    df_cached.attrs["stage_profile"] = stage_profile
+                return _optimize_dataframe_memory(df_cached) if optimize_memory else df_cached
+            except Exception:
+                pass
+
+    resolved = str(Path(db_path).resolve())
+    df = _cached_load_ultimate_training_frame(resolved).copy()
+    if profile:
+        stage_profile["load_db"] = round(time.perf_counter() - t0, 3)
+
+    if optimize_memory:
+        t_opt = time.perf_counter()
+        df = _optimize_dataframe_memory(df)
+        if profile:
+            stage_profile["optimize_memory"] = round(time.perf_counter() - t_opt, 3)
+
+    if cache_dir is not None:
+        t_cache = time.perf_counter()
+        _save_training_cache(df, cache_dir, prefer_parquet=prefer_parquet)
+        if profile:
+            stage_profile["save_cache"] = round(time.perf_counter() - t_cache, 3)
+
+    if profile:
+        stage_profile["total"] = round(time.perf_counter() - t0, 3)
+        df.attrs["stage_profile"] = stage_profile
+    return df
 
 def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
     """

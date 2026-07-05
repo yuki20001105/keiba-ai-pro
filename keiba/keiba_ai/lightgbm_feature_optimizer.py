@@ -40,6 +40,68 @@ VENUE_NORMALIZE_MAP: dict = {
 }
 
 
+def resolve_training_mode(
+    *,
+    fast_mode: bool,
+    audit_mode: bool,
+    n_trials_fast: int,
+    n_trials_prod: int,
+    n_trials_audit: int,
+    n_splits_fast: int,
+    n_splits_prod: int,
+    n_splits_audit: int,
+    boosting_fast: str,
+    boosting_prod: str,
+    boosting_audit: str,
+    num_boost_round_fast: int,
+    num_boost_round_prod: int,
+    num_boost_round_audit: int,
+) -> dict:
+    if audit_mode:
+        return {
+            "mode": "audit",
+            "n_trials": int(n_trials_audit),
+            "n_splits": int(n_splits_audit),
+            "boosting_type": str(boosting_audit),
+            "num_boost_round": int(num_boost_round_audit),
+        }
+    if fast_mode:
+        return {
+            "mode": "fast",
+            "n_trials": int(n_trials_fast),
+            "n_splits": int(n_splits_fast),
+            "boosting_type": str(boosting_fast),
+            "num_boost_round": int(num_boost_round_fast),
+        }
+    return {
+        "mode": "prod",
+        "n_trials": int(n_trials_prod),
+        "n_splits": int(n_splits_prod),
+        "boosting_type": str(boosting_prod),
+        "num_boost_round": int(num_boost_round_prod),
+    }
+
+
+def apply_gpu_mode_recommendation(
+    runtime: dict,
+    *,
+    fast_mode: bool | None = None,
+    n_trials: int | None = None,
+    boosting_type: str | None = None,
+    n_splits_fast: int = 3,
+    n_splits_prod: int = 5,
+) -> dict:
+    out = dict(runtime)
+    if fast_mode is not None:
+        out["mode"] = "fast" if fast_mode else "prod"
+        out["n_splits"] = int(n_splits_fast if fast_mode else n_splits_prod)
+    if n_trials is not None:
+        out["n_trials"] = int(n_trials)
+    if boosting_type:
+        out["boosting_type"] = str(boosting_type)
+    return out
+
+
 class LightGBMFeatureOptimizer:
     """LightGBM用の包括的な特徴量最適化クラス
     
@@ -466,6 +528,9 @@ class LightGBMFeatureOptimizer:
         print(f"    'categorical_feature': {self.categorical_features}")
         print(f"    'max_cat_to_onehot': 4  # 4種類以下は自動でワンホット化")
         print("="*80 + "\n")
+
+        # pandas nullable dtypes may keep pd.NA, which breaks downstream np.isfinite.
+        df = self._normalize_nullable_values(df)
         
         self.fitted = True
         return df, self.categorical_features
@@ -556,8 +621,19 @@ class LightGBMFeatureOptimizer:
         # 特徴量変換（対数変換・ベイズ平滑化）
         df = self._add_feature_transforms(df)
 
+        # pandas nullable dtypes may keep pd.NA, which breaks downstream np.isfinite.
+        df = self._normalize_nullable_values(df)
+
         print(f"  ✓ 変換完了: {len(df.columns)}カラム")
 
+        return df
+
+    def _normalize_nullable_values(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Convert pandas nullable scalar NA to numpy NaN for numeric safety."""
+        df = df.replace({pd.NA: np.nan})
+        for col in df.columns:
+            if pd.api.types.is_extension_array_dtype(df[col].dtype) and pd.api.types.is_numeric_dtype(df[col].dtype):
+                df[col] = pd.to_numeric(df[col], errors='coerce').astype(float)
         return df
     
     def _label_encode_column(self, df: pd.DataFrame, col: str, new_col: str) -> Tuple[pd.DataFrame, Optional[str]]:
