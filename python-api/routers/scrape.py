@@ -143,7 +143,7 @@ async def netkeiba_race_list(date: str):
 
 
 @router.get("/api/scrape/health")
-async def scrape_health() -> dict | JSONResponse:
+async def scrape_health() -> dict:
     """スクレイプ系サービスのヘルスチェック（read-only, 契約固定）。"""
     timestamp = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
     try:
