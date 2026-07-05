@@ -1064,6 +1064,23 @@ cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
 python-api\.venv\Scripts\python.exe scripts\run_keiba_smoke_suite.py --strict-preflight
 ```
 
+**UI連携 最終確認**
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+npm run lint
+npm run build
+python scripts/run_keiba_smoke_suite.py
+git grep -n -I "secret-prefix-check"
+git status --short
+```
+
+確認方針:
+- UI画面 / Next API / FastAPI の連携は完成扱い
+- P1-16 sandbox write-readback runtime actual pass は別管理
+- default UI/API 動線で危険な write は走らない
+- DB / reports JSON / metadata は Git 管理対象に含めない
+
 ### 生成物の保存先
 
 - Notebook実行済みファイル: `reports/e2e_notebooks/`

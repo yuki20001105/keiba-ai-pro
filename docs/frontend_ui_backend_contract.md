@@ -735,3 +735,25 @@ Safety constraints preserved:
 - production write remains blocked,
 - base tables (`races`, `race_results`, `race_payouts`) are not write/readback targets,
 - Next `/api/netkeiba/race` route and UI flow remain unchanged.
+
+## 30. UI Frontend Integration Final State
+
+Updated: 2026-07-05
+
+Completed and treated as stable:
+- UI page to Next API to FastAPI call chains,
+- Premium/Admin UI guard checks,
+- dedicated health check contracts,
+- route classification and direct-path inventory,
+- smoke suite baseline for default UI/API flows,
+- lint/build stabilization for frontend and API contract verification.
+
+Not included in UI integration completion:
+- P1-16 sandbox write-readback runtime actual pass,
+- upstream ready live-write verification,
+- sandbox write-readback PR merge decision,
+- production/base-table write migration.
+
+Operational rule:
+- default UI/API navigation stays non-write,
+- sandbox write-readback remains an explicit migration verification step handled separately.

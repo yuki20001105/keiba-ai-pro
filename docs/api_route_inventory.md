@@ -844,3 +844,25 @@ Safety behavior preserved:
 
 Migration marker update:
 - /api/netkeiba/race: `migrationStatus=sandbox-write-readback-added`
+
+## 20. UI Frontend Integration Final State
+
+Updated: 2026-07-05
+
+Completion scope considered done:
+- UI screens calling Next API routes,
+- Next API to FastAPI routing contracts,
+- Premium/Admin UI guard behavior,
+- dedicated health check contracts,
+- route classification and direct-path inventory,
+- smoke suite coverage for default non-write flows,
+- lint/build verification stability.
+
+Explicitly separate from UI integration completion:
+- P1-16 sandbox write-readback runtime actual pass,
+- upstream scrape service ready verification,
+- develop merge decision for sandbox write-readback PR.
+
+Safety note:
+- default UI/API flows do not perform sandbox write or production/base-table write,
+- runtime write-readback remains an explicit opt-in data-migration verification step.
