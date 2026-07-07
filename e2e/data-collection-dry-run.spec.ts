@@ -1,9 +1,22 @@
 import { test, expect } from '@playwright/test'
-import { mockAuth, mockDataStats } from './helpers/mock-api'
+import { mockDataStats } from './helpers/mock-api'
+
+const E2E_EMAIL = process.env.E2E_EMAIL || 'yuki20001105@icloud.com'
+const E2E_PASSWORD = process.env.E2E_PASSWORD || ''
+
+async function login(page: import('@playwright/test').Page) {
+  await page.goto('/login')
+  await expect(page.locator('input[type="email"]')).toBeVisible({ timeout: 30000 })
+  await page.locator('input[type="email"]').fill(E2E_EMAIL)
+  await page.locator('input[type="password"]').fill(E2E_PASSWORD)
+  await page.locator('form button[type="submit"]').click()
+  await page.waitForURL('**/home', { timeout: 30000 })
+}
 
 test.describe('データ取得 Dry-run UI', () => {
   test.beforeEach(async ({ page }) => {
-    await mockAuth(page)
+    test.skip(!E2E_PASSWORD, 'E2E_PASSWORD is required for auth-guarded routes')
+    await login(page)
     await mockDataStats(page)
     await page.route('/api/scrape/health**', route =>
       route.fulfill({ status: 200, json: { status: 'healthy' } })
@@ -68,8 +81,9 @@ test.describe('データ取得 Dry-run UI', () => {
     await page.getByRole('button', { name: 'Dry-run' }).click()
 
     await expect(page.getByText('Dry-run 結果（実取得なし）')).toBeVisible()
-    await expect(page.getByText('estimated request count')).toBeVisible()
-    await expect(page.getByText('8')).toBeVisible()
+    const estReqCard = page.locator('div').filter({ hasText: 'estimated request count' }).first()
+    await expect(estReqCard).toBeVisible()
+    await expect(estReqCard).toContainText('8')
     await expect(page.getByText('rate limit policy')).toBeVisible()
   })
 
