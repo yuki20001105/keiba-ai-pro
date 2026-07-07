@@ -42,6 +42,39 @@ type ScrapeDryRunResult = {
   }
 }
 
+type FetchSummaryHistoryItem = {
+  job_id: string
+  status: string
+  created_at?: string
+  updated_at?: string
+  fetch_summary?: {
+    mode?: string
+    start_date?: string
+    end_date?: string
+    saved_races?: number
+    saved_horses?: number
+    elapsed_time_sec?: number
+    dry_run?: {
+      estimated_request_count?: number
+      cache_hit_count?: number
+      cache_miss_count?: number
+      resume_hit_count?: number
+      estimated_runtime_sec?: number
+    }
+    metrics?: {
+      network_requests?: number
+      cache_hits?: number
+      resume_hits?: number
+      retry_count?: number
+      status_429?: number
+      status_403?: number
+      status_500?: number
+      status_503?: number
+      timeout_count?: number
+    }
+  }
+}
+
 export default function DataCollectionPage() {
   // 期間指定用
   const now = new Date()
@@ -54,6 +87,8 @@ export default function DataCollectionPage() {
   const [dryRunResult, setDryRunResult] = useState<ScrapeDryRunResult | null>(null)
   const [dryRunExecuted, setDryRunExecuted] = useState(false)
   const [executeWarn, setExecuteWarn] = useState('')
+  const [fetchHistory, setFetchHistory] = useState<FetchSummaryHistoryItem[]>([])
+  const [fetchHistoryLoading, setFetchHistoryLoading] = useState(false)
   const [toast, setToast] = useState({ visible: false, message: '', type: 'success' as 'success' | 'error' })
   const showToast = (message: string, type: 'success' | 'error' = 'success') =>
     setToast({ visible: true, message, type })
@@ -129,7 +164,23 @@ export default function DataCollectionPage() {
   useEffect(() => {
     loadStats()
     checkLocalApi()
+    loadFetchSummaryHistory()
   }, [])
+
+  const loadFetchSummaryHistory = async () => {
+    setFetchHistoryLoading(true)
+    try {
+      const res = await authFetch('/api/scrape/history?limit=10')
+      if (!res.ok) return
+      const data = await res.json().catch(() => ({}))
+      const jobs = Array.isArray(data?.jobs) ? data.jobs : []
+      setFetchHistory(jobs.filter((j: any) => !!j?.fetch_summary))
+    } catch (error) {
+      console.error('fetch history load error:', error)
+    } finally {
+      setFetchHistoryLoading(false)
+    }
+  }
 
   const loadStats = async () => {
     try {
@@ -205,6 +256,7 @@ export default function DataCollectionPage() {
       const result = await startBatchScrape(startPeriod, endPeriod, forceRescrape)
       showToast(`取得完了 — ${result.stats.total_months}ヶ月 / ${result.races_collected}レース / 所要: ${result.elapsed_time}秒`)
       loadStats()
+      loadFetchSummaryHistory()
     } catch (error: any) {
       showToast(`取得エラー: ${error.message}`, 'error')
     }
@@ -281,6 +333,7 @@ export default function DataCollectionPage() {
       setDryRunResult(normalized)
       setDryRunExecuted(true)
       showToast('Dry-run完了（HTTPアクセスなし）')
+      loadFetchSummaryHistory()
     } catch (error: any) {
       setDryRunResult(null)
       showToast(`Dry-runエラー: ${error.message}`, 'error')
@@ -506,6 +559,59 @@ export default function DataCollectionPage() {
             <span className="text-xs text-[#555]">{batchResult.elapsed_time}秒</span>
           </div>
         )}
+
+        {/* fetch summary 履歴 */}
+        <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-5">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-medium text-white">fetch summary 履歴</h2>
+            <button
+              onClick={loadFetchSummaryHistory}
+              className="text-xs text-[#555] hover:text-[#888] transition-colors"
+            >
+              {fetchHistoryLoading ? '更新中...' : '更新'}
+            </button>
+          </div>
+
+          {fetchHistory.length === 0 ? (
+            <div className="text-xs text-[#555] py-3">履歴がありません（Dry-run または 取得実行後に表示されます）</div>
+          ) : (
+            <div className="space-y-2">
+              {fetchHistory.map((item) => {
+                const summary = item.fetch_summary || {}
+                const metrics = summary.metrics || {}
+                const dry = summary.dry_run || {}
+                const mode = summary.mode || '-'
+                return (
+                  <div key={item.job_id} className="rounded border border-[#1e1e1e] bg-[#0a0a0a] p-3">
+                    <div className="flex flex-wrap items-center gap-2 mb-2">
+                      <span className="text-[11px] px-2 py-0.5 rounded bg-[#1f2937] text-[#dbeafe]">{mode}</span>
+                      <span className="text-[11px] text-[#888]">job: {item.job_id}</span>
+                      <span className="text-[11px] text-[#666]">{summary.start_date || '-'} ~ {summary.end_date || '-'}</span>
+                      <span className="text-[11px] text-[#666]">updated: {item.updated_at || '-'}</span>
+                    </div>
+                    {mode === 'dry-run' ? (
+                      <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-[11px]">
+                        <div className="text-[#aaa]">est req: <span className="text-white">{dry.estimated_request_count ?? '-'}</span></div>
+                        <div className="text-[#aaa]">cache hit: <span className="text-white">{dry.cache_hit_count ?? '-'}</span></div>
+                        <div className="text-[#aaa]">cache miss: <span className="text-white">{dry.cache_miss_count ?? '-'}</span></div>
+                        <div className="text-[#aaa]">resume hit: <span className="text-white">{dry.resume_hit_count ?? '-'}</span></div>
+                        <div className="text-[#aaa]">est runtime: <span className="text-white">{Math.ceil(Number(dry.estimated_runtime_sec || 0))} sec</span></div>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-[11px]">
+                        <div className="text-[#aaa]">saved races: <span className="text-white">{summary.saved_races ?? '-'}</span></div>
+                        <div className="text-[#aaa]">saved horses: <span className="text-white">{summary.saved_horses ?? '-'}</span></div>
+                        <div className="text-[#aaa]">elapsed: <span className="text-white">{Math.ceil(Number(summary.elapsed_time_sec || 0))} sec</span></div>
+                        <div className="text-[#aaa]">network req: <span className="text-white">{metrics.network_requests ?? '-'}</span></div>
+                        <div className="text-[#aaa]">retries: <span className="text-white">{metrics.retry_count ?? '-'}</span></div>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
 
         {/* 取得済みデータ統計 */}
         <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-5">

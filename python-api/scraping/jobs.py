@@ -218,6 +218,52 @@ def get_job(job_id: str) -> dict | None:
     return _load_job_from_db(job_id)
 
 
+def list_recent_jobs(limit: int = 20) -> list[dict]:
+    """SQLite から最近のジョブ履歴を取得する（fetch_summary 抜粋付き）。"""
+    safe_limit = max(1, min(int(limit), 100))
+    try:
+        conn = sqlite3.connect(str(_JOBS_DB_PATH))
+        rows = conn.execute(
+            """
+            SELECT job_id, status, progress, result, error, created_at, updated_at
+            FROM scrape_jobs
+            ORDER BY datetime(updated_at) DESC
+            LIMIT ?
+            """,
+            (safe_limit,),
+        ).fetchall()
+        conn.close()
+    except Exception:
+        return []
+
+    history: list[dict] = []
+    for row in rows:
+        try:
+            job_id = str(row[0])
+            status = str(row[1] or "unknown")
+            progress = json.loads(row[2] or "{}")
+            result = json.loads(row[3] or "null")
+            error = json.loads(row[4] or "null")
+            created_at = row[5]
+            updated_at = row[6]
+            fetch_summary = (result or {}).get("fetch_summary") if isinstance(result, dict) else None
+            history.append(
+                {
+                    "job_id": job_id,
+                    "status": status,
+                    "progress": progress,
+                    "result": result,
+                    "error": error,
+                    "created_at": created_at,
+                    "updated_at": updated_at,
+                    "fetch_summary": fetch_summary,
+                }
+            )
+        except Exception:
+            continue
+    return history
+
+
 # ============================================================
 # バックグラウンドスクレイピングジョブ
 # ============================================================

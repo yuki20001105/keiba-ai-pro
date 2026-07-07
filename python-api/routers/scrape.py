@@ -34,7 +34,7 @@ from deps.auth import require_admin  # type: ignore
 from models import ScrapeRequest, ScrapeResponse, RescrapeResponse  # type: ignore
 from scraping.constants import SCRAPE_HEADERS  # type: ignore
 from scraping.fetch_pipeline import fetch_text  # type: ignore
-from scraping.jobs import _scrape_jobs, _JOBS_LOCK, _purge_old_jobs, _run_scrape_job, get_job  # type: ignore
+from scraping.jobs import _scrape_jobs, _JOBS_LOCK, _purge_old_jobs, _run_scrape_job, get_job, list_recent_jobs  # type: ignore
 from scraping.race import scrape_race_full  # type: ignore
 from scraping.storage import _save_race_to_ultimate_db  # type: ignore
 
@@ -303,6 +303,16 @@ async def scrape_status(job_id: str):
         "progress": job["progress"],
         "result": job.get("result"),
         "error": job.get("error"),
+    }
+
+
+@router.get("/api/scrape/history")
+async def scrape_history(limit: int = 20):
+    """最近のスクレイピングジョブ履歴を返す。"""
+    jobs = list_recent_jobs(limit=limit)
+    return {
+        "count": len(jobs),
+        "jobs": jobs,
     }
 
 
