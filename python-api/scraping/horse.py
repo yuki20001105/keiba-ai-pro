@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from bs4 import BeautifulSoup
 
 from scraping.constants import HTML_STRAINER, COAT_COLORS, COAT_RE
+from scraping.fetch_pipeline import fetch_text
 
 if TYPE_CHECKING:
     pass
@@ -217,32 +218,42 @@ async def scrape_horse_detail(
                 try:
                     if attempt > 0:
                         await asyncio.sleep(attempt * 1.0)
-                    async with session.get(ped_url_b) as ped_resp_b:
-                        if ped_resp_b.status == 200:
-                            ped_content_b = await ped_resp_b.read()
-                            ped_html_b = ped_content_b.decode("euc-jp", errors="replace")
-                            ped_soup_b = BeautifulSoup(ped_html_b, "lxml", parse_only=HTML_STRAINER)
-                            blood_table_b = ped_soup_b.find("table", class_="blood_table")
-                            if blood_table_b:
-                                _parse_blood_table(blood_table_b, pedigree_result_b)
-                            if pedigree_result_b.get("sire"):
-                                logger.info(f"NAR馬 /ped/ 血統取得成功: {horse_id} sire={pedigree_result_b['sire']}")
-                                _save_pedigree_sqlite(
-                                    horse_id,
-                                    pedigree_result_b.get("sire", ""),
-                                    pedigree_result_b.get("dam", ""),
-                                    pedigree_result_b.get("damsire", ""),
-                                )
-                                _nar_result = pedigree_result_b
-                                break
-                            logger.debug(f"NAR馬 /ped/ 200 だが blood_table 未検出: {horse_id}")
+                    _ped_fetch, ped_html_b = await fetch_text(
+                        session,
+                        ped_url_b,
+                        cache_ttl_sec=30 * 24 * 60 * 60,
+                        resume_key=f"horse:{horse_id}:ped-nar",
+                        min_interval_sec=1.0,
+                        max_retries=3,
+                        retry_statuses={429, 500, 503},
+                        retry_base_sec=2.0,
+                        retry_jitter_sec=0.6,
+                        circuit_threshold=3,
+                        circuit_cooldown_sec=120.0,
+                    )
+                    if _ped_fetch.status == 200:
+                        ped_soup_b = BeautifulSoup(ped_html_b, "lxml", parse_only=HTML_STRAINER)
+                        blood_table_b = ped_soup_b.find("table", class_="blood_table")
+                        if blood_table_b:
+                            _parse_blood_table(blood_table_b, pedigree_result_b)
+                        if pedigree_result_b.get("sire"):
+                            logger.info(f"NAR馬 /ped/ 血統取得成功: {horse_id} sire={pedigree_result_b['sire']}")
+                            _save_pedigree_sqlite(
+                                horse_id,
+                                pedigree_result_b.get("sire", ""),
+                                pedigree_result_b.get("dam", ""),
+                                pedigree_result_b.get("damsire", ""),
+                            )
+                            _nar_result = pedigree_result_b
                             break
-                        elif ped_resp_b.status == 429:
-                            await asyncio.sleep(5.0 + attempt * 3.0)
-                            continue
-                        else:
-                            logger.debug(f"NAR馬 /ped/ HTTP {ped_resp_b.status}: {horse_id}")
-                            break
+                        logger.debug(f"NAR馬 /ped/ 200 だが blood_table 未検出: {horse_id}")
+                        break
+                    elif _ped_fetch.status == 429:
+                        await asyncio.sleep(5.0 + attempt * 3.0)
+                        continue
+                    else:
+                        logger.debug(f"NAR馬 /ped/ HTTP {_ped_fetch.status}: {horse_id}")
+                        break
                 except Exception as e_b:
                     logger.debug(f"NAR馬 /ped/ 取得失敗 試行{attempt + 1} {horse_id}: {e_b}")
                     if attempt < 2:
@@ -256,13 +267,21 @@ async def scrape_horse_detail(
         if not quick_mode and _sp_html_parsed is None:
             try:
                 await asyncio.sleep(1.0)
-                async with session.get(f"https://db.sp.netkeiba.com/horse/{horse_id}/") as _sp_resp2:
-                    if _sp_resp2.status == 200:
-                        _sp_html_parsed = BeautifulSoup(
-                            (await _sp_resp2.read()).decode("euc-jp", errors="replace"),
-                            "lxml",
-                            parse_only=HTML_STRAINER,
-                        )
+                _sp_fetch, _sp_text = await fetch_text(
+                    session,
+                    f"https://db.sp.netkeiba.com/horse/{horse_id}/",
+                    cache_ttl_sec=7 * 24 * 60 * 60,
+                    resume_key=f"horse:{horse_id}:sp",
+                    min_interval_sec=1.0,
+                    max_retries=2,
+                    retry_statuses={429, 500, 503},
+                    retry_base_sec=2.0,
+                    retry_jitter_sec=0.6,
+                    circuit_threshold=3,
+                    circuit_cooldown_sec=120.0,
+                )
+                if _sp_fetch.status == 200:
+                    _sp_html_parsed = BeautifulSoup(_sp_text, "lxml", parse_only=HTML_STRAINER)
             except Exception:
                 pass
 
@@ -298,10 +317,22 @@ async def scrape_horse_detail(
 
     async def _safe_get_horse(u: str):
         try:
-            async with session.get(u) as r:
-                if r.status != 200:
-                    return None
-                return (await r.read()).decode("euc-jp", errors="replace")
+            _fetch, text = await fetch_text(
+                session,
+                u,
+                cache_ttl_sec=7 * 24 * 60 * 60,
+                resume_key=f"horse:{horse_id}:{u}",
+                min_interval_sec=1.0,
+                max_retries=3,
+                retry_statuses={429, 500, 503},
+                retry_base_sec=2.0,
+                retry_jitter_sec=0.6,
+                circuit_threshold=3,
+                circuit_cooldown_sec=120.0,
+            )
+            if _fetch.status != 200:
+                return None
+            return text
         except Exception:
             return None
 
@@ -425,17 +456,27 @@ async def scrape_horse_detail(
                 ped_url = f"https://db.netkeiba.com/horse/ped/{horse_id}/"
                 try:
                     await asyncio.sleep(1.0)
-                    async with session.get(ped_url) as ped_resp:
-                        if ped_resp.status == 200:
-                            ped_content = await ped_resp.read()
-                            ped_html_retry = ped_content.decode("euc-jp", errors="replace")
-                            ped_soup = BeautifulSoup(ped_html_retry, "lxml", parse_only=HTML_STRAINER)
-                            blood_table = ped_soup.find("table", class_="blood_table")
-                            if blood_table:
-                                _parse_blood_table(blood_table, result)
-                                logger.debug(f"ped リトライ成功: {horse_id} sire={result.get('sire')}")
-                        elif ped_resp.status == 429:
-                            await asyncio.sleep(8.0)
+                    _ped_fetch2, ped_html_retry = await fetch_text(
+                        session,
+                        ped_url,
+                        cache_ttl_sec=30 * 24 * 60 * 60,
+                        resume_key=f"horse:{horse_id}:ped-jra",
+                        min_interval_sec=1.0,
+                        max_retries=3,
+                        retry_statuses={429, 500, 503},
+                        retry_base_sec=2.0,
+                        retry_jitter_sec=0.6,
+                        circuit_threshold=3,
+                        circuit_cooldown_sec=120.0,
+                    )
+                    if _ped_fetch2.status == 200:
+                        ped_soup = BeautifulSoup(ped_html_retry, "lxml", parse_only=HTML_STRAINER)
+                        blood_table = ped_soup.find("table", class_="blood_table")
+                        if blood_table:
+                            _parse_blood_table(blood_table, result)
+                            logger.debug(f"ped リトライ成功: {horse_id} sire={result.get('sire')}")
+                    elif _ped_fetch2.status == 429:
+                        await asyncio.sleep(8.0)
                 except Exception as _e:
                     logger.debug(f"ped リトライ失敗 {horse_id}: {_e}")
         else:

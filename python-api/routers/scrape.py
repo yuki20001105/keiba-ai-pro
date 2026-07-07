@@ -33,6 +33,7 @@ from app_config import (  # type: ignore
 from deps.auth import require_admin  # type: ignore
 from models import ScrapeRequest, ScrapeResponse, RescrapeResponse  # type: ignore
 from scraping.constants import SCRAPE_HEADERS  # type: ignore
+from scraping.fetch_pipeline import fetch_text  # type: ignore
 from scraping.jobs import _scrape_jobs, _JOBS_LOCK, _purge_old_jobs, _run_scrape_job, get_job  # type: ignore
 from scraping.race import scrape_race_full  # type: ignore
 from scraping.storage import _save_race_to_ultimate_db  # type: ignore
@@ -261,7 +262,13 @@ async def scrape_start(request: ScrapeRequest, _: dict = Depends(require_admin))
             asyncio.set_event_loop(loop)
             try:
                 loop.run_until_complete(
-                    _run_scrape_job(job_id, request.start_date, request.end_date, request.force_rescrape)
+                    _run_scrape_job(
+                        job_id,
+                        request.start_date,
+                        request.end_date,
+                        request.force_rescrape,
+                        request.dry_run,
+                    )
                 )
             finally:
                 loop.close()
@@ -271,7 +278,11 @@ async def scrape_start(request: ScrapeRequest, _: dict = Depends(require_admin))
         logger.error(f"スレッド起動失敗: {e}")
         _scrape_jobs[job_id]["status"] = "error"
         _scrape_jobs[job_id]["error"] = f"タスク起動失敗: {e}"
-    return {"job_id": job_id, "status": _scrape_jobs[job_id]["status"]}
+    return {
+        "job_id": job_id,
+        "status": _scrape_jobs[job_id]["status"],
+        "mode": "dry-run" if request.dry_run else "execute",
+    }
 
 
 @router.get("/api/scrape/status/{job_id}")
@@ -1583,14 +1594,24 @@ async def scrape_data(request: ScrapeRequest):
             list_url = f"https://db.netkeiba.com/race/list/{date}/"
             logger.info(f"レース一覧取得: {date}")
             try:
-                await asyncio.sleep(0.5)
-                async with session.get(list_url) as resp:
-                    if resp.status != 200:
-                        logger.warning(f"{date}: レース一覧 HTTP {resp.status} → スキップ")
-                        error_dates.append(date)
-                        continue
-                    content = await resp.read()
-                    html = content.decode("euc-jp", errors="ignore")
+                await asyncio.sleep(1.0)
+                _list_result, html = await fetch_text(
+                    session,
+                    list_url,
+                    cache_ttl_sec=12 * 60 * 60,
+                    resume_key=f"legacy-scrape:{date}:list",
+                    min_interval_sec=1.0,
+                    max_retries=3,
+                    retry_statuses={429, 500, 503},
+                    retry_base_sec=2.0,
+                    retry_jitter_sec=0.6,
+                    circuit_threshold=3,
+                    circuit_cooldown_sec=120.0,
+                )
+                if _list_result.status != 200:
+                    logger.warning(f"{date}: レース一覧 HTTP {_list_result.status} → スキップ")
+                    error_dates.append(date)
+                    continue
 
                 race_ids = list(dict.fromkeys(re.findall(r"/race/(\d{12})/", html)))
                 logger.info(f"  {len(race_ids)}レース発見")

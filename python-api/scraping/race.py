@@ -11,7 +11,8 @@ from typing import Optional
 
 from bs4 import BeautifulSoup
 
-from scraping.constants import HTML_STRAINER, VENUE_MAP, SCRAPE_PROXY_URL, is_cloudflare_block
+from scraping.constants import HTML_STRAINER, VENUE_MAP, is_cloudflare_block
+from scraping.fetch_pipeline import fetch_text
 from scraping.horse import scrape_horse_detail
 
 try:
@@ -33,42 +34,33 @@ async def scrape_race_full(
     _quick_mode = quick_mode
 
     url = f"https://db.netkeiba.com/race/{race_id}/"
-    html: str | None = None
-    # ── リトライ付きフェッチ（最大3回、指数バックオフ） ──
-    for _attempt in range(3):
-        try:
-            if _attempt > 0:
-                await asyncio.sleep(2.0 ** _attempt)
-            _get_kwargs: dict = {}
-            if SCRAPE_PROXY_URL:
-                _get_kwargs["proxy"] = SCRAPE_PROXY_URL
-            async with session.get(url, **_get_kwargs) as resp:
-                if resp.status == 429:
-                    logger.warning(f"429 Too Many Requests: {url} (試行{_attempt+1}/3)")
-                    await asyncio.sleep(10.0 + _attempt * 5.0)
-                    continue
-                if resp.status != 200:
-                    logger.warning(f"HTTP {resp.status}: {url}")
-                    return None
-                content = await resp.read()
-                if is_cloudflare_block(content):
-                    logger.error(
-                        f"Cloudflare ブロック検知 ({len(content)}B): {url} — "
-                        f"SCRAPE_PROXY_URL 環境変数でプロキシを設定してください"
-                    )
-                    return None
-                raw = content.decode("euc-jp", errors="replace")
-                if "\ufffd" in raw[:500]:
-                    logger.debug(f"EUC-JP 変換警告 (先頭500文字に置換文字あり): {race_id}")
-                html = raw
-                break
-        except asyncio.TimeoutError:
-            logger.warning(f"タイムアウト {race_id} 試行{_attempt+1}/3")
-        except Exception as e:
-            logger.error(f"取得エラー {race_id} 試行{_attempt+1}/3: {e}")
-    if html is None:
-        logger.error(f"最大リトライ到達、取得失敗: {race_id}")
+    _fetch, html = await fetch_text(
+        session,
+        url,
+        cache_ttl_sec=12 * 60 * 60,
+        resume_key=f"race:{race_id}:result",
+        min_interval_sec=1.0,
+        max_retries=3,
+        retry_statuses={429, 500, 503},
+        retry_base_sec=2.0,
+        retry_jitter_sec=0.6,
+        circuit_threshold=3,
+        circuit_cooldown_sec=120.0,
+    )
+    if _fetch.status != 200:
+        logger.warning(f"HTTP {_fetch.status}: {url}")
         return None
+    if is_cloudflare_block(_fetch.body):
+        logger.error(
+            f"Cloudflare ブロック検知 ({len(_fetch.body)}B): {url} — "
+            f"SCRAPE_PROXY_URL 環境変数でプロキシを設定してください"
+        )
+        return None
+    if not html:
+        logger.error(f"空レスポンス: {race_id}")
+        return None
+    if "\ufffd" in html[:500]:
+        logger.debug(f"EUC-JP 変換警告 (先頭500文字に置換文字あり): {race_id}")
 
     soup = BeautifulSoup(html, "lxml", parse_only=HTML_STRAINER)
     _smalltxt_p = soup.find("p", class_="smalltxt")
@@ -712,18 +704,22 @@ async def _scrape_shutuba_fallback(
     db.netkeiba.com に結果がない（当日・未来レース）場合に
     race.netkeiba.com/race/shutuba.html から出走馬情報を取得する。
     """
-    import httpx
-
     shutuba_url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
-    try:
-        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as hx:
-            resp = await hx.get(shutuba_url)
-        if resp.status_code != 200:
-            logger.warning(f"shutuba HTTP {resp.status_code}: {race_id}")
-            return None
-        html = resp.content.decode("euc-jp", errors="replace")
-    except Exception as e:
-        logger.error(f"shutuba 取得エラー {race_id}: {e}")
+    _fetch, html = await fetch_text(
+        session,
+        shutuba_url,
+        cache_ttl_sec=6 * 60 * 60,
+        resume_key=f"race:{race_id}:shutuba",
+        min_interval_sec=1.0,
+        max_retries=3,
+        retry_statuses={429, 500, 503},
+        retry_base_sec=2.0,
+        retry_jitter_sec=0.6,
+        circuit_threshold=3,
+        circuit_cooldown_sec=120.0,
+    )
+    if _fetch.status != 200:
+        logger.warning(f"shutuba HTTP {_fetch.status}: {race_id}")
         return None
 
     soup = BeautifulSoup(html, "lxml")

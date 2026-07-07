@@ -16,6 +16,12 @@ import httpx
 from bs4 import BeautifulSoup
 
 from scraping.constants import SCRAPE_HEADERS, SCRAPE_PROXY_URL, get_random_headers
+from scraping.fetch_pipeline import (
+    estimate_fetch_plan,
+    fetch_text,
+    get_fetch_metrics,
+    write_fetch_summary,
+)
 from scraping.race import scrape_race_full
 from scraping.storage import (
     _init_sqlite_db,
@@ -217,7 +223,11 @@ def get_job(job_id: str) -> dict | None:
 # ============================================================
 
 async def _run_scrape_job(
-    job_id: str, start_date: str, end_date: str, force_rescrape: bool = False
+    job_id: str,
+    start_date: str,
+    end_date: str,
+    force_rescrape: bool = False,
+    dry_run: bool = False,
 ):
     """バックグラウンドでスクレイピングを実行しジョブストアを更新する"""
     try:
@@ -269,6 +279,38 @@ async def _run_scrape_job(
 
         total = len(dates)
         job["progress"] = {"done": 0, "total": total, "message": f"0/{total}日処理済み"}
+
+        if dry_run:
+            dry_urls: list[str] = []
+            dry_resume_keys: list[str] = []
+            for d in dates:
+                dry_urls.append(f"https://db.netkeiba.com/race/list/{d}/")
+                dry_urls.append(f"https://race.netkeiba.com/top/race_list_sub.html?kaisai_date={d}")
+                dry_resume_keys.append(f"job:{job_id}:date:{d}:list")
+                dry_resume_keys.append(f"job:{job_id}:date:{d}:sub")
+
+            plan = estimate_fetch_plan(dry_urls, resume_keys=dry_resume_keys)
+            summary = {
+                "job_id": job_id,
+                "mode": "dry-run",
+                "start_date": start_date,
+                "end_date": end_date,
+                "total_dates": total,
+                "plan": plan,
+            }
+            report_path = write_fetch_summary(summary)
+
+            with _JOBS_LOCK:
+                job["status"] = "completed"
+                job["result"] = {
+                    "success": True,
+                    "dry_run": True,
+                    "message": "dry-run completed (no HTTP access)",
+                    "fetch_summary": summary,
+                    "fetch_summary_path": str(report_path),
+                }
+            _persist_job(job_id, job)
+            return
 
         # ── ② 前処理B: 取得済み日付を SQLite から読み込み（レジューム）──
         scraped_dates: set = set()
@@ -332,17 +374,25 @@ async def _run_scrape_job(
 
                     # ① db.netkeiba.com（過去レース結果ページ）から race ID を取得
                     race_ids = []
-                    async with session.get(list_url) as resp:
-                        if resp.status == 200:
-                            content = await resp.read()
-                            html = content.decode("euc-jp", errors="ignore")
-                            del content
-                            race_ids = list(dict.fromkeys(re.findall(r"/race/(\d{12})/", html)))
-                            del html
-                        elif resp.status == 400:
+                    _list_result, _list_html = await fetch_text(
+                        session,
+                        list_url,
+                        cache_ttl_sec=12 * 60 * 60,
+                        resume_key=f"job:{job_id}:date:{date}:list",
+                        min_interval_sec=1.0,
+                        max_retries=3,
+                        retry_statuses={429, 500, 503},
+                        retry_base_sec=2.0,
+                        retry_jitter_sec=0.6,
+                        circuit_threshold=3,
+                        circuit_cooldown_sec=120.0,
+                    )
+                    if _list_result.status == 200:
+                        race_ids = list(dict.fromkeys(re.findall(r"/race/(\d{12})/", _list_html)))
+                    elif _list_result.status == 400:
                             logger.info(f"{date}: db.netkeiba.com HTTP 400 → 未開催または削除済み日付")
-                        else:
-                            logger.warning(f"{date}: db.netkeiba.com HTTP {resp.status}")
+                    else:
+                        logger.warning(f"{date}: db.netkeiba.com HTTP {_list_result.status}")
 
                     # ② 0件のとき → race.netkeiba.com（race_list_sub）へフォールバック
                     #    当日・直近未来レースはこちらにしか載っていない
@@ -353,13 +403,21 @@ async def _run_scrape_job(
                             f"?kaisai_date={date}"
                         )
                         try:
-                            async with httpx.AsyncClient(
-                                timeout=20.0, follow_redirects=True
-                            ) as hx:
-                                resp2 = await hx.get(shutuba_url)
-                            if resp2.status_code == 200:
+                            _sub_result, html2 = await fetch_text(
+                                session,
+                                shutuba_url,
+                                cache_ttl_sec=6 * 60 * 60,
+                                resume_key=f"job:{job_id}:date:{date}:sub",
+                                min_interval_sec=1.0,
+                                max_retries=3,
+                                retry_statuses={429, 500, 503},
+                                retry_base_sec=2.0,
+                                retry_jitter_sec=0.6,
+                                circuit_threshold=3,
+                                circuit_cooldown_sec=120.0,
+                            )
+                            if _sub_result.status == 200:
                                 # Content-Type の charset が空なので EUC-JP で明示的にデコード
-                                html2 = resp2.content.decode("euc-jp", errors="replace")
                                 soup2 = BeautifulSoup(html2, "lxml")
                                 found_ids: list[str] = []
                                 for a in soup2.find_all("a", href=True):
@@ -378,17 +436,17 @@ async def _run_scrape_job(
                                     )
                             else:
                                 logger.warning(
-                                    f"{date}: レース一覧 HTTP {resp2.status_code} (db/race 両方失敗) → スキップ"
+                                    f"{date}: レース一覧 HTTP {_sub_result.status} (db/race 両方失敗) → スキップ"
                                 )
                                 job["progress"] = {
                                     "done": i + 1,
                                     "total": total,
-                                    "message": f"{i+1}/{total}日処理済み / {counter['races']}レース保存 (HTTP {resp2.status_code}スキップ)",
+                                    "message": f"{i+1}/{total}日処理済み / {counter['races']}レース保存 (HTTP {_sub_result.status}スキップ)",
                                     "saved_races": counter["races"],
                                     "saved_horses": counter["horses"],
                                 }
-                                if resp2.status_code in (403, 429, 503):
-                                    logger.warning(f"{date}: HTTP {resp2.status_code} → 60秒待機（IPブロック回避）")
+                                if _sub_result.status in (403, 429, 503):
+                                    logger.warning(f"{date}: HTTP {_sub_result.status} → 60秒待機（IPブロック回避）")
                                     await asyncio.sleep(60.0)
                                 continue
                         except Exception as _fe:
@@ -470,6 +528,17 @@ async def _run_scrape_job(
         saved_races = counter["races"]
         saved_horses = counter["horses"]
         elapsed = _time.time() - start_time
+        fetch_summary = {
+            "job_id": job_id,
+            "mode": "execute",
+            "start_date": start_date,
+            "end_date": end_date,
+            "saved_races": saved_races,
+            "saved_horses": saved_horses,
+            "elapsed_time_sec": elapsed,
+            "metrics": get_fetch_metrics(reset=True),
+        }
+        report_path = write_fetch_summary(fetch_summary)
         with _JOBS_LOCK:
             job["status"] = "completed"
             job["result"] = {
@@ -478,6 +547,8 @@ async def _run_scrape_job(
                 "saved_horses": saved_horses,
                 "elapsed_time": elapsed,
                 "message": f"{saved_races}レース・{saved_horses}頭のデータを収集しました",
+                "fetch_summary": fetch_summary,
+                "fetch_summary_path": str(report_path),
             }
         _persist_job(job_id, job)
     except Exception as e:

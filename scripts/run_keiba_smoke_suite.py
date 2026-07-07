@@ -370,6 +370,21 @@ def main() -> int:
         "log_tail": model_redesign_log[-2000:],
     }
 
+    fetch_pipeline_rc, fetch_pipeline_log = _run_step("fetch-pipeline", [
+        "scripts/smoke_fetch_pipeline.py",
+    ])
+    fetch_pipeline_report = _read_json(REPORTS_DIR / "fetch_pipeline_smoke_result.json")
+    fp_verdict = str(fetch_pipeline_report.get("verdict") or "") if isinstance(fetch_pipeline_report, dict) else ""
+    fp_result = "pass" if fp_verdict == "pass" and fetch_pipeline_rc == 0 else "fail"
+    fp_reason = "ok" if fp_result == "pass" else "fetch-pipeline-smoke-failed"
+    suite["steps"]["fetch_pipeline"] = {
+        "return_code": fetch_pipeline_rc,
+        "result": fp_result,
+        "reason": fp_reason,
+        "note": "Stub/mock smoke: cache hit no-fetch, URL dedup collapse, retry-after backoff, dry-run no-access",
+        "log_tail": fetch_pipeline_log[-2000:],
+    }
+
     if args.verify_write_guard_enabled:
         write_guard_enabled_rc, write_guard_enabled_log = _run_step("write-guard-enabled", [
             "scripts/smoke_netkeiba_race_write_guard.py",

@@ -157,6 +157,7 @@ class ScrapeRequest(BaseModel):
     start_date: str
     end_date: str
     force_rescrape: bool = False
+    dry_run: bool = False
 
 
 class ScrapeResponse(BaseModel):
