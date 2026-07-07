@@ -50,6 +50,7 @@ Architecture (current):
 | prediction-history | /api/prediction-history | GET /api/prediction-history | premium required (backend) | production | UI guard missing |
 | data-collection | /api/scrape | POST /api/scrape (legacy sync) | login required/admin-intent | production | uses legacy sync endpoint |
 | data-collection | /api/scrape/status/[jobId] | GET /api/scrape/status/{job_id} | login required | production | batch scrape polling endpoint |
+| data-collection | /api/scrape/history | GET /api/scrape/history | login required | production | fetch summary history (read-only) |
 | data-collection | /api/scrape/health | GET /api/scrape/health | login required | production | dedicated health contract |
 | data-collection | /api/profiling | POST /api/profiling/start | login required | production | query/body contract should be documented |
 | data-collection | /api/profiling/status/[job_id] | GET /api/profiling/status/{job_id} | login required | production | none critical |
@@ -968,3 +969,37 @@ Not included in UI integration completion:
 Operational rule:
 - default UI/API navigation stays non-write,
 - sandbox write-readback remains an explicit migration verification step handled separately.
+
+## 31. Implementation Status (P1-7 Fetch Summary History Smoke/E2E)
+
+Updated: 2026-07-07
+
+Implemented:
+- Added smoke script: `scripts/smoke_fetch_summary_history.py`
+- Added smoke output: `reports/fetch_summary_history_smoke_result.json`
+- Integrated into suite: `scripts/run_keiba_smoke_suite.py` as `fetch_summary_history` step
+- Added E2E: `e2e/data-collection-history.spec.ts`
+
+Smoke contract:
+- unauth request to `/api/scrape/history` is checked (401/403 pass; otherwise warn)
+- auth request checks `limit` behavior (`len(jobs) <= limit`)
+- response must not expose token/secret/env values (Notion token prefix and env secrets)
+- read-only check validates `keiba/data/scrape_jobs.db` row count unchanged before/after
+- empty history remains non-fail (`warn` allowed)
+- history with `fetch_summary` is normalized and verifies major fields:
+	- `mode`
+	- `job_id`
+	- `updated_at`
+	- `estimated_request_count`
+	- `cache_hit_count`
+	- `cache_miss_count`
+	- `resume_hit_count`
+	- `elapsed_seconds`
+	- `retry_count`
+
+E2E contract:
+- Data Collection page shows history section and refresh button
+- history cards or empty-state message is rendered
+- dry-run/execute display labels remain visible
+- secret-like strings are not rendered in UI
+- auth-guarded route uses real login pattern and skips when `E2E_PASSWORD` is unset

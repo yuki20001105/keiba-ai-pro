@@ -1193,6 +1193,18 @@ python-api\.venv\Scripts\python.exe scripts\smoke_model_redesign_workbench.py
 - path系入力 (`filePath`, `reportPath`, `modelPath`, `path`, `sourcePath`) は拒否されることを検証
 - retrain / active model switch action は `not-implemented` または `disabled` を検証
 
+**Fetch summary history smoke**
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_fetch_summary_history.py
+```
+
+補足:
+- `KEIBA_AUTH_BEARER_TOKEN` 未設定時は `auth-required` として warn
+- `limit` パラメータの適用、secret非露出、read-only（scrape_jobs row count不変）を検証
+- 空履歴は `warn` 扱いで fail にはしない
+
 strict preflight で統合実行する場合:
 
 ```powershell
@@ -1236,6 +1248,7 @@ git status --short
 - Write guard sandbox write-readback検証結果JSON: `reports/netkeiba_race_write_guard_sandbox_write_readback_smoke_result.json`
 - Smoke suite結果JSON: `reports/keiba_smoke_suite_result.json`
 - Notion output UI/API smoke結果JSON: `reports/notion_report_smoke_result.json`
+- Fetch summary history smoke結果JSON: `reports/fetch_summary_history_smoke_result.json`
 - 監査ログ（任意）: `reports/e2e_logs/`
 
 ### モデル再設計ワークベンチ仕様

@@ -153,6 +153,21 @@ def _classify_model_redesign_workbench(report: dict[str, Any] | None, token_prov
     return "fail", "model-redesign-workbench-smoke-failed"
 
 
+def _classify_fetch_summary_history(report: dict[str, Any] | None, token_provided: bool) -> tuple[str, str]:
+    if not isinstance(report, dict):
+        return "fail", "fetch-summary-history report missing or invalid"
+
+    verdict = str(report.get("verdict") or "")
+    if not token_provided and verdict == "warn":
+        return "warn", "auth-required"
+
+    if verdict == "pass":
+        return "pass", "ok"
+    if verdict == "warn":
+        return "warn", "partial-verification"
+    return "fail", "fetch-summary-history-smoke-failed"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run keiba smoke checks as an operational suite")
     parser.add_argument("--date", default=datetime.now().strftime("%Y%m%d"), help="YYYYMMDD for race-list/preflight checks")
@@ -368,6 +383,21 @@ def main() -> int:
         "reason": mr_reason,
         "note": "Model redesign workbench smoke: auth, read-only guard, path forbidden, action blocked, no artifact mutation",
         "log_tail": model_redesign_log[-2000:],
+    }
+
+    fetch_summary_history_rc, fetch_summary_history_log = _run_step("fetch-summary-history", [
+        "scripts/smoke_fetch_summary_history.py",
+        "--next-url", args.next_url,
+        *token_args,
+    ])
+    fetch_summary_history_report = _read_json(REPORTS_DIR / "fetch_summary_history_smoke_result.json")
+    fsh_result, fsh_reason = _classify_fetch_summary_history(fetch_summary_history_report, token_provided=token_provided)
+    suite["steps"]["fetch_summary_history"] = {
+        "return_code": fetch_summary_history_rc,
+        "result": fsh_result,
+        "reason": fsh_reason,
+        "note": "Fetch summary history smoke: auth behavior, limit, read-only, secret non-exposure, major fields",
+        "log_tail": fetch_summary_history_log[-2000:],
     }
 
     fetch_pipeline_rc, fetch_pipeline_log = _run_step("fetch-pipeline", [

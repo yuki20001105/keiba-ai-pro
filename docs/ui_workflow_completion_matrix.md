@@ -30,7 +30,7 @@ Scope: UI (src/app) + Next API (src/app/api) + FastAPI router/script mapping inv
 | 画面 | 主目的 | 主入力/操作 | 主な Next API |
 |---|---|---|---|
 | /home | ハブ/状態確認 | 4-step導線, API状態確認 | /api/health, /api/data-stats |
-| /data-collection | データ取得/プロファイリング | 期間(月), 強制再取得, 取得開始, API health, profiling開始 | /api/scrape, /api/scrape/status/[jobId], /api/scrape/health, /api/profiling, /api/profiling/status/[job_id], /api/races/recent, /api/races/[race_id]/horses |
+| /data-collection | データ取得/プロファイリング | 期間(月), 強制再取得, 取得開始, API health, profiling開始, fetch summary履歴確認 | /api/scrape, /api/scrape/status/[jobId], /api/scrape/history, /api/scrape/health, /api/profiling, /api/profiling/status/[job_id], /api/races/recent, /api/races/[race_id]/horses |
 | /data-view (Premium) | データ検証/特徴量確認 | 日付, レース選択, raw/featuresタブ, 列フィルタ | /api/races/by-date, /api/debug/race/[race_id], /api/debug/race/[race_id]/features |
 | /feature-lab (Premium) | 特徴量分析 | target, importance_type, topN, summary/importance/coverageタブ | /api/features/summary, /api/features/importance, /api/features/coverage |
 | /train | モデル学習/モデル管理 | target, model_type, 学習期間, advanced設定, Optuna, 学習開始, activate/delete | /api/ml/train/start, /api/ml/train/status/[job_id], /api/models, /api/models/[id], /api/models/[id]/activate |
@@ -51,6 +51,7 @@ Scope: UI (src/app) + Next API (src/app/api) + FastAPI router/script mapping inv
 |---|---|---|---|---|
 | 期間スクレイプ開始 | /data-collection | POST /api/scrape | POST /api/scrape/start (FastAPI scrape router) | 月単位ループ + job polling |
 | スクレイプ進捗監視 | /data-collection, /predict-batch hooks | GET /api/scrape/status/[jobId] | GET /api/scrape/status/{job_id} | useJobPoller |
+| fetch summary履歴確認 | /data-collection | GET /api/scrape/history | GET /api/scrape/history | read-only history (reload-safe) |
 | スクレイプhealth | /data-collection | GET /api/scrape/health | GET /api/scrape/health | read-only health |
 | 取得済み一覧/詳細 | /data-collection | GET /api/races/recent, GET /api/races/[race_id]/horses | GET /api/races/recent, GET /api/races/{race_id}/horses | 結果表示あり |
 | Profiling起動 | /data-collection | POST /api/profiling | POST /api/profiling/start | レポート閲覧UIは限定 |
@@ -141,6 +142,7 @@ Next API routeは存在するが、主要業務UI導線で未使用/非表示の
   - scripts/run_keiba_smoke_suite.py
   - scripts/smoke_*.py
    - model redesign workbench smoke: scripts/smoke_model_redesign_workbench.py
+   - fetch summary history smoke: scripts/smoke_fetch_summary_history.py
 - compile/lint/build 一括品質ゲート運用 (CLI)
 - Notion向け出力処理:
    - `/notion-report` + `/api/notion-report` で UI 導線あり
@@ -156,6 +158,7 @@ Next API routeは存在するが、主要業務UI導線で未使用/非表示の
 - /feature-lab 特徴量分析 (Premium)
 - /data-view データ検証 (Premium)
 - /data-collection の read/scrape start/status/health/profiling start
+- /data-collection の fetch summary history 表示（read-only）
 - /dashboard 購入履歴更新と損益分析
 - /home の health/data stats 可視化
 - /admin (AdminOnly) のユーザー管理
