@@ -64,6 +64,10 @@ class PlanDecision:
     key: str
     action: str
     reason: str
+    quality_score: float
+    missing_fields: list[str]
+    parser_version: str | None
+    fetched_at: str | None
 
 
 def _parse_date(v: Any) -> str | None:
@@ -424,21 +428,21 @@ def _decide_existing_action(policy: str, q: RowQuality, duplicate: bool) -> tupl
 
     if policy == "reparse-cache":
         if q.stale_parser_version:
-            return "reparse", "stale-parser-version"
+            return "reparse-cache", "stale-parser-version"
         return "skip", "no-stale-parser"
 
     if policy in ("repair-missing", "dry-run"):
         if q.required_missing or q.invalid_value:
             return "repair", "required-missing-or-invalid"
         if q.stale_parser_version:
-            return "reparse", "stale-parser-version"
+            return "reparse-cache", "stale-parser-version"
         if q.stale_fetched_at:
             return "refetch", "stale-fetched-at"
         return "skip", "healthy-existing"
 
     if policy == "refresh-stale":
         if q.stale_parser_version:
-            return "reparse", "stale-parser-version"
+            return "reparse-cache", "stale-parser-version"
         if q.stale_fetched_at:
             return "refetch", "stale-fetched-at"
         return "skip", "fresh-existing"
@@ -451,18 +455,18 @@ def _decide_existing_action(policy: str, q: RowQuality, duplicate: bool) -> tupl
 
 def _no_downgrade_decision(existing_q: RowQuality, cand_q: RowQuality, existing_row: dict[str, Any], candidate_row: dict[str, Any]) -> tuple[str, str]:
     if str(_pick(existing_row, "record_hash") or "") == str(_pick(candidate_row, "record_hash") or ""):
-        return "no_downgrade_skip", "record-hash-same"
+        return "no-downgrade-skip", "record-hash-same"
 
     if cand_q.required_missing:
-        return "no_downgrade_skip", "candidate-required-missing"
+        return "no-downgrade-skip", "candidate-required-missing"
 
     if cand_q.error_page_like or cand_q.source_html_missing:
-        return "no_downgrade_skip", "candidate-error-or-empty-html"
+        return "no-downgrade-skip", "candidate-error-or-empty-html"
 
     if cand_q.quality_score < existing_q.quality_score:
-        return "no_downgrade_skip", "candidate-quality-lower-than-existing"
+        return "no-downgrade-skip", "candidate-quality-lower-than-existing"
 
-    return "update_candidate", "candidate-quality-acceptable"
+    return "update-candidate", "candidate-quality-acceptable"
 
 
 def _build_plan(
@@ -519,32 +523,42 @@ def _build_plan(
         if candidate_row is not None:
             cand_q = _assess_row_quality(candidate_row, current_parser_version=current_parser_version, stale_days=stale_days)
             nd_action, nd_reason = _no_downgrade_decision(q, cand_q, existing_row, candidate_row)
-            if nd_action == "no_downgrade_skip":
-                action = "no_downgrade_skip"
+            if nd_action == "no-downgrade-skip":
+                action = "no-downgrade-skip"
                 reason = nd_reason
                 if nd_reason in ("candidate-required-missing", "candidate-error-or-empty-html"):
                     counts["quarantine_count"] += 1
             else:
-                if action in ("refetch", "repair", "reparse"):
-                    action = "update_candidate"
+                if action in ("refetch", "repair", "reparse-cache"):
+                    action = "update-candidate"
                     reason = "candidate-quality-acceptable"
 
-        decisions.append(PlanDecision(key=key, action=action, reason=reason))
+        decisions.append(
+            PlanDecision(
+                key=key,
+                action=action,
+                reason=reason,
+                quality_score=q.quality_score,
+                missing_fields=list(q.required_missing_fields),
+                parser_version=str(_pick(existing_row, "parser_version") or "") or None,
+                fetched_at=str(_pick(existing_row, "fetched_at") or "") or None,
+            )
+        )
         reasons[reason] += 1
 
         if action == "skip":
             counts["skip_count"] += 1
-        elif action == "reparse":
+        elif action == "reparse-cache":
             counts["reparse_count"] += 1
         elif action == "refetch":
             counts["refetch_count"] += 1
         elif action == "repair":
             counts["repair_count"] += 1
-        elif action == "update_candidate":
+        elif action == "update-candidate":
             counts["update_candidate_count"] += 1
         elif action == "quarantine":
             counts["quarantine_count"] += 1
-        elif action == "no_downgrade_skip":
+        elif action == "no-downgrade-skip":
             counts["no_downgrade_skip_count"] += 1
 
     # Missing targets become refetch candidates in planning, except skip-existing.
@@ -561,7 +575,15 @@ def _build_plan(
         "estimated_runtime": estimated_runtime,
         "reasons": dict(reasons),
         "decisions": [
-            {"key": d.key, "action": d.action, "reason": d.reason}
+            {
+                "key": d.key,
+                "action": d.action,
+                "reason": d.reason,
+                "quality_score": d.quality_score,
+                "missing_fields": d.missing_fields,
+                "parser_version": d.parser_version,
+                "fetched_at": d.fetched_at,
+            }
             for d in sorted(decisions, key=lambda x: (x.action, x.key))
         ],
     }
