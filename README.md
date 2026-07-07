@@ -1205,6 +1205,21 @@ python-api\.venv\Scripts\python.exe scripts\smoke_fetch_summary_history.py
 - `limit` パラメータの適用、secret非露出、read-only（scrape_jobs row count不変）を検証
 - 空履歴は `warn` 扱いで fail にはしない
 
+**Scrape speed benchmark (small + 10y estimate)**
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python scripts\benchmark_scrape_speed.py --preset small
+python scripts\benchmark_scrape_speed.py --preset estimate-10y
+```
+
+補足:
+- 10年分の実取得は実行しない（10年は dry-run 推定のみ）
+- live 計測は 1日/7日まで（`--max-live-days` 既定 7）
+- rate limit / backoff / Retry-After / circuit breaker は `fetch_pipeline` の既存実装を使用
+- 出力: `reports/scrape_benchmark_summary.json`
+- `reports/*.json` など生成物はコミットしない
+
 strict preflight で統合実行する場合:
 
 ```powershell
