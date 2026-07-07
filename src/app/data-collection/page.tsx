@@ -11,6 +11,37 @@ import { useBatchScrape } from '@/hooks/useBatchScrape'
 type ScrapeHealthStatus = 'healthy' | 'degraded' | 'unhealthy' | 'unknown'
 type LocalApiStatus = 'checking' | ScrapeHealthStatus
 
+type ScrapeDryRunSummary = {
+  total_target_count: number
+  unique_url_count: number
+  estimated_request_count: number
+  cache_hit_count: number
+  cache_miss_count: number
+  resume_hit_count: number
+  skipped_count: number
+  estimated_runtime_sec: number
+}
+
+type ScrapeDryRunResult = {
+  dry_run: ScrapeDryRunSummary
+  rate_limit_policy?: {
+    min_interval_sec?: number
+    scope?: string
+    note?: string
+  }
+  retry_backoff_policy?: {
+    max_retries?: number
+    retry_statuses?: number[]
+    backoff?: { type?: string; base_sec?: number; jitter_sec?: number }
+    retry_after?: string
+  }
+  circuit_breaker_policy?: {
+    failure_threshold?: number
+    cooldown_sec?: number
+    scope?: string
+  }
+}
+
 export default function DataCollectionPage() {
   // 期間指定用
   const now = new Date()
@@ -19,6 +50,10 @@ export default function DataCollectionPage() {
     `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
   )
   const [forceRescrape, setForceRescrape] = useState(false)
+  const [dryRunLoading, setDryRunLoading] = useState(false)
+  const [dryRunResult, setDryRunResult] = useState<ScrapeDryRunResult | null>(null)
+  const [dryRunExecuted, setDryRunExecuted] = useState(false)
+  const [executeWarn, setExecuteWarn] = useState('')
   const [toast, setToast] = useState({ visible: false, message: '', type: 'success' as 'success' | 'error' })
   const showToast = (message: string, type: 'success' | 'error' = 'success') =>
     setToast({ visible: true, message, type })
@@ -157,7 +192,14 @@ export default function DataCollectionPage() {
       totalMonths++; m++; if (m > 12) { m = 1; y++ }
     }
 
-    if (!confirm(`${startYear}年${startMonth}月 ～ ${endYear}年${endMonth}月（${totalMonths}ヶ月分）を月単位で順次取得します。\n中断するにはページをリロードしてください。\n\n続行しますか？`)) return
+    if (!dryRunExecuted) {
+      setExecuteWarn('Dry-run未実行です。本実行は可能ですが、推定アクセス数の確認を推奨します。')
+    } else {
+      setExecuteWarn('')
+    }
+
+    const _dryRunState = dryRunExecuted ? 'Dry-run実行済み' : 'Dry-run未実行（推奨）'
+    if (!confirm(`${startYear}年${startMonth}月 ～ ${endYear}年${endMonth}月（${totalMonths}ヶ月分）を月単位で順次取得します。\n中断するにはページをリロードしてください。\n\n${_dryRunState}\n続行しますか？`)) return
 
     try {
       const result = await startBatchScrape(startPeriod, endPeriod, forceRescrape)
@@ -165,6 +207,85 @@ export default function DataCollectionPage() {
       loadStats()
     } catch (error: any) {
       showToast(`取得エラー: ${error.message}`, 'error')
+    }
+  }
+
+  const periodToDateRange = (startPeriodValue: string, endPeriodValue: string) => {
+    const [startYearStr, startMonthStr] = startPeriodValue.split('-')
+    const [endYearStr, endMonthStr] = endPeriodValue.split('-')
+    const sy = parseInt(startYearStr, 10)
+    const sm = parseInt(startMonthStr, 10)
+    const ey = parseInt(endYearStr, 10)
+    const em = parseInt(endMonthStr, 10)
+    const pad = (n: number) => String(n).padStart(2, '0')
+    const startDateStr = `${sy}${pad(sm)}01`
+    const endLastDay = new Date(ey, em, 0).getDate()
+    const endDateStr = `${ey}${pad(em)}${pad(endLastDay)}`
+    return { startDateStr, endDateStr }
+  }
+
+  const handleDryRun = async () => {
+    setDryRunLoading(true)
+    setExecuteWarn('')
+    try {
+      const { startDateStr, endDateStr } = periodToDateRange(startPeriod, endPeriod)
+      const startRes = await authFetch('/api/scrape', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          start_date: startDateStr,
+          end_date: endDateStr,
+          force_rescrape: forceRescrape,
+          dry_run: true,
+        }),
+      })
+
+      if (!startRes.ok) {
+        const err = await startRes.json().catch(() => ({}))
+        throw new Error(err.detail || `HTTP ${startRes.status}`)
+      }
+
+      const { job_id } = await startRes.json()
+      let resultPayload: any = null
+      for (let i = 0; i < 10; i++) {
+        await new Promise(resolve => setTimeout(resolve, 500))
+        const statusRes = await authFetch(`/api/scrape/status/${job_id}`)
+        if (!statusRes.ok) continue
+        const statusData = await statusRes.json().catch(() => ({}))
+        if (statusData?.status === 'completed') {
+          resultPayload = statusData?.result
+          break
+        }
+        if (statusData?.status === 'error') {
+          throw new Error(statusData?.error || 'Dry-run failed')
+        }
+      }
+
+      const fetchSummary = resultPayload?.fetch_summary || {}
+      const dryRun = fetchSummary?.dry_run || {}
+      const normalized: ScrapeDryRunResult = {
+        dry_run: {
+          total_target_count: Number(dryRun.total_target_count || 0),
+          unique_url_count: Number(dryRun.unique_url_count || 0),
+          estimated_request_count: Number(dryRun.estimated_request_count || 0),
+          cache_hit_count: Number(dryRun.cache_hit_count || 0),
+          cache_miss_count: Number(dryRun.cache_miss_count || 0),
+          resume_hit_count: Number(dryRun.resume_hit_count || 0),
+          skipped_count: Number(dryRun.skipped_count || 0),
+          estimated_runtime_sec: Number(dryRun.estimated_runtime_sec || 0),
+        },
+        rate_limit_policy: fetchSummary?.rate_limit_policy || {},
+        retry_backoff_policy: fetchSummary?.retry_backoff_policy || {},
+        circuit_breaker_policy: fetchSummary?.circuit_breaker_policy || {},
+      }
+      setDryRunResult(normalized)
+      setDryRunExecuted(true)
+      showToast('Dry-run完了（HTTPアクセスなし）')
+    } catch (error: any) {
+      setDryRunResult(null)
+      showToast(`Dry-runエラー: ${error.message}`, 'error')
+    } finally {
+      setDryRunLoading(false)
     }
   }
 
@@ -264,7 +385,11 @@ export default function DataCollectionPage() {
             return null
           })()}
 
-          <div className="flex items-center justify-between pt-1">
+          <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] px-3 py-2.5 text-xs text-[#9db4cc]">
+            Dry-run は HTTPアクセスを実行しません。アクセス予定数とポリシーを事前確認するためのプレビューです。
+          </div>
+
+          <div className="flex items-center justify-between pt-1 gap-3">
             <label className="flex items-center gap-2 cursor-pointer select-none">
               <input
                 type="checkbox"
@@ -275,26 +400,85 @@ export default function DataCollectionPage() {
               <span className="text-xs text-[#888]">強制再取得（取得済みを上書き）</span>
             </label>
 
-            <button
-              onClick={handlePeriodBatchScrape}
-              disabled={batchLoading || isApiUnavailable}
-              className={`flex items-center gap-2 px-6 py-2.5 rounded-lg font-medium text-sm transition-colors ${
-                batchLoading || isApiUnavailable
-                  ? 'bg-[#222] text-[#555] cursor-not-allowed'
-                  : 'bg-white text-black hover:bg-[#eee]'
-              }`}
-            >
-              {batchLoading ? (
-                <>
-                  <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
-                  取得中...
-                </>
-              ) : isApiUnavailable ? 'API確認不可' : '取得開始'}
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleDryRun}
+                disabled={batchLoading || dryRunLoading || isApiUnavailable}
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-lg font-medium text-sm transition-colors ${
+                  batchLoading || dryRunLoading || isApiUnavailable
+                    ? 'bg-[#222] text-[#555] cursor-not-allowed'
+                    : 'bg-[#1e293b] text-[#dbeafe] hover:bg-[#334155]'
+                }`}
+              >
+                {dryRunLoading ? 'Dry-run中...' : 'Dry-run'}
+              </button>
+
+              <button
+                onClick={handlePeriodBatchScrape}
+                disabled={batchLoading || isApiUnavailable}
+                className={`flex items-center gap-2 px-6 py-2.5 rounded-lg font-medium text-sm transition-colors ${
+                  batchLoading || isApiUnavailable
+                    ? 'bg-[#222] text-[#555] cursor-not-allowed'
+                    : 'bg-white text-black hover:bg-[#eee]'
+                }`}
+              >
+                {batchLoading ? (
+                  <>
+                    <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    取得中...
+                  </>
+                ) : isApiUnavailable ? 'API確認不可' : '取得開始'}
+              </button>
+            </div>
           </div>
+
+          {executeWarn && (
+            <div className="rounded border border-[#4a3b0f] bg-[#201a08] px-3 py-2 text-xs text-[#facc15]">
+              {executeWarn}
+            </div>
+          )}
+
+          {dryRunResult && (
+            <div className="rounded-lg border border-[#1e1e1e] bg-[#0a0a0a] p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-medium text-white">Dry-run 結果（実取得なし）</h3>
+                <span className="text-[11px] text-[#6b7280]">HTTPアクセスしないプレビュー</span>
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">total target count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.total_target_count}</div></div>
+                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">unique URL count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.unique_url_count}</div></div>
+                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">estimated request count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.estimated_request_count}</div></div>
+                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">cache hit count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.cache_hit_count}</div></div>
+                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">cache miss count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.cache_miss_count}</div></div>
+                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">resume hit count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.resume_hit_count}</div></div>
+                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">skipped count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.skipped_count}</div></div>
+                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">estimated runtime</div><div className="text-sm text-white font-medium">{Math.ceil(dryRunResult.dry_run.estimated_runtime_sec)} sec</div></div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-[11px]">
+                <div className="rounded border border-[#1e1e1e] p-2">
+                  <div className="text-[#7dd3fc] mb-1">rate limit policy</div>
+                  <div className="text-[#aaa]">min_interval_sec: {dryRunResult.rate_limit_policy?.min_interval_sec ?? '-'}</div>
+                  <div className="text-[#aaa]">scope: {dryRunResult.rate_limit_policy?.scope || '-'}</div>
+                </div>
+                <div className="rounded border border-[#1e1e1e] p-2">
+                  <div className="text-[#7dd3fc] mb-1">retry/backoff policy</div>
+                  <div className="text-[#aaa]">max_retries: {dryRunResult.retry_backoff_policy?.max_retries ?? '-'}</div>
+                  <div className="text-[#aaa]">backoff: {dryRunResult.retry_backoff_policy?.backoff?.type || '-'}</div>
+                  <div className="text-[#aaa]">retry_after: {dryRunResult.retry_backoff_policy?.retry_after || '-'}</div>
+                </div>
+                <div className="rounded border border-[#1e1e1e] p-2">
+                  <div className="text-[#7dd3fc] mb-1">circuit breaker policy</div>
+                  <div className="text-[#aaa]">failure_threshold: {dryRunResult.circuit_breaker_policy?.failure_threshold ?? '-'}</div>
+                  <div className="text-[#aaa]">cooldown_sec: {dryRunResult.circuit_breaker_policy?.cooldown_sec ?? '-'}</div>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* 進捗バー */}
           {batchLoading && (

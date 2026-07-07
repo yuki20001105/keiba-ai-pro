@@ -283,6 +283,26 @@ async def _run_scrape_job(
         if dry_run:
             dry_urls: list[str] = []
             dry_resume_keys: list[str] = []
+            _rate_limit_policy = {
+                "min_interval_sec": 1.0,
+                "scope": "per-host",
+                "note": "INV-07 compliant; no high-concurrency acceleration",
+            }
+            _retry_policy = {
+                "max_retries": 3,
+                "retry_statuses": [429, 500, 503],
+                "backoff": {
+                    "type": "exponential_with_jitter",
+                    "base_sec": 2.0,
+                    "jitter_sec": 0.6,
+                },
+                "retry_after": "respected",
+            }
+            _circuit_breaker_policy = {
+                "failure_threshold": 3,
+                "cooldown_sec": 120.0,
+                "scope": "per-host",
+            }
             for d in dates:
                 dry_urls.append(f"https://db.netkeiba.com/race/list/{d}/")
                 dry_urls.append(f"https://race.netkeiba.com/top/race_list_sub.html?kaisai_date={d}")
@@ -290,12 +310,32 @@ async def _run_scrape_job(
                 dry_resume_keys.append(f"job:{job_id}:date:{d}:sub")
 
             plan = estimate_fetch_plan(dry_urls, resume_keys=dry_resume_keys)
+            cache_hits = int(plan.get("cache_hits", 0))
+            resume_hits = int(plan.get("resume_hits", 0))
+            unique_urls = int(plan.get("unique_urls", 0))
+            estimated_requests = int(plan.get("estimated_network_requests", 0))
+            cache_miss = max(0, unique_urls - cache_hits)
+            skipped_count = cache_hits + resume_hits
+            estimated_runtime_sec = float(max(0, estimated_requests) * _rate_limit_policy["min_interval_sec"])
             summary = {
                 "job_id": job_id,
                 "mode": "dry-run",
                 "start_date": start_date,
                 "end_date": end_date,
                 "total_dates": total,
+                "dry_run": {
+                    "total_target_count": int(plan.get("total_input_urls", 0)),
+                    "unique_url_count": unique_urls,
+                    "estimated_request_count": estimated_requests,
+                    "cache_hit_count": cache_hits,
+                    "cache_miss_count": cache_miss,
+                    "resume_hit_count": resume_hits,
+                    "skipped_count": skipped_count,
+                    "estimated_runtime_sec": estimated_runtime_sec,
+                },
+                "rate_limit_policy": _rate_limit_policy,
+                "retry_backoff_policy": _retry_policy,
+                "circuit_breaker_policy": _circuit_breaker_policy,
                 "plan": plan,
             }
             report_path = write_fetch_summary(summary)
@@ -537,6 +577,21 @@ async def _run_scrape_job(
             "saved_horses": saved_horses,
             "elapsed_time_sec": elapsed,
             "metrics": get_fetch_metrics(reset=True),
+            "rate_limit_policy": {
+                "min_interval_sec": 1.0,
+                "scope": "per-host",
+            },
+            "retry_backoff_policy": {
+                "max_retries": 3,
+                "retry_statuses": [429, 500, 503],
+                "backoff": {"type": "exponential_with_jitter", "base_sec": 2.0, "jitter_sec": 0.6},
+                "retry_after": "respected",
+            },
+            "circuit_breaker_policy": {
+                "failure_threshold": 3,
+                "cooldown_sec": 120.0,
+                "scope": "per-host",
+            },
         }
         report_path = write_fetch_summary(fetch_summary)
         with _JOBS_LOCK:
