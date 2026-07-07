@@ -1248,6 +1248,7 @@ git status --short
 
 - 設計書: `docs/model-retrain-approval-design.md`
 - 補助ノート: `docs/model-redesign-workbench.md`
+- 型の足場: `src/lib/model-retrain-approval-types.ts`
 - 目的:
   - dry-run payload を承認対象として固定
   - approval record を固定
@@ -1265,6 +1266,12 @@ git status --short
 3. job status UI の実装
 4. result comparison UI の実装
 5. active model switch request（別 Admin approval）
+
+### type-only scaffolding
+
+- `retrain_dry_run` / approval / job submit の契約は型で固定済み
+- ただし runtime 実装は dry-run preview まで
+- next phase で approval-create / approved job submit を追加する際の基礎として使う
 
 ---
 

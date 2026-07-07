@@ -166,3 +166,18 @@ Before implementing actual retrain:
 - hash canonicalization is implemented and tested.
 - approval expiration and invalidation rules are enforced.
 - active model switch remains separately approved.
+
+## 10. Type-Only Scaffolding
+
+Added type-only scaffolding for this design freeze:
+- `src/lib/model-retrain-approval-types.ts`
+
+Coverage:
+- dry-run payload / preview contract
+- approval record contract
+- approved retrain job preconditions / submit request / result
+- active model switch approval record boundary
+
+Runtime policy:
+- type-only scaffolding does not execute jobs.
+- no approval-create runtime, no job-submit runtime, no switch runtime.

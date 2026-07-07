@@ -513,6 +513,11 @@ Safety guard continuity:
 - no path-like input acceptance
 - no service_role key usage
 - no secret/token/env value exposure in responses/logs
+
+Type-only scaffolding added:
+- `src/lib/model-retrain-approval-types.ts`
+- shared with the retrain dry-run preview UI/API shapes
+- runtime behavior remains unchanged
 - `race_id`: string
 - `can_scrape`: bool
 - `can_write`: false (fixed in this phase)
