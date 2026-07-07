@@ -22,6 +22,7 @@ from typing import Any
 import sys
 
 import aiohttp
+from bs4 import BeautifulSoup
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 PY_API_DIR = ROOT_DIR / "python-api"
@@ -36,6 +37,8 @@ DEFAULT_OUTPUT = ROOT_DIR / "reports" / "scrape_benchmark_summary.json"
 DAYS_PER_YEAR = 365
 DAYS_10_YEARS = 3650
 TIERS = ("list", "race-detail", "horse-detail", "full-1day")
+MIN_HTML_CHARS = 200
+VENUE_PATTERN = re.compile(r"(札幌|函館|福島|新潟|東京|中山|中京|京都|阪神|小倉|門別|盛岡|水沢|浦和|船橋|大井|川崎|金沢|笠松|名古屋|園田|姫路|高知|佐賀|帯広)")
 
 
 @dataclass
@@ -172,6 +175,320 @@ def _build_resume_keys(prefix: str, count: int) -> list[str]:
     return [f"benchmark:{prefix}:{i}" for i in range(count)]
 
 
+def _new_quality_stats(enabled: bool) -> dict[str, Any]:
+    return {
+        "enabled": bool(enabled),
+        "http_success_count": 0,
+        "http_error_count": 0,
+        "empty_body_count": 0,
+        "too_short_html_count": 0,
+        "page_type_mismatch_count": 0,
+        "title_empty_count": 0,
+        "body_empty_count": 0,
+        "parse_success_count": 0,
+        "parse_failed_count": 0,
+        "required_field_missing_count": 0,
+        "duplicate_count": 0,
+        "valid_record_count": 0,
+        "invalid_record_count": 0,
+        "status_403_count": 0,
+        "status_404_count": 0,
+        "status_429_count": 0,
+        "status_500_count": 0,
+        "status_503_count": 0,
+        "timeout_count": 0,
+    }
+
+
+def _finalize_quality_stats(stats: dict[str, Any]) -> dict[str, Any]:
+    parse_total = _safe_int(stats.get("parse_success_count")) + _safe_int(stats.get("parse_failed_count"))
+    valid_total = _safe_int(stats.get("valid_record_count")) + _safe_int(stats.get("invalid_record_count"))
+    missing = _safe_int(stats.get("required_field_missing_count"))
+    dup = _safe_int(stats.get("duplicate_count"))
+    http_error = _safe_int(stats.get("http_error_count"))
+    mismatch = _safe_int(stats.get("page_type_mismatch_count"))
+
+    parse_failed_rate = (_safe_int(stats.get("parse_failed_count")) / parse_total) if parse_total > 0 else 0.0
+    invalid_record_rate = (_safe_int(stats.get("invalid_record_count")) / valid_total) if valid_total > 0 else 0.0
+    required_missing_rate = (missing / valid_total) if valid_total > 0 else 0.0
+
+    penalty = parse_failed_rate + invalid_record_rate + min(1.0, required_missing_rate)
+    penalty += min(1.0, (http_error + mismatch + dup) / max(1, _safe_int(stats.get("http_success_count")) + http_error))
+    data_quality_score = max(0.0, min(100.0, 100.0 * (1.0 - penalty / 4.0)))
+
+    if data_quality_score >= 95.0:
+        risk = "low"
+    elif data_quality_score >= 85.0:
+        risk = "medium"
+    else:
+        risk = "high"
+
+    stats["parse_failed_rate"] = parse_failed_rate
+    stats["required_field_missing_rate"] = required_missing_rate
+    stats["invalid_record_rate"] = invalid_record_rate
+    stats["data_quality_score"] = data_quality_score
+    stats["quality_risk_level"] = risk
+    return stats
+
+
+def _merge_quality_stats(parts: list[dict[str, Any]]) -> dict[str, Any]:
+    merged = _new_quality_stats(enabled=any(bool(p.get("enabled")) for p in parts if isinstance(p, dict)))
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        for key in merged.keys():
+            if key == "enabled":
+                continue
+            merged[key] = _safe_int(merged.get(key)) + _safe_int(part.get(key))
+    return _finalize_quality_stats(merged)
+
+
+def _detect_page_type(url: str, html: str) -> str:
+    lower_html = html.lower()
+    if "/race/list/" in url or "race_list_sub" in url:
+        return "list"
+    if re.search(r"/race/\d{12}/", url):
+        if "/horse/" in lower_html:
+            return "race-detail"
+        return "race-detail"
+    if "/horse/result/" in url:
+        return "horse-detail"
+    if "/horse/ped/" in url:
+        return "horse-detail"
+    return "unknown"
+
+
+def _expected_type_for_url(url: str) -> str:
+    if "/race/list/" in url or "race_list_sub" in url:
+        return "list"
+    if re.search(r"/race/\d{12}/", url):
+        return "race-detail"
+    if "/horse/result/" in url or "/horse/ped/" in url:
+        return "horse-detail"
+    return "unknown"
+
+
+def _parse_race_page_quality(url: str, html: str) -> dict[str, Any]:
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        race_id_match = re.search(r"/race/(\d{12})/", url)
+        race_id = race_id_match.group(1) if race_id_match else ""
+
+        race_name = ""
+        for sel in ("h1", ".RaceName", ".RaceName01"):
+            node = soup.select_one(sel)
+            if node:
+                race_name = node.get_text(strip=True)
+                if race_name:
+                    break
+
+        page_text = soup.get_text(" ", strip=True)
+        race_date = ""
+        m_date = re.search(r"(\d{4}年\d{1,2}月\d{1,2}日)", page_text)
+        if m_date:
+            race_date = m_date.group(1)
+
+        venue = ""
+        m_venue = VENUE_PATTERN.search(page_text)
+        if m_venue:
+            venue = m_venue.group(1)
+
+        race_number = ""
+        m_num = re.search(r"\b(\d{1,2})R\b", page_text)
+        if m_num:
+            race_number = m_num.group(1)
+
+        horse_pairs: list[tuple[str, str]] = []
+        for a in soup.select("a[href*='/horse/']"):
+            href = str(a.get("href") or "")
+            m_h = re.search(r"/horse/(\d{10})/?", href)
+            if not m_h:
+                continue
+            horse_pairs.append((m_h.group(1), a.get_text(strip=True)))
+
+        horse_ids = [hid for hid, _ in horse_pairs]
+        horse_names = [name for _, name in horse_pairs if name]
+        unique_horse_ids = list(dict.fromkeys(horse_ids))
+        duplicate_count = max(0, len(horse_ids) - len(set(horse_ids)))
+
+        missing = 0
+        if not race_id:
+            missing += 1
+        if not race_name:
+            missing += 1
+        if not race_date:
+            missing += 1
+        if not venue:
+            missing += 1
+        if not race_number:
+            missing += 1
+        if not unique_horse_ids:
+            missing += 1
+        if not horse_names:
+            missing += 1
+
+        horse_count = len(unique_horse_ids)
+        horse_count_valid = 1 <= horse_count <= 18
+        if not horse_count_valid:
+            missing += 1
+
+        parse_success = bool(race_id and horse_count > 0)
+        valid_record = bool(parse_success and missing == 0 and duplicate_count == 0)
+        return {
+            "attempted": True,
+            "parse_success": parse_success,
+            "valid_record": valid_record,
+            "missing": missing,
+            "duplicate_count": duplicate_count,
+        }
+    except Exception:
+        return {
+            "attempted": True,
+            "parse_success": False,
+            "valid_record": False,
+            "missing": 1,
+            "duplicate_count": 0,
+        }
+
+
+def _extract_horse_name_from_soup(soup: BeautifulSoup) -> str:
+    for sel in ("h1", ".horse_title", ".HorseName", ".HorseName01"):
+        node = soup.select_one(sel)
+        if node:
+            t = node.get_text(strip=True)
+            if t:
+                return t
+    title = soup.title.get_text(strip=True) if soup.title else ""
+    return title
+
+
+def _parse_horse_page_quality(url: str, html: str) -> dict[str, Any]:
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        horse_id_match = re.search(r"/horse/(?:result|ped)/(\d{10})/", url)
+        horse_id = horse_id_match.group(1) if horse_id_match else ""
+        horse_name = _extract_horse_name_from_soup(soup)
+
+        missing = 0
+        if not horse_id:
+            missing += 1
+        if not horse_name:
+            missing += 1
+
+        if "/horse/ped/" in url:
+            ped_nodes = soup.select("table.pedigree_table td, table.pedigree_table a, td.b_ml")
+            if not ped_nodes:
+                missing += 1
+
+            sire = ""
+            dam = ""
+            broodmare_sire = ""
+            ped_anchor_texts = [a.get_text(strip=True) for a in soup.select("table.pedigree_table a") if a.get_text(strip=True)]
+            if ped_anchor_texts:
+                sire = ped_anchor_texts[0] if len(ped_anchor_texts) >= 1 else ""
+                dam = ped_anchor_texts[1] if len(ped_anchor_texts) >= 2 else ""
+                broodmare_sire = ped_anchor_texts[2] if len(ped_anchor_texts) >= 3 else ""
+
+            if sire is not None and sire == "":
+                missing += 1
+            if dam is not None and dam == "":
+                missing += 1
+            if broodmare_sire is not None and broodmare_sire == "":
+                missing += 1
+
+        parse_success = bool(horse_id and horse_name)
+        valid_record = bool(parse_success and missing == 0)
+        return {
+            "attempted": True,
+            "parse_success": parse_success,
+            "valid_record": valid_record,
+            "missing": missing,
+            "duplicate_count": 0,
+        }
+    except Exception:
+        return {
+            "attempted": True,
+            "parse_success": False,
+            "valid_record": False,
+            "missing": 1,
+            "duplicate_count": 0,
+        }
+
+
+def _apply_quality_check(
+    stats: dict[str, Any],
+    *,
+    tier: str,
+    url: str,
+    result: Any,
+    text: str,
+    min_html_chars: int,
+) -> None:
+    if not bool(stats.get("enabled")):
+        return
+
+    status = _safe_int(getattr(result, "status", 0))
+    source = str(getattr(result, "source", ""))
+
+    if 200 <= status < 300:
+        stats["http_success_count"] = _safe_int(stats.get("http_success_count")) + 1
+    else:
+        stats["http_error_count"] = _safe_int(stats.get("http_error_count")) + 1
+        if status == 403:
+            stats["status_403_count"] = _safe_int(stats.get("status_403_count")) + 1
+        elif status == 404:
+            stats["status_404_count"] = _safe_int(stats.get("status_404_count")) + 1
+        elif status == 429:
+            stats["status_429_count"] = _safe_int(stats.get("status_429_count")) + 1
+        elif status == 500:
+            stats["status_500_count"] = _safe_int(stats.get("status_500_count")) + 1
+        elif status == 503:
+            stats["status_503_count"] = _safe_int(stats.get("status_503_count")) + 1
+        elif status == 0 and ("timeout" in str(getattr(result, "error", "")).lower() or source == "network-error"):
+            stats["timeout_count"] = _safe_int(stats.get("timeout_count")) + 1
+
+    if not text.strip():
+        stats["empty_body_count"] = _safe_int(stats.get("empty_body_count")) + 1
+        return
+
+    if len(text.strip()) < max(1, min_html_chars):
+        stats["too_short_html_count"] = _safe_int(stats.get("too_short_html_count")) + 1
+
+    page_type = _detect_page_type(url, text)
+    expected = _expected_type_for_url(url)
+    if expected != "unknown" and page_type != expected:
+        stats["page_type_mismatch_count"] = _safe_int(stats.get("page_type_mismatch_count")) + 1
+
+    soup = BeautifulSoup(text, "html.parser")
+    title = soup.title.get_text(strip=True) if soup.title else ""
+    body = soup.body.get_text(" ", strip=True) if soup.body else ""
+    if not title:
+        stats["title_empty_count"] = _safe_int(stats.get("title_empty_count")) + 1
+    if not body:
+        stats["body_empty_count"] = _safe_int(stats.get("body_empty_count")) + 1
+
+    parse_result: dict[str, Any] | None = None
+    if tier in ("race-detail", "full-1day") and expected == "race-detail":
+        parse_result = _parse_race_page_quality(url, text)
+    elif tier in ("horse-detail", "full-1day") and expected == "horse-detail":
+        parse_result = _parse_horse_page_quality(url, text)
+
+    if not parse_result or not bool(parse_result.get("attempted")):
+        return
+
+    if bool(parse_result.get("parse_success")):
+        stats["parse_success_count"] = _safe_int(stats.get("parse_success_count")) + 1
+    else:
+        stats["parse_failed_count"] = _safe_int(stats.get("parse_failed_count")) + 1
+
+    stats["required_field_missing_count"] = _safe_int(stats.get("required_field_missing_count")) + _safe_int(parse_result.get("missing"))
+    stats["duplicate_count"] = _safe_int(stats.get("duplicate_count")) + _safe_int(parse_result.get("duplicate_count"))
+    if bool(parse_result.get("valid_record")):
+        stats["valid_record_count"] = _safe_int(stats.get("valid_record_count")) + 1
+    else:
+        stats["invalid_record_count"] = _safe_int(stats.get("invalid_record_count")) + 1
+
+
 def _plan_metrics(urls: list[str], resume_prefix: str) -> dict[str, int]:
     resume_keys = _build_resume_keys(resume_prefix, len(urls))
     plan = estimate_fetch_plan(urls, resume_keys=resume_keys)
@@ -194,6 +511,7 @@ async def _fetch_urls_live(
     urls: list[str],
     resume_prefix: str,
     args: argparse.Namespace,
+    tier: str,
     parse_race: bool = False,
     parse_horse: bool = False,
 ) -> dict[str, Any]:
@@ -201,17 +519,18 @@ async def _fetch_urls_live(
     discovered_horses: list[str] = []
     consecutive_errors = 0
     consecutive_error_break = False
+    quality = _new_quality_stats(bool(args.quality_check))
 
     get_fetch_metrics(reset=True)
     t0 = time.perf_counter()
 
     for idx, url in enumerate(urls):
-        resume_key = f"{resume_prefix}:{idx}"
+        resume_key = None if bool(args.quality_check) else f"{resume_prefix}:{idx}"
         result, text = await fetch_text(
             session,
             url,
-            use_cache=False,
-            force_refresh=True,
+            use_cache=True,
+            force_refresh=False,
             cache_ttl_sec=60,
             resume_key=resume_key,
             min_interval_sec=1.0,
@@ -221,6 +540,15 @@ async def _fetch_urls_live(
             retry_jitter_sec=0.6,
             circuit_threshold=3,
             circuit_cooldown_sec=120.0,
+        )
+
+        _apply_quality_check(
+            quality,
+            tier=tier,
+            url=url,
+            result=result,
+            text=text,
+            min_html_chars=int(args.min_html_chars),
         )
 
         if result.status in (0, 429, 503):
@@ -248,6 +576,7 @@ async def _fetch_urls_live(
         "consecutive_error_break": consecutive_error_break,
         "race_ids": list(dict.fromkeys(discovered_races)),
         "horse_ids": list(dict.fromkeys(discovered_horses)),
+        "quality": _finalize_quality_stats(quality),
     }
 
 
@@ -298,6 +627,7 @@ async def _run_tier_once(spec: BenchmarkSpec, args: argparse.Namespace) -> dict[
             raise ValueError(f"unsupported tier: {spec.tier}")
 
         plan = _plan_metrics(all_urls, resume_prefix=f"{spec.tier}:{spec.start_date}:{spec.end_date}:{spec.mode}")
+        quality = _finalize_quality_stats(_new_quality_stats(bool(args.quality_check)))
         return {
             "tier": spec.tier,
             "date_range": _date_range_label(spec.start_date, spec.end_date),
@@ -317,6 +647,7 @@ async def _run_tier_once(spec: BenchmarkSpec, args: argparse.Namespace) -> dict[
             "failed_count": 0,
             "elapsed_seconds": 0.0,
             "consecutive_error_break": False,
+            **quality,
         }
 
     timeout = aiohttp.ClientTimeout(total=25, connect=8)
@@ -331,6 +662,7 @@ async def _run_tier_once(spec: BenchmarkSpec, args: argparse.Namespace) -> dict[
                 all_urls,
                 resume_prefix=f"live:{spec.tier}:{spec.start_date}:{spec.end_date}",
                 args=args,
+                tier=spec.tier,
             )
 
         elif spec.tier == "race-detail":
@@ -339,6 +671,7 @@ async def _run_tier_once(spec: BenchmarkSpec, args: argparse.Namespace) -> dict[
                 list_urls,
                 resume_prefix=f"live:list-discovery:{spec.start_date}:{spec.end_date}",
                 args=args,
+                tier=spec.tier,
                 parse_race=True,
             )
             race_ids = discover["race_ids"][: int(args.max_races)]
@@ -351,6 +684,7 @@ async def _run_tier_once(spec: BenchmarkSpec, args: argparse.Namespace) -> dict[
                 race_urls,
                 resume_prefix=f"live:race-detail:{spec.start_date}:{spec.end_date}",
                 args=args,
+                tier=spec.tier,
             )
             measured = {
                 "elapsed_seconds": _safe_float(discover.get("elapsed_seconds")) + _safe_float(detail.get("elapsed_seconds")),
@@ -359,6 +693,10 @@ async def _run_tier_once(spec: BenchmarkSpec, args: argparse.Namespace) -> dict[
                     k: _safe_int(discover.get("metrics", {}).get(k)) + _safe_int(detail.get("metrics", {}).get(k))
                     for k in set(list(discover.get("metrics", {}).keys()) + list(detail.get("metrics", {}).keys()))
                 },
+                "quality": _merge_quality_stats([
+                    discover.get("quality", {}),
+                    detail.get("quality", {}),
+                ]),
             }
 
         elif spec.tier == "horse-detail":
@@ -367,6 +705,7 @@ async def _run_tier_once(spec: BenchmarkSpec, args: argparse.Namespace) -> dict[
                 list_urls,
                 resume_prefix=f"live:list-for-horse:{spec.start_date}:{spec.end_date}",
                 args=args,
+                tier=spec.tier,
                 parse_race=True,
             )
             race_ids = discover_list["race_ids"][: int(args.max_races)]
@@ -376,6 +715,7 @@ async def _run_tier_once(spec: BenchmarkSpec, args: argparse.Namespace) -> dict[
                 race_urls,
                 resume_prefix=f"live:race-for-horse:{spec.start_date}:{spec.end_date}",
                 args=args,
+                tier=spec.tier,
                 parse_horse=True,
             )
             horse_ids = discover_horse["horse_ids"][: int(args.max_horses)]
@@ -388,6 +728,7 @@ async def _run_tier_once(spec: BenchmarkSpec, args: argparse.Namespace) -> dict[
                 horse_urls,
                 resume_prefix=f"live:horse-detail:{spec.start_date}:{spec.end_date}",
                 args=args,
+                tier=spec.tier,
             )
             measured = {
                 "elapsed_seconds": (
@@ -410,6 +751,11 @@ async def _run_tier_once(spec: BenchmarkSpec, args: argparse.Namespace) -> dict[
                         + list(detail.get("metrics", {}).keys())
                     )
                 },
+                "quality": _merge_quality_stats([
+                    discover_list.get("quality", {}),
+                    discover_horse.get("quality", {}),
+                    detail.get("quality", {}),
+                ]),
             }
 
         elif spec.tier == "full-1day":
@@ -418,6 +764,7 @@ async def _run_tier_once(spec: BenchmarkSpec, args: argparse.Namespace) -> dict[
                 list_urls,
                 resume_prefix=f"live:full-list:{spec.start_date}:{spec.end_date}",
                 args=args,
+                tier=spec.tier,
                 parse_race=True,
             )
             race_ids = discover_list["race_ids"][: int(args.max_races)]
@@ -428,6 +775,7 @@ async def _run_tier_once(spec: BenchmarkSpec, args: argparse.Namespace) -> dict[
                 race_urls,
                 resume_prefix=f"live:full-race:{spec.start_date}:{spec.end_date}",
                 args=args,
+                tier=spec.tier,
                 parse_horse=True,
             )
             horse_ids = race_stage["horse_ids"][: int(args.max_horses)]
@@ -438,6 +786,7 @@ async def _run_tier_once(spec: BenchmarkSpec, args: argparse.Namespace) -> dict[
                 horse_urls,
                 resume_prefix=f"live:full-horse:{spec.start_date}:{spec.end_date}",
                 args=args,
+                tier=spec.tier,
             )
             all_urls = list_urls + race_urls + horse_urls
             plan = _plan_metrics(all_urls, resume_prefix=f"{spec.tier}:{spec.start_date}:{spec.end_date}:{spec.mode}")
@@ -462,12 +811,18 @@ async def _run_tier_once(spec: BenchmarkSpec, args: argparse.Namespace) -> dict[
                         + list(horse_stage.get("metrics", {}).keys())
                     )
                 },
+                "quality": _merge_quality_stats([
+                    discover_list.get("quality", {}),
+                    race_stage.get("quality", {}),
+                    horse_stage.get("quality", {}),
+                ]),
             }
 
         else:
             raise ValueError(f"unsupported tier: {spec.tier}")
 
     metrics = measured["metrics"]
+    quality = measured.get("quality", _finalize_quality_stats(_new_quality_stats(bool(args.quality_check))))
     return {
         "tier": spec.tier,
         "date_range": _date_range_label(spec.start_date, spec.end_date),
@@ -487,6 +842,7 @@ async def _run_tier_once(spec: BenchmarkSpec, args: argparse.Namespace) -> dict[
         "failed_count": _failed_count_from_metrics(metrics),
         "elapsed_seconds": float(_safe_float(measured.get("elapsed_seconds")) or 0.0),
         "consecutive_error_break": bool(measured.get("consecutive_error_break")),
+        **quality,
     }
 
 
@@ -663,15 +1019,33 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
 
         if spr and est_req > 0:
             est_seconds = est_req * spr
-            row["estimated_10_year_seconds"] = est_seconds if "3650" in str(row.get("date_range")) else None
+            date_range = str(row.get("date_range") or "")
+            row_days = 0
+            if len(date_range.split("-")) == 2:
+                row_days = _inclusive_days(*date_range.split("-"))
+            row["estimated_10_year_seconds"] = est_seconds if row_days >= DAYS_10_YEARS else None
             if row.get("estimated_10_year_seconds") is None:
-                row["estimated_10_year_seconds"] = est_seconds * (DAYS_10_YEARS / max(1, _inclusive_days(*str(row.get("date_range")).split("-"))))
+                row["estimated_10_year_seconds"] = est_seconds * (DAYS_10_YEARS / max(1, row_days))
             row["estimated_10_year_conservative_seconds"] = row["estimated_10_year_seconds"] * _safe_float(row.get("conservative_multiplier"))
             row["estimation_source"] = "tier-live-calibrated"
         else:
             row["estimated_10_year_seconds"] = None
             row["estimated_10_year_conservative_seconds"] = None
             row["estimation_source"] = "no-tier-calibration"
+
+        parse_failed_rate = _safe_float(row.get("parse_failed_rate")) or 0.0
+        required_missing_rate = _safe_float(row.get("required_field_missing_rate")) or 0.0
+        invalid_record_rate = _safe_float(row.get("invalid_record_rate")) or 0.0
+        est_quality_base = _safe_float(row.get("estimated_10_year_seconds"))
+        if est_quality_base is not None and est_req > 0:
+            expected_records_10y = float(est_req)
+            row["estimated_10_year_parse_failures"] = expected_records_10y * parse_failed_rate
+            row["estimated_10_year_required_field_missing"] = expected_records_10y * required_missing_rate
+            row["estimated_10_year_invalid_records"] = expected_records_10y * invalid_record_rate
+        else:
+            row["estimated_10_year_parse_failures"] = None
+            row["estimated_10_year_required_field_missing"] = None
+            row["estimated_10_year_invalid_records"] = None
 
     tier_estimates: dict[str, dict[str, float | None]] = {}
     for tier in ("list", "race-detail", "horse-detail"):
@@ -692,12 +1066,20 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
                 "seconds_per_request": _safe_float(tier_calibration.get(tier)),
                 "estimated_10_year_seconds": _safe_float(dry_10y.get("estimated_10_year_seconds")),
                 "estimated_10_year_conservative_seconds": _safe_float(dry_10y.get("estimated_10_year_conservative_seconds")),
+                "estimated_10_year_parse_failures": _safe_float(dry_10y.get("estimated_10_year_parse_failures")),
+                "estimated_10_year_invalid_records": _safe_float(dry_10y.get("estimated_10_year_invalid_records")),
+                "quality_risk_level": dry_10y.get("quality_risk_level"),
+                "data_quality_score": _safe_float(dry_10y.get("data_quality_score")),
             }
         else:
             tier_estimates[tier] = {
                 "seconds_per_request": _safe_float(tier_calibration.get(tier)),
                 "estimated_10_year_seconds": None,
                 "estimated_10_year_conservative_seconds": None,
+                "estimated_10_year_parse_failures": None,
+                "estimated_10_year_invalid_records": None,
+                "quality_risk_level": None,
+                "data_quality_score": None,
             }
 
     contains_live_10y = any(
@@ -716,6 +1098,8 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         "anchor_date": _fmt_date(anchor),
         "policy": {
             "tier": args.tier,
+            "quality_check": bool(args.quality_check),
+            "min_html_chars": int(args.min_html_chars),
             "max_live_days": int(args.max_live_days),
             "max_races": int(args.max_races),
             "max_horses": int(args.max_horses),
@@ -766,6 +1150,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-actual-requests", type=int, default=200)
     p.add_argument("--max-consecutive-errors", type=int, default=3)
     p.add_argument("--conservative-multiplier", type=float, default=1.5)
+    p.add_argument("--quality-check", action="store_true", help="Enable HTTP/HTML/parse quality checks")
+    p.add_argument("--min-html-chars", type=int, default=MIN_HTML_CHARS, help="Minimum HTML length threshold")
     p.add_argument("--output", default=str(DEFAULT_OUTPUT))
     return p
 
