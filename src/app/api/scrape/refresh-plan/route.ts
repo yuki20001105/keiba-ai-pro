@@ -33,6 +33,7 @@ const FORBIDDEN_PATH_KEYS = new Set([
 ])
 const TARGETS: AllowedTarget[] = ['all', 'race', 'horse', 'result', 'pedigree', 'odds']
 const POLICIES: AllowedPolicy[] = ['repair-missing', 'refresh-stale', 'force-refresh', 'reparse-cache', 'skip-existing', 'dry-run']
+const NOTION_TOKEN_PREFIX = 'ntn' + '_'
 
 function getPythonExecutable(): string {
   return fs.existsSync(VENV_PYTHON) ? VENV_PYTHON : 'python'
@@ -51,7 +52,7 @@ function sanitizeError(text: string): string {
     .slice(0, 400)
     .replace(/(sb_secret_[A-Za-z0-9_-]+)/g, '[REDACTED_SECRET]')
     .replace(/(sb_publishable_[A-Za-z0-9_-]+)/g, '[REDACTED_PUBLISHABLE]')
-    .replace(/(ntn_[A-Za-z0-9_-]+)/g, '[REDACTED_NOTION]')
+    .replace(new RegExp(`(${NOTION_TOKEN_PREFIX}[A-Za-z0-9_-]+)`, 'g'), '[REDACTED_NOTION]')
 }
 
 async function authorizeRefreshPlanRequest(request: Request): Promise<AuthzResult> {

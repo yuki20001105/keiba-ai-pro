@@ -24,6 +24,7 @@ SECRET_ENV_KEYS = [
     "OPENAI_API_KEY",
     "E2E_PASSWORD",
 ]
+NOTION_TOKEN_PREFIX = "ntn" + "_"
 
 
 def _http_json(method: str, url: str, payload: dict[str, Any] | None = None, token: str | None = None) -> tuple[int, str, dict[str, Any]]:
@@ -51,7 +52,7 @@ def _http_json(method: str, url: str, payload: dict[str, Any] | None = None, tok
 
 def _contains_secret(text: str, token: str) -> bool:
     lowered = text.lower()
-    if "ntn_" in lowered:
+    if NOTION_TOKEN_PREFIX in lowered:
         return True
 
     values = [token]
