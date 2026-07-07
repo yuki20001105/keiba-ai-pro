@@ -6,6 +6,7 @@ import { Logo } from '@/components/Logo'
 import { PremiumRequiredNotice } from '@/components/PremiumRequiredNotice'
 import { useAuth } from '@/contexts/AuthContext'
 import { authFetch } from '@/lib/auth-fetch'
+import type { RetrainDryRunPreview } from '@/lib/model-retrain-approval-types'
 
 type UiState = 'pass' | 'warn' | 'fail'
 
@@ -68,18 +69,7 @@ type DryRunPreviewResponse = {
   code: string
   action: string
   generated_at: string
-  dry_run_preview: {
-    target: string
-    model_type: string
-    train_period: { start: string | null; end: string | null }
-    validation_period: { start: string | null; end: string | null }
-    feature_count: number
-    selected_features: string[]
-    removed_features: string[]
-    expected_outputs: string[]
-    estimated_runtime: { unit: string; min: number; max: number; note: string }
-    safety_checks: Array<{ key: string; status: string; note: string }>
-  }
+  dry_run_preview: RetrainDryRunPreview
   guard: {
     read_only_mode: boolean
     retrain_execution: string

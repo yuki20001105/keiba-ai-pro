@@ -2,6 +2,11 @@ import { NextResponse } from 'next/server'
 import fs from 'fs'
 import path from 'path'
 import { createClient } from '@supabase/supabase-js'
+import type {
+  RetrainDryRunPreview,
+  RetrainDryRunRequest,
+  RetrainDryRunSafetyCheck,
+} from '@/lib/model-retrain-approval-types'
 
 export const runtime = 'nodejs'
 export const maxDuration = 120
@@ -20,21 +25,7 @@ type NumericMetric = {
   note: string
 }
 
-type DryRunPeriod = {
-  start: string | null
-  end: string | null
-}
-
-type DryRunPayload = {
-  action?: unknown
-  target?: unknown
-  model_type?: unknown
-  train_period?: unknown
-  validation_period?: unknown
-  selected_features?: unknown
-  removed_features?: unknown
-  [key: string]: unknown
-}
+type DryRunPayload = RetrainDryRunRequest
 
 const PROJECT_ROOT = process.cwd()
 const MODELS_DIR = path.join(PROJECT_ROOT, 'python-api', 'models')
@@ -171,7 +162,7 @@ function getForbiddenPathKey(searchParams: URLSearchParams): string | null {
   return forbiddenPathKeys.find((k) => searchParams.get(k)) || null
 }
 
-function sanitizePeriod(value: unknown): DryRunPeriod | null {
+function sanitizePeriod(value: unknown): RetrainDryRunPreview['train_period'] | null {
   if (typeof value !== 'object' || value == null) return null
   const raw = value as Record<string, unknown>
   const start = typeof raw.start === 'string' && raw.start.trim() ? raw.start.trim() : null
@@ -189,18 +180,18 @@ function parseDateTokens(text: string): string[] {
   return matches ? matches.slice(0, 4) : []
 }
 
-function buildDryRunPreview(payload: DryRunPayload): Record<string, unknown> {
+function buildDryRunPreview(payload: DryRunPayload): RetrainDryRunPreview {
   const activeModelJson = readJson(ACTIVE_MODEL_PATH)
   const featureAnalysis = readJson(FEATURE_ANALYSIS_PATH)
 
   const activeModelId = String(activeModelJson?.model_id || '')
   const dateTokens = parseDateTokens(activeModelId)
 
-  const inferredTrainPeriod: DryRunPeriod = {
+  const inferredTrainPeriod: RetrainDryRunPreview['train_period'] = {
     start: dateTokens[0] || null,
     end: dateTokens[1] || null,
   }
-  const inferredValidationPeriod: DryRunPeriod = {
+  const inferredValidationPeriod: RetrainDryRunPreview['validation_period'] = {
     start: dateTokens[2] || null,
     end: dateTokens[2] || null,
   }
@@ -244,7 +235,7 @@ function buildDryRunPreview(payload: DryRunPayload): Record<string, unknown> {
     'docs/reports/model_retrain_preview.json (planned, dry-run only)',
   ]
 
-  const safetyChecks = [
+  const safetyChecks: RetrainDryRunSafetyCheck[] = [
     { key: 'read_only_mode', status: 'pass', note: 'actual retrain execution is disabled' },
     { key: 'joblib_write_blocked', status: 'pass', note: '.joblib is not created/overwritten in dry-run' },
     { key: 'active_model_immutable', status: 'pass', note: '.active_model.json is unchanged' },
@@ -443,10 +434,10 @@ export async function POST(request: Request) {
     }, { status: 400 })
   }
 
-  let payload: Record<string, unknown> = {}
+  let payload: RetrainDryRunRequest = {}
   try {
     const body = await request.json()
-    if (typeof body === 'object' && body != null) payload = body as Record<string, unknown>
+    if (typeof body === 'object' && body != null) payload = body as RetrainDryRunRequest
   } catch {
     payload = {}
   }
@@ -464,7 +455,7 @@ export async function POST(request: Request) {
 
   const action = String(payload.action || '')
   if (action === 'retrain_dry_run') {
-    const preview = buildDryRunPreview(payload)
+    const preview: RetrainDryRunPreview = buildDryRunPreview(payload)
     return NextResponse.json({
       success: true,
       state: 'pass',

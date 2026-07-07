@@ -1244,6 +1244,35 @@ git status --short
 - 範囲: 画面、API、ジョブ管理、提案→承認→再学習フロー、本番反映ガード
 - 現状: 仕様確定済み（実装は別フェーズ）
 
+### 再学習承認設計（design freeze）
+
+- 設計書: `docs/model-retrain-approval-design.md`
+- 補助ノート: `docs/model-redesign-workbench.md`
+- 型の足場: `src/lib/model-retrain-approval-types.ts`
+- 目的:
+  - dry-run payload を承認対象として固定
+  - approval record を固定
+  - 実行可能条件（hash一致、期限内、同一active model/feature contract/code version）を固定
+- この段階で未実装のまま維持:
+  - actual retrain
+  - `.joblib` create/overwrite
+  - `.active_model.json` 更新
+  - active model switch
+  - production/base table write
+
+ロードマップ（次フェーズ）:
+1. approval create/status API の実装
+2. submit_approved_retrain の実装（staging/sandbox 制約）
+3. job status UI の実装
+4. result comparison UI の実装
+5. active model switch request（別 Admin approval）
+
+### type-only scaffolding
+
+- `retrain_dry_run` / approval / job submit の契約は型で固定済み
+- ただし runtime 実装は dry-run preview まで
+- next phase で approval-create / approved job submit を追加する際の基礎として使う
+
 ---
 
 ## 11. ディレクトリ構成

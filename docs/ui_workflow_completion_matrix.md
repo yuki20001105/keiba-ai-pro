@@ -98,6 +98,8 @@ Scope: UI (src/app) + Next API (src/app/api) + FastAPI router/script mapping inv
 補足:
 - #9 は read-only / preview 中心の MVP 実装済み。再学習実行と active model 切替は未実装で別フェーズ。
 - #9 の回帰防止として `scripts/smoke_model_redesign_workbench.py` と `e2e/model-redesign-workbench.spec.ts` を追加済み。
+- #9 の次フェーズ準備として、dry-run payload schema と approval record schema を design freeze 済み。
+- 仕様書: `docs/model-retrain-approval-design.md`, `docs/model-redesign-workbench.md`。
 
 ---
 
@@ -199,6 +201,7 @@ Next API routeは存在するが、主要業務UI導線で未使用/非表示の
    - optimizer結果の可視化
    - 採用/却下の意思決定フロー
    - 再学習ジョブ連携
+   - 事前条件: dry-run payload hash と approval record 契約を破らない
 2. P2: Notionレポート出力 UI
    - 出力対象/期間/テンプレ選択
    - secretはserver-side envのみ
@@ -238,6 +241,25 @@ Next API routeは存在するが、主要業務UI導線で未使用/非表示の
 - 予測/分析系UIは本番運用確認フェーズにある。
 - ただし、データ取得 -> 学習 -> 再設計 -> Notion出力までの全業務が UI 完結とはまだ断定できない。
 - 現在は、CLI/Notebook依存の業務 (再設計, Notion出力) が残っている。
+
+## 12. Approval Boundary Freeze (2026-07-06)
+
+対象:
+- モデル再設計ワークベンチ (#9)
+
+固定した境界:
+- 承認対象は `retrain_dry_run` payload の正規化ハッシュ
+- 承認レコードは retrain 実行権限と期限を保持
+- active model pointer 切替は retrain 承認と分離（別 Admin 承認）
+
+この段階で未実装のまま維持:
+- actual retrain runtime
+- approved job submit runtime
+- active model switch runtime
+
+参照:
+- `docs/model-retrain-approval-design.md`
+- `docs/model-redesign-workbench.md`
 
 ## 13. P0実装更新 (2026-07-05)
 

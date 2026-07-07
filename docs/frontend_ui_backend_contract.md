@@ -446,6 +446,78 @@ Preflight response contract:
 - `success`: bool
 - `status`: `ready | degraded | unavailable`
 - `service`: `netkeiba-race`
+
+## 25. Design Freeze (P1.5 Retrain Approval Boundary)
+
+Updated: 2026-07-06
+
+Purpose:
+- Freeze approval boundary before implementing actual retrain runtime.
+- Clarify what is approved, who approved it, and what becomes executable.
+
+Design-only outputs added:
+- `docs/model-retrain-approval-design.md`
+- `docs/model-redesign-workbench.md`
+
+Dry-run payload contract (fixed):
+- includes core planning fields:
+	- `dry_run_id`, `generated_at`, `target`, `model_type`
+	- `train_period`, `validation_period`
+	- `feature_count`, `selected_features`, `removed_features`
+	- `expected_outputs`, `estimated_runtime`, `safety_checks`
+- includes traceability fields:
+	- `source_model_id`, `active_model_id`
+	- `feature_contract_hash`, `data_snapshot_id`
+	- `code_version`, `git_commit`, `created_by`, `state`
+
+Approval record contract (fixed):
+- `approval_id`, `dry_run_id`
+- `approved_by`, `approved_at`, `approval_status`, `approval_comment`
+- `approved_payload_hash`
+- `requested_by`, `requested_at`, `expires_at`, `invalidation_reason`
+- `execution_policy`, `allowed_actions`
+
+Approved retrain preconditions (future execution gate):
+- `approval_status=approved`
+- payload hash equals `approved_payload_hash`
+- not expired (`now <= expires_at`)
+- `active_model_id` / `feature_contract_hash` / `code_version` unchanged
+- caller role policy satisfied (Admin-first)
+- production/base write remains blocked
+- model artifact write only with explicit staging/sandbox policy
+- active model switch requires separate Admin approval
+
+API design freeze (spec only in this phase):
+- active now:
+	- `POST /api/model-redesign/summary` (`action=retrain_dry_run`)
+- defined for next phase:
+	- `POST /api/model-redesign/approval` (`action=create_approval`)
+	- `GET /api/model-redesign/approval/:approval_id`
+	- `POST /api/model-redesign/job` (`action=submit_approved_retrain`)
+
+UI design freeze (future lanes, runtime-gated):
+- dry-run preview
+- approval request preview
+- approval status
+- approved job submit
+- job status
+- result comparison
+- active model switch request
+
+Safety guard continuity:
+- no actual retrain implementation in this phase
+- no `.joblib` create/overwrite
+- no `.active_model.json` mutation
+- no active model switch implementation
+- no production/base table write enablement
+- no path-like input acceptance
+- no service_role key usage
+- no secret/token/env value exposure in responses/logs
+
+Type-only scaffolding added:
+- `src/lib/model-retrain-approval-types.ts`
+- shared with the retrain dry-run preview UI/API shapes
+- runtime behavior remains unchanged
 - `race_id`: string
 - `can_scrape`: bool
 - `can_write`: false (fixed in this phase)
