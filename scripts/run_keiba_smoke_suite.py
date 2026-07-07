@@ -416,6 +416,22 @@ def main() -> int:
         "log_tail": missingness_log[-2000:],
     }
 
+    refresh_policy_rc, refresh_policy_log = _run_step("scrape-refresh-policy", [
+        "scripts/smoke_scrape_refresh_policy.py",
+    ])
+    refresh_policy_report = _read_json(REPORTS_DIR / "scrape_refresh_policy_smoke_result.json")
+    rp_verdict = str(refresh_policy_report.get("verdict") or "") if isinstance(refresh_policy_report, dict) else ""
+    rp_success = bool(refresh_policy_report.get("success")) if isinstance(refresh_policy_report, dict) else False
+    rp_result = "pass" if refresh_policy_rc == 0 and rp_success and rp_verdict == "pass" else "fail"
+    rp_reason = "ok" if rp_result == "pass" else "scrape-refresh-policy-smoke-failed"
+    suite["steps"]["scrape_refresh_policy"] = {
+        "return_code": refresh_policy_rc,
+        "result": rp_result,
+        "reason": rp_reason,
+        "note": "Refresh safeguards smoke: skip/repair/reparse/no-downgrade and dry-run no-write",
+        "log_tail": refresh_policy_log[-2000:],
+    }
+
     fetch_pipeline_rc, fetch_pipeline_log = _run_step("fetch-pipeline", [
         "scripts/smoke_fetch_pipeline.py",
     ])
