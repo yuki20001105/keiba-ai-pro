@@ -400,6 +400,22 @@ def main() -> int:
         "log_tail": fetch_summary_history_log[-2000:],
     }
 
+    missingness_rc, missingness_log = _run_step("scrape-missingness-audit", [
+        "scripts/smoke_scrape_missingness_audit.py",
+    ])
+    missingness_report = _read_json(REPORTS_DIR / "scrape_missingness_audit_smoke_result.json")
+    ms_verdict = str(missingness_report.get("verdict") or "") if isinstance(missingness_report, dict) else ""
+    ms_success = bool(missingness_report.get("success")) if isinstance(missingness_report, dict) else False
+    ms_result = "pass" if missingness_rc == 0 and ms_success and ms_verdict == "pass" else "fail"
+    ms_reason = "ok" if ms_result == "pass" else "scrape-missingness-audit-smoke-failed"
+    suite["steps"]["scrape_missingness_audit"] = {
+        "return_code": missingness_rc,
+        "result": ms_result,
+        "reason": ms_reason,
+        "note": "Read-only missingness fixture smoke: good data pass, required missing fail",
+        "log_tail": missingness_log[-2000:],
+    }
+
     fetch_pipeline_rc, fetch_pipeline_log = _run_step("fetch-pipeline", [
         "scripts/smoke_fetch_pipeline.py",
     ])
