@@ -44,12 +44,16 @@ IMPORTANT_WARN_FIELDS = [
     "dam",
     "broodmare_sire",
 ]
+RACE_NUMBER_ALIAS_KEYS = ["race_number", "race_no", "race_num", "race", "round", "race_index", "race_order"]
 
 
 @dataclass
 class RowQuality:
     required_missing: bool
     required_missing_fields: list[str]
+    domain_allowed_missing_fields: list[str]
+    derived_field_applied_fields: list[str]
+    schema_review_fields: list[str]
     important_missing_count: int
     invalid_value: bool
     stale_parser_version: bool
@@ -144,6 +148,60 @@ def _pick(d: dict[str, Any], *keys: str) -> Any:
     return None
 
 
+def _pick_with_source(d: dict[str, Any], *keys: str) -> tuple[Any, str | None]:
+    for k in keys:
+        if k in d and d.get(k) is not None:
+            return d.get(k), k
+    return None, None
+
+
+def _derive_race_number_from_race_id(race_id: Any) -> int | None:
+    s = str(race_id or "").strip()
+    if len(s) < 2:
+        return None
+    tail = s[-2:]
+    if not tail.isdigit():
+        return None
+    val = int(tail)
+    if 1 <= val <= 12:
+        return val
+    return None
+
+
+def _is_numeric_finish_position(v: Any) -> bool:
+    if v is None:
+        return False
+    txt = str(v).strip()
+    return txt.isdigit()
+
+
+def _is_domain_allowed_missing(col: str, row: dict[str, Any], has_result: bool) -> bool:
+    if col not in RESULT_REQUIRED_FIELDS or not has_result:
+        return False
+
+    fp = _pick(row, "finish_position")
+    fp_txt = str(fp).strip() if fp is not None else ""
+    fp_numeric = _is_numeric_finish_position(fp)
+
+    if col == "margin":
+        if fp_txt == "1":
+            return True
+        if (not fp_numeric) or _is_missing(fp):
+            return True
+        return False
+
+    if col == "result_time":
+        if (not fp_numeric) or _is_missing(fp):
+            return True
+        return False
+
+    if col == "finish_position":
+        page_type = str(_pick(row, "source_page_type") or "").lower()
+        return page_type in ("entry", "shutuba")
+
+    return False
+
+
 def _row_key(row: dict[str, Any]) -> str:
     rid = str(_pick(row, "race_id") or "")
     hid = str(_pick(row, "horse_id") or "")
@@ -220,17 +278,25 @@ def _normalize_row(raw: dict[str, Any], source_page_type: str = "result") -> dic
     source_html = _pick(raw, "source_html", "html", "raw_html")
     source_html_present = bool(source_html and str(source_html).strip())
 
+    race_number_val, race_number_src = _pick_with_source(raw, *RACE_NUMBER_ALIAS_KEYS)
+    finish_position_val, finish_position_src = _pick_with_source(raw, "finish_position", "finish")
+    result_time_val, result_time_src = _pick_with_source(raw, "result_time", "finish_time", "time")
+
     row = {
         "race_id": _pick(raw, "race_id"),
         "race_date": race_date,
         "venue": _pick(raw, "venue"),
-        "race_number": _pick(raw, "race_number"),
+        "race_number": race_number_val,
+        "race_number_source": race_number_src,
+        "race_number_derived": _derive_race_number_from_race_id(_pick(raw, "race_id")),
         "horse_id": _pick(raw, "horse_id"),
         "horse_name": _pick(raw, "horse_name"),
         "frame_number": _pick(raw, "frame_number", "bracket_number", "bracket"),
         "horse_number": _pick(raw, "horse_number", "horse_no"),
-        "finish_position": _pick(raw, "finish_position", "finish"),
-        "result_time": _pick(raw, "result_time", "finish_time", "time"),
+        "finish_position": finish_position_val,
+        "finish_position_source": finish_position_src,
+        "result_time": result_time_val,
+        "result_time_source": result_time_src,
         "margin": _pick(raw, "margin"),
         "odds": _pick(raw, "odds"),
         "popularity": _pick(raw, "popularity"),
@@ -354,7 +420,26 @@ def _assess_row_quality(row: dict[str, Any], current_parser_version: str, stale_
     if has_result:
         required_fields += RESULT_REQUIRED_FIELDS
 
-    required_missing_fields = [f for f in required_fields if _is_missing(_pick(row, f))]
+    required_missing_fields: list[str] = []
+    domain_allowed_missing_fields: list[str] = []
+    derived_field_applied_fields: list[str] = []
+    schema_review_fields: list[str] = []
+
+    for f in required_fields:
+        if not _is_missing(_pick(row, f)):
+            continue
+
+        if _is_domain_allowed_missing(f, row, has_result):
+            domain_allowed_missing_fields.append(f)
+            continue
+
+        if f == "race_number" and _safe_int(_pick(row, "race_number_derived")) is not None:
+            derived_field_applied_fields.append("race_number")
+            schema_review_fields.append("race_number:derived-from-race_id")
+            continue
+
+        required_missing_fields.append(f)
+
     required_missing = len(required_missing_fields) > 0
 
     important_missing_count = sum(1 for f in IMPORTANT_WARN_FIELDS if _is_missing(_pick(row, f)))
@@ -388,6 +473,8 @@ def _assess_row_quality(row: dict[str, Any], current_parser_version: str, stale_
         score = 100.0
         if required_missing:
             score -= 35.0
+        if schema_review_fields:
+            score -= 3.0
         score -= min(25.0, important_missing_count * 3.0)
         if invalid_value:
             score -= 20.0
@@ -400,6 +487,9 @@ def _assess_row_quality(row: dict[str, Any], current_parser_version: str, stale_
     return RowQuality(
         required_missing=required_missing,
         required_missing_fields=required_missing_fields,
+        domain_allowed_missing_fields=domain_allowed_missing_fields,
+        derived_field_applied_fields=derived_field_applied_fields,
+        schema_review_fields=schema_review_fields,
         important_missing_count=important_missing_count,
         invalid_value=invalid_value,
         stale_parser_version=stale_parser_version,
@@ -434,6 +524,8 @@ def _decide_existing_action(policy: str, q: RowQuality, duplicate: bool) -> tupl
     if policy in ("repair-missing", "dry-run"):
         if q.required_missing or q.invalid_value:
             return "repair", "required-missing-or-invalid"
+        if q.schema_review_fields:
+            return "schema-review", "schema-mismatch-or-derived-candidate"
         if q.stale_parser_version:
             return "reparse-cache", "stale-parser-version"
         if q.stale_fetched_at:
@@ -504,6 +596,7 @@ def _build_plan(
         "repair_count": 0,
         "quarantine_count": 0,
         "no_downgrade_skip_count": 0,
+        "schema_review_count": 0,
     }
 
     reasons: Counter[str] = Counter()
@@ -548,6 +641,8 @@ def _build_plan(
 
         if action == "skip":
             counts["skip_count"] += 1
+        elif action == "schema-review":
+            counts["schema_review_count"] += 1
         elif action == "reparse-cache":
             counts["reparse_count"] += 1
         elif action == "refetch":
@@ -698,6 +793,7 @@ def main() -> int:
                 "refetch_count": payload.get("refetch_count"),
                 "quarantine_count": payload.get("quarantine_count"),
                 "no_downgrade_skip_count": payload.get("no_downgrade_skip_count"),
+                "schema_review_count": payload.get("schema_review_count"),
             },
             ensure_ascii=False,
         )

@@ -39,6 +39,14 @@ def _run_audit(csv_path: Path, output_path: Path) -> tuple[int, dict[str, Any]]:
         except Exception:
             payload = {"raw_stdout": out[-1000:]}
 
+    if output_path.exists():
+        try:
+            detail = json.loads(output_path.read_text(encoding="utf-8"))
+            if isinstance(detail, dict):
+                payload["_detail"] = detail
+        except Exception:
+            pass
+
     return proc.returncode, payload
 
 
@@ -46,7 +54,13 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     if not rows:
         raise ValueError("rows required")
 
-    columns = list(rows[0].keys())
+    columns: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        for k in row.keys():
+            if k not in seen:
+                seen.add(k)
+                columns.append(k)
     with path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=columns)
         writer.writeheader()
@@ -67,7 +81,7 @@ def _base_rows() -> list[dict[str, Any]]:
             "horse_number": "1",
             "finish_position": "1",
             "result_time": "1:34.5",
-            "margin": "0.0",
+            "margin": "",
             "odds": "2.5",
             "popularity": "1",
             "horse_weight": "480",
@@ -107,6 +121,7 @@ def _base_rows() -> list[dict[str, Any]]:
             "surface": "芝",
             "class": "1勝",
             "source_page_type": "result",
+            "race_no": "1",
         },
     ]
 
@@ -135,8 +150,20 @@ def main() -> int:
         good_rc, good_payload = _run_audit(good_csv, good_out)
         bad_rc, bad_payload = _run_audit(bad_csv, bad_out)
 
+    def _col(payload: dict[str, Any], name: str) -> dict[str, Any]:
+        for item in payload.get("column_missingness", []) if isinstance(payload, dict) else []:
+            if str(item.get("column")) == name:
+                return item
+        return {}
+
+    good_detail = good_payload.get("_detail") if isinstance(good_payload.get("_detail"), dict) else {}
+    race_num_col = _col(good_detail, "race_number")
+    margin_col = _col(good_detail, "margin")
+
     checks = {
-        "good_fixture_pass": bool(good_rc == 0 and str(good_payload.get("verdict")) == "pass"),
+        "good_fixture_pass": bool(good_rc == 0 and str(good_payload.get("verdict")) in ("pass", "warn")),
+        "race_number_alias_or_derived_not_fail": bool(int(race_num_col.get("true_missing_count") or 0) == 0),
+        "winner_margin_allowed_missing": bool(int(margin_col.get("domain_allowed_missing_count") or 0) >= 1),
         "bad_fixture_fail": bool(bad_rc != 0 and str(bad_payload.get("verdict")) == "fail"),
     }
 

@@ -7,7 +7,7 @@ import argparse
 import csv
 import json
 import sqlite3
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -40,6 +40,8 @@ IMPORTANT_WARN_FIELDS = [
 ]
 
 GROUP_KEYS = ["year", "month", "venue", "race_type", "distance", "surface", "class", "source_page_type"]
+RACE_NUMBER_ALIAS_KEYS = ["race_number", "race_no", "race_num", "race", "round", "race_index", "race_order"]
+FINISH_DNF_TOKENS = ("中", "取", "除", "失", "降", "止", "取消", "除外", "中止", "失格")
 
 
 @dataclass
@@ -116,6 +118,97 @@ def _pick(d: dict[str, Any], *keys: str) -> Any:
         if k in d and d.get(k) is not None:
             return d.get(k)
     return None
+
+
+def _pick_with_source(d: dict[str, Any], *keys: str) -> tuple[Any, str | None]:
+    for k in keys:
+        if k in d and d.get(k) is not None:
+            return d.get(k), k
+    return None, None
+
+
+def _derive_race_number_from_race_id(race_id: Any) -> int | None:
+    s = str(race_id or "").strip()
+    if len(s) < 2:
+        return None
+    tail = s[-2:]
+    if not tail.isdigit():
+        return None
+    val = int(tail)
+    if 1 <= val <= 12:
+        return val
+    return None
+
+
+def _is_numeric_finish_position(v: Any) -> bool:
+    if v is None:
+        return False
+    txt = str(v).strip()
+    return txt.isdigit()
+
+
+def _is_domain_allowed_missing(col: str, row: dict[str, Any], has_results: bool) -> bool:
+    if col not in RESULT_REQUIRED_FIELDS or not has_results:
+        return False
+
+    fp = _pick(row, "finish_position")
+    fp_txt = str(fp).strip() if fp is not None else ""
+    fp_numeric = _is_numeric_finish_position(fp)
+
+    if col == "margin":
+        # 勝ち馬の着差空欄、または非完走/未確定レコードは許容。
+        if fp_txt == "1":
+            return True
+        if (not fp_numeric) or _is_missing(fp):
+            return True
+        return False
+
+    if col == "result_time":
+        # 中止・取消・除外・失格等の非完走系はタイム欠損を許容。
+        if (not fp_numeric) or _is_missing(fp):
+            return True
+        return False
+
+    if col == "finish_position":
+        page_type = str(_pick(row, "source_page_type") or "").lower()
+        if page_type in ("entry", "shutuba"):
+            return True
+        return False
+
+    return False
+
+
+def _inspect_schema(db_path: Path) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "tables": [],
+        "candidate_columns": {},
+        "race_results_json_key_presence": {},
+    }
+    conn = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)
+    try:
+        tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
+        out["tables"] = tables
+
+        cand_cols: dict[str, list[str]] = {}
+        aliases = set(RACE_NUMBER_ALIAS_KEYS + ["horse_no", "bracket", "bracket_number"])
+        for t in tables:
+            cols = [r[1] for r in conn.execute(f"PRAGMA table_info({t})")]
+            hits = [c for c in cols if c in aliases]
+            if hits:
+                cand_cols[t] = hits
+        out["candidate_columns"] = cand_cols
+
+        key_presence: dict[str, int] = {}
+        for k in ["race_number", "race_no", "race_num", "round", "finish_position", "finish_time", "result_time", "margin"]:
+            q = f"SELECT COUNT(*) FROM race_results_ultimate WHERE json_extract(data, '$.{k}') IS NOT NULL"
+            try:
+                key_presence[k] = int(conn.execute(q).fetchone()[0])
+            except sqlite3.Error:
+                key_presence[k] = 0
+        out["race_results_json_key_presence"] = key_presence
+    finally:
+        conn.close()
+    return out
 
 
 def _load_races_meta(conn: sqlite3.Connection) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
@@ -208,6 +301,10 @@ def _load_rows_from_db(conn: sqlite3.Connection, target: str) -> tuple[list[dict
             distance = _safe_int(raw_distance)
             surface = _pick(d, "surface") or _pick(meta, "surface")
 
+            race_number_val, race_number_src = _pick_with_source(d, *RACE_NUMBER_ALIAS_KEYS)
+            result_time_val, result_time_src = _pick_with_source(d, "finish_time", "time", "result_time")
+            finish_position_val, finish_position_src = _pick_with_source(d, "finish_position", "finish")
+
             row = {
                 "race_id": rid,
                 "race_date": race_date,
@@ -215,13 +312,17 @@ def _load_rows_from_db(conn: sqlite3.Connection, target: str) -> tuple[list[dict
                 "month": race_date[4:6] if race_date else None,
                 "venue": _pick(d, "venue") or _pick(meta, "venue"),
                 "race_name": _pick(d, "race_name") or _pick(meta, "race_name"),
-                "race_number": _pick(d, "race_number"),
+                "race_number": race_number_val,
+                "race_number_source": race_number_src,
+                "race_number_derived": _derive_race_number_from_race_id(rid),
                 "horse_id": horse_id,
                 "horse_name": _pick(d, "horse_name") or _pick(hdet, "horse_name"),
                 "frame_number": _pick(d, "bracket_number", "frame_number"),
                 "horse_number": _pick(d, "horse_number"),
-                "finish_position": _pick(d, "finish_position", "finish"),
-                "result_time": _pick(d, "finish_time", "time", "result_time"),
+                "finish_position": finish_position_val,
+                "finish_position_source": finish_position_src,
+                "result_time": result_time_val,
+                "result_time_source": result_time_src,
                 "margin": _pick(d, "margin"),
                 "odds": _pick(d, "odds"),
                 "popularity": _pick(d, "popularity"),
@@ -253,12 +354,16 @@ def _load_rows_from_db(conn: sqlite3.Connection, target: str) -> tuple[list[dict
                     "venue": _pick(meta, "venue"),
                     "race_name": _pick(meta, "race_name"),
                     "race_number": None,
+                    "race_number_source": None,
+                    "race_number_derived": _derive_race_number_from_race_id(race_id),
                     "horse_id": horse_id,
                     "horse_name": horse_name,
                     "frame_number": bracket,
                     "horse_number": horse_no,
                     "finish_position": None,
+                    "finish_position_source": None,
                     "result_time": None,
+                    "result_time_source": None,
                     "margin": None,
                     "odds": odds,
                     "popularity": popularity,
@@ -287,21 +392,30 @@ def _load_rows_from_csv(csv_path: Path) -> tuple[list[dict[str, Any]], list[dict
     normalized: list[dict[str, Any]] = []
     for row in rows:
         race_date = _parse_date(_pick(row, "race_date", "date", "kaisai_date"))
+        race_number_val, race_number_src = _pick_with_source(row, *RACE_NUMBER_ALIAS_KEYS)
+        result_time_val, result_time_src = _pick_with_source(row, "result_time", "finish_time", "time")
+        finish_position_val, finish_position_src = _pick_with_source(row, "finish_position", "finish")
+        rid = _pick(row, "race_id")
+
         normalized.append(
             {
-                "race_id": _pick(row, "race_id"),
+            "race_id": rid,
                 "race_date": race_date,
                 "year": race_date[:4] if race_date else None,
                 "month": race_date[4:6] if race_date else None,
                 "venue": _pick(row, "venue"),
                 "race_name": _pick(row, "race_name"),
-                "race_number": _pick(row, "race_number"),
+                "race_number": race_number_val,
+                "race_number_source": race_number_src,
+                "race_number_derived": _derive_race_number_from_race_id(rid),
                 "horse_id": _pick(row, "horse_id"),
                 "horse_name": _pick(row, "horse_name"),
                 "frame_number": _pick(row, "frame_number", "bracket_number", "bracket"),
                 "horse_number": _pick(row, "horse_number", "horse_no"),
-                "finish_position": _pick(row, "finish_position", "finish"),
-                "result_time": _pick(row, "result_time", "finish_time", "time"),
+                "finish_position": finish_position_val,
+                "finish_position_source": finish_position_src,
+                "result_time": result_time_val,
+                "result_time_source": result_time_src,
                 "margin": _pick(row, "margin"),
                 "odds": _pick(row, "odds"),
                 "popularity": _pick(row, "popularity"),
@@ -399,18 +513,44 @@ def _audit_column_missingness(rows: list[dict[str, Any]]) -> tuple[list[dict[str
     out: list[dict[str, Any]] = []
 
     for col in columns:
-        missing = sum(1 for r in rows if _is_missing(_pick(r, col)))
+        missing = 0
+        domain_allowed_missing = 0
+        derived_filled = 0
+        true_missing = 0
+        alias_counter: Counter[str] = Counter()
+
+        for r in rows:
+            miss = _is_missing(_pick(r, col))
+            if not miss:
+                if col == "race_number":
+                    src = str(_pick(r, "race_number_source") or "")
+                    if src and src != "race_number":
+                        alias_counter[src] += 1
+                continue
+
+            missing += 1
+            if _is_domain_allowed_missing(col, r, has_results):
+                domain_allowed_missing += 1
+                continue
+
+            if col == "race_number" and _safe_int(_pick(r, "race_number_derived")) is not None:
+                derived_filled += 1
+                continue
+
+            true_missing += 1
+
         rate = (missing / total) if total > 0 else 0.0
+        true_rate = (true_missing / total) if total > 0 else 0.0
 
         if col in CORE_REQUIRED_FIELDS:
             required_level = "required"
-            severity = "fail" if rate > 0 else "pass"
+            severity = "fail" if true_rate > 0 else ("warn" if rate > 0 else "pass")
         elif col in RESULT_REQUIRED_FIELDS:
             required_level = "required_if_result"
-            severity = "fail" if has_results and rate > 0 else "pass"
+            severity = "fail" if has_results and true_rate > 0 else ("warn" if has_results and rate > 0 else "pass")
         elif col in IMPORTANT_WARN_FIELDS:
             required_level = "important_warn"
-            severity = "warn" if rate > 0.10 else "pass"
+            severity = "warn" if true_rate > 0.10 else "pass"
         else:
             required_level = "optional"
             severity = "info"
@@ -419,8 +559,14 @@ def _audit_column_missingness(rows: list[dict[str, Any]]) -> tuple[list[dict[str
             {
                 "column": col,
                 "missing_count": missing,
+                "raw_missing_count": missing,
                 "total_count": total,
                 "missing_rate": rate,
+                "true_missing_count": true_missing,
+                "true_missing_rate": true_rate,
+                "domain_allowed_missing_count": domain_allowed_missing,
+                "derived_field_applied_count": derived_filled,
+                "alias_candidate": sorted(alias_counter.keys()),
                 "severity": severity,
                 "required_level": required_level,
             }
@@ -618,7 +764,7 @@ def _coverage_and_consistency(ctx: AuditContext, required_fields: list[str]) -> 
     for item in col_missing:
         level = str(item.get("required_level") or "")
         rate = float(item.get("missing_rate") or 0.0)
-        if level in ("required", "required_if_result") and rate > 0.0:
+        if level in ("required", "required_if_result") and float(item.get("true_missing_rate") or 0.0) > 0.0:
             required_fail_hits += 1
     add_check(
         "required_column_missing_rate_over_0pct",
@@ -629,7 +775,7 @@ def _coverage_and_consistency(ctx: AuditContext, required_fields: list[str]) -> 
 
     important_warn_hits = 0
     for item in col_missing:
-        if item["column"] in important_cols and float(item["missing_rate"]) > 0.10:
+        if item["column"] in important_cols and float(item.get("true_missing_rate") or 0.0) > 0.10:
             important_warn_hits += 1
     add_check(
         "important_column_missing_over_10pct",
@@ -683,15 +829,19 @@ def _render_markdown(report: dict[str, Any]) -> str:
 
     lines.append("## Column Missingness")
     lines.append("")
-    lines.append("| column | missing_count | total_count | missing_rate | severity | required_level |")
-    lines.append("|---|---:|---:|---:|---|---|")
+    lines.append("| column | missing_count | true_missing_count | domain_allowed_missing_count | derived_field_applied_count | total_count | missing_rate | true_missing_rate | severity | required_level |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---|---|")
     for item in report.get("column_missingness", []):
         lines.append(
-            "| {column} | {missing_count} | {total_count} | {missing_rate:.4f} | {severity} | {required_level} |".format(
+            "| {column} | {missing_count} | {true_missing_count} | {domain_allowed_missing_count} | {derived_field_applied_count} | {total_count} | {missing_rate:.4f} | {true_missing_rate:.4f} | {severity} | {required_level} |".format(
                 column=item.get("column"),
                 missing_count=item.get("missing_count"),
+                true_missing_count=item.get("true_missing_count"),
+                domain_allowed_missing_count=item.get("domain_allowed_missing_count"),
+                derived_field_applied_count=item.get("derived_field_applied_count"),
                 total_count=item.get("total_count"),
                 missing_rate=float(item.get("missing_rate") or 0.0),
+                true_missing_rate=float(item.get("true_missing_rate") or 0.0),
                 severity=item.get("severity"),
                 required_level=item.get("required_level"),
             )
@@ -746,6 +896,24 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _build_fail_reason_ranking(column_missingness: list[dict[str, Any]], checks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    reasons: Counter[str] = Counter()
+    for item in column_missingness:
+        level = str(item.get("required_level") or "")
+        tmiss = int(item.get("true_missing_count") or 0)
+        if tmiss <= 0:
+            continue
+        if level in ("required", "required_if_result"):
+            reasons[f"required:{item.get('column')}"] += tmiss
+
+    for c in checks:
+        if str(c.get("status")) == "fail":
+            reasons[f"check:{c.get('name')}"] += int(c.get("failed_count") or 0)
+
+    out = [{"reason": k, "count": v} for k, v in reasons.most_common()]
+    return out
+
+
 def main() -> int:
     args = _build_parser().parse_args()
 
@@ -760,6 +928,11 @@ def main() -> int:
             raise SystemExit(f"error: CSV not found: {csv_path}")
         rows, races, horse_details = _load_rows_from_csv(csv_path)
         input_source = {"type": "csv", "path": str(csv_path)}
+        schema_info = {
+            "tables": [],
+            "candidate_columns": {},
+            "race_results_json_key_presence": {},
+        }
     else:
         db_path = Path(args.input_db) if args.input_db else DEFAULT_DB_PATH
         if not db_path.exists():
@@ -770,6 +943,7 @@ def main() -> int:
         finally:
             conn.close()
         input_source = {"type": "db", "path": str(db_path)}
+        schema_info = _inspect_schema(db_path)
 
     rows = [r for r in rows if _in_range(_parse_date(_pick(r, "race_date")), start_date, end_date)]
     rows = _filter_by_target(rows, args.target)
@@ -787,6 +961,30 @@ def main() -> int:
     group_missingness = _audit_group_missingness(rows, required_fields)
     coverage, consistency_checks, summary = _coverage_and_consistency(ctx, required_fields)
 
+    race_number_item = next((x for x in column_missingness if x.get("column") == "race_number"), {})
+    schema_mismatch_suspected = []
+    if race_number_item:
+        raw_missing = int(race_number_item.get("raw_missing_count") or 0)
+        true_missing = int(race_number_item.get("true_missing_count") or 0)
+        derived_cnt = int(race_number_item.get("derived_field_applied_count") or 0)
+        if raw_missing > 0 and derived_cnt > 0 and true_missing <= max(3, int(raw_missing * 0.001)):
+            schema_mismatch_suspected.append("race_number: payload key absent; mostly derivable from race_id suffix")
+
+    derived_field_candidate = {
+        "race_number": {
+            "method": "race_id_suffix_last2",
+            "applied_count": int(race_number_item.get("derived_field_applied_count") or 0),
+            "true_missing_count": int(race_number_item.get("true_missing_count") or 0),
+        }
+    }
+
+    alias_candidate = {
+        "race_number": race_number_item.get("alias_candidate") or [],
+        "schema": schema_info.get("candidate_columns") or {},
+    }
+
+    fail_reason_ranking = _build_fail_reason_ranking(column_missingness, consistency_checks)
+
     report = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "input_source": input_source,
@@ -799,6 +997,11 @@ def main() -> int:
         "coverage": coverage,
         "consistency_checks": consistency_checks,
         "summary": summary,
+        "schema_info": schema_info,
+        "schema_mismatch_suspected": schema_mismatch_suspected,
+        "alias_candidate": alias_candidate,
+        "derived_field_candidate": derived_field_candidate,
+        "fail_reason_ranking": fail_reason_ranking,
     }
 
     out_json = Path(args.output)
