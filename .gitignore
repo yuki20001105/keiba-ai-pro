@@ -108,11 +108,22 @@ regen_*.txt
 verify_result.txt
 patch_log*.txt
 dev-server.log
+reports/
 reports/analyze_race_smoke_result.json
 reports/e2e_notebooks/
 reports/e2e_debug/
 reports/e2e_logs/
 reports/keiba_notebook_e2e_result.json
+docs/reports/feature_analysis.json
+docs/reports/feature_llm_report.md
+
+# Generated scraper/model data
+python-api/data/html/
+python-api/data/models/
+
+# Generated model artifacts
+python-api/models/*.joblib
+python-api/models/*.metadata.json
 
 # Local notebook workspace
 notebooks/
