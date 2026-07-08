@@ -222,6 +222,18 @@ def _classify_p0_cache_coverage_diagnosis(report: dict[str, Any] | None) -> tupl
     return "fail", "p0-cache-coverage-diagnosis-smoke-failed"
 
 
+def _classify_p0_targeted_refetch_plan(report: dict[str, Any] | None) -> tuple[str, str]:
+    if not isinstance(report, dict):
+        return "fail", "p0-targeted-refetch-plan report missing or invalid"
+
+    verdict = str(report.get("verdict") or "")
+    if verdict == "pass":
+        return "pass", "ok"
+    if verdict == "warn":
+        return "warn", "partial-verification"
+    return "fail", "p0-targeted-refetch-plan-smoke-failed"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run keiba smoke checks as an operational suite")
     parser.add_argument("--date", default=datetime.now().strftime("%Y%m%d"), help="YYYYMMDD for race-list/preflight checks")
@@ -508,6 +520,19 @@ def main() -> int:
         "reason": p0ccd_reason,
         "note": "P0 cache coverage diagnosis: read-only cache presence and sampling-scope check",
         "log_tail": p0_cache_coverage_log[-2000:],
+    }
+
+    p0_targeted_refetch_rc, p0_targeted_refetch_log = _run_step("p0-targeted-refetch-plan", [
+        "scripts/smoke_p0_targeted_refetch_plan.py",
+    ])
+    p0_targeted_refetch_report = _read_json(REPORTS_DIR / "p0_targeted_refetch_plan_smoke_result.json")
+    p0tr_result, p0tr_reason = _classify_p0_targeted_refetch_plan(p0_targeted_refetch_report)
+    suite["steps"]["p0_targeted_refetch_plan"] = {
+        "return_code": p0_targeted_refetch_rc,
+        "result": p0tr_result,
+        "reason": p0tr_reason,
+        "note": "P0 targeted refetch dry-run: read-only URL enumeration only",
+        "log_tail": p0_targeted_refetch_log[-2000:],
     }
 
     missingness_rc, missingness_log = _run_step("scrape-missingness-audit", [
