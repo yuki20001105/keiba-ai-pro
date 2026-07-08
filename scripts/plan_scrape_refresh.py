@@ -74,6 +74,41 @@ class PlanDecision:
     fetched_at: str | None
 
 
+def _priority_for_column(col: str) -> str:
+    if col in ("race_id", "horse_id", "finish_position"):
+        return "P0"
+    if col in ("result_time", "race_date", "venue", "horse_name", "frame_number", "horse_number"):
+        return "P1"
+    if col in IMPORTANT_WARN_FIELDS:
+        return "P2"
+    return "P0"
+
+
+def _recommended_next_action(priority: str, action: str, reason: str) -> str:
+    if priority == "P0":
+        return "targeted-repair-or-refetch-now"
+    if priority == "P1":
+        return "repair-after-p0"
+    if priority == "P2":
+        return "optional-backfill"
+    if priority == "Schema review":
+        return "review-schema-alias-derived-rules"
+    if priority == "Domain allowed":
+        return "no-action-monitor"
+    if action == "refetch":
+        return "refetch-required"
+    if action == "reparse-cache":
+        return "reparse-with-current-parser"
+    return "no-action"
+
+
+def _schema_col_name(field: str) -> str:
+    txt = str(field or "")
+    if ":" in txt:
+        return txt.split(":", 1)[0]
+    return txt or "(schema)"
+
+
 def _parse_date(v: Any) -> str | None:
     if v is None:
         return None
@@ -271,6 +306,33 @@ def _expected_race_ids(conn: sqlite3.Connection, start_date: str | None, end_dat
     return out
 
 
+def _load_race_meta(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    try:
+        for race_id, data_txt in conn.execute("SELECT race_id, data FROM races_ultimate"):
+            try:
+                d = json.loads(data_txt or "{}")
+                if not isinstance(d, dict):
+                    d = {}
+            except Exception:
+                d = {}
+            rid = str(race_id or "")
+            if not rid:
+                continue
+            out[rid] = {
+                "race_date": _parse_date(_pick(d, "date", "race_date")),
+                "venue": _pick(d, "venue"),
+                "race_name": _pick(d, "race_name"),
+                "race_type": _pick(d, "track_type", "race_type"),
+                "distance": _pick(d, "distance"),
+                "surface": _pick(d, "surface"),
+                "race_class": _pick(d, "race_class"),
+            }
+    except sqlite3.Error:
+        return out
+    return out
+
+
 def _normalize_row(raw: dict[str, Any], source_page_type: str = "result") -> dict[str, Any]:
     race_date = _parse_date(_pick(raw, "race_date", "date", "kaisai_date"))
     parser_version = _pick(raw, "parser_version")
@@ -324,6 +386,7 @@ def _normalize_row(raw: dict[str, Any], source_page_type: str = "result") -> dic
 
 def _load_rows_from_db(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    race_meta = _load_race_meta(conn)
 
     try:
         for race_id, data_txt, created_at in conn.execute("SELECT race_id, data, created_at FROM race_results_ultimate"):
@@ -335,6 +398,14 @@ def _load_rows_from_db(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                 d = {}
             d.setdefault("race_id", race_id)
             d.setdefault("created_at", created_at)
+
+            rid = str(_pick(d, "race_id") or race_id or "")
+            meta = race_meta.get(rid, {})
+            if _is_missing(_pick(d, "race_date")) and not _is_missing(_pick(meta, "race_date")):
+                d["race_date"] = _pick(meta, "race_date")
+            if _is_missing(_pick(d, "venue")) and not _is_missing(_pick(meta, "venue")):
+                d["venue"] = _pick(meta, "venue")
+
             rows.append(_normalize_row(d, source_page_type="result"))
     except sqlite3.Error:
         pass
@@ -600,6 +671,12 @@ def _build_plan(
     }
 
     reasons: Counter[str] = Counter()
+    breakdown_counter: Counter[tuple[str, str, str, str, str]] = Counter()
+
+    domain_allowed_missing_count = 0
+    repair_count_p0 = 0
+    repair_count_p1 = 0
+    repair_count_p2 = 0
 
     existing_race_ids = {str(_pick(r, "race_id") or "") for r in filtered if str(_pick(r, "race_id") or "")}
     if expected_race_count > 0:
@@ -609,6 +686,7 @@ def _build_plan(
 
     for key, existing_row in existing_by_key.items():
         q = _assess_row_quality(existing_row, current_parser_version=current_parser_version, stale_days=stale_days)
+        domain_allowed_missing_count += len(q.domain_allowed_missing_fields)
         duplicate = bool(duplicate_map.get(key))
         action, reason = _decide_existing_action(policy=policy, q=q, duplicate=duplicate)
 
@@ -639,6 +717,40 @@ def _build_plan(
         )
         reasons[reason] += 1
 
+        if action == "repair":
+            cols = list(q.required_missing_fields) if q.required_missing_fields else (["(invalid-value)"] if q.invalid_value else ["(repair)"])
+            row_priorities: list[str] = []
+            for col in cols:
+                priority = _priority_for_column(col)
+                row_priorities.append(priority)
+                nxt = _recommended_next_action(priority, action, reason)
+                breakdown_counter[(action, reason, col, priority, nxt)] += 1
+            if "P0" in row_priorities:
+                repair_count_p0 += 1
+            elif "P1" in row_priorities:
+                repair_count_p1 += 1
+            else:
+                repair_count_p2 += 1
+        elif action == "schema-review":
+            cols = [_schema_col_name(x) for x in q.schema_review_fields] or ["(schema)"]
+            for col in cols:
+                priority = "Schema review"
+                nxt = _recommended_next_action(priority, action, reason)
+                breakdown_counter[(action, reason, col, priority, nxt)] += 1
+        elif q.domain_allowed_missing_fields:
+            for col in q.domain_allowed_missing_fields:
+                priority = "Domain allowed"
+                nxt = _recommended_next_action(priority, "no-action", "domain-allowed-missing")
+                breakdown_counter[("no-action", "domain-allowed-missing", col, priority, nxt)] += 1
+        elif action in ("refetch", "reparse-cache"):
+            priority = "P0" if action == "refetch" else "P1"
+            nxt = _recommended_next_action(priority, action, reason)
+            breakdown_counter[(action, reason, "(row)", priority, nxt)] += 1
+        elif action in ("skip", "no-downgrade-skip", "quarantine", "update-candidate"):
+            priority = "Domain allowed"
+            nxt = _recommended_next_action(priority, action, reason)
+            breakdown_counter[(action, reason, "(row)", priority, nxt)] += 1
+
         if action == "skip":
             counts["skip_count"] += 1
         elif action == "schema-review":
@@ -664,8 +776,49 @@ def _build_plan(
     estimated_http_request_count = counts["refetch_count"] + max(0, counts["repair_count"] - counts["update_candidate_count"])
     estimated_runtime = float(estimated_http_request_count) * max(0.1, avg_sec_per_req)
 
+    repair_plan_breakdown = [
+        {
+            "action": action,
+            "reason": reason,
+            "column": column,
+            "count": cnt,
+            "priority": priority,
+            "estimated_http_request_count": cnt if action in ("repair", "refetch", "reparse-cache") else 0,
+            "recommended_next_action": rec,
+        }
+        for (action, reason, column, priority, rec), cnt in sorted(breakdown_counter.items(), key=lambda kv: kv[1], reverse=True)
+    ]
+
+    priority_counts = {
+        "repair_count_total": counts["repair_count"],
+        "repair_count_p0": repair_count_p0,
+        "repair_count_p1": repair_count_p1,
+        "repair_count_p2": repair_count_p2,
+        "schema_review_count": counts["schema_review_count"],
+        "domain_allowed_missing_count": domain_allowed_missing_count,
+        "refetch_count": counts["refetch_count"],
+        "reparse_count": counts["reparse_count"],
+        "no_action_count": counts["skip_count"] + counts["no_downgrade_skip_count"] + counts["schema_review_count"],
+    }
+
+    recommended_next_actions: list[str] = []
+    if repair_count_p0 > 0:
+        recommended_next_actions.append("P0 true missing records should be repaired first")
+    if repair_count_p1 > 0:
+        recommended_next_actions.append("P1 records should be repaired after P0 completion")
+    if repair_count_p2 > 0:
+        recommended_next_actions.append("P2 optional fields can be backfilled in batches")
+    if counts["schema_review_count"] > 0:
+        recommended_next_actions.append("Schema review required for alias/derived candidates before refetch")
+    if counts["refetch_count"] > 0:
+        recommended_next_actions.append("Refetch only missing-target-data and truly stale records")
+
     return {
         **counts,
+        "domain_allowed_missing_count": domain_allowed_missing_count,
+        "repair_plan_breakdown": repair_plan_breakdown,
+        "priority_counts": priority_counts,
+        "recommended_next_actions": recommended_next_actions,
         "estimated_http_request_count": estimated_http_request_count,
         "estimated_runtime": estimated_runtime,
         "reasons": dict(reasons),

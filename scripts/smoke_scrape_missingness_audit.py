@@ -100,7 +100,7 @@ def _base_rows() -> list[dict[str, Any]]:
             "race_id": "202601010101",
             "race_date": "2026-01-01",
             "venue": "東京",
-            "race_number": "1",
+            "race_number": "",
             "horse_id": "2021100002",
             "horse_name": "B",
             "frame_number": "1",
@@ -121,7 +121,6 @@ def _base_rows() -> list[dict[str, Any]]:
             "surface": "芝",
             "class": "1勝",
             "source_page_type": "result",
-            "race_no": "1",
         },
     ]
 
@@ -157,13 +156,39 @@ def main() -> int:
         return {}
 
     good_detail = good_payload.get("_detail") if isinstance(good_payload.get("_detail"), dict) else {}
+    bad_detail = bad_payload.get("_detail") if isinstance(bad_payload.get("_detail"), dict) else {}
     race_num_col = _col(good_detail, "race_number")
     margin_col = _col(good_detail, "margin")
+
+    good_breakdown = list(good_detail.get("repair_reason_breakdown") or [])
+    bad_breakdown = list(bad_detail.get("repair_reason_breakdown") or [])
+    has_domain_allowed_margin = any(
+        str(x.get("reason")) == "domain-allowed-missing"
+        and str(x.get("column")) == "margin"
+        and str(x.get("priority")) == "Domain allowed"
+        for x in good_breakdown
+    )
+    has_schema_derived_race_number = any(
+        str(x.get("reason")) == "derived-field-candidate"
+        and str(x.get("column")) == "race_number"
+        and str(x.get("priority")) == "Schema review"
+        for x in good_breakdown
+    )
+    has_true_missing_p0 = any(
+        str(x.get("reason")) == "true-missing"
+        and str(x.get("column")) in ("race_id", "horse_id", "finish_position")
+        and str(x.get("priority")) == "P0"
+        for x in bad_breakdown
+    )
 
     checks = {
         "good_fixture_pass": bool(good_rc == 0 and str(good_payload.get("verdict")) in ("pass", "warn")),
         "race_number_alias_or_derived_not_fail": bool(int(race_num_col.get("true_missing_count") or 0) == 0),
         "winner_margin_allowed_missing": bool(int(margin_col.get("domain_allowed_missing_count") or 0) >= 1),
+        "repair_reason_breakdown_present": bool(len(good_breakdown) > 0 and len(bad_breakdown) > 0),
+        "domain_allowed_breakdown_margin": has_domain_allowed_margin,
+        "schema_derived_breakdown_race_number": has_schema_derived_race_number,
+        "true_missing_p0_exists": has_true_missing_p0,
         "bad_fixture_fail": bool(bad_rc != 0 and str(bad_payload.get("verdict")) == "fail"),
     }
 

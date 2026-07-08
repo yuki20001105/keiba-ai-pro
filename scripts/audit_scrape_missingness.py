@@ -127,6 +127,38 @@ def _pick_with_source(d: dict[str, Any], *keys: str) -> tuple[Any, str | None]:
     return None, None
 
 
+def _example_key(row: dict[str, Any]) -> str:
+    rid = str(_pick(row, "race_id") or "")
+    hid = str(_pick(row, "horse_id") or "")
+    if rid and hid:
+        return f"{rid}:{hid}"
+    if rid:
+        return rid
+    if hid:
+        return f"(race-missing):{hid}"
+    return "(missing-key)"
+
+
+def _priority_for_column(col: str, required_level: str) -> str:
+    if col in ("race_id", "horse_id", "finish_position"):
+        return "P0"
+    if col in ("result_time", "race_date", "venue", "horse_name", "frame_number", "horse_number"):
+        return "P1"
+    if col in IMPORTANT_WARN_FIELDS:
+        return "P2"
+    if required_level in ("required", "required_if_result"):
+        return "P0"
+    return "P2"
+
+
+def _priority_for_check(name: str) -> str:
+    if name in ("race_without_horse_data", "horse_id_missing", "race_id_duplicate"):
+        return "P0"
+    if name in ("race_date_out_of_target_period", "venue_empty"):
+        return "P1"
+    return "P1"
+
+
 def _derive_race_number_from_race_id(race_id: Any) -> int | None:
     s = str(race_id or "").strip()
     if len(s) < 2:
@@ -518,6 +550,9 @@ def _audit_column_missingness(rows: list[dict[str, Any]]) -> tuple[list[dict[str
         derived_filled = 0
         true_missing = 0
         alias_counter: Counter[str] = Counter()
+        true_missing_examples: list[str] = []
+        domain_allowed_examples: list[str] = []
+        derived_examples: list[str] = []
 
         for r in rows:
             miss = _is_missing(_pick(r, col))
@@ -531,13 +566,22 @@ def _audit_column_missingness(rows: list[dict[str, Any]]) -> tuple[list[dict[str
             missing += 1
             if _is_domain_allowed_missing(col, r, has_results):
                 domain_allowed_missing += 1
+                ex = _example_key(r)
+                if len(domain_allowed_examples) < 5 and ex not in domain_allowed_examples:
+                    domain_allowed_examples.append(ex)
                 continue
 
             if col == "race_number" and _safe_int(_pick(r, "race_number_derived")) is not None:
                 derived_filled += 1
+                ex = _example_key(r)
+                if len(derived_examples) < 5 and ex not in derived_examples:
+                    derived_examples.append(ex)
                 continue
 
             true_missing += 1
+            ex = _example_key(r)
+            if len(true_missing_examples) < 5 and ex not in true_missing_examples:
+                true_missing_examples.append(ex)
 
         rate = (missing / total) if total > 0 else 0.0
         true_rate = (true_missing / total) if total > 0 else 0.0
@@ -567,6 +611,9 @@ def _audit_column_missingness(rows: list[dict[str, Any]]) -> tuple[list[dict[str
                 "domain_allowed_missing_count": domain_allowed_missing,
                 "derived_field_applied_count": derived_filled,
                 "alias_candidate": sorted(alias_counter.keys()),
+                "true_missing_example_keys": true_missing_examples,
+                "domain_allowed_example_keys": domain_allowed_examples,
+                "derived_example_keys": derived_examples,
                 "severity": severity,
                 "required_level": required_level,
             }
@@ -914,6 +961,102 @@ def _build_fail_reason_ranking(column_missingness: list[dict[str, Any]], checks:
     return out
 
 
+def _build_repair_reason_breakdown(column_missingness: list[dict[str, Any]], checks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+
+    for item in column_missingness:
+        col = str(item.get("column") or "")
+        level = str(item.get("required_level") or "")
+        severity = str(item.get("severity") or "info")
+
+        true_missing_count = int(item.get("true_missing_count") or 0)
+        if true_missing_count > 0:
+            rows.append(
+                {
+                    "reason": "true-missing",
+                    "column": col,
+                    "required_level": level,
+                    "count": true_missing_count,
+                    "severity": severity,
+                    "priority": _priority_for_column(col, level),
+                    "example_keys": list(item.get("true_missing_example_keys") or []),
+                }
+            )
+
+        domain_allowed_count = int(item.get("domain_allowed_missing_count") or 0)
+        if domain_allowed_count > 0:
+            rows.append(
+                {
+                    "reason": "domain-allowed-missing",
+                    "column": col,
+                    "required_level": level,
+                    "count": domain_allowed_count,
+                    "severity": "info",
+                    "priority": "Domain allowed",
+                    "example_keys": list(item.get("domain_allowed_example_keys") or []),
+                }
+            )
+
+        derived_count = int(item.get("derived_field_applied_count") or 0)
+        if derived_count > 0:
+            rows.append(
+                {
+                    "reason": "derived-field-candidate",
+                    "column": col,
+                    "required_level": level,
+                    "count": derived_count,
+                    "severity": "warn",
+                    "priority": "Schema review",
+                    "example_keys": list(item.get("derived_example_keys") or []),
+                }
+            )
+
+        aliases = list(item.get("alias_candidate") or [])
+        if aliases:
+            rows.append(
+                {
+                    "reason": "alias-candidate",
+                    "column": col,
+                    "required_level": level,
+                    "count": len(aliases),
+                    "severity": "warn",
+                    "priority": "Schema review",
+                    "example_keys": aliases[:5],
+                }
+            )
+
+    for c in checks:
+        failed_count = int(c.get("failed_count") or 0)
+        if failed_count <= 0:
+            continue
+        status = str(c.get("status") or "")
+        if status not in ("fail", "warn"):
+            continue
+        name = str(c.get("name") or "")
+        rows.append(
+            {
+                "reason": f"consistency:{name}",
+                "column": "(check)",
+                "required_level": "consistency",
+                "count": failed_count,
+                "severity": status,
+                "priority": _priority_for_check(name),
+                "example_keys": [],
+            }
+        )
+
+    return sorted(rows, key=lambda x: (int(x.get("count") or 0), str(x.get("priority") or "")), reverse=True)
+
+
+def _summarize_by_priority(rows: list[dict[str, Any]]) -> dict[str, int]:
+    out: dict[str, int] = {"P0": 0, "P1": 0, "P2": 0, "Schema review": 0, "Domain allowed": 0}
+    for r in rows:
+        p = str(r.get("priority") or "")
+        if p in out:
+            out[p] += int(r.get("count") or 0)
+    return out
+
+
 def main() -> int:
     args = _build_parser().parse_args()
 
@@ -984,6 +1127,43 @@ def main() -> int:
     }
 
     fail_reason_ranking = _build_fail_reason_ranking(column_missingness, consistency_checks)
+    repair_reason_breakdown = _build_repair_reason_breakdown(column_missingness, consistency_checks)
+
+    true_missing_summary = {
+        "total_true_missing_count": sum(int(x.get("true_missing_count") or 0) for x in column_missingness),
+        "by_column": [
+            {
+                "column": str(x.get("column") or ""),
+                "count": int(x.get("true_missing_count") or 0),
+                "required_level": str(x.get("required_level") or ""),
+                "priority": _priority_for_column(str(x.get("column") or ""), str(x.get("required_level") or "")),
+            }
+            for x in column_missingness
+            if int(x.get("true_missing_count") or 0) > 0
+        ],
+    }
+
+    domain_allowed_missing_summary = {
+        "total_domain_allowed_missing_count": sum(int(x.get("domain_allowed_missing_count") or 0) for x in column_missingness),
+        "by_column": [
+            {
+                "column": str(x.get("column") or ""),
+                "count": int(x.get("domain_allowed_missing_count") or 0),
+            }
+            for x in column_missingness
+            if int(x.get("domain_allowed_missing_count") or 0) > 0
+        ],
+    }
+
+    schema_review_summary = {
+        "schema_mismatch_suspected": schema_mismatch_suspected,
+        "derived_field_candidates": derived_field_candidate,
+        "alias_candidate": alias_candidate,
+        "total_schema_review_count": sum(
+            int(x.get("derived_field_applied_count") or 0) + len(list(x.get("alias_candidate") or []))
+            for x in column_missingness
+        ),
+    }
 
     report = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -1002,6 +1182,13 @@ def main() -> int:
         "alias_candidate": alias_candidate,
         "derived_field_candidate": derived_field_candidate,
         "fail_reason_ranking": fail_reason_ranking,
+        "repair_reason_breakdown": repair_reason_breakdown,
+        "true_missing_summary": true_missing_summary,
+        "domain_allowed_missing_summary": domain_allowed_missing_summary,
+        "schema_review_summary": {
+            **schema_review_summary,
+            "priority_summary": _summarize_by_priority(repair_reason_breakdown),
+        },
     }
 
     out_json = Path(args.output)
