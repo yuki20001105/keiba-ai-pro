@@ -198,6 +198,18 @@ def _classify_p0_repair_plan_api(report: dict[str, Any] | None, token_provided: 
     return "fail", "p0-repair-plan-api-smoke-failed"
 
 
+def _classify_p0_reparse_cache(report: dict[str, Any] | None) -> tuple[str, str]:
+    if not isinstance(report, dict):
+        return "fail", "p0-reparse-cache report missing or invalid"
+
+    verdict = str(report.get("verdict") or "")
+    if verdict == "pass":
+        return "pass", "ok"
+    if verdict == "warn":
+        return "warn", "partial-verification"
+    return "fail", "p0-reparse-cache-smoke-failed"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run keiba smoke checks as an operational suite")
     parser.add_argument("--date", default=datetime.now().strftime("%Y%m%d"), help="YYYYMMDD for race-list/preflight checks")
@@ -458,6 +470,19 @@ def main() -> int:
         "reason": p0rpa_reason,
         "note": "P0 repair plan API smoke: read-only preview, path-input reject, update disabled, auth behavior",
         "log_tail": p0_repair_plan_api_log[-2000:],
+    }
+
+    p0_reparse_cache_rc, p0_reparse_cache_log = _run_step("p0-reparse-cache", [
+        "scripts/smoke_p0_reparse_cache.py",
+    ])
+    p0_reparse_cache_report = _read_json(REPORTS_DIR / "p0_reparse_cache_smoke_result.json")
+    p0rc_result, p0rc_reason = _classify_p0_reparse_cache(p0_reparse_cache_report)
+    suite["steps"]["p0_reparse_cache"] = {
+        "return_code": p0_reparse_cache_rc,
+        "result": p0rc_result,
+        "reason": p0rc_reason,
+        "note": "P0 reparse cache dry-run: read-only cached HTML comparison only",
+        "log_tail": p0_reparse_cache_log[-2000:],
     }
 
     missingness_rc, missingness_log = _run_step("scrape-missingness-audit", [
