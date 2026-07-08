@@ -234,6 +234,18 @@ def _classify_p0_targeted_refetch_plan(report: dict[str, Any] | None) -> tuple[s
     return "fail", "p0-targeted-refetch-plan-smoke-failed"
 
 
+def _classify_p0_targeted_refetch_live_validation(report: dict[str, Any] | None) -> tuple[str, str]:
+    if not isinstance(report, dict):
+        return "fail", "p0-targeted-refetch-live-validation report missing or invalid"
+
+    verdict = str(report.get("verdict") or "")
+    if verdict == "pass":
+        return "pass", "ok"
+    if verdict == "warn":
+        return "warn", "partial-verification"
+    return "fail", "p0-targeted-refetch-live-validation-smoke-failed"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run keiba smoke checks as an operational suite")
     parser.add_argument("--date", default=datetime.now().strftime("%Y%m%d"), help="YYYYMMDD for race-list/preflight checks")
@@ -533,6 +545,19 @@ def main() -> int:
         "reason": p0tr_reason,
         "note": "P0 targeted refetch dry-run: read-only URL enumeration only",
         "log_tail": p0_targeted_refetch_log[-2000:],
+    }
+
+    p0_targeted_refetch_live_rc, p0_targeted_refetch_live_log = _run_step("p0-targeted-refetch-live-validation", [
+        "scripts/smoke_p0_targeted_refetch_live_validation.py",
+    ])
+    p0_targeted_refetch_live_report = _read_json(REPORTS_DIR / "p0_targeted_refetch_live_validation_smoke_result.json")
+    p0trlv_result, p0trlv_reason = _classify_p0_targeted_refetch_live_validation(p0_targeted_refetch_live_report)
+    suite["steps"]["p0_targeted_refetch_live_validation"] = {
+        "return_code": p0_targeted_refetch_live_rc,
+        "result": p0trlv_result,
+        "reason": p0trlv_reason,
+        "note": "P0 targeted refetch small live validation: capped URL fetch validation with no DB writes",
+        "log_tail": p0_targeted_refetch_live_log[-2000:],
     }
 
     missingness_rc, missingness_log = _run_step("scrape-missingness-audit", [
