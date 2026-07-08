@@ -462,6 +462,22 @@ def main() -> int:
         "log_tail": refresh_policy_log[-2000:],
     }
 
+    p0_repair_plan_rc, p0_repair_plan_log = _run_step("p0-scrape-repair-plan", [
+        "scripts/smoke_p0_scrape_repair_plan.py",
+    ])
+    p0_repair_plan_report = _read_json(REPORTS_DIR / "p0_scrape_repair_plan_smoke_result.json")
+    p0_verdict = str(p0_repair_plan_report.get("verdict") or "") if isinstance(p0_repair_plan_report, dict) else ""
+    p0_success = bool(p0_repair_plan_report.get("success")) if isinstance(p0_repair_plan_report, dict) else False
+    p0_result = "pass" if p0_repair_plan_rc == 0 and p0_success and p0_verdict == "pass" else "fail"
+    p0_reason = "ok" if p0_result == "pass" else "p0-scrape-repair-plan-smoke-failed"
+    suite["steps"]["p0_scrape_repair_plan"] = {
+        "return_code": p0_repair_plan_rc,
+        "result": p0_result,
+        "reason": p0_reason,
+        "note": "P0-only read-only repair planning smoke: reason/action breakdown and refetch dedup",
+        "log_tail": p0_repair_plan_log[-2000:],
+    }
+
     fetch_pipeline_rc, fetch_pipeline_log = _run_step("fetch-pipeline", [
         "scripts/smoke_fetch_pipeline.py",
     ])
