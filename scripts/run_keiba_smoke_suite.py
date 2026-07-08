@@ -210,6 +210,18 @@ def _classify_p0_reparse_cache(report: dict[str, Any] | None) -> tuple[str, str]
     return "fail", "p0-reparse-cache-smoke-failed"
 
 
+def _classify_p0_cache_coverage_diagnosis(report: dict[str, Any] | None) -> tuple[str, str]:
+    if not isinstance(report, dict):
+        return "fail", "p0-cache-coverage-diagnosis report missing or invalid"
+
+    verdict = str(report.get("verdict") or "")
+    if verdict == "pass":
+        return "pass", "ok"
+    if verdict == "warn":
+        return "warn", "partial-verification"
+    return "fail", "p0-cache-coverage-diagnosis-smoke-failed"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run keiba smoke checks as an operational suite")
     parser.add_argument("--date", default=datetime.now().strftime("%Y%m%d"), help="YYYYMMDD for race-list/preflight checks")
@@ -483,6 +495,19 @@ def main() -> int:
         "reason": p0rc_reason,
         "note": "P0 reparse cache dry-run: read-only cached HTML comparison only",
         "log_tail": p0_reparse_cache_log[-2000:],
+    }
+
+    p0_cache_coverage_rc, p0_cache_coverage_log = _run_step("p0-cache-coverage-diagnosis", [
+        "scripts/smoke_p0_cache_coverage_diagnosis.py",
+    ])
+    p0_cache_coverage_report = _read_json(REPORTS_DIR / "p0_cache_coverage_diagnosis_smoke_result.json")
+    p0ccd_result, p0ccd_reason = _classify_p0_cache_coverage_diagnosis(p0_cache_coverage_report)
+    suite["steps"]["p0_cache_coverage_diagnosis"] = {
+        "return_code": p0_cache_coverage_rc,
+        "result": p0ccd_result,
+        "reason": p0ccd_reason,
+        "note": "P0 cache coverage diagnosis: read-only cache presence and sampling-scope check",
+        "log_tail": p0_cache_coverage_log[-2000:],
     }
 
     missingness_rc, missingness_log = _run_step("scrape-missingness-audit", [
