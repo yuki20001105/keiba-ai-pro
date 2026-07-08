@@ -183,6 +183,21 @@ def _classify_refresh_plan_api(report: dict[str, Any] | None, token_provided: bo
     return "fail", "refresh-plan-api-smoke-failed"
 
 
+def _classify_p0_repair_plan_api(report: dict[str, Any] | None, token_provided: bool) -> tuple[str, str]:
+    if not isinstance(report, dict):
+        return "fail", "p0-repair-plan-api report missing or invalid"
+
+    verdict = str(report.get("verdict") or "")
+    if not token_provided and verdict == "warn":
+        return "warn", "auth-required"
+
+    if verdict == "pass":
+        return "pass", "ok"
+    if verdict == "warn":
+        return "warn", "partial-verification"
+    return "fail", "p0-repair-plan-api-smoke-failed"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run keiba smoke checks as an operational suite")
     parser.add_argument("--date", default=datetime.now().strftime("%Y%m%d"), help="YYYYMMDD for race-list/preflight checks")
@@ -428,6 +443,21 @@ def main() -> int:
         "reason": rpa_reason,
         "note": "Refresh plan API smoke: dry-run only, path-input reject, update disabled, auth behavior",
         "log_tail": refresh_plan_api_log[-2000:],
+    }
+
+    p0_repair_plan_api_rc, p0_repair_plan_api_log = _run_step("p0-repair-plan-api", [
+        "scripts/smoke_p0_scrape_repair_plan_api.py",
+        "--next-url", args.next_url,
+        *token_args,
+    ])
+    p0_repair_plan_api_report = _read_json(REPORTS_DIR / "p0_scrape_repair_plan_api_smoke_result.json")
+    p0rpa_result, p0rpa_reason = _classify_p0_repair_plan_api(p0_repair_plan_api_report, token_provided=token_provided)
+    suite["steps"]["p0_scrape_repair_plan_api"] = {
+        "return_code": p0_repair_plan_api_rc,
+        "result": p0rpa_result,
+        "reason": p0rpa_reason,
+        "note": "P0 repair plan API smoke: read-only preview, path-input reject, update disabled, auth behavior",
+        "log_tail": p0_repair_plan_api_log[-2000:],
     }
 
     missingness_rc, missingness_log = _run_step("scrape-missingness-audit", [

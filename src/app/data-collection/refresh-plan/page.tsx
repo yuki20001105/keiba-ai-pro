@@ -120,6 +120,7 @@ export default function RefreshPlanPage() {
         <Logo href="/home" />
         <div className="flex items-center gap-4">
           <Link href="/data-collection" className="text-xs text-[#666] hover:text-white transition-colors">データ取得へ戻る</Link>
+          <Link href="/data-collection/p0-repair-plan" className="text-xs text-[#666] hover:text-white transition-colors">P0 Repair Plan</Link>
           <span className="text-sm text-[#888]">Refresh Plan (Dry-run)</span>
         </div>
       </header>
