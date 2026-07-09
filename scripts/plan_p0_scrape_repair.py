@@ -113,6 +113,10 @@ def _action_hint(action: str) -> str:
         return "reparse-cache-first"
     if action == "refetch-required":
         return "refetch-required"
+    if action == "source-empty-result-cells":
+        return "source-review-domain-review"
+    if action == "result-source-missing":
+        return "result-source-missing-review"
     if action == "repair-from-existing-metadata":
         return "repair-from-existing-metadata"
     if action == "schema-review":
@@ -147,6 +151,8 @@ def _is_p0_candidate(item: dict[str, Any]) -> bool:
         return check_name in P0_SCOPE_CHECKS
     if reason in ("derived-field-candidate", "alias-candidate") and col == "race_number":
         return True
+    if reason == "source-empty-result-cells" and col == "finish_position":
+        return True
     return False
 
 
@@ -179,6 +185,9 @@ def _choose_action(
     if reason in ("derived-field-candidate", "alias-candidate"):
         return "schema-review", "schema/derived-candidate"
 
+    if reason == "source-empty-result-cells":
+        return "source-empty-result-cells", "result-row-empty-cells"
+
     if reason.startswith("consistency:"):
         check_name = reason.split(":", 1)[1]
         if check_name == "race_without_horse_data":
@@ -201,14 +210,20 @@ def _choose_action(
         return "manual-review", "identifier-missing"
 
     if column == "finish_position" and reason == "true-missing":
+        dec_reason = str(dec.get("reason") or "")
+        if "source-empty-result-cells" in dec_reason:
+            return "source-empty-result-cells", "from-refresh-decision-source-empty"
         if dec_action == "reparse-cache" or has_cache_hint:
             return "reparse-cache", "result-cache-reparse-priority"
-        return "refetch-required", "result-cache-missing-refetch"
+        return "result-source-missing", "result-cache-missing-refetch"
 
     if column in ("result_time", "margin") and reason == "true-missing":
+        dec_reason = str(dec.get("reason") or "")
+        if "source-empty-result-cells" in dec_reason:
+            return "source-empty-result-cells", "from-refresh-decision-source-empty"
         if dec_action == "reparse-cache" or has_cache_hint:
             return "reparse-cache", "result-cache-reparse-priority"
-        return "refetch-required", "result-cache-missing-refetch"
+        return "result-source-missing", "result-cache-missing-refetch"
 
     if column in ("horse_name", "frame_number", "horse_number") and reason == "true-missing":
         if dec_action == "reparse-cache":
@@ -230,7 +245,13 @@ def _recommended_actions(records: list[TargetRecord]) -> list[str]:
     out: list[str] = []
     if any(r.column == "finish_position" and r.reason == "true-missing" for r in records):
         out.append("finish_position true missing は result page の reparse-cache を優先")
-        out.append("cacheがなければ refetch-required")
+        out.append("cacheがなければ targeted refetch dry-run 候補")
+    if any(r.action == "source-empty-result-cells" for r in records):
+        out.append("result row があり finish/time/margin が空の場合は source review / domain review を優先")
+        out.append("source-empty-result-cells は targeted refetch execution 候補から分離")
+    if any(r.action == "result-source-missing" for r in records):
+        out.append("result-source-missing は URL/page種別/対象キーの妥当性を先に確認")
+        out.append("cache不在だけでは即時 refetch-required にしない")
     if any(r.reason == "consistency:race_without_horse_data" for r in records):
         out.append("race_without_horse_data は race_id単位で refetch候補")
     if any(r.column == "race_number" and r.action == "schema-review" for r in records):

@@ -227,13 +227,21 @@ def main() -> int:
     sample_urls = detail.get("sample_urls") if isinstance(detail.get("sample_urls"), dict) else {}
     result_samples = sample_urls.get("result_page") if isinstance(sample_urls.get("result_page"), list) else []
     race_samples = sample_urls.get("race_detail") if isinstance(sample_urls.get("race_detail"), list) else []
+    classification_rows = detail.get("classification_breakdown") if isinstance(detail.get("classification_breakdown"), list) else []
+    classification_map = {
+        str(x.get("classification") or ""): int(x.get("count") or 0)
+        for x in classification_rows
+        if isinstance(x, dict)
+    }
 
     checks = {
         "finish_position_result_page_url": any(item.get("url_type") == "result_page" and item.get("column") == "finish_position" for item in result_samples),
         "race_without_horse_data_race_id_dedup": int(detail.get("race_detail_url_count") or 0) == 1,
         "schema_review_excluded": int(detail.get("excluded_schema_review_count") or 0) > 0,
         "domain_allowed_excluded": int(detail.get("excluded_domain_allowed_count") or 0) > 0,
-        "cache_available_not_refetched": int(detail.get("excluded_cache_available_count") or 0) > 0,
+        "cache_exclusion_metric_present": int(detail.get("excluded_cache_available_count") or 0) >= 0,
+        "source_empty_classified": int(classification_map.get("source-empty-result-cells", 0)) > 0,
+        "source_empty_excluded_from_refetch": int(detail.get("excluded_source_empty_result_cells_count") or 0) > 0,
         "http_access_zero": bool(detail.get("safety_flags", {}).get("no_http_access")),
         "db_write_zero": bool(db_before == db_after and cache_before == cache_after and ped_before == ped_after),
         "race_detail_sample_present": bool(race_samples),

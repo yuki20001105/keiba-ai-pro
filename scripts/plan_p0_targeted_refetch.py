@@ -70,6 +70,7 @@ class Candidate:
     priority: str
     source: str
     recommended_next_action: str
+    classification: str = "refetch-required"
     cache_status: str = "missing"
     raw_key: str = ""
 
@@ -282,7 +283,13 @@ def _load_result_missing_candidates(conn: sqlite3.Connection, target: str) -> li
         hid = str(_pick(payload, "horse_id") or "").strip() or None
 
         missing_specs: list[tuple[str, str, str]] = []
-        if _is_missing(_pick(payload, "finish_position", "finish")):
+        miss_finish = _is_missing(_pick(payload, "finish_position", "finish"))
+        miss_time = _is_missing(_pick(payload, "result_time", "finish_time", "time"))
+        miss_margin = _is_missing(_pick(payload, "margin"))
+        has_row_identity = bool(hid or _pick(payload, "horse_number", "horse_no"))
+        has_row_context = bool(_pick(payload, "horse_name") or _pick(payload, "frame_number", "bracket_number", "bracket") or _pick(payload, "horse_number", "horse_no"))
+
+        if miss_finish:
             missing_specs.append(("finish_position", "true-missing", "P0"))
         if _is_missing(_pick(payload, "horse_name")):
             missing_specs.append(("horse_name", "true-missing", "P1"))
@@ -300,17 +307,36 @@ def _load_result_missing_candidates(conn: sqlite3.Connection, target: str) -> li
             url = _make_url(url_type, rid, hid)
             if not url:
                 continue
+
+            classification = "refetch-required"
+            reason_out = reason
+            next_action = "targeted refetch dry-run"
+
+            if column in RESULT_COLUMNS and miss_finish and miss_time and miss_margin and has_row_identity and has_row_context:
+                classification = "source-empty-result-cells"
+                reason_out = "source-empty-result-cells"
+                next_action = "source review / domain review"
+            elif column in RESULT_COLUMNS and not has_row_identity:
+                classification = "result-source-missing"
+                reason_out = "result-source-missing"
+                next_action = "manual review target row mapping"
+            elif column in RESULT_COLUMNS and not rid:
+                classification = "manual-review"
+                reason_out = "manual-review"
+                next_action = "manual review race_id / source key"
+
             out.append(
                 Candidate(
                     url=url,
                     url_type=url_type,
                     race_id=rid,
                     horse_id=hid,
-                    reason=reason,
+                    reason=reason_out,
                     column=column,
                     priority=priority,
                     source="db",
-                    recommended_next_action="targeted refetch dry-run",
+                    recommended_next_action=next_action,
+                    classification=classification,
                     raw_key=f"{rid}:{hid or ''}:{column}",
                 )
             )
@@ -415,6 +441,10 @@ def _recommended_next_actions(unique_url_count: int, counts: dict[str, int], tar
 
     if counts.get("finish_position", 0) > 0:
         out.append("finish_position 中心なので result page refetch を優先")
+    if counts.get("source_empty_result_cells", 0) > 0:
+        out.append("source-empty-result-cells は refetch から分離し source/domain review を優先")
+    if counts.get("result_source_missing", 0) > 0:
+        out.append("result-source-missing は URL/row key の manual-review を先に実施")
     if counts.get("race_without_horse_data", 0) > 0:
         out.append("race_without_horse_data は race detail/result page のどちらが必要かを再確認")
     if counts.get("pedigree", 0) > 0:
@@ -464,8 +494,23 @@ def main() -> int:
         raw_refetch_candidate_count = 0
         reparse_candidate_count = 0
         excluded_cache_available_count = 0
+        classification_breakdown: Counter[str] = Counter()
+        excluded_source_empty_result_cells_count = 0
+        excluded_manual_review_count = 0
+        excluded_result_source_missing_count = 0
 
         for candidate in raw_candidates:
+            classification_breakdown[candidate.classification] += 1
+            if candidate.classification == "source-empty-result-cells":
+                excluded_source_empty_result_cells_count += 1
+                continue
+            if candidate.classification == "manual-review":
+                excluded_manual_review_count += 1
+                continue
+            if candidate.classification == "result-source-missing":
+                excluded_result_source_missing_count += 1
+                continue
+
             candidate.cache_status = _maybe_cache_status(candidate, cache_conn, ped_conn)
             if candidate.cache_status == "available":
                 excluded_cache_available_count += 1
@@ -525,7 +570,13 @@ def main() -> int:
             "excluded_domain_allowed_count": exclusion_counts["domain"],
             "excluded_metadata_repair_count": exclusion_counts["metadata"],
             "excluded_cache_available_count": excluded_cache_available_count,
+            "excluded_source_empty_result_cells_count": excluded_source_empty_result_cells_count,
+            "excluded_manual_review_count": excluded_manual_review_count,
+            "excluded_result_source_missing_count": excluded_result_source_missing_count,
             "reparse_candidate_count": reparse_candidate_count,
+            "classification_breakdown": [
+                {"classification": k, "count": int(v)} for k, v in sorted(classification_breakdown.items(), key=lambda kv: kv[1], reverse=True)
+            ],
             "estimated_http_request_count": estimated_http_request_count,
             "estimated_runtime_seconds": estimated_runtime_seconds,
             "rate_limit_policy": "sequential read-only URL enumeration; one request per URL only after explicit execution approval; no parallelism",
@@ -540,6 +591,8 @@ def main() -> int:
             "sample_urls": sample_urls,
             "recommended_next_actions": _recommended_next_actions(unique_url_count, {
                 "finish_position": sum(1 for c in unique_candidates if c.column == "finish_position"),
+                "source_empty_result_cells": excluded_source_empty_result_cells_count,
+                "result_source_missing": excluded_result_source_missing_count,
                 "race_without_horse_data": sum(1 for c in unique_candidates if c.reason == "consistency:race_without_horse_data"),
                 "pedigree": pedigree_url_count,
             }, args.target, cache_available_rate),

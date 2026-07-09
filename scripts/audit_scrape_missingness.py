@@ -961,7 +961,50 @@ def _build_fail_reason_ranking(column_missingness: list[dict[str, Any]], checks:
     return out
 
 
-def _build_repair_reason_breakdown(column_missingness: list[dict[str, Any]], checks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _detect_source_empty_result_cells(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    seen: set[str] = set()
+    examples: list[str] = []
+    count = 0
+    for row in rows:
+        page_type = str(_pick(row, "source_page_type") or "").lower()
+        if page_type not in ("result", "result_page", "race_detail"):
+            continue
+        key = _example_key(row)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        has_row_identity = not _is_missing(_pick(row, "horse_id")) or not _is_missing(_pick(row, "horse_number"))
+        if not has_row_identity:
+            continue
+
+        has_context = (
+            not _is_missing(_pick(row, "horse_name"))
+            or not _is_missing(_pick(row, "frame_number"))
+            or not _is_missing(_pick(row, "horse_number"))
+        )
+        if not has_context:
+            continue
+
+        finish_missing = _is_missing(_pick(row, "finish_position"))
+        time_missing = _is_missing(_pick(row, "result_time"))
+        margin_missing = _is_missing(_pick(row, "margin"))
+        if finish_missing and time_missing and margin_missing:
+            count += 1
+            if len(examples) < 10:
+                examples.append(key)
+
+    return {
+        "count": count,
+        "example_keys": examples,
+    }
+
+
+def _build_repair_reason_breakdown(
+    column_missingness: list[dict[str, Any]],
+    checks: list[dict[str, Any]],
+    source_empty_summary: dict[str, Any],
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
 
     for item in column_missingness:
@@ -1042,6 +1085,20 @@ def _build_repair_reason_breakdown(column_missingness: list[dict[str, Any]], che
                 "severity": status,
                 "priority": _priority_for_check(name),
                 "example_keys": [],
+            }
+        )
+
+    source_empty_count = int(source_empty_summary.get("count") or 0)
+    if source_empty_count > 0:
+        rows.append(
+            {
+                "reason": "source-empty-result-cells",
+                "column": "finish_position",
+                "required_level": "required_if_result",
+                "count": source_empty_count,
+                "severity": "warn",
+                "priority": "P0",
+                "example_keys": list(source_empty_summary.get("example_keys") or []),
             }
         )
 
@@ -1126,8 +1183,13 @@ def main() -> int:
         "schema": schema_info.get("candidate_columns") or {},
     }
 
+    source_empty_result_cells_summary = _detect_source_empty_result_cells(rows)
     fail_reason_ranking = _build_fail_reason_ranking(column_missingness, consistency_checks)
-    repair_reason_breakdown = _build_repair_reason_breakdown(column_missingness, consistency_checks)
+    repair_reason_breakdown = _build_repair_reason_breakdown(
+        column_missingness,
+        consistency_checks,
+        source_empty_result_cells_summary,
+    )
 
     true_missing_summary = {
         "total_true_missing_count": sum(int(x.get("true_missing_count") or 0) for x in column_missingness),
@@ -1183,6 +1245,7 @@ def main() -> int:
         "derived_field_candidate": derived_field_candidate,
         "fail_reason_ranking": fail_reason_ranking,
         "repair_reason_breakdown": repair_reason_breakdown,
+        "source_empty_result_cells_summary": source_empty_result_cells_summary,
         "true_missing_summary": true_missing_summary,
         "domain_allowed_missing_summary": domain_allowed_missing_summary,
         "schema_review_summary": {

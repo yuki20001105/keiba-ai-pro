@@ -83,6 +83,7 @@ class ValidationTarget:
     url_type: str
     race_id: str | None
     horse_id: str | None
+    horse_number: str | None
     reason: str
     column: str
     priority: str
@@ -112,6 +113,12 @@ class FetchObserved:
     missing_fields_before: list[str]
     fields_found_after: list[str]
     would_fix_columns: list[str]
+    source_empty_result_cells: bool
+    target_row_found: bool
+    finish_cell_empty: bool
+    time_cell_empty: bool
+    margin_cell_empty: bool
+    diagnosis: str
 
 
 def _load_json(path: Path, label: str) -> dict[str, Any]:
@@ -208,6 +215,7 @@ def _read_targets_from_plan(plan: dict[str, Any]) -> list[ValidationTarget]:
                     url_type=_canonical_url_type(str(item.get("url_type") or "")),
                     race_id=str(item.get("race_id") or "").strip() or None,
                     horse_id=str(item.get("horse_id") or "").strip() or None,
+                    horse_number=str(item.get("horse_number") or "").strip() or None,
                     reason=str(item.get("reason") or ""),
                     column=str(item.get("column") or ""),
                     priority=str(item.get("priority") or "P1"),
@@ -229,6 +237,7 @@ def _read_targets_from_plan(plan: dict[str, Any]) -> list[ValidationTarget]:
                 url_type=_canonical_url_type(str(item.get("url_type") or "")),
                 race_id=str(item.get("race_id") or "").strip() or None,
                 horse_id=str(item.get("horse_id") or "").strip() or None,
+                horse_number=str(item.get("horse_number") or "").strip() or None,
                 reason=str(item.get("reason") or ""),
                 column=str(item.get("column") or ""),
                 priority=str(item.get("priority") or "P1"),
@@ -277,17 +286,29 @@ def _is_error_page(html: str) -> bool:
     return False
 
 
-def _extract_race_fields(html: str, race_id: str | None, horse_id: str | None) -> dict[str, Any]:
+def _extract_race_fields(html: str, race_id: str | None, horse_id: str | None, horse_number: str | None) -> dict[str, Any]:
     out: dict[str, Any] = {}
     soup = BeautifulSoup(html, "html.parser")
     table = soup.find("table", class_="race_table_01")
+    out["html_has_result_table"] = bool(table is not None)
     if table is None:
+        out["target_row_found"] = False
+        out["finish_cell_empty"] = False
+        out["time_cell_empty"] = False
+        out["margin_cell_empty"] = False
+        out["source_empty_result_cells"] = False
+        out["diagnosis"] = "table-structure-changed"
         return out
 
     header_rows = table.find_all("tr")
     if not header_rows:
         return out
     headers = [c.get_text(strip=True) for c in header_rows[0].find_all(["th", "td"])]
+
+    def _norm_header(v: str) -> str:
+        return re.sub(r"\s+", "", v or "")
+
+    normalized_headers = [_norm_header(h) for h in headers]
 
     def idx(names: list[str], default: int = -1) -> int:
         for name in names:
@@ -302,6 +323,10 @@ def _extract_race_fields(html: str, race_id: str | None, horse_id: str | None) -
     idx_horse = idx(["馬名"], 3)
     idx_time = idx(["タイム"], 7)
     idx_margin = idx(["着差"], 8)
+
+    idx_finish_diag = next((i for i, h in enumerate(normalized_headers) if "着順" in h), -1)
+    idx_time_diag = next((i for i, h in enumerate(normalized_headers) if "タイム" in h), -1)
+    idx_margin_diag = next((i for i, h in enumerate(normalized_headers) if "着差" in h), -1)
 
     entries: list[dict[str, Any]] = []
     for row in table.find_all("tr")[1:]:
@@ -337,13 +362,86 @@ def _extract_race_fields(html: str, race_id: str | None, horse_id: str | None) -
         )
 
     target_entry = None
+    target_cells = None
     if horse_id:
         for entry in entries:
             if str(entry.get("horse_id") or "") == horse_id:
                 target_entry = entry
                 break
+    if target_entry is None and horse_number:
+        for entry in entries:
+            if str(entry.get("horse_number") or "") == str(horse_number):
+                target_entry = entry
+                break
     if target_entry is None and entries:
         target_entry = entries[0]
+
+    for row in table.find_all("tr")[1:]:
+        cols = row.find_all("td")
+        if len(cols) < 4:
+            continue
+
+        row_horse_id = ""
+        if idx_horse < len(cols):
+            a = cols[idx_horse].find("a")
+            raw = str(a.get("href") or "") if a else ""
+            m = re.search(r"/horse/(?:result/)?([A-Za-z0-9]+)(?:/|$)", raw)
+            row_horse_id = m.group(1) if m else ""
+
+        row_horse_number = cols[idx_horse_num].get_text(strip=True) if idx_horse_num < len(cols) else ""
+        if horse_id and row_horse_id == horse_id:
+            target_cells = cols
+            break
+        if horse_number and row_horse_number == str(horse_number):
+            target_cells = cols
+            break
+        if not horse_id and not horse_number and target_cells is None:
+            target_cells = cols
+
+    target_row_found = bool(target_cells is not None)
+    finish_cell_empty = True
+    time_cell_empty = True
+    margin_cell_empty = True
+    parser_missed = False
+
+    if target_cells is not None:
+        def _cell_text(cols: Any, i: int) -> str:
+            return cols[i].get_text(strip=True) if i >= 0 and i < len(cols) else ""
+
+        finish_diag_text = _cell_text(target_cells, idx_finish_diag)
+        time_diag_text = _cell_text(target_cells, idx_time_diag)
+        margin_diag_text = _cell_text(target_cells, idx_margin_diag)
+
+        finish_cell_empty = finish_diag_text == ""
+        time_cell_empty = time_diag_text == ""
+        margin_cell_empty = margin_diag_text == ""
+
+        mapped_finish = str(target_entry.get("finish_position") or "") if isinstance(target_entry, dict) else ""
+        mapped_time = str(target_entry.get("result_time") or "") if isinstance(target_entry, dict) else ""
+        mapped_margin = str(target_entry.get("margin") or "") if isinstance(target_entry, dict) else ""
+
+        parser_missed = (
+            ((finish_diag_text != "") and (mapped_finish == ""))
+            or ((time_diag_text != "") and (mapped_time == ""))
+            or ((margin_diag_text != "") and (mapped_margin == ""))
+        )
+
+    source_empty_result_cells = bool(target_row_found and finish_cell_empty and time_cell_empty and margin_cell_empty)
+    if not target_row_found:
+        diagnosis = "target-row-not-found"
+    elif source_empty_result_cells:
+        diagnosis = "source-empty-result-cells"
+    elif parser_missed:
+        diagnosis = "parser-missed"
+    else:
+        diagnosis = "parsed-or-partial"
+
+    out["target_row_found"] = target_row_found
+    out["finish_cell_empty"] = finish_cell_empty
+    out["time_cell_empty"] = time_cell_empty
+    out["margin_cell_empty"] = margin_cell_empty
+    out["source_empty_result_cells"] = source_empty_result_cells
+    out["diagnosis"] = diagnosis
     if isinstance(target_entry, dict):
         out.update(target_entry)
 
@@ -425,7 +523,7 @@ def _parse_for_target(target: ValidationTarget, html: str) -> tuple[str, dict[st
         return "parse_failed", {}, f"page-type-mismatch:{detected}"
 
     if target.url_type in {"result_page", "race_detail"}:
-        fields = _extract_race_fields(html, target.race_id, target.horse_id)
+        fields = _extract_race_fields(html, target.race_id, target.horse_id, target.horse_number)
     else:
         fields = _extract_horse_fields(html)
 
@@ -629,6 +727,8 @@ async def _run_validation(args: argparse.Namespace) -> dict[str, Any]:
             )
 
             missing_before = _missing_fields_before(target)
+            observed_reason = target.reason
+            observed_next_action = target.recommended_next_action
             if http_status < 200 or http_status >= 300:
                 parse_status = "http_error"
                 fields_after: dict[str, Any] = {}
@@ -638,7 +738,24 @@ async def _run_validation(args: argparse.Namespace) -> dict[str, Any]:
                 parse_status, fields_after, parse_reason = _parse_for_target(target, html)
                 if parse_status == "parse_success":
                     would_fix = _would_fix_columns(target, missing_before, fields_after)
-                    if would_fix:
+                    diagnosis = str(fields_after.get("diagnosis") or "")
+                    if target.url_type in {"result_page", "race_detail"} and diagnosis == "source-empty-result-cells":
+                        action = "source-empty-result-cells"
+                        observed_reason = "result row exists but finish/time/margin cells are empty"
+                        observed_next_action = "source-review/domain-review"
+                    elif target.url_type in {"result_page", "race_detail"} and diagnosis == "parser-missed":
+                        action = "parser-missed"
+                        observed_reason = "target row has non-empty cells but parser mapping returned empty"
+                        observed_next_action = "parser-fix-required"
+                    elif target.url_type in {"result_page", "race_detail"} and diagnosis == "target-row-not-found":
+                        action = "target-row-not-found"
+                        observed_reason = "target row was not found by horse_id/horse_number"
+                        observed_next_action = "result-source-missing-or-key-mismatch"
+                    elif target.url_type in {"result_page", "race_detail"} and diagnosis == "table-structure-changed":
+                        action = "table-structure-changed"
+                        observed_reason = "result table structure changed or missing"
+                        observed_next_action = "manual-review-table-structure"
+                    elif would_fix:
                         action = "would-fix"
                     else:
                         action = "no-downgrade-skip"
@@ -652,11 +769,11 @@ async def _run_validation(args: argparse.Namespace) -> dict[str, Any]:
                     url_type=target.url_type,
                     race_id=target.race_id,
                     horse_id=target.horse_id,
-                    reason=target.reason,
+                    reason=observed_reason,
                     column=target.column,
                     priority=target.priority,
                     source=target.source,
-                    recommended_next_action=target.recommended_next_action,
+                    recommended_next_action=observed_next_action,
                     http_status=http_status,
                     parse_status=parse_status,
                     action=action,
@@ -668,6 +785,12 @@ async def _run_validation(args: argparse.Namespace) -> dict[str, Any]:
                     missing_fields_before=missing_before,
                     fields_found_after=_field_names_found(fields_after),
                     would_fix_columns=would_fix,
+                    source_empty_result_cells=bool(fields_after.get("source_empty_result_cells", False)),
+                    target_row_found=bool(fields_after.get("target_row_found", False)),
+                    finish_cell_empty=bool(fields_after.get("finish_cell_empty", False)),
+                    time_cell_empty=bool(fields_after.get("time_cell_empty", False)),
+                    margin_cell_empty=bool(fields_after.get("margin_cell_empty", False)),
+                    diagnosis=str(fields_after.get("diagnosis") or ""),
                 )
             )
 
@@ -682,6 +805,17 @@ async def _run_validation(args: argparse.Namespace) -> dict[str, Any]:
         would_fix_count = sum(1 for x in observed if len(x.would_fix_columns) > 0)
         would_not_fix_count = attempted_url_count - would_fix_count
         no_downgrade_skip_count = sum(1 for x in observed if x.action == "no-downgrade-skip")
+        source_empty_result_cells_count = sum(1 for x in observed if x.source_empty_result_cells)
+        target_row_found_count = sum(1 for x in observed if x.target_row_found)
+        html_has_result_table_count = sum(
+            1
+            for x in observed
+            if x.url_type in {"result_page", "race_detail"} and x.diagnosis != "table-structure-changed"
+        )
+        parser_missed_count = sum(1 for x in observed if x.diagnosis == "parser-missed")
+        source_missing_count = sum(
+            1 for x in observed if x.diagnosis in {"source-empty-result-cells", "target-row-not-found"}
+        )
         required_field_missing_count = sum(
             _required_missing_count(x.url_type, {name: True for name in x.fields_found_after}) for x in observed if x.parse_status == "parse_success"
         )
@@ -704,6 +838,12 @@ async def _run_validation(args: argparse.Namespace) -> dict[str, Any]:
                 "would_fix_columns": x.would_fix_columns,
                 "action": x.action,
                 "reason": x.reason,
+                "source_empty_result_cells": x.source_empty_result_cells,
+                "target_row_found": x.target_row_found,
+                "finish_cell_empty": x.finish_cell_empty,
+                "time_cell_empty": x.time_cell_empty,
+                "margin_cell_empty": x.margin_cell_empty,
+                "diagnosis": x.diagnosis,
                 "recommended_next_action": x.recommended_next_action,
             }
             for x in observed
@@ -743,6 +883,11 @@ async def _run_validation(args: argparse.Namespace) -> dict[str, Any]:
             "would_not_fix_count": would_not_fix_count,
             "required_field_missing_count": required_field_missing_count,
             "no_downgrade_skip_count": no_downgrade_skip_count,
+            "source_empty_result_cells_count": source_empty_result_cells_count,
+            "target_row_found_count": target_row_found_count,
+            "html_has_result_table_count": html_has_result_table_count,
+            "parser_missed_count": parser_missed_count,
+            "source_missing_count": source_missing_count,
             "repairable_from_live_count": repairable_from_live_count,
             "elapsed_seconds": elapsed_seconds,
             "estimated_full_refetch_runtime_seconds": estimated_full_refetch_runtime_seconds,

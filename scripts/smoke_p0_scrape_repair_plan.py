@@ -86,6 +86,14 @@ def _make_audit_fixture() -> dict[str, Any]:
                 "priority": "Domain allowed",
                 "example_keys": ["202601010401:2021100401"],
             },
+            {
+                "reason": "source-empty-result-cells",
+                "column": "finish_position",
+                "required_level": "required_if_result",
+                "count": 1,
+                "priority": "P0",
+                "example_keys": ["202601010501:2021100501"],
+            },
         ]
     }
 
@@ -163,6 +171,22 @@ def main() -> int:
                 reason="consistency:race_without_horse_data",
                 action="refetch-required",
                 column="(check)",
+            )
+        ),
+        "source_empty_result_cells_classified": bool(
+            _has_sample_with(
+                detail,
+                reason="source-empty-result-cells",
+                action="source-empty-result-cells",
+                column="finish_position",
+            )
+        ),
+        "source_empty_result_cells_not_refetch_required": bool(
+            not _has_sample_with(
+                detail,
+                reason="source-empty-result-cells",
+                action="refetch-required",
+                column="finish_position",
             )
         ),
         "race_number_derived_schema_review": bool(
