@@ -146,7 +146,19 @@ def _cache_diag_fixture() -> dict[str, Any]:
     }
 
 
-def _run_plan(audit_path: Path, p0_path: Path, cache_diag_path: Path, db_path: Path, cache_db: Path, ped_db: Path, output_path: Path) -> tuple[int, dict[str, Any]]:
+def _source_empty_diag_fixture() -> dict[str, Any]:
+    return {
+        "checked_count": 3,
+        "domain_allowed_count": 2,
+        "classification_breakdown": [
+            {"classification": "domain-allowed-canceled", "count": 1},
+            {"classification": "domain-allowed-excluded", "count": 1},
+            {"classification": "source-result-missing", "count": 1},
+        ],
+    }
+
+
+def _run_plan(audit_path: Path, p0_path: Path, cache_diag_path: Path, source_empty_diag_path: Path, db_path: Path, cache_db: Path, ped_db: Path, output_path: Path) -> tuple[int, dict[str, Any]]:
     proc = subprocess.run(
         [
             sys.executable,
@@ -157,6 +169,8 @@ def _run_plan(audit_path: Path, p0_path: Path, cache_diag_path: Path, db_path: P
             str(p0_path),
             "--input-cache-diagnosis",
             str(cache_diag_path),
+            "--input-source-empty-diagnosis",
+            str(source_empty_diag_path),
             "--db-path",
             str(db_path),
             "--cache-db",
@@ -206,6 +220,7 @@ def main() -> int:
         audit_path = tmp / "audit.json"
         p0_path = tmp / "p0_plan.json"
         cache_diag_path = tmp / "cache_diag.json"
+        source_empty_diag_path = tmp / "source_empty_diag.json"
         out_json = tmp / "refetch_plan.json"
 
         _write_main_db(db_path)
@@ -214,11 +229,12 @@ def main() -> int:
         audit_path.write_text(json.dumps(_audit_fixture(), ensure_ascii=False, indent=2), encoding="utf-8")
         p0_path.write_text(json.dumps(_plan_fixture(), ensure_ascii=False, indent=2), encoding="utf-8")
         cache_diag_path.write_text(json.dumps(_cache_diag_fixture(), ensure_ascii=False, indent=2), encoding="utf-8")
+        source_empty_diag_path.write_text(json.dumps(_source_empty_diag_fixture(), ensure_ascii=False, indent=2), encoding="utf-8")
 
         db_before = db_path.stat().st_mtime_ns
         cache_before = cache_db.stat().st_mtime_ns
         ped_before = ped_db.stat().st_mtime_ns
-        rc, payload = _run_plan(audit_path, p0_path, cache_diag_path, db_path, cache_db, ped_db, out_json)
+        rc, payload = _run_plan(audit_path, p0_path, cache_diag_path, source_empty_diag_path, db_path, cache_db, ped_db, out_json)
         db_after = db_path.stat().st_mtime_ns
         cache_after = cache_db.stat().st_mtime_ns
         ped_after = ped_db.stat().st_mtime_ns

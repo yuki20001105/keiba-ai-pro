@@ -18,6 +18,7 @@ from typing import Any
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_AUDIT_INPUT = ROOT_DIR / "reports" / "scrape_missingness_audit.json"
 DEFAULT_REFRESH_INPUT = ROOT_DIR / "reports" / "scrape_refresh_plan.json"
+DEFAULT_SOURCE_EMPTY_DIAG_INPUT = ROOT_DIR / "reports" / "source_empty_result_cells_diagnosis.json"
 DEFAULT_OUTPUT = ROOT_DIR / "reports" / "p0_scrape_repair_plan.json"
 DEFAULT_AVG_SEC_PER_REQ = 1.2
 
@@ -240,7 +241,7 @@ def _choose_action(
     return "manual-review", "unmapped-case"
 
 
-def _recommended_actions(records: list[TargetRecord]) -> list[str]:
+def _recommended_actions(records: list[TargetRecord], source_empty_diag: dict[str, Any] | None = None) -> list[str]:
     actions = {r.action for r in records}
     out: list[str] = []
     if any(r.column == "finish_position" and r.reason == "true-missing" for r in records):
@@ -262,6 +263,19 @@ def _recommended_actions(records: list[TargetRecord]) -> list[str]:
         out.append("identifier missing や consistency failure は manual-review で隔離確認")
     if "repair-from-existing-metadata" in actions:
         out.append("race_date/venue は races metadata から補完可能なら先に修復")
+
+    if isinstance(source_empty_diag, dict):
+        breakdown = source_empty_diag.get("classification_breakdown") if isinstance(source_empty_diag.get("classification_breakdown"), list) else []
+        diag_counts = {str(x.get("classification") or ""): int(x.get("count") or 0) for x in breakdown if isinstance(x, dict)}
+        domain_allowed_count = int(source_empty_diag.get("domain_allowed_count") or 0)
+        if domain_allowed_count > 0:
+            out.append("source-empty domain-allowed 系は repair/refetch 対象から除外")
+        if diag_counts.get("source-result-missing", 0) > 0:
+            out.append("source-result-missing は manual-review または alternate source 候補")
+        if diag_counts.get("alternate-page-required", 0) > 0:
+            out.append("alternate-page-required は URL生成規則の見直し候補")
+        if diag_counts.get("wrong-target-row", 0) > 0:
+            out.append("wrong-target-row は horse_id/horse_number 紐付け修正候補")
     return out
 
 
@@ -305,7 +319,12 @@ def _build_samples(records: list[TargetRecord], max_per_group: int = 10) -> list
     return out
 
 
-def _build_plan(audit: dict[str, Any], refresh: dict[str, Any], target: str) -> dict[str, Any]:
+def _build_plan(
+    audit: dict[str, Any],
+    refresh: dict[str, Any],
+    target: str,
+    source_empty_diag: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     refresh_decisions = _build_refresh_decision_map(refresh)
     breakdown = audit.get("repair_reason_breakdown") if isinstance(audit.get("repair_reason_breakdown"), list) else []
 
@@ -387,7 +406,7 @@ def _build_plan(audit: dict[str, Any], refresh: dict[str, Any], target: str) -> 
         "estimated_http_request_count": estimated_http_request_count,
         "estimated_runtime_seconds": estimated_runtime_seconds,
         "sample_targets": _build_samples(records, max_per_group=10),
-        "recommended_next_actions": _recommended_actions(records),
+        "recommended_next_actions": _recommended_actions(records, source_empty_diag),
         "safeguards": {
             "read_only": True,
             "no_db_write": True,
@@ -402,6 +421,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Build read-only P0 scrape repair planning from report artifacts")
     p.add_argument("--input-audit", default=str(DEFAULT_AUDIT_INPUT), help="Path to scrape_missingness_audit.json")
     p.add_argument("--input-refresh-plan", default=str(DEFAULT_REFRESH_INPUT), help="Path to scrape_refresh_plan.json")
+    p.add_argument("--input-source-empty-diagnosis", default=str(DEFAULT_SOURCE_EMPTY_DIAG_INPUT), help="Path to source_empty_result_cells_diagnosis.json")
     p.add_argument("--target", choices=["all", "race", "horse", "result", "pedigree", "odds"], default="all")
     p.add_argument("--output", default=str(DEFAULT_OUTPUT), help="Output JSON path")
     return p
@@ -412,12 +432,15 @@ def main() -> int:
 
     audit = _load_json(Path(args.input_audit), label="input-audit")
     refresh = _load_json(Path(args.input_refresh_plan), label="input-refresh-plan")
+    source_empty_diag_path = Path(args.input_source_empty_diagnosis)
+    source_empty_diag = _load_json(source_empty_diag_path, label="input-source-empty-diagnosis") if source_empty_diag_path.exists() else None
 
-    plan = _build_plan(audit=audit, refresh=refresh, target=str(args.target))
+    plan = _build_plan(audit=audit, refresh=refresh, target=str(args.target), source_empty_diag=source_empty_diag)
     payload = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "input_audit": str(args.input_audit),
         "input_refresh_plan": str(args.input_refresh_plan),
+        "input_source_empty_diagnosis": str(args.input_source_empty_diagnosis),
         **plan,
     }
 

@@ -246,6 +246,18 @@ def _classify_p0_targeted_refetch_live_validation(report: dict[str, Any] | None)
     return "fail", "p0-targeted-refetch-live-validation-smoke-failed"
 
 
+def _classify_source_empty_result_cells_diagnosis(report: dict[str, Any] | None) -> tuple[str, str]:
+    if not isinstance(report, dict):
+        return "fail", "source-empty-result-cells-diagnosis report missing or invalid"
+
+    verdict = str(report.get("verdict") or "")
+    if verdict == "pass":
+        return "pass", "ok"
+    if verdict == "warn":
+        return "warn", "partial-verification"
+    return "fail", "source-empty-result-cells-diagnosis-smoke-failed"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run keiba smoke checks as an operational suite")
     parser.add_argument("--date", default=datetime.now().strftime("%Y%m%d"), help="YYYYMMDD for race-list/preflight checks")
@@ -558,6 +570,19 @@ def main() -> int:
         "reason": p0trlv_reason,
         "note": "P0 targeted refetch small live validation: capped URL fetch validation with no DB writes",
         "log_tail": p0_targeted_refetch_live_log[-2000:],
+    }
+
+    source_empty_diag_rc, source_empty_diag_log = _run_step("source-empty-result-cells-diagnosis", [
+        "scripts/smoke_source_empty_result_cells_diagnosis.py",
+    ])
+    source_empty_diag_report = _read_json(REPORTS_DIR / "source_empty_result_cells_diagnosis_smoke_result.json")
+    sed_result, sed_reason = _classify_source_empty_result_cells_diagnosis(source_empty_diag_report)
+    suite["steps"]["source_empty_result_cells_diagnosis"] = {
+        "return_code": source_empty_diag_rc,
+        "result": sed_result,
+        "reason": sed_reason,
+        "note": "Source-empty result cells diagnosis: read-only cache-based domain/source classification",
+        "log_tail": source_empty_diag_log[-2000:],
     }
 
     missingness_rc, missingness_log = _run_step("scrape-missingness-audit", [
