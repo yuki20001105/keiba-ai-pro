@@ -94,6 +94,15 @@ def _live_validation_fixture() -> dict[str, Any]:
             "horse_number": "5",
             "horse_name": "Epsilon",
         },
+        {
+            **base,
+            "url": "https://db.netkeiba.com/race/202601010206/",
+            "url_type": "result_page",
+            "race_id": "202601010206",
+            "horse_id": "H006",
+            "horse_number": "6",
+            "horse_name": "Zeta",
+        },
     ]
     return {
         "sample_results": rows,
@@ -213,12 +222,14 @@ def main() -> int:
 
     detail = payload.get("_detail") if isinstance(payload.get("_detail"), dict) else {}
     checks = {
-        "checked_count_is_5": int(detail.get("checked_count") or 0) == 5,
+        "checked_count_is_6": int(detail.get("checked_count") or 0) == 6,
         "canceled_classified": _count_classification(detail, "domain-allowed-canceled") >= 1,
         "excluded_classified": _count_classification(detail, "domain-allowed-excluded") >= 1,
         "dnf_classified": _count_classification(detail, "domain-allowed-did-not-finish") >= 1,
         "manual_review_classified": _count_classification(detail, "manual-review-required") >= 1,
         "wrong_target_row_classified": _count_classification(detail, "wrong-target-row") >= 1,
+        "cache_missing_classified": _count_classification(detail, "cache-missing") >= 1,
+        "cache_missing_not_alternate_page_required": _count_classification(detail, "alternate-page-required") == 0,
         "http_access_zero": bool(detail.get("safety_flags", {}).get("no_http_access")),
         "db_write_zero": bool(cache_before == cache_after),
         "sample_diagnostics_present": bool(detail.get("sample_diagnostics")),

@@ -347,17 +347,33 @@ def _recommended_next_actions(counts: Counter[str]) -> list[str]:
     )
     if domain_allowed_count > 0:
         out.append("domain-allowed 系は targeted refetch execution 候補から除外")
+    if counts.get("cache-missing", 0) > 0:
+        out.append("cache-missing が多いため targeted refetch dry-run / small live validation を検討")
     if counts.get("source-result-missing", 0) > 0:
-        out.append("source-result-missing は manual review または alternate source 候補として扱う")
+        out.append("source-result-missing が多いため source/domain review を優先")
     if counts.get("alternate-page-required", 0) > 0:
-        out.append("alternate-page-required は URL生成/ページ種別を見直す")
+        out.append("alternate-page-required が多いため URL生成・別ページ候補を調査")
     if counts.get("wrong-target-row", 0) > 0:
-        out.append("wrong-target-row は horse_id / horse_number matching 修正候補")
+        out.append("wrong-target-row が多いため horse_id / horse_number matching 修正を検討")
     if counts.get("manual-review-required", 0) > 0:
         out.append("manual-review-required は実ページとドメインルール確認を優先")
     if not out:
         out.append("source-empty-result-cells は検出されたが追加分類対象はありません")
     return out
+
+
+def _recommended_next_action_for_classification(classification: str) -> str:
+    if classification == "cache-missing":
+        return "targeted refetch dry-run / small live validation candidate (do not execute yet)"
+    if classification == "alternate-page-required":
+        return "investigate URL generation and alternate page/source candidates"
+    if classification == "source-result-missing":
+        return "source/domain review"
+    if classification == "wrong-target-row":
+        return "review horse_id / horse_number row matching"
+    if classification.startswith("domain-allowed-"):
+        return "domain-allowed; keep out of refetch candidates"
+    return "manual review"
 
 
 def main() -> int:
@@ -381,7 +397,7 @@ def main() -> int:
             checked_count += 1
             cache_key, final_url, html = _fetch_cached_html(cache_conn, target.url, target.race_id)
             if html is None:
-                classification = "alternate-page-required"
+                classification = "cache-missing"
                 reason = "cached HTML not found for target URL/race"
                 detail = {
                     "html_has_result_table": False,
@@ -397,8 +413,14 @@ def main() -> int:
                     "matched_horse_name": "",
                     "matched_horse_number": "",
                 }
+                cache_status = "missing"
+                cache_missing = True
+                html_checked = False
             else:
                 classification, detail, reason = _classify_target(target, html)
+                cache_status = "available"
+                cache_missing = False
+                html_checked = True
 
             counts[classification] += 1
             samples.append(
@@ -411,8 +433,12 @@ def main() -> int:
                     "url": target.url,
                     "cache_key": cache_key,
                     "cache_final_url": final_url,
+                    "cache_status": cache_status,
+                    "cache_missing": cache_missing,
+                    "html_checked": html_checked,
                     "classification": classification,
                     "classification_reason": reason,
+                    "recommended_next_action": _recommended_next_action_for_classification(classification),
                     **detail,
                 }
             )
@@ -434,6 +460,7 @@ def main() -> int:
             "max_samples": int(args.max_samples),
             "checked_count": checked_count,
             "domain_allowed_count": domain_allowed_count,
+            "cache_missing_count": int(counts.get("cache-missing", 0)),
             "source_result_missing_count": int(counts.get("source-result-missing", 0)),
             "wrong_target_row_count": int(counts.get("wrong-target-row", 0)),
             "alternate_page_required_count": int(counts.get("alternate-page-required", 0)),
@@ -464,6 +491,7 @@ def main() -> int:
                     "output": str(output),
                     "checked_count": out["checked_count"],
                     "domain_allowed_count": out["domain_allowed_count"],
+                    "cache_missing_count": out["cache_missing_count"],
                     "source_result_missing_count": out["source_result_missing_count"],
                     "wrong_target_row_count": out["wrong_target_row_count"],
                     "alternate_page_required_count": out["alternate_page_required_count"],

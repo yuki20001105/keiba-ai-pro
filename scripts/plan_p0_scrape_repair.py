@@ -270,10 +270,12 @@ def _recommended_actions(records: list[TargetRecord], source_empty_diag: dict[st
         domain_allowed_count = int(source_empty_diag.get("domain_allowed_count") or 0)
         if domain_allowed_count > 0:
             out.append("source-empty domain-allowed 系は repair/refetch 対象から除外")
+        if diag_counts.get("cache-missing", 0) > 0:
+            out.append("cache-missing は alternate-page-required と分離し targeted refetch dry-run / small live validation 候補")
         if diag_counts.get("source-result-missing", 0) > 0:
-            out.append("source-result-missing は manual-review または alternate source 候補")
+            out.append("source-result-missing は source/domain review を優先")
         if diag_counts.get("alternate-page-required", 0) > 0:
-            out.append("alternate-page-required は URL生成規則の見直し候補")
+            out.append("alternate-page-required は URL生成規則の見直し候補（cache-missing とは別扱い）")
         if diag_counts.get("wrong-target-row", 0) > 0:
             out.append("wrong-target-row は horse_id/horse_number 紐付け修正候補")
     return out
