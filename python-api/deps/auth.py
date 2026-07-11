@@ -18,11 +18,20 @@ JWT ミドルウェアが request.state にセットした情報を利用し、
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional
 
 from fastapi import Depends, HTTPException, Request
 
 logger = logging.getLogger(__name__)
+
+
+def _runtime_env() -> str:
+    return (os.environ.get("APP_ENV") or "development").strip().lower()
+
+
+def _is_local_or_test_env() -> bool:
+    return _runtime_env() in {"development", "local", "test"}
 
 
 # ── ベース: 現在のユーザー取得 ────────────────────────────────────────
@@ -78,6 +87,8 @@ async def require_admin(user: dict = Depends(get_current_user)) -> dict:
     403: 権限不足
     """
     profile = _get_profile_from_db(user["user_id"])
+    if profile is None and not _is_local_or_test_env():
+        raise HTTPException(status_code=503, detail="認可基盤が利用できません")
     role: str = profile.get("role", "user") if profile else user["role"]
 
     if role != "admin":
@@ -93,7 +104,7 @@ async def require_admin(user: dict = Depends(get_current_user)) -> dict:
 
 async def require_premium(user: dict = Depends(get_current_user)) -> dict:
     """
-    Premium サブスクリプションが必要なエンドポイント用ガード。
+    Premium または Admin が必要なエンドポイント用ガード。
 
     JWT の claim よりも DB の profiles.subscription_tier を優先。
 
@@ -101,13 +112,14 @@ async def require_premium(user: dict = Depends(get_current_user)) -> dict:
     403: Free プラン（アップグレード誘導）
     """
     profile = _get_profile_from_db(user["user_id"])
-    tier: str = (
-        profile.get("subscription_tier", "free") if profile else user["subscription_tier"]
-    )
+    if profile is None and not _is_local_or_test_env():
+        raise HTTPException(status_code=503, detail="認可基盤が利用できません")
+    role: str = profile.get("role", "user") if profile else user["role"]
+    tier: str = profile.get("subscription_tier", "free") if profile else user["subscription_tier"]
 
-    if tier != "premium":
+    if role != "admin" and tier != "premium":
         raise HTTPException(
             status_code=403,
             detail="Premiumプランへのアップグレードが必要です。/pricing からアップグレードできます。",
         )
-    return {**user, "subscription_tier": tier}
+    return {**user, "role": role, "subscription_tier": tier}

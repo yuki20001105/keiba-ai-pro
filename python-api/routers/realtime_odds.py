@@ -14,9 +14,10 @@ import time
 from typing import Any
 
 import aiohttp
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from app_config import logger  # type: ignore
+from deps.auth import require_admin  # type: ignore
 from scraping.constants import SCRAPE_HEADERS  # type: ignore
 
 router = APIRouter()
@@ -262,7 +263,7 @@ async def get_realtime_odds(race_id: str, types: str = "tansho,umaren"):
 
 
 @router.post("/api/realtime-odds/refresh")
-async def refresh_realtime_odds(body: dict):
+async def refresh_realtime_odds(body: dict, _: dict = Depends(require_admin)):
     """
     複数レースのオッズを一括更新（最大36レース）。
     body: { "race_ids": ["202605051211", ...], "types": "tansho,umaren" }

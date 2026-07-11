@@ -722,7 +722,7 @@ async def train_model(request: TrainRequest, current_user: dict = Depends(requir
 # ── 非同期ジョブ管理 ──────────────────────────────────────
 
 
-async def _run_train_job(job_id: str, request: TrainRequest) -> None:
+async def _run_train_job(job_id: str, request: TrainRequest, current_user: dict) -> None:
     job = _train_jobs[job_id]
     job["status"] = "running"
     job["pct"] = 0
@@ -733,7 +733,7 @@ async def _run_train_job(job_id: str, request: TrainRequest) -> None:
             job["pct"] = pct
 
     try:
-        train_result = await _do_train(request, {"user_id": "background-job"}, progress_cb=_cb)
+        train_result = await _do_train(request, current_user, progress_cb=_cb)
         job["status"] = "completed"
         job["result"] = train_result.dict()
         job["progress"] = "完了"
@@ -750,7 +750,7 @@ async def _run_train_job(job_id: str, request: TrainRequest) -> None:
 
 
 @router.post("/api/train/start")
-async def train_start(request: TrainRequest):
+async def train_start(request: TrainRequest, current_user: dict = Depends(require_premium)):
     """非同期学習ジョブを起動してすぐに job_id を返す"""
     _purge_old_jobs(_train_jobs)
     job_id = str(uuid.uuid4())
@@ -759,7 +759,7 @@ async def train_start(request: TrainRequest):
         import threading
         def _bg() -> None:
             # 別スレッドで独立した event loop を持つことでメインループをブロックしない
-            asyncio.run(_run_train_job(job_id, request))
+            asyncio.run(_run_train_job(job_id, request, current_user))
         threading.Thread(target=_bg, daemon=True, name=f"train-{job_id}").start()
     except Exception as e:
         _train_jobs[job_id]["status"] = "error"
