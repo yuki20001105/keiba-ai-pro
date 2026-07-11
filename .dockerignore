@@ -14,6 +14,13 @@ __pycache__/
 *.pyc
 *.pyo
 
+# 秘密情報ファイル
+.env
+.env.*
+!.env.example
+!.env.local.example
+!.env.test.example
+
 # ログ・一時ファイル
 tools/
 validation/
