@@ -77,6 +77,7 @@ UI ガード:
 - 実行中: 「見積もり生成中」「経過秒」を表示。
 - 期間が 6 ヶ月以上の場合: 長時間化注意を表示。
 - 未完了時: 0 値を表示せず、明示エラーに遷移。
+- 完了時: dry-run summary cards をカテゴリ別に表示し、`DB existing / cache hit / resume hit / new fetch required` を分離表示。
 
 dry-run 表示項目:
 - `total_target_count`, `unique_url_count`, `estimated_request_count`
@@ -124,6 +125,7 @@ dry-run 表示項目:
 - `mode === dry-run` は見積系指標を表示。
 - それ以外（execute）は保存件数・ネットワーク件数・リトライ等を表示。
 - `fetch_summary` が存在する job のみ表示。
+- 古い dry-run 履歴で新指標が未定義の場合は `-` を表示し、`0` と未取得を混同しない。
 
 運用上の意義:
 - dry-run と execute の監査ログを同一 UI で比較可能。

@@ -310,6 +310,22 @@ export default function DataCollectionPage() {
     return Math.max(0, (ey - sy) * 12 + (em - sm) + 1)
   }
 
+  const formatMaybeNumber = (value: unknown): string => {
+    if (value == null) return '-'
+    if (typeof value === 'number') {
+      return Number.isFinite(value) ? String(value) : '-'
+    }
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? String(parsed) : '-'
+  }
+
+  const formatMaybeSeconds = (value: unknown): string => {
+    if (value == null) return '-'
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed)) return '-'
+    return `${Math.ceil(parsed)} sec`
+  }
+
   const handleDryRun = async () => {
     const dryRunTimeoutMessage = 'Dry-run結果を取得できませんでした。期間を短くするか、再実行してください。'
 
@@ -597,25 +613,48 @@ export default function DataCollectionPage() {
                 <span className="text-[11px] text-[#6b7280]">HTTPアクセスしないプレビュー</span>
               </div>
 
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">total target count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.total_target_count}</div></div>
-                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">unique URL count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.unique_url_count}</div></div>
-                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">estimated request count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.estimated_request_count}</div></div>
-                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">cache hit count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.cache_hit_count}</div></div>
-                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">cache miss count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.cache_miss_count}</div></div>
-                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">resume hit count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.resume_hit_count}</div></div>
-                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">skipped count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.skipped_count}</div></div>
-                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">DB existing skip count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.db_existing_skip_count}</div></div>
-                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">DB existing race count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.db_existing_race_count}</div></div>
-                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">DB existing horse count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.db_existing_horse_count}</div></div>
-                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">new fetch required count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.new_fetch_required_count}</div></div>
-                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">already covered count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.already_covered_count}</div></div>
-                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">estimated runtime</div><div className="text-sm text-white font-medium">{Math.ceil(dryRunResult.dry_run.estimated_runtime_sec)} sec</div></div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">
+                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3 space-y-2">
+                  <div className="text-[#7dd3fc]">取得対象</div>
+                  <div className="text-[#aaa]">total target count: <span className="text-white">{dryRunResult.dry_run.total_target_count}</span></div>
+                  <div className="text-[#aaa]">unique URL count: <span className="text-white">{dryRunResult.dry_run.unique_url_count}</span></div>
+                </div>
+
+                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3 space-y-2">
+                  <div className="text-[#7dd3fc]">新規取得が必要</div>
+                  <div className="text-[#aaa]">new fetch required count: <span className="text-white">{dryRunResult.dry_run.new_fetch_required_count}</span></div>
+                  <div className="text-[#aaa]">estimated request count: <span className="text-white">{dryRunResult.dry_run.estimated_request_count}</span></div>
+                  <div className="text-[#aaa]">cache miss count: <span className="text-white">{dryRunResult.dry_run.cache_miss_count}</span></div>
+                </div>
+
+                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3 space-y-2">
+                  <div className="text-[#7dd3fc]">既存DBでカバー済み</div>
+                  <div className="text-[#aaa]">already covered count: <span className="text-white">{dryRunResult.dry_run.already_covered_count}</span></div>
+                  <div className="text-[#aaa]">DB existing skip count: <span className="text-white">{dryRunResult.dry_run.db_existing_skip_count}</span></div>
+                  <div className="text-[#aaa]">DB existing race count: <span className="text-white">{dryRunResult.dry_run.db_existing_race_count}</span></div>
+                  <div className="text-[#aaa]">DB existing horse count: <span className="text-white">{dryRunResult.dry_run.db_existing_horse_count}</span></div>
+                  <div className="text-[#aaa]">DB existing result count: <span className="text-white">{dryRunResult.dry_run.db_existing_result_count}</span></div>
+                  <div className="text-[#aaa]">DB existing pedigree count: <span className="text-white">{dryRunResult.dry_run.db_existing_pedigree_count}</span></div>
+                </div>
+
+                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3 space-y-2">
+                  <div className="text-[#7dd3fc]">HTTPキャッシュ / resume でスキップ</div>
+                  <div className="text-[#aaa]">cache hit count: <span className="text-white">{dryRunResult.dry_run.cache_hit_count}</span></div>
+                  <div className="text-[#aaa]">resume hit count: <span className="text-white">{dryRunResult.dry_run.resume_hit_count}</span></div>
+                  <div className="text-[#aaa]">skipped count: <span className="text-white">{dryRunResult.dry_run.skipped_count}</span></div>
+                </div>
+
+                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3 space-y-2 md:col-span-2">
+                  <div className="text-[#7dd3fc]">推定</div>
+                  <div className="text-[#aaa]">推定実行時間: <span className="text-white">{Math.ceil(dryRunResult.dry_run.estimated_runtime_sec)} sec</span></div>
+                </div>
               </div>
 
               <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] px-3 py-2 text-xs text-[#9db4cc] space-y-1">
                 <div>DB existing skip count は、既にDBに保存済みのため再取得不要と判定された件数です。</div>
-                <div>cache hit はHTTPキャッシュ、resume hit は過去成功済みURL、DB existing は保存済みデータを意味します。</div>
+                <div>cache hit はHTTPキャッシュで再取得不要と判定された件数です。</div>
+                <div>resume hit は過去に成功済みのURLとして再実行をスキップできる件数です。</div>
+                <div>new fetch required は今回新たに取得が必要と推定される件数です。</div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-[11px]">
@@ -697,12 +736,14 @@ export default function DataCollectionPage() {
                     </div>
                     {mode === 'dry-run' ? (
                       <div className="grid grid-cols-2 md:grid-cols-6 gap-2 text-[11px]">
-                        <div className="text-[#aaa]">est req: <span className="text-white">{dry.estimated_request_count ?? '-'}</span></div>
-                        <div className="text-[#aaa]">cache hit: <span className="text-white">{dry.cache_hit_count ?? '-'}</span></div>
-                        <div className="text-[#aaa]">cache miss: <span className="text-white">{dry.cache_miss_count ?? '-'}</span></div>
-                        <div className="text-[#aaa]">resume hit: <span className="text-white">{dry.resume_hit_count ?? '-'}</span></div>
-                        <div className="text-[#aaa]">db existing: <span className="text-white">{dry.db_existing_skip_count ?? '-'}</span></div>
-                        <div className="text-[#aaa]">est runtime: <span className="text-white">{Math.ceil(Number(dry.estimated_runtime_sec || 0))} sec</span></div>
+                        <div className="text-[#aaa]">est req: <span className="text-white">{formatMaybeNumber(dry.estimated_request_count)}</span></div>
+                        <div className="text-[#aaa]">new fetch: <span className="text-white">{formatMaybeNumber(dry.new_fetch_required_count)}</span></div>
+                        <div className="text-[#aaa]">already covered: <span className="text-white">{formatMaybeNumber(dry.already_covered_count)}</span></div>
+                        <div className="text-[#aaa]">cache hit: <span className="text-white">{formatMaybeNumber(dry.cache_hit_count)}</span></div>
+                        <div className="text-[#aaa]">cache miss: <span className="text-white">{formatMaybeNumber(dry.cache_miss_count)}</span></div>
+                        <div className="text-[#aaa]">resume hit: <span className="text-white">{formatMaybeNumber(dry.resume_hit_count)}</span></div>
+                        <div className="text-[#aaa]">db existing: <span className="text-white">{formatMaybeNumber(dry.db_existing_skip_count)}</span></div>
+                        <div className="text-[#aaa]">est runtime: <span className="text-white">{formatMaybeSeconds(dry.estimated_runtime_sec)}</span></div>
                       </div>
                     ) : (
                       <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-[11px]">
