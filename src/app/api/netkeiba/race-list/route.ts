@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { SCRAPE_API_URL as ML_API_URL } from '@/lib/backend-url'
+import { verifyRequestAuth } from '@/lib/server-auth'
 
 /**
  * 特定日のレースID一覧を取得
@@ -7,6 +8,11 @@ import { SCRAPE_API_URL as ML_API_URL } from '@/lib/backend-url'
  */
 export async function POST(request: NextRequest) {
   try {
+    const authz = await verifyRequestAuth(request, { requireAdmin: true })
+    if (!authz.ok) {
+      return NextResponse.json({ detail: authz.detail }, { status: authz.status })
+    }
+
     const { date } = await request.json()
 
     if (!date) {
@@ -21,10 +27,10 @@ export async function POST(request: NextRequest) {
     
     console.log(`[race-list] Fetching race list for date: ${dateStr}`)
 
-    const authHeader = request.headers.get('Authorization') || ''
+    const authHeader = `Bearer ${authz.context.token}`
     const response = await fetch(`${ML_API_URL}/api/netkeiba/race-list?date=${encodeURIComponent(dateStr)}`, {
       method: 'GET',
-      headers: authHeader ? { Authorization: authHeader } : {},
+      headers: { Authorization: authHeader },
       signal: AbortSignal.timeout(20_000),
     })
 

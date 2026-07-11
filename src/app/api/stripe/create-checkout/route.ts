@@ -1,9 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { stripe } from '@/lib/stripe'
-import { supabase } from '@/lib/supabase'
+import { PLANS } from '@/lib/stripe'
+import { createSupabaseServiceClient, verifyRequestAuth } from '@/lib/server-auth'
+
+function getAllowedPriceIds(): Set<string> {
+  const values = [
+    PLANS.PREMIUM.priceId,
+    process.env.STRIPE_PRICE_ID_PREMIUM,
+    ...(process.env.STRIPE_ALLOWED_PRICE_IDS || '').split(',').map(v => v.trim()),
+  ]
+  return new Set(values.filter((v): v is string => !!v))
+}
 
 export async function POST(request: NextRequest) {
   try {
+    const authz = await verifyRequestAuth(request)
+    if (!authz.ok) {
+      return NextResponse.json({ detail: authz.detail }, { status: authz.status })
+    }
+
+    const supabase = createSupabaseServiceClient()
     if (!stripe || !supabase) {
       return NextResponse.json(
         { error: 'Stripe/Supabase設定が不足しています' },
@@ -11,11 +27,34 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const { userId, priceId } = await request.json()
+    const { userId, priceId, customerId: bodyCustomerId } = await request.json()
+    const verifiedUserId = authz.context.user.id
 
-    if (!userId || !priceId) {
+    if (!priceId) {
       return NextResponse.json(
-        { error: 'ユーザーIDと価格IDが必要です' },
+        { error: '価格IDが必要です' },
+        { status: 400 }
+      )
+    }
+
+    if (typeof userId === 'string' && userId.trim() && userId !== verifiedUserId) {
+      return NextResponse.json(
+        { error: 'userId mismatch is not allowed' },
+        { status: 403 }
+      )
+    }
+
+    if (typeof bodyCustomerId === 'string' && bodyCustomerId.trim()) {
+      return NextResponse.json(
+        { error: 'customerId must not be supplied by client' },
+        { status: 403 }
+      )
+    }
+
+    const allowedPriceIds = getAllowedPriceIds()
+    if (!allowedPriceIds.has(String(priceId))) {
+      return NextResponse.json(
+        { error: '許可されていないpriceIdです' },
         { status: 400 }
       )
     }
@@ -24,7 +63,7 @@ export async function POST(request: NextRequest) {
     const { data: profile, error: profileError } = await supabase
       .from('profiles')
       .select('stripe_customer_id, email')
-      .eq('id', userId)
+      .eq('id', verifiedUserId)
       .single()
 
     if (profileError) {
@@ -41,7 +80,7 @@ export async function POST(request: NextRequest) {
       const customer = await stripe.customers.create({
         email: profile.email,
         metadata: {
-          supabaseUserId: userId,
+          supabaseUserId: verifiedUserId,
         },
       })
       customerId = customer.id
@@ -50,7 +89,7 @@ export async function POST(request: NextRequest) {
       await supabase
         .from('profiles')
         .update({ stripe_customer_id: customerId })
-        .eq('id', userId)
+        .eq('id', verifiedUserId)
     }
 
     // Checkoutセッションを作成
@@ -67,7 +106,7 @@ export async function POST(request: NextRequest) {
       success_url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard?success=true`,
       cancel_url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard?canceled=true`,
       metadata: {
-        supabaseUserId: userId,
+        supabaseUserId: verifiedUserId,
       },
     })
 

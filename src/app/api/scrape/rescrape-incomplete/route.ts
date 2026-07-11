@@ -5,8 +5,10 @@ export async function POST(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
     const limit = searchParams.get('limit') || '50'
+    const authHeader = request.headers.get('Authorization') || ''
     const response = await fetch(`${ML_API_URL}/api/rescrape_incomplete?limit=${encodeURIComponent(limit)}`, {
       method: 'POST',
+      headers: authHeader ? { Authorization: authHeader } : {},
       signal: AbortSignal.timeout(180_000),
     })
     const data = await response.json()

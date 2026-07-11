@@ -5,15 +5,21 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
     const query = searchParams.toString()
+    const authorization = request.headers.get('Authorization')
+    const headers: Record<string, string> = {}
+    if (authorization) headers.Authorization = authorization
     // StreamingResponse (SQLite binary) をそのままクライアントに転送
-    const response = await fetch(`${ML_API_URL}/api/export-db${query ? `?${query}` : ''}`, { signal: AbortSignal.timeout(60_000) })
+    const response = await fetch(`${ML_API_URL}/api/export-db${query ? `?${query}` : ''}`, {
+      headers,
+      signal: AbortSignal.timeout(60_000),
+    })
     if (!response.ok) {
       const text = await response.text()
       return new NextResponse(text, { status: response.status })
     }
     const contentDisposition = response.headers.get('Content-Disposition') || 'attachment; filename="keiba_ultimate.db"'
     return new NextResponse(response.body, {
-      status: 200,
+      status: response.status,
       headers: {
         'Content-Type': 'application/octet-stream',
         'Content-Disposition': contentDisposition,
