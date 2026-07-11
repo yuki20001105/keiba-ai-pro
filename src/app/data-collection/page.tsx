@@ -644,9 +644,14 @@ export default function DataCollectionPage() {
                   <div className="text-[#aaa]">skipped count: <span className="text-white">{dryRunResult.dry_run.skipped_count}</span></div>
                 </div>
 
-                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3 space-y-2 md:col-span-2">
-                  <div className="text-[#7dd3fc]">推定</div>
-                  <div className="text-[#aaa]">推定実行時間: <span className="text-white">{Math.ceil(dryRunResult.dry_run.estimated_runtime_sec)} sec</span></div>
+                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3 space-y-2">
+                  <div className="text-[#7dd3fc]">推定HTTPリクエスト</div>
+                  <div className="text-[#aaa]">estimated request count: <span className="text-white">{dryRunResult.dry_run.estimated_request_count}</span></div>
+                </div>
+
+                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3 space-y-2">
+                  <div className="text-[#7dd3fc]">推定実行時間</div>
+                  <div className="text-[#aaa]">estimated runtime: <span className="text-white">{Math.ceil(dryRunResult.dry_run.estimated_runtime_sec)} sec</span></div>
                 </div>
               </div>
 
