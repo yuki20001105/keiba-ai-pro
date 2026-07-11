@@ -23,7 +23,7 @@ test.describe('データ取得 Dry-run UI', () => {
     )
   })
 
-  test('Dry-runボタンと結果カードを表示できる', async ({ page }) => {
+  test('Dry-run中は見積もり生成中を表示し、完了後に結果カードを表示する', async ({ page }) => {
     await page.route('/api/scrape', async route => {
       if (route.request().method() !== 'POST') {
         return route.continue()
@@ -35,8 +35,13 @@ test.describe('データ取得 Dry-run UI', () => {
       return route.fulfill({ status: 200, json: { job_id: 'exec-job-001', status: 'queued' } })
     })
 
-    await page.route('/api/scrape/status/dry-run-job-001**', route =>
-      route.fulfill({
+    let pollCount = 0
+    await page.route('/api/scrape/status/dry-run-job-001**', route => {
+      pollCount += 1
+      if (pollCount === 1) {
+        return route.fulfill({ status: 200, json: { status: 'running', progress: 'planning' } })
+      }
+      return route.fulfill({
         status: 200,
         json: {
           status: 'completed',
@@ -71,7 +76,7 @@ test.describe('データ取得 Dry-run UI', () => {
           },
         },
       })
-    )
+    })
 
     await page.goto('/data-collection')
 
@@ -80,11 +85,41 @@ test.describe('データ取得 Dry-run UI', () => {
 
     await page.getByRole('button', { name: 'Dry-run' }).click()
 
+    await expect(page.getByText('Dry-run 実行中')).toBeVisible()
+    await expect(page.getByText('見積もり生成中')).toBeVisible()
+    await expect(page.getByText('HTTPアクセスは実行していません')).toBeVisible()
+    await expect(page.getByText(/経過秒:\s*\d+\s*sec/)).toBeVisible()
+    await expect(page.getByText('Dry-run 結果（実取得なし）')).not.toBeVisible()
+    await expect(page.getByRole('button', { name: '取得開始' })).toBeDisabled()
+    await expect(page.locator('input[type="month"]').first()).toBeDisabled()
+    await expect(page.locator('input[type="month"]').nth(1)).toBeDisabled()
+    await expect(page.locator('input[type="checkbox"]').first()).toBeDisabled()
+
     await expect(page.getByText('Dry-run 結果（実取得なし）')).toBeVisible()
     const estReqCard = page.locator('div').filter({ hasText: 'estimated request count' }).first()
     await expect(estReqCard).toBeVisible()
     await expect(estReqCard).toContainText('8')
     await expect(page.getByText('rate limit policy')).toBeVisible()
+  })
+
+  test('Dry-runエラー時に0件ではなくエラーメッセージを表示する', async ({ page }) => {
+    await page.route('/api/scrape', async route => {
+      if (route.request().method() !== 'POST') {
+        return route.continue()
+      }
+      return route.fulfill({
+        status: 500,
+        json: { detail: 'Dry-run結果を取得できませんでした。期間を短くするか、再実行してください。' },
+      })
+    })
+
+    await page.goto('/data-collection')
+    await page.getByRole('button', { name: 'Dry-run' }).click()
+
+    await expect(
+      page.getByText('Dry-run結果を取得できませんでした。期間を短くするか、再実行してください。', { exact: true })
+    ).toBeVisible()
+    await expect(page.getByText('Dry-run 結果（実取得なし）')).not.toBeVisible()
   })
 
   test('Dry-run未実行で本実行するとwarnが表示される', async ({ page }) => {
