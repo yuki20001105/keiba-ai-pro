@@ -299,8 +299,11 @@ export default function DataCollectionPage() {
 
       const { job_id } = await startRes.json()
       let resultPayload: any = null
-      for (let i = 0; i < 10; i++) {
-        await new Promise(resolve => setTimeout(resolve, 500))
+      // Dry-run can take longer for wide month ranges because backend preloads calendar days.
+      // Keep polling until completion (up to ~90s) instead of falling back to zeroed defaults.
+      const maxPollCount = 90
+      for (let i = 0; i < maxPollCount; i++) {
+        await new Promise(resolve => setTimeout(resolve, 1000))
         const statusRes = await authFetch(`/api/scrape/status/${job_id}`)
         if (!statusRes.ok) continue
         const statusData = await statusRes.json().catch(() => ({}))
@@ -311,6 +314,10 @@ export default function DataCollectionPage() {
         if (statusData?.status === 'error') {
           throw new Error(statusData?.error || 'Dry-run failed')
         }
+      }
+
+      if (!resultPayload) {
+        throw new Error('Dry-run結果の取得がタイムアウトしました。数秒後に履歴を再読込してください。')
       }
 
       const fetchSummary = resultPayload?.fetch_summary || {}
