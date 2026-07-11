@@ -45,6 +45,9 @@ jobs:
       - name: Vitest
         run: npm test
 
+      - name: Vitest supabase-ssr-cookie-contract
+        run: npx vitest run src/__tests__/supabase-ssr-cookie-contract.test.ts
+
       - name: Build
         run: npm run build
 
@@ -88,6 +91,18 @@ jobs:
             keiba/keiba_ai/tests/test_train_inference_consistency.py::TestConsistencyWithSyntheticData \
             python-api/tests/test_contract_health.py \
             -v --tb=short
+
+      - name: Pytest Phase2 authz
+        run: python -m pytest python-api/tests/test_phase2_authz.py -q
+
+      - name: Pytest Phase2 static contracts
+        run: python -m pytest python-api/tests/test_phase2_static_contracts.py -q
+
+      - name: Pytest Phase2 authz matrix gate
+        run: python -m pytest python-api/tests/test_phase2_authz_matrix_gate.py -q
+
+      - name: Generate Phase2 authz matrix check
+        run: python scripts/security/generate_phase2_authz_matrix.py --check
 
   contract-smoke-aux:
     name: Contract smoke aux (warn-allowed)
@@ -201,6 +216,9 @@ jobs:
       - name: Run public/fixture smoke E2E
         run: npx playwright test e2e/public-fixture-smoke.spec.ts --trace=on --reporter=html,list
 
+      - name: Run phase2 authz E2E
+        run: npx playwright test e2e/phase2-authz.spec.ts --trace=on --reporter=html,list
+
       - name: Upload Playwright artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -209,6 +227,47 @@ jobs:
           path: |
             test-results
             e2e-report
+          if-no-files-found: ignore
+
+  security-scanners-release-blocking:
+    name: Security scanners (release-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ensure origin/develop ref is available
+        run: git fetch --no-tags origin develop:refs/remotes/origin/develop
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install test dependencies
+        run: pip install "pytest>=9,<10"
+
+      - name: Secret scanner (release-blocking)
+        run: python scripts/security/scan_new_secrets.py
+
+      - name: Test weakening scanner (release-blocking)
+        run: python scripts/security/scan_test_weakening.py
+
+      - name: Scanner regression tests
+        run: python -m pytest python-api/tests/test_security_scanners_regression.py -q
+
+      - name: Upload scanner reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-scanner-reports
+          path: |
+            reports/security_secret_scan.json
+            reports/test_weakening_scan.json
           if-no-files-found: ignore
 
   container-build-check:
