@@ -85,6 +85,8 @@ export default function DataCollectionPage() {
   const [forceRescrape, setForceRescrape] = useState(false)
   const [dryRunLoading, setDryRunLoading] = useState(false)
   const [dryRunResult, setDryRunResult] = useState<ScrapeDryRunResult | null>(null)
+  const [dryRunElapsedSec, setDryRunElapsedSec] = useState(0)
+  const [dryRunErrorMessage, setDryRunErrorMessage] = useState('')
   const [dryRunExecuted, setDryRunExecuted] = useState(false)
   const [executeWarn, setExecuteWarn] = useState('')
   const [fetchHistory, setFetchHistory] = useState<FetchSummaryHistoryItem[]>([])
@@ -276,8 +278,28 @@ export default function DataCollectionPage() {
     return { startDateStr, endDateStr }
   }
 
+  const periodMonthSpan = (startPeriodValue: string, endPeriodValue: string) => {
+    const [startYearStr, startMonthStr] = startPeriodValue.split('-')
+    const [endYearStr, endMonthStr] = endPeriodValue.split('-')
+    const sy = parseInt(startYearStr, 10)
+    const sm = parseInt(startMonthStr, 10)
+    const ey = parseInt(endYearStr, 10)
+    const em = parseInt(endMonthStr, 10)
+    if (!Number.isFinite(sy) || !Number.isFinite(sm) || !Number.isFinite(ey) || !Number.isFinite(em)) return 0
+    return Math.max(0, (ey - sy) * 12 + (em - sm) + 1)
+  }
+
   const handleDryRun = async () => {
+    const dryRunTimeoutMessage = 'Dry-run結果を取得できませんでした。期間を短くするか再実行してください'
+    const startedAt = Date.now()
+    const elapsedTimer = setInterval(() => {
+      setDryRunElapsedSec(Math.floor((Date.now() - startedAt) / 1000))
+    }, 1000)
+
     setDryRunLoading(true)
+    setDryRunElapsedSec(0)
+    setDryRunErrorMessage('')
+    setDryRunResult(null)
     setExecuteWarn('')
     try {
       const { startDateStr, endDateStr } = periodToDateRange(startPeriod, endPeriod)
@@ -317,7 +339,7 @@ export default function DataCollectionPage() {
       }
 
       if (!resultPayload) {
-        throw new Error('Dry-run結果の取得がタイムアウトしました。数秒後に履歴を再読込してください。')
+        throw new Error(dryRunTimeoutMessage)
       }
 
       const fetchSummary = resultPayload?.fetch_summary || {}
@@ -343,8 +365,12 @@ export default function DataCollectionPage() {
       loadFetchSummaryHistory()
     } catch (error: any) {
       setDryRunResult(null)
+      setDryRunExecuted(false)
+      const message = typeof error?.message === 'string' ? error.message : dryRunTimeoutMessage
+      setDryRunErrorMessage(message)
       showToast(`Dry-runエラー: ${error.message}`, 'error')
     } finally {
+      clearInterval(elapsedTimer)
       setDryRunLoading(false)
     }
   }
@@ -507,7 +533,30 @@ export default function DataCollectionPage() {
             </div>
           )}
 
-          {dryRunResult && (
+          {dryRunLoading && (
+            <div className="rounded-lg border border-[#1e1e1e] bg-[#0a0a0a] p-4 space-y-2">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-medium text-white">見積もり生成中</h3>
+                <span className="text-[11px] text-[#6b7280]">経過 {dryRunElapsedSec} 秒</span>
+              </div>
+              <div className="text-xs text-[#9db4cc]">
+                Dry-run を実行しています。結果が確定するまで total target count などは表示しません。
+              </div>
+              {periodMonthSpan(startPeriod, endPeriod) >= 6 && (
+                <div className="text-xs text-[#facc15]">
+                  月次カレンダー確認により数十秒かかる場合があります。
+                </div>
+              )}
+            </div>
+          )}
+
+          {!dryRunLoading && dryRunErrorMessage && (
+            <div className="rounded border border-[#5b1e1e] bg-[#1f0d0d] px-3 py-2 text-xs text-[#fca5a5]">
+              {dryRunErrorMessage}
+            </div>
+          )}
+
+          {!dryRunLoading && dryRunResult && (
             <div className="rounded-lg border border-[#1e1e1e] bg-[#0a0a0a] p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-xs font-medium text-white">Dry-run 結果（実取得なし）</h3>
