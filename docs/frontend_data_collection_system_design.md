@@ -39,7 +39,7 @@
 主要 state:
 - 期間: `startPeriod`, `endPeriod`
 - 実行オプション: `forceRescrape`
-- dry-run: `dryRunLoading`, `dryRunResult`, `dryRunElapsedSec`, `dryRunErrorMessage`, `dryRunExecuted`
+- dry-run: `dryRunLoading`, `dryRunStartedAt`, `dryRunElapsedSeconds`, `dryRunError`, `dryRunResultReady`, `dryRunResult`, `dryRunExecuted`
 - 実行: `useBatchScrape()` 由来 `batchLoading`, `batchProgress`, `batchResult`
 - 履歴: `fetchHistory`, `fetchHistoryLoading`
 - 統計/データ一覧: `dataStats`, `showCollectedData`, `collectedRaces`, `selectedRaceDetail`
@@ -81,8 +81,16 @@ UI ガード:
 dry-run 表示項目:
 - `total_target_count`, `unique_url_count`, `estimated_request_count`
 - `cache_hit_count`, `cache_miss_count`, `resume_hit_count`, `skipped_count`
+- `db_existing_skip_count`, `db_existing_race_count`, `db_existing_horse_count`, `db_existing_result_count`, `db_existing_pedigree_count`
+- `new_fetch_required_count`, `already_covered_count`
 - `estimated_runtime_sec`
 - rate-limit/retry-backoff/circuit-breaker policy
+
+指標補足:
+- `skipped_count`: 既存互換（cache hit + resume hit）
+- `db_existing_skip_count`: DB保存済み判定によるスキップ件数
+- `new_fetch_required_count`: 新規にフェッチが必要な件数
+- `already_covered_count`: 再利用可能件数（cache/resume/DB existing の合計）
 
 ---
 

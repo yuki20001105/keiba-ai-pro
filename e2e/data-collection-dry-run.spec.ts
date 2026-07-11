@@ -57,6 +57,13 @@ test.describe('データ取得 Dry-run UI', () => {
                 cache_miss_count: 10,
                 resume_hit_count: 2,
                 skipped_count: 12,
+                db_existing_skip_count: 14,
+                db_existing_race_count: 7,
+                db_existing_horse_count: 96,
+                db_existing_result_count: 7,
+                db_existing_pedigree_count: 94,
+                new_fetch_required_count: 8,
+                already_covered_count: 26,
                 estimated_runtime_sec: 8,
               },
               rate_limit_policy: {
@@ -99,6 +106,9 @@ test.describe('データ取得 Dry-run UI', () => {
     const estReqCard = page.locator('div').filter({ hasText: 'estimated request count' }).first()
     await expect(estReqCard).toBeVisible()
     await expect(estReqCard).toContainText('8')
+    await expect(page.locator('div').filter({ hasText: 'DB existing skip count' }).first()).toContainText('14')
+    await expect(page.locator('div').filter({ hasText: 'new fetch required count' }).first()).toContainText('8')
+    await expect(page.locator('div').filter({ hasText: 'already covered count' }).first()).toContainText('26')
     await expect(page.getByText('rate limit policy')).toBeVisible()
   })
 

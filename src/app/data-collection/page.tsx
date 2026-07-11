@@ -19,6 +19,13 @@ type ScrapeDryRunSummary = {
   cache_miss_count: number
   resume_hit_count: number
   skipped_count: number
+  db_existing_skip_count: number
+  db_existing_race_count: number
+  db_existing_horse_count: number
+  db_existing_result_count: number
+  db_existing_pedigree_count: number
+  new_fetch_required_count: number
+  already_covered_count: number
   estimated_runtime_sec: number
 }
 
@@ -59,6 +66,9 @@ type FetchSummaryHistoryItem = {
       cache_hit_count?: number
       cache_miss_count?: number
       resume_hit_count?: number
+      db_existing_skip_count?: number
+      new_fetch_required_count?: number
+      already_covered_count?: number
       estimated_runtime_sec?: number
     }
     metrics?: {
@@ -362,6 +372,13 @@ export default function DataCollectionPage() {
           cache_miss_count: Number(dryRun.cache_miss_count || 0),
           resume_hit_count: Number(dryRun.resume_hit_count || 0),
           skipped_count: Number(dryRun.skipped_count || 0),
+          db_existing_skip_count: Number(dryRun.db_existing_skip_count || 0),
+          db_existing_race_count: Number(dryRun.db_existing_race_count || 0),
+          db_existing_horse_count: Number(dryRun.db_existing_horse_count || 0),
+          db_existing_result_count: Number(dryRun.db_existing_result_count || 0),
+          db_existing_pedigree_count: Number(dryRun.db_existing_pedigree_count || 0),
+          new_fetch_required_count: Number(dryRun.new_fetch_required_count || 0),
+          already_covered_count: Number(dryRun.already_covered_count || 0),
           estimated_runtime_sec: Number(dryRun.estimated_runtime_sec || 0),
         },
         rate_limit_policy: fetchSummary?.rate_limit_policy || {},
@@ -588,7 +605,17 @@ export default function DataCollectionPage() {
                 <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">cache miss count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.cache_miss_count}</div></div>
                 <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">resume hit count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.resume_hit_count}</div></div>
                 <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">skipped count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.skipped_count}</div></div>
+                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">DB existing skip count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.db_existing_skip_count}</div></div>
+                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">DB existing race count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.db_existing_race_count}</div></div>
+                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">DB existing horse count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.db_existing_horse_count}</div></div>
+                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">new fetch required count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.new_fetch_required_count}</div></div>
+                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">already covered count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.already_covered_count}</div></div>
                 <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">estimated runtime</div><div className="text-sm text-white font-medium">{Math.ceil(dryRunResult.dry_run.estimated_runtime_sec)} sec</div></div>
+              </div>
+
+              <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] px-3 py-2 text-xs text-[#9db4cc] space-y-1">
+                <div>DB existing skip count は、既にDBに保存済みのため再取得不要と判定された件数です。</div>
+                <div>cache hit はHTTPキャッシュ、resume hit は過去成功済みURL、DB existing は保存済みデータを意味します。</div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-[11px]">
@@ -669,11 +696,12 @@ export default function DataCollectionPage() {
                       <span className="text-[11px] text-[#666]">updated: {item.updated_at || '-'}</span>
                     </div>
                     {mode === 'dry-run' ? (
-                      <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-[11px]">
+                      <div className="grid grid-cols-2 md:grid-cols-6 gap-2 text-[11px]">
                         <div className="text-[#aaa]">est req: <span className="text-white">{dry.estimated_request_count ?? '-'}</span></div>
                         <div className="text-[#aaa]">cache hit: <span className="text-white">{dry.cache_hit_count ?? '-'}</span></div>
                         <div className="text-[#aaa]">cache miss: <span className="text-white">{dry.cache_miss_count ?? '-'}</span></div>
                         <div className="text-[#aaa]">resume hit: <span className="text-white">{dry.resume_hit_count ?? '-'}</span></div>
+                        <div className="text-[#aaa]">db existing: <span className="text-white">{dry.db_existing_skip_count ?? '-'}</span></div>
                         <div className="text-[#aaa]">est runtime: <span className="text-white">{Math.ceil(Number(dry.estimated_runtime_sec || 0))} sec</span></div>
                       </div>
                     ) : (

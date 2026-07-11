@@ -106,6 +106,9 @@ def _normalize_item(item: dict[str, Any]) -> dict[str, Any]:
         "cache_hit_count": cache_hit,
         "cache_miss_count": cache_miss,
         "resume_hit_count": resume_hit,
+        "db_existing_skip_count": dry.get("db_existing_skip_count"),
+        "new_fetch_required_count": dry.get("new_fetch_required_count"),
+        "already_covered_count": dry.get("already_covered_count"),
         "elapsed_seconds": elapsed_seconds,
         "retry_count": metrics.get("retry_count"),
     }

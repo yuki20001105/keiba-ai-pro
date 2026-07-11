@@ -41,6 +41,7 @@ except ImportError:
 # ジョブ永続化（SQLite）
 # ============================================================
 _JOBS_DB_PATH: Path = Path(__file__).parent.parent.parent / "keiba" / "data" / "scrape_jobs.db"
+_PEDIGREE_DB_PATH: Path = Path(__file__).parent.parent.parent / "keiba" / "data" / "pedigree_cache.db"
 
 
 def _init_jobs_db() -> None:
@@ -264,6 +265,140 @@ def list_recent_jobs(limit: int = 20) -> list[dict]:
     return history
 
 
+def _parse_yyyymmdd(value: object) -> str | None:
+    txt = str(value or "").strip()
+    if len(txt) == 8 and txt.isdigit():
+        return txt
+    if len(txt) >= 10 and txt[4] == "-" and txt[7] == "-":
+        ymd = txt[:10].replace("-", "")
+        if len(ymd) == 8 and ymd.isdigit():
+            return ymd
+    if len(txt) >= 10 and txt[4] == "/" and txt[7] == "/":
+        ymd = txt[:10].replace("/", "")
+        if len(ymd) == 8 and ymd.isdigit():
+            return ymd
+    return None
+
+
+def _iter_chunks(values: list[str], chunk_size: int = 500):
+    for i in range(0, len(values), chunk_size):
+        yield values[i:i + chunk_size]
+
+
+def _estimate_db_existing_coverage(db_path: Path, dates: list[str], min_races: int = 6) -> dict[str, int]:
+    if not db_path.exists() or not dates:
+        return {
+            "db_existing_skip_count": 0,
+            "db_existing_race_count": 0,
+            "db_existing_horse_count": 0,
+            "db_existing_result_count": 0,
+            "db_existing_pedigree_count": 0,
+        }
+
+    date_set = set(dates)
+    db_existing_dates = _get_scraped_dates_sqlite(db_path, min_races=min_races)
+    target_existing_dates = sorted(date_set & db_existing_dates)
+    db_existing_skip_count = len(target_existing_dates) * 2
+
+    out = {
+        "db_existing_skip_count": int(db_existing_skip_count),
+        "db_existing_race_count": 0,
+        "db_existing_horse_count": 0,
+        "db_existing_result_count": 0,
+        "db_existing_pedigree_count": 0,
+    }
+
+    if not target_existing_dates:
+        return out
+
+    race_ids: set[str] = set()
+    horse_ids: set[str] = set()
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        rows = conn.execute("SELECT race_id, data FROM races_ultimate").fetchall()
+        for race_id, data_txt in rows:
+            try:
+                payload = json.loads(data_txt or "{}")
+            except Exception:
+                payload = {}
+            if not isinstance(payload, dict):
+                continue
+            race_date = (
+                _parse_yyyymmdd(payload.get("race_date"))
+                or _parse_yyyymmdd(payload.get("date"))
+                or _parse_yyyymmdd(payload.get("kaisai_date"))
+            )
+            if race_date and race_date in date_set:
+                race_ids.add(str(race_id))
+
+        if race_ids:
+            race_ids_list = sorted(race_ids)
+            out["db_existing_race_count"] = len(race_ids_list)
+
+            result_race_count = 0
+            horse_count = 0
+            for chunk in _iter_chunks(race_ids_list):
+                placeholders = ",".join("?" for _ in chunk)
+                row = conn.execute(
+                    f"SELECT COUNT(DISTINCT race_id), COUNT(*) FROM race_results_ultimate WHERE race_id IN ({placeholders})",
+                    chunk,
+                ).fetchone()
+                if row:
+                    result_race_count += int(row[0] or 0)
+                    horse_count += int(row[1] or 0)
+
+                result_rows = conn.execute(
+                    f"SELECT data FROM race_results_ultimate WHERE race_id IN ({placeholders})",
+                    chunk,
+                ).fetchall()
+                for (data_txt,) in result_rows:
+                    try:
+                        payload = json.loads(data_txt or "{}")
+                    except Exception:
+                        payload = {}
+                    if isinstance(payload, dict):
+                        horse_id = str(payload.get("horse_id") or "").strip()
+                        if horse_id:
+                            horse_ids.add(horse_id)
+
+            out["db_existing_result_count"] = int(result_race_count)
+            out["db_existing_horse_count"] = int(horse_count)
+    except Exception:
+        return out
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    if not horse_ids or not _PEDIGREE_DB_PATH.exists():
+        return out
+
+    try:
+        ped_conn = sqlite3.connect(str(_PEDIGREE_DB_PATH))
+        pedigree_count = 0
+        horse_id_list = sorted(horse_ids)
+        for chunk in _iter_chunks(horse_id_list):
+            placeholders = ",".join("?" for _ in chunk)
+            row = ped_conn.execute(
+                f"SELECT COUNT(*) FROM pedigree_cache WHERE horse_id IN ({placeholders})",
+                chunk,
+            ).fetchone()
+            if row:
+                pedigree_count += int(row[0] or 0)
+        out["db_existing_pedigree_count"] = int(pedigree_count)
+    except Exception:
+        pass
+    finally:
+        try:
+            ped_conn.close()
+        except Exception:
+            pass
+
+    return out
+
+
 # ============================================================
 # バックグラウンドスクレイピングジョブ
 # ============================================================
@@ -356,12 +491,18 @@ async def _run_scrape_job(
                 dry_resume_keys.append(f"job:{job_id}:date:{d}:sub")
 
             plan = estimate_fetch_plan(dry_urls, resume_keys=dry_resume_keys)
+            db_existing = _estimate_db_existing_coverage(ULTIMATE_DB, dates, min_races=_MIN_RACES_PER_DAY)
             cache_hits = int(plan.get("cache_hits", 0))
             resume_hits = int(plan.get("resume_hits", 0))
             unique_urls = int(plan.get("unique_urls", 0))
-            estimated_requests = int(plan.get("estimated_network_requests", 0))
+            total_target_count = int(plan.get("total_input_urls", 0))
+            db_existing_skip_count = int(db_existing.get("db_existing_skip_count", 0))
+            legacy_skipped_count = cache_hits + resume_hits
+            already_covered_count = legacy_skipped_count + db_existing_skip_count
+            new_fetch_required_count = max(0, total_target_count - already_covered_count)
+            estimated_requests = int(new_fetch_required_count)
             cache_miss = max(0, unique_urls - cache_hits)
-            skipped_count = cache_hits + resume_hits
+            skipped_count = legacy_skipped_count
             estimated_runtime_sec = float(max(0, estimated_requests) * _rate_limit_policy["min_interval_sec"])
             summary = {
                 "job_id": job_id,
@@ -370,13 +511,20 @@ async def _run_scrape_job(
                 "end_date": end_date,
                 "total_dates": total,
                 "dry_run": {
-                    "total_target_count": int(plan.get("total_input_urls", 0)),
+                    "total_target_count": total_target_count,
                     "unique_url_count": unique_urls,
                     "estimated_request_count": estimated_requests,
                     "cache_hit_count": cache_hits,
                     "cache_miss_count": cache_miss,
                     "resume_hit_count": resume_hits,
                     "skipped_count": skipped_count,
+                    "db_existing_skip_count": db_existing_skip_count,
+                    "db_existing_race_count": int(db_existing.get("db_existing_race_count", 0)),
+                    "db_existing_horse_count": int(db_existing.get("db_existing_horse_count", 0)),
+                    "db_existing_result_count": int(db_existing.get("db_existing_result_count", 0)),
+                    "db_existing_pedigree_count": int(db_existing.get("db_existing_pedigree_count", 0)),
+                    "new_fetch_required_count": int(new_fetch_required_count),
+                    "already_covered_count": int(already_covered_count),
                     "estimated_runtime_sec": estimated_runtime_sec,
                 },
                 "rate_limit_policy": _rate_limit_policy,
