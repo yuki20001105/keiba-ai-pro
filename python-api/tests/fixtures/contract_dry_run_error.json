@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-07-11T00:00:00+00:00",
+  "contract_ok": false,
+  "check": {
+    "status": 200,
+    "body": {
+      "detail": {}
+    }
+  }
+}

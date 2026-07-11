@@ -2,6 +2,8 @@ import { defineConfig, devices } from '@playwright/test'
 import dotenv from 'dotenv'
 dotenv.config({ path: '.env.test', override: false })
 
+const useWebServer = process.env.PW_USE_WEBSERVER === '1'
+
 export default defineConfig({
   testDir: './e2e',
   fullyParallel: false,
@@ -21,7 +23,14 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
     },
   ],
-  // Do NOT start a webServer — assumes `npm run dev` is already running
+  webServer: useWebServer
+    ? {
+        command: 'npm run dev',
+        url: 'http://localhost:3000',
+        reuseExistingServer: !process.env.CI,
+        timeout: 120_000,
+      }
+    : undefined,
   timeout: 30_000,
   expect: { timeout: 8_000 },
 })
