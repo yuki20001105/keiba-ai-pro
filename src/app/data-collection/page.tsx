@@ -75,6 +75,91 @@ type FetchSummaryHistoryItem = {
   }
 }
 
+type PeriodValidation = {
+  ok: boolean
+  message?: string
+}
+
+type BatchRequestSnapshot = {
+  startPeriod: string
+  endPeriod: string
+  forceRescrape: boolean
+}
+
+const PERIOD_PATTERN = /^(\d{4})-(0[1-9]|1[0-2])$/
+
+function validatePeriodRange(startPeriod: string, endPeriod: string): PeriodValidation {
+  if (!PERIOD_PATTERN.test(startPeriod) || !PERIOD_PATTERN.test(endPeriod)) {
+    return { ok: false, message: '期間指定が不正です（YYYY-MM形式、月は01〜12）' }
+  }
+
+  const [startYearStr, startMonthStr] = startPeriod.split('-')
+  const [endYearStr, endMonthStr] = endPeriod.split('-')
+  const sy = Number(startYearStr)
+  const sm = Number(startMonthStr)
+  const ey = Number(endYearStr)
+  const em = Number(endMonthStr)
+
+  if (![sy, sm, ey, em].every(Number.isFinite)) {
+    return { ok: false, message: '期間指定に数値以外が含まれています' }
+  }
+  if (sm < 1 || sm > 12 || em < 1 || em > 12) {
+    return { ok: false, message: '月の指定が不正です（01〜12）' }
+  }
+  if (new Date(sy, sm - 1, 1) > new Date(ey, em - 1, 1)) {
+    return { ok: false, message: '開始年月は終了年月以前にしてください' }
+  }
+
+  const totalMonths = (ey - sy) * 12 + (em - sm) + 1
+  if (!Number.isFinite(totalMonths) || totalMonths <= 0) {
+    return { ok: false, message: '期間内の対象月が0件です' }
+  }
+
+  return { ok: true }
+}
+
+function normalizeDryRunResult(resultPayload: any): ScrapeDryRunResult {
+  const fetchSummary = resultPayload?.fetch_summary
+  const dryRun = fetchSummary?.dry_run
+  if (!fetchSummary || typeof fetchSummary !== 'object' || !dryRun || typeof dryRun !== 'object') {
+    throw new Error('Dry-run結果形式が不正です（fetch_summary.dry_run）')
+  }
+
+  const numericKeys: Array<keyof ScrapeDryRunSummary> = [
+    'total_target_count',
+    'unique_url_count',
+    'estimated_request_count',
+    'cache_hit_count',
+    'cache_miss_count',
+    'resume_hit_count',
+    'skipped_count',
+    'estimated_runtime_sec',
+  ]
+
+  for (const key of numericKeys) {
+    const value = Number(dryRun[key])
+    if (!Number.isFinite(value) || value < 0) {
+      throw new Error(`Dry-run結果形式が不正です（${key}）`)
+    }
+  }
+
+  return {
+    dry_run: {
+      total_target_count: Number(dryRun.total_target_count),
+      unique_url_count: Number(dryRun.unique_url_count),
+      estimated_request_count: Number(dryRun.estimated_request_count),
+      cache_hit_count: Number(dryRun.cache_hit_count),
+      cache_miss_count: Number(dryRun.cache_miss_count),
+      resume_hit_count: Number(dryRun.resume_hit_count),
+      skipped_count: Number(dryRun.skipped_count),
+      estimated_runtime_sec: Number(dryRun.estimated_runtime_sec),
+    },
+    rate_limit_policy: fetchSummary?.rate_limit_policy || {},
+    retry_backoff_policy: fetchSummary?.retry_backoff_policy || {},
+    circuit_breaker_policy: fetchSummary?.circuit_breaker_policy || {},
+  }
+}
+
 export default function DataCollectionPage() {
   // 期間指定用
   const now = new Date()
@@ -88,6 +173,8 @@ export default function DataCollectionPage() {
   const [dryRunExecuted, setDryRunExecuted] = useState(false)
   const [dryRunPendingMessage, setDryRunPendingMessage] = useState('')
   const [dryRunErrorMessage, setDryRunErrorMessage] = useState('')
+  const [periodErrorMessage, setPeriodErrorMessage] = useState('')
+  const [retrySnapshot, setRetrySnapshot] = useState<BatchRequestSnapshot | null>(null)
   const [executeWarn, setExecuteWarn] = useState('')
   const [fetchHistory, setFetchHistory] = useState<FetchSummaryHistoryItem[]>([])
   const [fetchHistoryLoading, setFetchHistoryLoading] = useState(false)
@@ -106,6 +193,8 @@ export default function DataCollectionPage() {
     start: startBatchScrape,
   } = useBatchScrape()
   const isBatchBusy = batchLoading || batchStatus === 'queued' || batchStatus === 'running'
+  const periodValidation = validatePeriodRange(startPeriod, endPeriod)
+  const isPeriodValid = periodValidation.ok
 
   // データ統計と表示
   const [dataStats, setDataStats] = useState({ totalRaces: 0, totalResults: 0, latestDate: '' })
@@ -151,6 +240,7 @@ export default function DataCollectionPage() {
   }
 
   const isApiUnavailable = localApiStatus === 'unhealthy' || localApiStatus === 'unknown'
+  const effectivePeriodError = periodErrorMessage || (!isPeriodValid ? periodValidation.message || '' : '')
 
   const checkLocalApi = async () => {
     setLocalApiStatus('checking')
@@ -234,20 +324,26 @@ export default function DataCollectionPage() {
   }
 
   // 🚀 期間指定バッチスクレイピング（バリデーション・確認ダイアログのみ担当）
-  const handlePeriodBatchScrape = async () => {
+  const handlePeriodBatchScrape = async (override?: BatchRequestSnapshot) => {
     if (isBatchBusy) return
 
-    const [startYearStr, startMonthStr] = startPeriod.split('-')
-    const [endYearStr, endMonthStr] = endPeriod.split('-')
+    const target = override ?? { startPeriod, endPeriod, forceRescrape }
+    const validation = validatePeriodRange(target.startPeriod, target.endPeriod)
+    if (!validation.ok) {
+      const message = validation.message || '期間指定が不正です'
+      setPeriodErrorMessage(message)
+      showToast(message, 'error')
+      return
+    }
+    setPeriodErrorMessage('')
+    setDryRunErrorMessage('')
+
+    const [startYearStr, startMonthStr] = target.startPeriod.split('-')
+    const [endYearStr, endMonthStr] = target.endPeriod.split('-')
     const startYear = parseInt(startYearStr, 10)
     const startMonth = parseInt(startMonthStr, 10)
     const endYear = parseInt(endYearStr, 10)
     const endMonth = parseInt(endMonthStr, 10)
-
-    if (new Date(startYear, startMonth - 1) > new Date(endYear, endMonth - 1)) {
-      alert('開始年月が終了年月より後になっています')
-      return
-    }
 
     // 月数カウント（確認ダイアログ用）
     let totalMonths = 0
@@ -263,14 +359,16 @@ export default function DataCollectionPage() {
     }
 
     const _dryRunState = dryRunExecuted ? 'Dry-run実行済み' : 'Dry-run未実行（推奨）'
-    if (!confirm(`${startYear}年${startMonth}月 ～ ${endYear}年${endMonth}月（${totalMonths}ヶ月分）を月単位で順次取得します。\n中断するにはページをリロードしてください。\n\n${_dryRunState}\n続行しますか？`)) return
+    if (!confirm(`${startYear}年${startMonth}月 ～ ${endYear}年${endMonth}月（${totalMonths}ヶ月分）を月単位で順次取得します。\n中断するとこの実行は失敗として扱われます。\n\n${_dryRunState}\n続行しますか？`)) return
 
     try {
-      const result = await startBatchScrape(startPeriod, endPeriod, forceRescrape)
+      const result = await startBatchScrape(target.startPeriod, target.endPeriod, target.forceRescrape)
       showToast(`取得完了 — ${result.stats.total_months}ヶ月 / ${result.races_collected}レース / 所要: ${result.elapsed_time}秒`)
+      setRetrySnapshot(null)
       loadStats()
       loadFetchSummaryHistory()
     } catch (error: any) {
+      setRetrySnapshot(target)
       showToast(`取得エラー: ${error.message}`, 'error')
     }
   }
@@ -290,6 +388,16 @@ export default function DataCollectionPage() {
   }
 
   const handleDryRun = async () => {
+    const validation = validatePeriodRange(startPeriod, endPeriod)
+    if (!validation.ok) {
+      const message = validation.message || '期間指定が不正です'
+      setPeriodErrorMessage(message)
+      setDryRunResult(null)
+      setDryRunExecuted(false)
+      showToast(message, 'error')
+      return
+    }
+    setPeriodErrorMessage('')
     setDryRunLoading(true)
     setExecuteWarn('')
     setDryRunPendingMessage('')
@@ -340,23 +448,7 @@ export default function DataCollectionPage() {
         return
       }
 
-      const fetchSummary = resultPayload?.fetch_summary || {}
-      const dryRun = fetchSummary?.dry_run || {}
-      const normalized: ScrapeDryRunResult = {
-        dry_run: {
-          total_target_count: Number(dryRun.total_target_count || 0),
-          unique_url_count: Number(dryRun.unique_url_count || 0),
-          estimated_request_count: Number(dryRun.estimated_request_count || 0),
-          cache_hit_count: Number(dryRun.cache_hit_count || 0),
-          cache_miss_count: Number(dryRun.cache_miss_count || 0),
-          resume_hit_count: Number(dryRun.resume_hit_count || 0),
-          skipped_count: Number(dryRun.skipped_count || 0),
-          estimated_runtime_sec: Number(dryRun.estimated_runtime_sec || 0),
-        },
-        rate_limit_policy: fetchSummary?.rate_limit_policy || {},
-        retry_backoff_policy: fetchSummary?.retry_backoff_policy || {},
-        circuit_breaker_policy: fetchSummary?.circuit_breaker_policy || {},
-      }
+      const normalized = normalizeDryRunResult(resultPayload)
       setDryRunResult(normalized)
       setDryRunExecuted(true)
       setDryRunPendingMessage('')
@@ -449,7 +541,10 @@ export default function DataCollectionPage() {
               <input
                 type="month"
                 value={startPeriod}
-                onChange={e => setStartPeriod(e.target.value)}
+                onChange={e => {
+                  setStartPeriod(e.target.value)
+                  setPeriodErrorMessage('')
+                }}
                 max={endPeriod}
                 className="w-full px-4 py-3 bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg text-white focus:outline-none focus:border-[#333] transition-colors"
               />
@@ -459,7 +554,10 @@ export default function DataCollectionPage() {
               <input
                 type="month"
                 value={endPeriod}
-                onChange={e => setEndPeriod(e.target.value)}
+                onChange={e => {
+                  setEndPeriod(e.target.value)
+                  setPeriodErrorMessage('')
+                }}
                 min={startPeriod}
                 className="w-full px-4 py-3 bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg text-white focus:outline-none focus:border-[#333] transition-colors"
               />
@@ -494,9 +592,9 @@ export default function DataCollectionPage() {
             <div className="flex items-center gap-2">
               <button
                 onClick={handleDryRun}
-                disabled={isBatchBusy || dryRunLoading || isApiUnavailable}
+                disabled={isBatchBusy || dryRunLoading || isApiUnavailable || !isPeriodValid}
                 className={`flex items-center gap-2 px-4 py-2.5 rounded-lg font-medium text-sm transition-colors ${
-                  isBatchBusy || dryRunLoading || isApiUnavailable
+                  isBatchBusy || dryRunLoading || isApiUnavailable || !isPeriodValid
                     ? 'bg-[#222] text-[#555] cursor-not-allowed'
                     : 'bg-[#1e293b] text-[#dbeafe] hover:bg-[#334155]'
                 }`}
@@ -505,10 +603,10 @@ export default function DataCollectionPage() {
               </button>
 
               <button
-                onClick={handlePeriodBatchScrape}
-                disabled={isBatchBusy || isApiUnavailable}
+                onClick={() => handlePeriodBatchScrape()}
+                disabled={isBatchBusy || isApiUnavailable || !isPeriodValid}
                 className={`flex items-center gap-2 px-6 py-2.5 rounded-lg font-medium text-sm transition-colors ${
-                  isBatchBusy || isApiUnavailable
+                  isBatchBusy || isApiUnavailable || !isPeriodValid
                     ? 'bg-[#222] text-[#555] cursor-not-allowed'
                     : 'bg-white text-black hover:bg-[#eee]'
                 }`}
@@ -521,10 +619,16 @@ export default function DataCollectionPage() {
                     </svg>
                     取得中...
                   </>
-                ) : isApiUnavailable ? 'API確認不可' : '取得開始'}
+                ) : isApiUnavailable ? 'API確認不可' : !isPeriodValid ? '期間不正' : '取得開始'}
               </button>
             </div>
           </div>
+
+          {effectivePeriodError && (
+            <div className="rounded border border-[#4a1d1d] bg-[#220d0d] px-3 py-2 text-xs text-[#fca5a5]" role="alert">
+              期間エラー: {effectivePeriodError}
+            </div>
+          )}
 
           {dryRunPendingMessage && (
             <div className="rounded border border-[#1e3a8a] bg-[#0b1220] px-3 py-2 text-xs text-[#93c5fd]" role="status" aria-live="polite">
@@ -615,7 +719,7 @@ export default function DataCollectionPage() {
                 <div className="space-y-2" role="alert">
                   <div className="text-xs text-[#fca5a5]">取得失敗: {batchError || '不明なエラー'}</div>
                   <button
-                    onClick={handlePeriodBatchScrape}
+                    onClick={() => handlePeriodBatchScrape(retrySnapshot || undefined)}
                     disabled={isBatchBusy || isApiUnavailable}
                     className={`px-4 py-2 rounded text-xs font-medium transition-colors ${
                       isBatchBusy || isApiUnavailable
