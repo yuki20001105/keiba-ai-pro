@@ -43,8 +43,18 @@ def _git_has_changes() -> bool:
     return bool(_run(["git", "status", "--porcelain"]).strip())
 
 
+def _git_status_porcelain_lines() -> List[str]:
+    out = _run(["git", "status", "--porcelain"])
+    return [line for line in out.splitlines() if line.strip()]
+
+
 def _tracked_diff_text() -> str:
     return _run(["git", "diff", "--unified=0", BASE_REF, "--", "."])
+
+
+def _changed_files_from_base() -> List[str]:
+    out = _run(["git", "diff", "--name-only", BASE_REF, "--", "."])
+    return [line.strip() for line in out.splitlines() if line.strip()]
 
 
 def _deleted_files() -> List[str]:
@@ -135,19 +145,72 @@ def _coverage_error(has_changes: bool, scanned_file_count: int, scanned_line_cou
     return None
 
 
+def _normalize_status_path(raw_path: str) -> str:
+    txt = raw_path.strip()
+    if " -> " in txt:
+        txt = txt.split(" -> ", 1)[1].strip()
+    return txt
+
+
+def _collect_test_scope_files(
+    changed_from_base: List[str],
+    status_lines: List[str],
+    deleted_files: List[str],
+    untracked_files: List[str],
+) -> Set[str]:
+    out: Set[str] = set()
+
+    for path in changed_from_base:
+        if TEST_CODE_PATH.search(path):
+            out.add(path)
+
+    for line in status_lines:
+        if len(line) < 4:
+            continue
+        path = _normalize_status_path(line[3:])
+        if path and TEST_CODE_PATH.search(path):
+            out.add(path)
+
+    for path in deleted_files:
+        if TEST_CODE_PATH.search(path):
+            out.add(path)
+
+    for path in untracked_files:
+        if TEST_CODE_PATH.search(path):
+            out.add(path)
+
+    return out
+
+
+def _coverage_error_for_test_scope(has_test_scope_changes: bool, scanned_line_count: int) -> str | None:
+    if has_test_scope_changes and scanned_line_count == 0:
+        return "fail-closed: test scope changes exist but scanner input coverage is zero"
+    return None
+
+
 def main() -> int:
     has_changes = _git_has_changes()
+    status_lines = _git_status_porcelain_lines()
+    changed_from_base = _changed_files_from_base()
     tracked_diff = _tracked_diff_text()
     tracked_added, tracked_deleted = _collect_diff_lines(tracked_diff)
     untracked_files = _untracked_files()
     untracked_added = _collect_untracked_lines(untracked_files)
     deleted_files = _deleted_files()
     added = tracked_added + untracked_added
+    test_scope_files = _collect_test_scope_files(
+        changed_from_base,
+        status_lines,
+        deleted_files,
+        untracked_files,
+    )
+    has_test_scope_changes = len(test_scope_files) > 0
 
     hits = []
     exclusions = []
     scanned_files: Set[str] = set()
-    scanned_line_count = 0
+    scanned_added_test_code_lines = 0
+    scanned_deleted_test_code_lines = 0
 
     for file_path in deleted_files:
         if TEST_CODE_PATH.search(file_path):
@@ -164,7 +227,7 @@ def main() -> int:
         if _is_comment_or_doc(line):
             continue
         scanned_files.add(file_path)
-        scanned_line_count += 1
+        scanned_added_test_code_lines += 1
         for label, pattern in PATTERNS:
             if pattern.search(line):
                 allow, reason = _is_allowlisted(file_path, line)
@@ -189,6 +252,8 @@ def main() -> int:
             continue
         if _is_comment_or_doc(line):
             continue
+        scanned_files.add(file_path)
+        scanned_deleted_test_code_lines += 1
         for label, pattern in DELETED_PATTERNS:
             if pattern.search(line):
                 allow, reason = _is_allowlisted(file_path, line)
@@ -208,9 +273,9 @@ def main() -> int:
                 })
                 break
 
-    coverage_error = _coverage_error(
-        has_changes=has_changes,
-        scanned_file_count=len(scanned_files),
+    scanned_line_count = scanned_added_test_code_lines + scanned_deleted_test_code_lines
+    coverage_error = _coverage_error_for_test_scope(
+        has_test_scope_changes=has_test_scope_changes,
         scanned_line_count=scanned_line_count,
     )
 
@@ -224,6 +289,10 @@ def main() -> int:
         "scanned_file_count": len(scanned_files),
         "scanned_line_count": scanned_line_count,
         "has_working_tree_changes": has_changes,
+        "has_test_scope_changes": has_test_scope_changes,
+        "test_scope_file_count": len(test_scope_files),
+        "scanned_added_test_code_lines": scanned_added_test_code_lines,
+        "scanned_deleted_test_code_lines": scanned_deleted_test_code_lines,
         "coverage_error": coverage_error,
         "allowlist_exact": ALLOWLIST_EXACT,
         "exclusions": exclusions,
@@ -239,6 +308,11 @@ def main() -> int:
         "tracked_added_line_count": len(tracked_added),
         "untracked_file_count": len(untracked_files),
         "untracked_line_count": len(untracked_added),
+        "has_working_tree_changes": has_changes,
+        "has_test_scope_changes": has_test_scope_changes,
+        "test_scope_file_count": len(test_scope_files),
+        "scanned_added_test_code_lines": scanned_added_test_code_lines,
+        "scanned_deleted_test_code_lines": scanned_deleted_test_code_lines,
         "scanned_file_count": len(scanned_files),
         "scanned_line_count": scanned_line_count,
         "coverage_error": coverage_error,
