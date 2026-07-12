@@ -24,6 +24,14 @@ logger = logging.getLogger(__name__)
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 
+
+def _runtime_env() -> str:
+    return (os.environ.get("APP_ENV") or "development").strip().lower()
+
+
+def _is_local_or_test_env() -> bool:
+    return _runtime_env() in {"development", "local", "test"}
+
 # JWKS キャッシュ（TTL: 1 時間）
 _jwks_cache: Optional[dict] = None
 _jwks_cache_at: float = 0.0
@@ -148,7 +156,18 @@ class SupabaseJWTMiddleware(BaseHTTPMiddleware):
         if path in self.exempt_paths or not path.startswith("/api/"):
             return await call_next(request)
 
-        # ローカル開発: SUPABASE_URL 未設定 → auth スキップ（admin として扱う）
+        # internal 系は INTERNAL_SECRET ベースで認証するため JWT ガード対象外
+        if path.startswith("/api/internal/"):
+            return await call_next(request)
+
+        # 本番環境では認証基盤未設定を許容しない
+        if not SUPABASE_URL and not _is_local_or_test_env():
+            return JSONResponse(
+                {"detail": "認証基盤が利用できません"},
+                status_code=503,
+            )
+
+        # ローカル開発: SUPABASE_URL 未設定 → auth スキップ
         if not SUPABASE_URL:
             request.state.user_id = "local-dev"
             request.state.user_role = "admin"
@@ -174,19 +193,16 @@ class SupabaseJWTMiddleware(BaseHTTPMiddleware):
             )
 
         # request.state にユーザー情報をセット
-        user_meta = payload.get("user_metadata") or {}
         app_meta = payload.get("app_metadata") or {}
 
         request.state.user_id = payload.get("sub")
-        request.state.user_role = (
-            app_meta.get("role")
-            or user_meta.get("role")
-            or "user"
-        )
-        request.state.subscription_tier = (
-            user_meta.get("subscription_tier")
-            or "free"
-        )
+        if _is_local_or_test_env():
+            request.state.user_role = app_meta.get("role") or "user"
+            request.state.subscription_tier = app_meta.get("subscription_tier") or "free"
+        else:
+            # 本番系環境では role/tier は profiles を正本として deps.auth 側で判定する。
+            request.state.user_role = "user"
+            request.state.subscription_tier = "free"
         request.state.jwt_payload = payload
 
         return await call_next(request)

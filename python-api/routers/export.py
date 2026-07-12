@@ -21,12 +21,21 @@ import sqlite3
 import tempfile
 from typing import Iterator
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app_config import SUPABASE_ENABLED, get_supabase_client  # type: ignore
+from deps.auth import require_admin  # type: ignore
 
 router = APIRouter()
+
+
+def _ensure_non_production_debug_endpoints() -> None:
+    import os
+
+    env = (os.environ.get("APP_ENV") or "development").strip().lower()
+    if env == "production":
+        raise HTTPException(status_code=404, detail="Not Found")
 
 # バッチ IN クエリの最大件数: Supabase の URL 長制限に収まる安全な値
 _BATCH_RESULTS = 100
@@ -189,7 +198,7 @@ async def export_db(date: str = "", limit: int = 5000):
 
 
 @router.delete("/api/data/all")
-async def delete_all_data(date_prefix: str = ""):
+async def delete_all_data(date_prefix: str = "", _: dict = Depends(require_admin)):
     """Supabase の races_ultimate / race_results_ultimate を全削除（検証用）"""
     client = _require_supabase()
     try:
@@ -226,6 +235,7 @@ async def delete_all_data(date_prefix: str = ""):
 @router.get("/api/debug/race-ids")
 async def debug_race_ids(limit: int = 10):
     """race_id のサンプルを返す（デバッグ用）"""
+    _ensure_non_production_debug_endpoints()
     client = _require_supabase()
     try:
         res = await asyncio.to_thread(

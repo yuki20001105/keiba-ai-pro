@@ -15,29 +15,46 @@ POST /api/internal/enqueue_scrape
 """
 from __future__ import annotations
 
+import hmac
 import os
 import threading
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
 
 from app_config import logger  # type: ignore
 router = APIRouter()
-
-_INTERNAL_SECRET = os.environ.get("INTERNAL_SECRET", "")
 
 # ジョブ記録（インメモリ）
 _enqueue_jobs: dict = {}
 
 
+def _runtime_env() -> str:
+    return (os.environ.get("APP_ENV") or "development").strip().lower()
+
+
+def _internal_secret() -> str:
+    return os.environ.get("INTERNAL_SECRET", "")
+
+
 def _verify_secret(x_internal_secret: Optional[str]) -> None:
-    if not _INTERNAL_SECRET:
-        logger.warning("INTERNAL_SECRET 未設定。本番環境では必ず設定してください。")
-        return
-    if x_internal_secret != _INTERNAL_SECRET:
+    secret = _internal_secret()
+    if not secret:
+        if _runtime_env() == "production":
+            raise HTTPException(status_code=503, detail="internal identity is unavailable")
+        raise HTTPException(status_code=503, detail="internal secret is not configured")
+
+    provided = x_internal_secret or ""
+    if not hmac.compare_digest(provided, secret):
         raise HTTPException(status_code=403, detail="Invalid internal secret")
+
+
+def require_internal_secret(
+    x_internal_secret: Optional[str] = Header(None, alias="X-Internal-Secret"),
+) -> None:
+    _verify_secret(x_internal_secret)
 
 
 async def _scrape_date(date_str: str) -> int:
@@ -115,15 +132,13 @@ def _run_scrape_job(job_id: str, days_back: int) -> None:
 @router.post("/api/internal/enqueue_scrape", status_code=202)
 async def enqueue_scrape(
     background_tasks: BackgroundTasks,
-    x_internal_secret: Optional[str] = Header(None, alias="X-Internal-Secret"),
+    _: None = Depends(require_internal_secret),
     days_back: int = 3,
 ):
     """
     GitHub Actions から呼ばれる。直近 days_back 日分をバックグラウンドでスクレイプ。
     すぐに 202 Accepted を返す。
     """
-    _verify_secret(x_internal_secret)
-
     job_id = str(uuid.uuid4())[:8]
     _enqueue_jobs[job_id] = {
         "status": "queued",
@@ -150,10 +165,9 @@ async def enqueue_scrape(
 @router.get("/api/internal/scrape_status/{job_id}")
 async def scrape_status(
     job_id: str,
-    x_internal_secret: Optional[str] = Header(None, alias="X-Internal-Secret"),
+    _: None = Depends(require_internal_secret),
 ):
     """ジョブ進捗確認"""
-    _verify_secret(x_internal_secret)
     job = _enqueue_jobs.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"job {job_id} not found")

@@ -451,8 +451,7 @@ async def predict(request: PredictRequest, http_req: Request):
         raise HTTPException(status_code=500, detail=f"予測中にエラーが発生: {str(e)}")
 
 
-@router.post("/api/analyze_race", response_model=AnalyzeRaceResponse)
-async def analyze_race(request: AnalyzeRaceRequest):
+async def _analyze_race_impl(request: AnalyzeRaceRequest):
     """レース分析と購入推奨エンドポイント"""
     # ── キャッシュチェック（TTL=5分、bankroll/risk_mode が同一の場合のみ）
     _cache_key = f"{request.race_id}:{request.model_id}:{request.bankroll}:{request.risk_mode}"
@@ -938,12 +937,26 @@ async def analyze_race(request: AnalyzeRaceRequest):
         raise HTTPException(status_code=500, detail=f"レース分析に失敗: {str(e)}")
 
 
+@router.post("/api/analyze_race", response_model=AnalyzeRaceResponse)
+async def analyze_race(request: AnalyzeRaceRequest, http_req: Request):
+    """単一レース分析（1リクエスト = 1 quota unit）。"""
+    await check_and_consume_pred_count(http_req, units=1)
+    return await _analyze_race_impl(request)
+
+
 @router.post("/api/analyze_races_batch")
 async def analyze_races_batch(request: BatchAnalyzeRequest, http_req: Request):
-    """複数レースを一括分析（一括予測）"""
-    await check_and_consume_pred_count(http_req)
+    """複数レースを一括分析（重複除外件数を事前に原子的に quota 消費）。"""
+    unique_race_ids = list(dict.fromkeys(request.race_ids))
+    if not unique_race_ids:
+        raise HTTPException(status_code=400, detail="race_ids must contain at least one item")
+    if len(unique_race_ids) > 100:
+        raise HTTPException(status_code=400, detail="race_ids must contain at most 100 unique items")
+
+    await check_and_consume_pred_count(http_req, units=len(unique_race_ids))
+
     results: dict = {}
-    for race_id in request.race_ids:
+    for race_id in unique_race_ids:
         req = AnalyzeRaceRequest(
             race_id=race_id,
             model_id=request.model_id,
@@ -954,7 +967,7 @@ async def analyze_races_batch(request: BatchAnalyzeRequest, http_req: Request):
             min_ev=request.min_ev,
         )
         try:
-            resp = await analyze_race(req)
+            resp = await _analyze_race_impl(req)
             results[race_id] = {"success": True, "data": resp.dict()}
         except HTTPException as e:
             results[race_id] = {"success": False, "error": e.detail}
@@ -962,6 +975,8 @@ async def analyze_races_batch(request: BatchAnalyzeRequest, http_req: Request):
             results[race_id] = {"success": False, "error": str(e)}
     return {
         "results": results,
-        "total": len(request.race_ids),
+        "total": len(unique_race_ids),
+        "requested_total": len(request.race_ids),
+        "charged_units": len(unique_race_ids),
         "success_count": sum(1 for v in results.values() if v["success"]),
     }

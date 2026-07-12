@@ -1,12 +1,9 @@
 import '@/app/globals.css'
 import type { Metadata, Viewport } from 'next'
-import { Inter } from 'next/font/google'
 import { UltimateModeProvider } from '@/contexts/UltimateModeContext'
 import { AuthProvider } from '@/contexts/AuthContext'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import Script from 'next/script'
-
-const inter = Inter({ subsets: ['latin'] })
 
 export const metadata: Metadata = {
   title: '競馬AI Pro - AI予測システム',
@@ -41,7 +38,7 @@ export default function RootLayout({
         <link rel="icon" href="/icon.svg" type="image/svg+xml" />
         <link rel="apple-touch-icon" href="/icon-192x192.png" />
       </head>
-      <body className={inter.className}>
+      <body>
         <ErrorBoundary>
           <AuthProvider>
             <UltimateModeProvider>

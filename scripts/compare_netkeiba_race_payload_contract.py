@@ -182,6 +182,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Compare Next write payload contract with FastAPI dry-run preview")
     parser.add_argument("--dry-run-report", default=str(DRY_RUN_REPORT_PATH), help="Path to dry-run smoke report JSON")
     parser.add_argument("--stale-seconds", type=int, default=DEFAULT_STALE_SECONDS, help="Treat dry-run report older than this as stale")
+    parser.add_argument(
+        "--skip-staleness-check",
+        action="store_true",
+        default=False,
+        help="Skip staleness check for deterministic fixture validation only (does not skip schema/status/write-safety checks)",
+    )
     args = parser.parse_args()
 
     report_path = Path(args.dry_run_report)
@@ -195,6 +201,7 @@ def main() -> int:
         "reason_detail": "",
         "input": {
             "dry_run_report": str(report_path),
+            "staleness_check_skipped": bool(args.skip_staleness_check),
         },
         "next_contract": EXPECTED_CONTRACT,
         "dry_run_status": None,
@@ -215,7 +222,7 @@ def main() -> int:
             result["verdict_reason"] = REASON_MISSING_REPORT
             result["reason_detail"] = "dry-run smoke report missing or invalid JSON"
             result["success"] = True
-        elif _is_stale(smoke_report, args.stale_seconds):
+        elif not args.skip_staleness_check and _is_stale(smoke_report, args.stale_seconds):
             result["verdict"] = "warn"
             result["verdict_reason"] = REASON_STALE_REPORT
             result["reason_detail"] = "dry-run report is stale"

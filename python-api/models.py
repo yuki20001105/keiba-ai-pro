@@ -118,7 +118,7 @@ class BatchAnalyzeRequest(BaseModel):
     """一括レース分析リクエスト"""
     model_config = {"protected_namespaces": ()}
 
-    race_ids: List[str]
+    race_ids: List[str] = Field(min_length=1, max_length=100)
     model_id: Optional[str] = None
     bankroll: int = Field(10000, ge=100, le=10_000_000)
     risk_mode: Literal["aggressive", "balanced", "conservative"] = "balanced"

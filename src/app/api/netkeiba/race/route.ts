@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { SCRAPE_SERVICE_URL } from '@/lib/backend-url'
+import { verifyRequestAuth } from '@/lib/server-auth'
 
-// APIルート用のSupabaseクライアント（SERVICE_ROLE_KEYでRLSをバイパス）
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-const supabase = (supabaseUrl && supabaseServiceKey) ? createClient(supabaseUrl, supabaseServiceKey) : null
+function getServiceClient() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY
+  if (!supabaseUrl || !supabaseServiceKey) return null
+  return createClient(supabaseUrl, supabaseServiceKey)
+}
 
 
 /**
@@ -13,6 +16,12 @@ const supabase = (supabaseUrl && supabaseServiceKey) ? createClient(supabaseUrl,
  */
 export async function POST(request: NextRequest) {
   try {
+    const authz = await verifyRequestAuth(request, { requireAdmin: true })
+    if (!authz.ok) {
+      return NextResponse.json({ detail: authz.detail }, { status: authz.status })
+    }
+
+    const supabase = getServiceClient()
     if (!supabase) {
       return NextResponse.json(
         { error: 'Supabase設定が不足しています' },
@@ -21,11 +30,19 @@ export async function POST(request: NextRequest) {
     }
 
     const { raceId, userId, testOnly } = await request.json()
+    const verifiedUserId = authz.context.user.id
 
-    if (!raceId || !userId) {
+    if (!raceId) {
       return NextResponse.json(
-        { error: 'レースIDとユーザーIDが必要です' },
+        { error: 'レースIDが必要です' },
         { status: 400 }
+      )
+    }
+
+    if (typeof userId === 'string' && userId.trim() && userId !== verifiedUserId) {
+      return NextResponse.json(
+        { error: 'userId mismatch is not allowed' },
+        { status: 403 }
       )
     }
 
@@ -92,7 +109,7 @@ export async function POST(request: NextRequest) {
     }
     
     // user_idは常に含める（デフォルトUUIDでも）
-    raceRecord.user_id = userId
+    raceRecord.user_id = verifiedUserId
     
     console.log('Upserting race:', raceRecord)
     const { error: raceError } = await supabase.from('races').upsert(raceRecord)
@@ -124,7 +141,7 @@ export async function POST(request: NextRequest) {
           finish_time: result.finish_time || '',
           odds: parseFloat(result.odds) || 0,
           popularity: parseInt(result.popularity) || 0,
-          user_id: userId
+          user_id: verifiedUserId
         }
       })
 
@@ -154,7 +171,7 @@ export async function POST(request: NextRequest) {
           bet_type: payout.type || payout.bet_type || '',
           combination: payout.numbers || payout.combination || '',
           payout: amount,
-          user_id: userId
+          user_id: verifiedUserId
         }
       })
 

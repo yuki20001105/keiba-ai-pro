@@ -1,0 +1,1416 @@
+{
+  "fastapi": {
+    "count": 62,
+    "routes": [
+      {
+        "endpoint": "/",
+        "method": "GET",
+        "policy": "Public",
+        "dependency_names": [
+          "root"
+        ],
+        "source": "python-api/routers/stats.py"
+      },
+      {
+        "endpoint": "/api/analyze_race",
+        "method": "POST",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "analyze_race"
+        ],
+        "source": "python-api/routers/predict.py"
+      },
+      {
+        "endpoint": "/api/analyze_races_batch",
+        "method": "POST",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "analyze_races_batch"
+        ],
+        "source": "python-api/routers/predict.py"
+      },
+      {
+        "endpoint": "/api/backfill/coat-color",
+        "method": "POST",
+        "policy": "Admin",
+        "dependency_names": [
+          "backfill_coat_color",
+          "get_current_user",
+          "require_admin"
+        ],
+        "source": "python-api/routers/backfill.py"
+      },
+      {
+        "endpoint": "/api/backfill/nar-pedigree",
+        "method": "POST",
+        "policy": "Admin",
+        "dependency_names": [
+          "backfill_nar_pedigree",
+          "get_current_user",
+          "require_admin"
+        ],
+        "source": "python-api/routers/backfill.py"
+      },
+      {
+        "endpoint": "/api/data/all",
+        "method": "DELETE",
+        "policy": "Admin",
+        "dependency_names": [
+          "delete_all_data",
+          "get_current_user",
+          "require_admin"
+        ],
+        "source": "python-api/routers/export.py"
+      },
+      {
+        "endpoint": "/api/data_stats",
+        "method": "GET",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "get_data_stats"
+        ],
+        "source": "python-api/routers/stats.py"
+      },
+      {
+        "endpoint": "/api/debug",
+        "method": "GET",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "debug_info"
+        ],
+        "source": "python-api/routers/stats.py"
+      },
+      {
+        "endpoint": "/api/debug/race-ids",
+        "method": "GET",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "debug_race_ids"
+        ],
+        "source": "python-api/routers/export.py"
+      },
+      {
+        "endpoint": "/api/debug/race/{race_id}",
+        "method": "GET",
+        "policy": "PremiumOrAdmin",
+        "dependency_names": [
+          "debug_raw_race",
+          "get_current_user",
+          "require_premium"
+        ],
+        "source": "python-api/routers/debug_data.py"
+      },
+      {
+        "endpoint": "/api/debug/race/{race_id}/features",
+        "method": "GET",
+        "policy": "PremiumOrAdmin",
+        "dependency_names": [
+          "debug_features",
+          "get_current_user",
+          "require_premium"
+        ],
+        "source": "python-api/routers/debug_data.py"
+      },
+      {
+        "endpoint": "/api/export-data",
+        "method": "GET",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "export_data"
+        ],
+        "source": "python-api/routers/export.py"
+      },
+      {
+        "endpoint": "/api/export-db",
+        "method": "GET",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "export_db"
+        ],
+        "source": "python-api/routers/export.py"
+      },
+      {
+        "endpoint": "/api/export/bet-list",
+        "method": "POST",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "export_bet_list"
+        ],
+        "source": "python-api/routers/bet_export.py"
+      },
+      {
+        "endpoint": "/api/export/bet-list/csv",
+        "method": "POST",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "export_bet_list_csv"
+        ],
+        "source": "python-api/routers/bet_export.py"
+      },
+      {
+        "endpoint": "/api/features/catalog",
+        "method": "GET",
+        "policy": "PremiumOrAdmin",
+        "dependency_names": [
+          "get_catalog",
+          "get_current_user",
+          "require_premium"
+        ],
+        "source": "python-api/routers/feature_analysis.py"
+      },
+      {
+        "endpoint": "/api/features/coverage",
+        "method": "GET",
+        "policy": "PremiumOrAdmin",
+        "dependency_names": [
+          "get_coverage",
+          "get_current_user",
+          "require_premium"
+        ],
+        "source": "python-api/routers/feature_analysis.py"
+      },
+      {
+        "endpoint": "/api/features/importance",
+        "method": "GET",
+        "policy": "PremiumOrAdmin",
+        "dependency_names": [
+          "get_current_user",
+          "get_importance",
+          "require_premium"
+        ],
+        "source": "python-api/routers/feature_analysis.py"
+      },
+      {
+        "endpoint": "/api/features/summary",
+        "method": "GET",
+        "policy": "PremiumOrAdmin",
+        "dependency_names": [
+          "get_current_user",
+          "get_summary",
+          "require_premium"
+        ],
+        "source": "python-api/routers/feature_analysis.py"
+      },
+      {
+        "endpoint": "/api/internal/enqueue_scrape",
+        "method": "POST",
+        "policy": "Internal",
+        "dependency_names": [
+          "enqueue_scrape",
+          "require_internal_secret"
+        ],
+        "source": "python-api/routers/internal.py"
+      },
+      {
+        "endpoint": "/api/internal/scrape_status/{job_id}",
+        "method": "GET",
+        "policy": "Internal",
+        "dependency_names": [
+          "require_internal_secret",
+          "scrape_status"
+        ],
+        "source": "python-api/routers/internal.py"
+      },
+      {
+        "endpoint": "/api/models",
+        "method": "GET",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "list_models"
+        ],
+        "source": "python-api/routers/models_mgmt.py"
+      },
+      {
+        "endpoint": "/api/models/active/info",
+        "method": "GET",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "get_active_model"
+        ],
+        "source": "python-api/routers/models_mgmt.py"
+      },
+      {
+        "endpoint": "/api/models/{model_id}",
+        "method": "DELETE",
+        "policy": "Admin",
+        "dependency_names": [
+          "delete_model",
+          "get_current_user",
+          "require_admin"
+        ],
+        "source": "python-api/routers/models_mgmt.py"
+      },
+      {
+        "endpoint": "/api/models/{model_id}",
+        "method": "GET",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "get_model_info"
+        ],
+        "source": "python-api/routers/models_mgmt.py"
+      },
+      {
+        "endpoint": "/api/models/{model_id}/activate",
+        "method": "PUT",
+        "policy": "Admin",
+        "dependency_names": [
+          "activate_model",
+          "get_current_user",
+          "require_admin"
+        ],
+        "source": "python-api/routers/models_mgmt.py"
+      },
+      {
+        "endpoint": "/api/netkeiba/race-list",
+        "method": "GET",
+        "policy": "Admin",
+        "dependency_names": [
+          "get_current_user",
+          "netkeiba_race_list",
+          "require_admin"
+        ],
+        "source": "python-api/routers/scrape.py"
+      },
+      {
+        "endpoint": "/api/netkeiba/race/dry-run",
+        "method": "POST",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "netkeiba_race_dry_run"
+        ],
+        "source": "python-api/routers/scrape.py"
+      },
+      {
+        "endpoint": "/api/netkeiba/race/preflight",
+        "method": "GET",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "netkeiba_race_preflight"
+        ],
+        "source": "python-api/routers/scrape.py"
+      },
+      {
+        "endpoint": "/api/netkeiba/race/sandbox/precheck",
+        "method": "GET",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "netkeiba_race_sandbox_precheck"
+        ],
+        "source": "python-api/routers/scrape.py"
+      },
+      {
+        "endpoint": "/api/netkeiba/race/write",
+        "method": "POST",
+        "policy": "Admin",
+        "dependency_names": [
+          "get_current_user",
+          "netkeiba_race_write",
+          "require_admin"
+        ],
+        "source": "python-api/routers/scrape.py"
+      },
+      {
+        "endpoint": "/api/predict",
+        "method": "POST",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "predict"
+        ],
+        "source": "python-api/routers/predict.py"
+      },
+      {
+        "endpoint": "/api/prediction-history",
+        "method": "GET",
+        "policy": "PremiumOrAdmin",
+        "dependency_names": [
+          "get_current_user",
+          "prediction_history",
+          "require_premium"
+        ],
+        "source": "python-api/routers/prediction_history.py"
+      },
+      {
+        "endpoint": "/api/prediction-history/{race_id}",
+        "method": "GET",
+        "policy": "PremiumOrAdmin",
+        "dependency_names": [
+          "get_current_user",
+          "prediction_history_by_race",
+          "require_premium"
+        ],
+        "source": "python-api/routers/prediction_history.py"
+      },
+      {
+        "endpoint": "/api/profiling/html/{job_id}",
+        "method": "GET",
+        "policy": "Admin",
+        "dependency_names": [
+          "get_current_user",
+          "get_profiling_html",
+          "require_admin"
+        ],
+        "source": "python-api/routers/profiling.py"
+      },
+      {
+        "endpoint": "/api/profiling/start",
+        "method": "POST",
+        "policy": "Admin",
+        "dependency_names": [
+          "get_current_user",
+          "require_admin",
+          "start_profiling"
+        ],
+        "source": "python-api/routers/profiling.py"
+      },
+      {
+        "endpoint": "/api/profiling/status/{job_id}",
+        "method": "GET",
+        "policy": "Admin",
+        "dependency_names": [
+          "get_current_user",
+          "get_profiling_status",
+          "require_admin"
+        ],
+        "source": "python-api/routers/profiling.py"
+      },
+      {
+        "endpoint": "/api/purchase",
+        "method": "POST",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "save_purchase_history"
+        ],
+        "source": "python-api/routers/purchase.py"
+      },
+      {
+        "endpoint": "/api/purchase/diagnostics/legacy-orphans",
+        "method": "GET",
+        "policy": "Admin",
+        "dependency_names": [
+          "get_current_user",
+          "get_legacy_orphan_diagnostics",
+          "require_admin"
+        ],
+        "source": "python-api/routers/purchase.py"
+      },
+      {
+        "endpoint": "/api/purchase/{purchase_id}",
+        "method": "DELETE",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "delete_purchase"
+        ],
+        "source": "python-api/routers/purchase.py"
+      },
+      {
+        "endpoint": "/api/purchase/{purchase_id}",
+        "method": "PATCH",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "update_purchase_result"
+        ],
+        "source": "python-api/routers/purchase.py"
+      },
+      {
+        "endpoint": "/api/purchase_history",
+        "method": "GET",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "get_purchase_history"
+        ],
+        "source": "python-api/routers/purchase.py"
+      },
+      {
+        "endpoint": "/api/races/by_date",
+        "method": "GET",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "get_races_by_date"
+        ],
+        "source": "python-api/routers/races.py"
+      },
+      {
+        "endpoint": "/api/races/recent",
+        "method": "GET",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "get_races_recent"
+        ],
+        "source": "python-api/routers/races.py"
+      },
+      {
+        "endpoint": "/api/races/{race_id}/horses",
+        "method": "GET",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "get_race_horses"
+        ],
+        "source": "python-api/routers/races.py"
+      },
+      {
+        "endpoint": "/api/realtime-odds/refresh",
+        "method": "POST",
+        "policy": "Admin",
+        "dependency_names": [
+          "get_current_user",
+          "refresh_realtime_odds",
+          "require_admin"
+        ],
+        "source": "python-api/routers/realtime_odds.py"
+      },
+      {
+        "endpoint": "/api/realtime-odds/{race_id}",
+        "method": "GET",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "get_realtime_odds"
+        ],
+        "source": "python-api/routers/realtime_odds.py"
+      },
+      {
+        "endpoint": "/api/rescrape_incomplete",
+        "method": "POST",
+        "policy": "Admin",
+        "dependency_names": [
+          "get_current_user",
+          "require_admin",
+          "rescrape_incomplete"
+        ],
+        "source": "python-api/routers/scrape.py"
+      },
+      {
+        "endpoint": "/api/scrape",
+        "method": "POST",
+        "policy": "Admin",
+        "dependency_names": [
+          "get_current_user",
+          "require_admin",
+          "scrape_data"
+        ],
+        "source": "python-api/routers/scrape.py"
+      },
+      {
+        "endpoint": "/api/scrape/health",
+        "method": "GET",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "scrape_health"
+        ],
+        "source": "python-api/routers/scrape.py"
+      },
+      {
+        "endpoint": "/api/scrape/history",
+        "method": "GET",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "scrape_history"
+        ],
+        "source": "python-api/routers/scrape.py"
+      },
+      {
+        "endpoint": "/api/scrape/repair/{race_id}",
+        "method": "POST",
+        "policy": "Admin",
+        "dependency_names": [
+          "get_current_user",
+          "repair_race",
+          "require_admin"
+        ],
+        "source": "python-api/routers/scrape.py"
+      },
+      {
+        "endpoint": "/api/scrape/start",
+        "method": "POST",
+        "policy": "Admin",
+        "dependency_names": [
+          "get_current_user",
+          "require_admin",
+          "scrape_start"
+        ],
+        "source": "python-api/routers/scrape.py"
+      },
+      {
+        "endpoint": "/api/scrape/status/{job_id}",
+        "method": "GET",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "scrape_status"
+        ],
+        "source": "python-api/routers/scrape.py"
+      },
+      {
+        "endpoint": "/api/statistics",
+        "method": "GET",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "get_statistics"
+        ],
+        "source": "python-api/routers/purchase.py"
+      },
+      {
+        "endpoint": "/api/test-optuna-request",
+        "method": "POST",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "test_optuna_request"
+        ],
+        "source": "python-api/routers/stats.py"
+      },
+      {
+        "endpoint": "/api/test/connectivity",
+        "method": "GET",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "test_connectivity"
+        ],
+        "source": "python-api/routers/stats.py"
+      },
+      {
+        "endpoint": "/api/test/task",
+        "method": "GET",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "scrape_start_debug"
+        ],
+        "source": "python-api/routers/stats.py"
+      },
+      {
+        "endpoint": "/api/train",
+        "method": "POST",
+        "policy": "PremiumOrAdmin",
+        "dependency_names": [
+          "get_current_user",
+          "require_premium",
+          "train_model"
+        ],
+        "source": "python-api/routers/train.py"
+      },
+      {
+        "endpoint": "/api/train/start",
+        "method": "POST",
+        "policy": "PremiumOrAdmin",
+        "dependency_names": [
+          "get_current_user",
+          "require_premium",
+          "train_start"
+        ],
+        "source": "python-api/routers/train.py"
+      },
+      {
+        "endpoint": "/api/train/status/{job_id}",
+        "method": "GET",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "train_job_status"
+        ],
+        "source": "python-api/routers/train.py"
+      },
+      {
+        "endpoint": "/health",
+        "method": "GET",
+        "policy": "Public",
+        "dependency_names": [
+          "health"
+        ],
+        "source": "python-api/main.py"
+      }
+    ],
+    "unclassified": [],
+    "duplicates": []
+  },
+  "next": {
+    "count": 65,
+    "routes": [
+      {
+        "route": "/api/ai-correct",
+        "method": "POST",
+        "policy": "Authenticated",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/ai-correct/route.ts"
+      },
+      {
+        "route": "/api/analyze-race",
+        "method": "POST",
+        "policy": "Authenticated",
+        "backend_endpoint": "/api/analyze_race",
+        "backend_method": "POST",
+        "backend_policy": "Authenticated",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/analyze-race/route.ts"
+      },
+      {
+        "route": "/api/analyze-races-batch",
+        "method": "POST",
+        "policy": "Authenticated",
+        "backend_endpoint": "/api/analyze_races_batch",
+        "backend_method": "POST",
+        "backend_policy": "Authenticated",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/analyze-races-batch/route.ts"
+      },
+      {
+        "route": "/api/backfill/coat-color",
+        "method": "POST",
+        "policy": "Admin",
+        "backend_endpoint": "/api/backfill/coat-color",
+        "backend_method": "POST",
+        "backend_policy": "Admin",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/backfill/coat-color/route.ts"
+      },
+      {
+        "route": "/api/backfill/nar-pedigree",
+        "method": "POST",
+        "policy": "Admin",
+        "backend_endpoint": "/api/backfill/nar-pedigree",
+        "backend_method": "POST",
+        "backend_policy": "Admin",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/backfill/nar-pedigree/route.ts"
+      },
+      {
+        "route": "/api/data-stats",
+        "method": "GET",
+        "policy": "Authenticated",
+        "backend_endpoint": "/api/data_stats",
+        "backend_method": "GET",
+        "backend_policy": "Authenticated",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/data-stats/route.ts"
+      },
+      {
+        "route": "/api/data/all",
+        "method": "DELETE",
+        "policy": "Admin",
+        "backend_endpoint": "/api/data/all",
+        "backend_method": "DELETE",
+        "backend_policy": "Admin",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/data/all/route.ts"
+      },
+      {
+        "route": "/api/debug/race-ids",
+        "method": "GET",
+        "policy": "Authenticated",
+        "backend_endpoint": "/api/debug/race-ids",
+        "backend_method": "GET",
+        "backend_policy": "Authenticated",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/debug/race-ids/route.ts"
+      },
+      {
+        "route": "/api/debug/race/[race_id]",
+        "method": "GET",
+        "policy": "PremiumOrAdmin",
+        "backend_endpoint": "/api/debug/race/{param}",
+        "backend_method": "GET",
+        "backend_policy": "PremiumOrAdmin",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/debug/race/[race_id]/route.ts"
+      },
+      {
+        "route": "/api/debug/race/[race_id]/features",
+        "method": "GET",
+        "policy": "PremiumOrAdmin",
+        "backend_endpoint": "/api/debug/race/{param}/features",
+        "backend_method": "GET",
+        "backend_policy": "PremiumOrAdmin",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/debug/race/[race_id]/features/route.ts"
+      },
+      {
+        "route": "/api/export/bet-list",
+        "method": "POST",
+        "policy": "Authenticated",
+        "backend_endpoint": "/api/export/bet-list/csv",
+        "backend_method": "POST",
+        "backend_policy": "Authenticated",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/export/bet-list/route.ts"
+      },
+      {
+        "route": "/api/export/data",
+        "method": "GET",
+        "policy": "Authenticated",
+        "backend_endpoint": "/api/export-data",
+        "backend_method": "GET",
+        "backend_policy": "Authenticated",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/export/data/route.ts"
+      },
+      {
+        "route": "/api/export/db",
+        "method": "GET",
+        "policy": "Authenticated",
+        "backend_endpoint": "/api/export-db",
+        "backend_method": "GET",
+        "backend_policy": "Authenticated",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/export/db/route.ts"
+      },
+      {
+        "route": "/api/features/catalog",
+        "method": "GET",
+        "policy": "PremiumOrAdmin",
+        "backend_endpoint": "/api/features/catalog",
+        "backend_method": "GET",
+        "backend_policy": "PremiumOrAdmin",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/features/catalog/route.ts"
+      },
+      {
+        "route": "/api/features/coverage",
+        "method": "GET",
+        "policy": "PremiumOrAdmin",
+        "backend_endpoint": "/api/features/coverage",
+        "backend_method": "GET",
+        "backend_policy": "PremiumOrAdmin",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/features/coverage/route.ts"
+      },
+      {
+        "route": "/api/features/importance",
+        "method": "GET",
+        "policy": "PremiumOrAdmin",
+        "backend_endpoint": "/api/features/importance",
+        "backend_method": "GET",
+        "backend_policy": "PremiumOrAdmin",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/features/importance/route.ts"
+      },
+      {
+        "route": "/api/features/summary",
+        "method": "GET",
+        "policy": "PremiumOrAdmin",
+        "backend_endpoint": "/api/features/summary",
+        "backend_method": "GET",
+        "backend_policy": "PremiumOrAdmin",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/features/summary/route.ts"
+      },
+      {
+        "route": "/api/health",
+        "method": "GET",
+        "policy": "Public",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/health/route.ts"
+      },
+      {
+        "route": "/api/ml/train/start",
+        "method": "POST",
+        "policy": "PremiumOrAdmin",
+        "backend_endpoint": "/api/train/start",
+        "backend_method": "POST",
+        "backend_policy": "PremiumOrAdmin",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/ml/train/start/route.ts"
+      },
+      {
+        "route": "/api/ml/train/status/[job_id]",
+        "method": "GET",
+        "policy": "Authenticated",
+        "backend_endpoint": "/api/train/status/{param}",
+        "backend_method": "GET",
+        "backend_policy": "Authenticated",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/ml/train/status/[job_id]/route.ts"
+      },
+      {
+        "route": "/api/model-redesign/summary",
+        "method": "GET",
+        "policy": "Authenticated",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/model-redesign/summary/route.ts"
+      },
+      {
+        "route": "/api/model-redesign/summary",
+        "method": "POST",
+        "policy": "Authenticated",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/model-redesign/summary/route.ts"
+      },
+      {
+        "route": "/api/models",
+        "method": "GET",
+        "policy": "Authenticated",
+        "backend_endpoint": "/api/models",
+        "backend_method": "GET",
+        "backend_policy": "Authenticated",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/models/route.ts"
+      },
+      {
+        "route": "/api/models/[id]",
+        "method": "DELETE",
+        "policy": "Admin",
+        "backend_endpoint": "/api/models/{param}",
+        "backend_method": "DELETE",
+        "backend_policy": "Admin",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/models/[id]/route.ts"
+      },
+      {
+        "route": "/api/models/[id]",
+        "method": "GET",
+        "policy": "Authenticated",
+        "backend_endpoint": "/api/models/{param}",
+        "backend_method": "GET",
+        "backend_policy": "Authenticated",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/models/[id]/route.ts"
+      },
+      {
+        "route": "/api/models/[id]/activate",
+        "method": "PUT",
+        "policy": "Admin",
+        "backend_endpoint": "/api/models/{param}/activate",
+        "backend_method": "PUT",
+        "backend_policy": "Admin",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/models/[id]/activate/route.ts"
+      },
+      {
+        "route": "/api/netkeiba/calendar",
+        "method": "GET",
+        "policy": "Admin",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/netkeiba/calendar/route.ts"
+      },
+      {
+        "route": "/api/netkeiba/calendar",
+        "method": "POST",
+        "policy": "Admin",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/netkeiba/calendar/route.ts"
+      },
+      {
+        "route": "/api/netkeiba/race",
+        "method": "POST",
+        "policy": "Admin",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/netkeiba/race/route.ts"
+      },
+      {
+        "route": "/api/netkeiba/race-list",
+        "method": "POST",
+        "policy": "Admin",
+        "backend_endpoint": "/api/netkeiba/race-list",
+        "backend_method": "GET",
+        "backend_policy": "Admin",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/netkeiba/race-list/route.ts"
+      },
+      {
+        "route": "/api/notion-report",
+        "method": "GET",
+        "policy": "Authenticated",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/notion-report/route.ts"
+      },
+      {
+        "route": "/api/notion-report",
+        "method": "POST",
+        "policy": "Authenticated",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/notion-report/route.ts"
+      },
+      {
+        "route": "/api/ocr",
+        "method": "POST",
+        "policy": "Authenticated",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/ocr/route.ts"
+      },
+      {
+        "route": "/api/prediction-history",
+        "method": "GET",
+        "policy": "PremiumOrAdmin",
+        "backend_endpoint": "/api/prediction-history",
+        "backend_method": "GET",
+        "backend_policy": "PremiumOrAdmin",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/prediction-history/route.ts"
+      },
+      {
+        "route": "/api/prediction-history/[race_id]",
+        "method": "GET",
+        "policy": "PremiumOrAdmin",
+        "backend_endpoint": "/api/prediction-history/{param}",
+        "backend_method": "GET",
+        "backend_policy": "PremiumOrAdmin",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/prediction-history/[race_id]/route.ts"
+      },
+      {
+        "route": "/api/production-readiness",
+        "method": "GET",
+        "policy": "PremiumOrAdmin",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/production-readiness/route.ts"
+      },
+      {
+        "route": "/api/production-readiness",
+        "method": "POST",
+        "policy": "PremiumOrAdmin",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/production-readiness/route.ts"
+      },
+      {
+        "route": "/api/profiling",
+        "method": "POST",
+        "policy": "Admin",
+        "backend_endpoint": "/api/profiling/start",
+        "backend_method": "POST",
+        "backend_policy": "Admin",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/profiling/route.ts"
+      },
+      {
+        "route": "/api/profiling/html/[job_id]",
+        "method": "GET",
+        "policy": "Admin",
+        "backend_endpoint": "/api/profiling/html/{param}",
+        "backend_method": "GET",
+        "backend_policy": "Admin",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/profiling/html/[job_id]/route.ts"
+      },
+      {
+        "route": "/api/profiling/status/[job_id]",
+        "method": "GET",
+        "policy": "Admin",
+        "backend_endpoint": "/api/profiling/status/{param}",
+        "backend_method": "GET",
+        "backend_policy": "Admin",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/profiling/status/[job_id]/route.ts"
+      },
+      {
+        "route": "/api/purchase",
+        "method": "POST",
+        "policy": "Authenticated",
+        "backend_endpoint": "/api/purchase",
+        "backend_method": "POST",
+        "backend_policy": "Authenticated",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/purchase/route.ts"
+      },
+      {
+        "route": "/api/purchase-history",
+        "method": "GET",
+        "policy": "Authenticated",
+        "backend_endpoint": "/api/purchase_history",
+        "backend_method": "GET",
+        "backend_policy": "Authenticated",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/purchase-history/route.ts"
+      },
+      {
+        "route": "/api/purchase/[id]",
+        "method": "DELETE",
+        "policy": "Authenticated",
+        "backend_endpoint": "/api/purchase/{param}",
+        "backend_method": "DELETE",
+        "backend_policy": "Authenticated",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/purchase/[id]/route.ts"
+      },
+      {
+        "route": "/api/purchase/[id]",
+        "method": "PATCH",
+        "policy": "Authenticated",
+        "backend_endpoint": "/api/purchase/{param}",
+        "backend_method": "PATCH",
+        "backend_policy": "Authenticated",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/purchase/[id]/route.ts"
+      },
+      {
+        "route": "/api/races/[race_id]/horses",
+        "method": "GET",
+        "policy": "Authenticated",
+        "backend_endpoint": "/api/races/{param}/horses",
+        "backend_method": "GET",
+        "backend_policy": "Authenticated",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/races/[race_id]/horses/route.ts"
+      },
+      {
+        "route": "/api/races/by-date",
+        "method": "GET",
+        "policy": "Authenticated",
+        "backend_endpoint": "/api/races/by_date",
+        "backend_method": "GET",
+        "backend_policy": "Authenticated",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/races/by-date/route.ts"
+      },
+      {
+        "route": "/api/races/recent",
+        "method": "GET",
+        "policy": "Authenticated",
+        "backend_endpoint": "/api/races/recent",
+        "backend_method": "GET",
+        "backend_policy": "Authenticated",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/races/recent/route.ts"
+      },
+      {
+        "route": "/api/realtime-odds/[race_id]",
+        "method": "GET",
+        "policy": "Authenticated",
+        "backend_endpoint": "/api/realtime-odds/{param}",
+        "backend_method": "GET",
+        "backend_policy": "Authenticated",
+        "auth_header_forward": true,
+        "status_propagation": false,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/realtime-odds/[race_id]/route.ts"
+      },
+      {
+        "route": "/api/realtime-odds/refresh",
+        "method": "POST",
+        "policy": "Admin",
+        "backend_endpoint": "/api/realtime-odds/refresh",
+        "backend_method": "POST",
+        "backend_policy": "Admin",
+        "auth_header_forward": true,
+        "status_propagation": false,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/realtime-odds/refresh/route.ts"
+      },
+      {
+        "route": "/api/scrape",
+        "method": "POST",
+        "policy": "Admin",
+        "backend_endpoint": "/api/scrape/start",
+        "backend_method": "POST",
+        "backend_policy": "Admin",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/scrape/route.ts"
+      },
+      {
+        "route": "/api/scrape/health",
+        "method": "GET",
+        "policy": "Authenticated",
+        "backend_endpoint": "/api/scrape/health",
+        "backend_method": "GET",
+        "backend_policy": "Authenticated",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/scrape/health/route.ts"
+      },
+      {
+        "route": "/api/scrape/history",
+        "method": "GET",
+        "policy": "Authenticated",
+        "backend_endpoint": "/api/scrape/history",
+        "backend_method": "GET",
+        "backend_policy": "Authenticated",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/scrape/history/route.ts"
+      },
+      {
+        "route": "/api/scrape/p0-repair-plan",
+        "method": "GET",
+        "policy": "PremiumOrAdmin",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/scrape/p0-repair-plan/route.ts"
+      },
+      {
+        "route": "/api/scrape/p0-repair-plan",
+        "method": "POST",
+        "policy": "PremiumOrAdmin",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/scrape/p0-repair-plan/route.ts"
+      },
+      {
+        "route": "/api/scrape/p0-repair-plan",
+        "method": "PUT",
+        "policy": "PremiumOrAdmin",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/scrape/p0-repair-plan/route.ts"
+      },
+      {
+        "route": "/api/scrape/refresh-plan",
+        "method": "GET",
+        "policy": "PremiumOrAdmin",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/scrape/refresh-plan/route.ts"
+      },
+      {
+        "route": "/api/scrape/refresh-plan",
+        "method": "POST",
+        "policy": "PremiumOrAdmin",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/scrape/refresh-plan/route.ts"
+      },
+      {
+        "route": "/api/scrape/refresh-plan",
+        "method": "PUT",
+        "policy": "PremiumOrAdmin",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/scrape/refresh-plan/route.ts"
+      },
+      {
+        "route": "/api/scrape/repair/[race_id]",
+        "method": "POST",
+        "policy": "Admin",
+        "backend_endpoint": "/api/scrape/repair/{param}",
+        "backend_method": "POST",
+        "backend_policy": "Admin",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/scrape/repair/[race_id]/route.ts"
+      },
+      {
+        "route": "/api/scrape/rescrape-incomplete",
+        "method": "POST",
+        "policy": "Admin",
+        "backend_endpoint": "/api/rescrape_incomplete",
+        "backend_method": "POST",
+        "backend_policy": "Admin",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/scrape/rescrape-incomplete/route.ts"
+      },
+      {
+        "route": "/api/scrape/status/[jobId]",
+        "method": "GET",
+        "policy": "Authenticated",
+        "backend_endpoint": "/api/scrape/status/{param}",
+        "backend_method": "GET",
+        "backend_policy": "Authenticated",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/scrape/status/[jobId]/route.ts"
+      },
+      {
+        "route": "/api/statistics",
+        "method": "GET",
+        "policy": "Authenticated",
+        "backend_endpoint": "/api/statistics",
+        "backend_method": "GET",
+        "backend_policy": "Authenticated",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/statistics/route.ts"
+      },
+      {
+        "route": "/api/stripe/create-checkout",
+        "method": "POST",
+        "policy": "Authenticated",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/stripe/create-checkout/route.ts"
+      },
+      {
+        "route": "/api/stripe/portal",
+        "method": "POST",
+        "policy": "Authenticated",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/stripe/portal/route.ts"
+      },
+      {
+        "route": "/api/stripe/webhook",
+        "method": "POST",
+        "policy": "Webhook",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/stripe/webhook/route.ts"
+      }
+    ],
+    "unclassified": [],
+    "canonical_entries": 65,
+    "gate_failures": []
+  },
+  "gate": {
+    "fastapi_unclassified_count": 0,
+    "fastapi_duplicate_count": 0,
+    "next_unclassified_count": 0,
+    "next_failure_count": 0,
+    "pass": true
+  }
+}

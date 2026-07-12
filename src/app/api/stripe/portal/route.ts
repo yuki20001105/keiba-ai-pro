@@ -1,9 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { stripe } from '@/lib/stripe'
-import { supabase } from '@/lib/supabase'
+import { createSupabaseServiceClient, verifyRequestAuth } from '@/lib/server-auth'
 
 export async function POST(request: NextRequest) {
   try {
+    const authz = await verifyRequestAuth(request)
+    if (!authz.ok) {
+      return NextResponse.json({ detail: authz.detail }, { status: authz.status })
+    }
+
+    const supabase = createSupabaseServiceClient()
     if (!stripe || !supabase) {
       return NextResponse.json(
         { error: 'Stripe/Supabase設定が不足しています' },
@@ -11,26 +17,31 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const { userId } = await request.json()
+    const { userId, customerId } = await request.json()
+    const verifiedUserId = authz.context.user.id
 
-    if (!userId) {
-      return NextResponse.json(
-        { error: 'ユーザーIDが必要です' },
-        { status: 400 }
-      )
+    if (typeof userId === 'string' && userId.trim() && userId !== verifiedUserId) {
+      return NextResponse.json({ error: 'userId mismatch is not allowed' }, { status: 403 })
     }
 
     // ユーザー情報を取得
     const { data: profile, error } = await supabase
       .from('profiles')
       .select('stripe_customer_id, stripe_subscription_id')
-      .eq('id', userId)
+      .eq('id', verifiedUserId)
       .single()
 
     if (error || !profile.stripe_customer_id) {
       return NextResponse.json(
         { error: 'ユーザー情報が見つかりません' },
         { status: 404 }
+      )
+    }
+
+    if (typeof customerId === 'string' && customerId.trim() && customerId !== profile.stripe_customer_id) {
+      return NextResponse.json(
+        { error: 'customer mismatch is not allowed' },
+        { status: 403 }
       )
     }
 

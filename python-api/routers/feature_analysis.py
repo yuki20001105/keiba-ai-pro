@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import joblib
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 # keiba_ai パッケージへのパスを追加
 _KEIBA_ROOT = Path(__file__).parent.parent.parent / "keiba"
@@ -22,8 +22,9 @@ if str(_KEIBA_ROOT) not in sys.path:
 from keiba_ai.feature_catalog import FeatureCatalog  # type: ignore
 
 from app_config import MODELS_DIR  # type: ignore
+from deps.auth import require_premium  # type: ignore
 
-router = APIRouter(prefix="/api/features", tags=["features"])
+router = APIRouter(prefix="/api/features", tags=["features"], dependencies=[Depends(require_premium)])
 
 _CATALOG: FeatureCatalog | None = None
 _CATALOG_HASH: str | None = None

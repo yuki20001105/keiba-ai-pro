@@ -3,12 +3,85 @@
  * 共通APIモックヘルパー
  */
 import { Page } from '@playwright/test'
+import { buildSupabaseSessionCookie, getAppOrigin, type SupabaseSessionOptions } from './supabase-session'
 
 /** Supabase auth — ログイン不要の匿名ユーザーを返す */
 export async function mockAuth(page: Page) {
   await page.route('**/auth/v1/user**', route =>
     route.fulfill({ status: 401, json: { error: 'not authenticated' } })
   )
+}
+
+export async function setSupabaseTestSession(page: Page, opts: SupabaseSessionOptions) {
+  const appOrigin = getAppOrigin(opts.appBaseUrl)
+  const cookie = buildSupabaseSessionCookie(opts)
+  await page.context().addCookies([
+    {
+      name: cookie.name,
+      value: cookie.value,
+      url: appOrigin,
+      httpOnly: false,
+      sameSite: 'Lax',
+    },
+  ])
+  return cookie.name
+}
+
+export async function clearSupabaseTestSession(page: Page) {
+  await page.context().clearCookies()
+}
+
+export async function mockSupabaseIdentity(
+  page: Page,
+  opts: { authenticated: boolean; role?: 'admin' | 'user'; tier?: 'free' | 'premium' }
+) {
+  const role = opts.role ?? 'user'
+  const tier = opts.tier ?? 'free'
+
+  await page.route('**/auth/v1/user**', route => {
+    if (!opts.authenticated) {
+      return route.fulfill({
+        status: 401,
+        contentType: 'application/json',
+        body: JSON.stringify({ message: 'JWT expired' }),
+      })
+    }
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: 'e2e-user-id',
+        aud: 'authenticated',
+        role: 'authenticated',
+        email: 'e2e@example.com',
+      }),
+    })
+  })
+
+  await page.route('**/rest/v1/profiles**', route => {
+    const url = route.request().url()
+    if (url.includes('select=role%2Csubscription_tier') || url.includes('select=role,subscription_tier')) {
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ role, subscription_tier: tier }),
+      })
+    }
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([
+        {
+          id: 'e2e-user-id',
+          email: 'e2e@example.com',
+          role,
+          full_name: 'E2E User',
+          subscription_tier: tier,
+          created_at: '2026-01-01T00:00:00Z',
+        },
+      ]),
+    })
+  })
 }
 
 /** FastAPI /health */

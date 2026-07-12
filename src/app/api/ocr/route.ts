@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import vision from '@google-cloud/vision'
-import { supabase } from '@/lib/supabase'
+import { createSupabaseServiceClient, verifyRequestAuth } from '@/lib/server-auth'
+
+export const runtime = 'nodejs'
 
 // Google Vision APIクライアント
 const visionClient = new vision.ImageAnnotatorClient({
@@ -9,6 +11,13 @@ const visionClient = new vision.ImageAnnotatorClient({
 
 export async function POST(request: NextRequest) {
   try {
+    const authz = await verifyRequestAuth(request)
+    if (!authz.ok) {
+      return NextResponse.json({ detail: authz.detail }, { status: authz.status })
+    }
+
+    const verifiedUserId = authz.context.user.id
+    const supabase = createSupabaseServiceClient()
     if (!supabase) {
       return NextResponse.json(
         { error: 'Supabase設定が不足しています' },
@@ -20,6 +29,13 @@ export async function POST(request: NextRequest) {
     const image = formData.get('image') as File
     const userId = formData.get('userId') as string
 
+    if (typeof userId === 'string' && userId.trim() && userId !== verifiedUserId) {
+      return NextResponse.json(
+        { error: 'userId mismatch is not allowed' },
+        { status: 403 }
+      )
+    }
+
     if (!image) {
       return NextResponse.json(
         { error: '画像ファイルが必要です' },
@@ -28,11 +44,11 @@ export async function POST(request: NextRequest) {
     }
 
     // ユーザーのOCR利用制限をチェック
-    if (userId) {
+    {
       const { data: profile, error } = await supabase
         .from('profiles')
         .select('ocr_monthly_limit, ocr_used_this_month, ocr_reset_date')
-        .eq('id', userId)
+        .eq('id', verifiedUserId)
         .single()
 
       if (error) {
@@ -56,7 +72,7 @@ export async function POST(request: NextRequest) {
             ocr_used_this_month: 0, 
             ocr_reset_date: now.toISOString() 
           })
-          .eq('id', userId)
+          .eq('id', verifiedUserId)
       } else if (profile.ocr_used_this_month >= profile.ocr_monthly_limit) {
         return NextResponse.json(
           { error: '月間OCR利用制限に達しました。プレミアムプランにアップグレードしてください。' },
@@ -86,12 +102,12 @@ export async function POST(request: NextRequest) {
     const betInfo = parseBetTicket(extractedText)
 
     // OCR使用回数を増加
-    if (userId) {
+    {
       // 現在の使用回数を取得
       const { data: profile } = await supabase
         .from('profiles')
         .select('ocr_used_this_month')
-        .eq('id', userId)
+        .eq('id', verifiedUserId)
         .single()
 
       // 使用回数を増加
@@ -100,11 +116,11 @@ export async function POST(request: NextRequest) {
         .update({ 
           ocr_used_this_month: (profile?.ocr_used_this_month || 0) + 1
         })
-        .eq('id', userId)
+        .eq('id', verifiedUserId)
 
       // OCR使用履歴を記録
       await supabase.from('ocr_usage').insert({
-        user_id: userId,
+        user_id: verifiedUserId,
         extracted_text: extractedText,
         corrected_data: betInfo,
         success: true,

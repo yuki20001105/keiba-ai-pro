@@ -16,7 +16,7 @@ type UiState = 'pass' | 'warn' | 'fail'
 type AuthzResult = {
   ok: boolean
   status: 200 | 401 | 403 | 503
-  error?: string
+  detail?: string
 }
 
 type NumericMetric = {
@@ -107,17 +107,17 @@ async function authorizePremiumOrAdmin(request: Request): Promise<AuthzResult> {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || ''
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
   if (!supabaseUrl || !supabaseAnonKey) {
-    return { ok: false, status: 503, error: 'Supabase設定が不足しています' }
+    return { ok: false, status: 503, detail: 'Supabase設定が不足しています' }
   }
 
   const authHeader = request.headers.get('Authorization') || ''
   if (!authHeader.startsWith('Bearer ')) {
-    return { ok: false, status: 401, error: '認証が必要です' }
+    return { ok: false, status: 401, detail: '認証が必要です' }
   }
 
   const token = authHeader.slice('Bearer '.length).trim()
   if (!token) {
-    return { ok: false, status: 401, error: '認証が必要です' }
+    return { ok: false, status: 401, detail: '認証が必要です' }
   }
 
   const supabase = createClient(supabaseUrl, supabaseAnonKey, {
@@ -128,7 +128,7 @@ async function authorizePremiumOrAdmin(request: Request): Promise<AuthzResult> {
 
   const { data: userData, error: userError } = await supabase.auth.getUser()
   if (userError || !userData.user) {
-    return { ok: false, status: 401, error: '認証が必要です' }
+    return { ok: false, status: 401, detail: '認証が必要です' }
   }
 
   const { data: profile, error: profileError } = await supabase
@@ -138,7 +138,7 @@ async function authorizePremiumOrAdmin(request: Request): Promise<AuthzResult> {
     .single()
 
   if (profileError || !profile) {
-    return { ok: false, status: 403, error: '権限がありません' }
+    return { ok: false, status: 403, detail: '権限がありません' }
   }
 
   const role = String((profile as Record<string, unknown>).role || '').toLowerCase()
@@ -146,7 +146,7 @@ async function authorizePremiumOrAdmin(request: Request): Promise<AuthzResult> {
   const isAdmin = role === 'admin'
   const isPremium = isAdmin || tier === 'premium'
   if (!isPremium) {
-    return { ok: false, status: 403, error: '権限がありません' }
+    return { ok: false, status: 403, detail: '権限がありません' }
   }
 
   return { ok: true, status: 200 }
@@ -265,7 +265,7 @@ function buildDryRunPreview(payload: DryRunPayload): RetrainDryRunPreview {
 export async function GET(request: Request) {
   const authz = await authorizePremiumOrAdmin(request)
   if (!authz.ok) {
-    return NextResponse.json({ success: false, error: authz.error || 'authorization failed' }, { status: authz.status })
+    return NextResponse.json({ success: false, detail: authz.detail || 'authorization failed' }, { status: authz.status })
   }
 
   const searchParams = new URL(request.url).searchParams
@@ -420,7 +420,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const authz = await authorizePremiumOrAdmin(request)
   if (!authz.ok) {
-    return NextResponse.json({ success: false, error: authz.error || 'authorization failed' }, { status: authz.status })
+    return NextResponse.json({ success: false, detail: authz.detail || 'authorization failed' }, { status: authz.status })
   }
 
   const searchParams = new URL(request.url).searchParams

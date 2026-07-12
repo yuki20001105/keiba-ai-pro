@@ -9,7 +9,9 @@ GET    /api/models/active
 from __future__ import annotations
 
 import joblib
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+
+from deps.auth import require_admin  # type: ignore
 
 from app_config import (  # type: ignore
     SUPABASE_DATA_ENABLED,
@@ -94,7 +96,7 @@ async def list_models(ultimate: bool | None = None):
 
 
 @router.delete("/api/models/{model_id}")
-async def delete_model(model_id: str):
+async def delete_model(model_id: str, _: dict = Depends(require_admin)):
     """保存済みモデルを削除"""
     try:
         deleted = []
@@ -181,7 +183,7 @@ async def get_active_model():
 
 
 @router.put("/api/models/{model_id}/activate")
-async def activate_model(model_id: str):
+async def activate_model(model_id: str, _: dict = Depends(require_admin)):
     """指定したモデルをアクティブにする（予測に使用するモデルを切り替える）"""
     model_path = MODELS_DIR / f"{model_id}.joblib"
     if not model_path.exists():

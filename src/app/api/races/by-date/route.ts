@@ -1,16 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { ML_API_URL } from '@/lib/backend-url'
+import { verifyRequestAuth } from '@/lib/server-auth'
 
 export async function GET(request: NextRequest) {
   try {
+    const authz = await verifyRequestAuth(request)
+    if (!authz.ok) {
+      return NextResponse.json({ detail: authz.detail }, { status: authz.status })
+    }
+
     const { searchParams } = new URL(request.url)
     const date = searchParams.get('date')
     if (!date) {
       return NextResponse.json({ detail: 'date parameter is required' }, { status: 400 })
     }
-    const authHeader = request.headers.get('Authorization')
-    const headers: Record<string, string> = {}
-    if (authHeader) headers['Authorization'] = authHeader
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${authz.context.token}`,
+    }
     const response = await fetch(`${ML_API_URL}/api/races/by_date?date=${encodeURIComponent(date)}`, { headers, signal: AbortSignal.timeout(10_000) })
     const data = await response.json()
     return NextResponse.json(data, { status: response.status })

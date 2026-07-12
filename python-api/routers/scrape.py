@@ -317,7 +317,7 @@ async def scrape_history(limit: int = 20):
 
 
 @router.get("/api/netkeiba/race-list")
-async def netkeiba_race_list(date: str):
+async def netkeiba_race_list(date: str, _: dict = Depends(require_admin)):
     """Scrape Service の race_list を FastAPI 経由で read-only プロキシする。"""
     date_str = (date or "").strip().replace("-", "")
     if not re.fullmatch(r"\d{8}", date_str):
@@ -1211,7 +1211,10 @@ async def netkeiba_race_dry_run(payload: dict[str, Any] = Body(default={})) -> d
 
 
 @router.post("/api/netkeiba/race/write")
-async def netkeiba_race_write(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+async def netkeiba_race_write(
+    payload: dict[str, Any] = Body(default={}),
+    _: dict = Depends(require_admin),
+) -> dict[str, Any]:
     """Guarded write endpoint. P1-13 enables explicit sandbox-only writes under strict staging locks."""
     race_id_raw = payload.get("race_id") if isinstance(payload, dict) else None
     if race_id_raw is None and isinstance(payload, dict):
@@ -1561,7 +1564,7 @@ async def scrape_health() -> dict:
 
 
 @router.post("/api/scrape", response_model=ScrapeResponse)
-async def scrape_data(request: ScrapeRequest):
+async def scrape_data(request: ScrapeRequest, _: dict = Depends(require_admin)):
     """
     期間指定でnetkeiba.comから完全データを自動収集しkeiba_ultimate.dbに保存。
     NOTE: 土日のみ対象。全日程は /api/scrape/start を使用すること。
@@ -1654,7 +1657,7 @@ async def scrape_data(request: ScrapeRequest):
 
 
 @router.post("/api/rescrape_incomplete")
-async def rescrape_incomplete(limit: int = 50) -> RescrapeResponse:
+async def rescrape_incomplete(limit: int = 50, _: dict = Depends(require_admin)) -> RescrapeResponse:
     """
     keiba_ultimate.db 内の不完全レコード（trainer_name=NULL / distance=0 等）を再スクレイプして上書き保存する。
     """
