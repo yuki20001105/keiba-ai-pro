@@ -19,6 +19,7 @@ describe('server-auth fail-closed contract', () => {
     vi.clearAllMocks()
     process.env.NEXT_PUBLIC_SUPABASE_URL = 'http://127.0.0.1:54321'
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = 'anon-key'
+    delete process.env.SUPABASE_SERVICE_KEY
     process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-role-key'
   })
 
@@ -57,6 +58,7 @@ describe('server-auth fail-closed contract', () => {
 
   test('service role未設定は503', async () => {
     delete process.env.SUPABASE_SERVICE_ROLE_KEY
+    delete process.env.SUPABASE_SERVICE_KEY
 
     mockCreateClient.mockImplementation((_url: string, key: string) => {
       if (key === 'anon-key') {
