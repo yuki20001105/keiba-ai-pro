@@ -219,6 +219,9 @@ jobs:
       - name: Run phase2 authz E2E
         run: npx playwright test e2e/phase2-authz.spec.ts --trace=on --reporter=html,list
 
+      - name: Run phase3b data collection E2E
+        run: npx playwright test e2e/data-collection-phase3b.spec.ts --trace=on --reporter=html,list
+
       - name: Upload Playwright artifacts
         if: always()
         uses: actions/upload-artifact@v4
