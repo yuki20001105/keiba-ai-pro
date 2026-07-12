@@ -52,6 +52,11 @@ def _tracked_diff_text() -> str:
     return _run(["git", "diff", "--unified=0", BASE_REF, "--", "."])
 
 
+def _changed_files_from_base() -> List[str]:
+    out = _run(["git", "diff", "--name-only", BASE_REF, "--", "."])
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
 def _deleted_files() -> List[str]:
     out = _run(["git", "diff", "--name-only", "--diff-filter=D", BASE_REF, "--", "."])
     return [line.strip() for line in out.splitlines() if line.strip()]
@@ -148,11 +153,16 @@ def _normalize_status_path(raw_path: str) -> str:
 
 
 def _collect_test_scope_files(
+    changed_from_base: List[str],
     status_lines: List[str],
     deleted_files: List[str],
     untracked_files: List[str],
 ) -> Set[str]:
     out: Set[str] = set()
+
+    for path in changed_from_base:
+        if TEST_CODE_PATH.search(path):
+            out.add(path)
 
     for line in status_lines:
         if len(line) < 4:
@@ -181,13 +191,19 @@ def _coverage_error_for_test_scope(has_test_scope_changes: bool, scanned_line_co
 def main() -> int:
     has_changes = _git_has_changes()
     status_lines = _git_status_porcelain_lines()
+    changed_from_base = _changed_files_from_base()
     tracked_diff = _tracked_diff_text()
     tracked_added, tracked_deleted = _collect_diff_lines(tracked_diff)
     untracked_files = _untracked_files()
     untracked_added = _collect_untracked_lines(untracked_files)
     deleted_files = _deleted_files()
     added = tracked_added + untracked_added
-    test_scope_files = _collect_test_scope_files(status_lines, deleted_files, untracked_files)
+    test_scope_files = _collect_test_scope_files(
+        changed_from_base,
+        status_lines,
+        deleted_files,
+        untracked_files,
+    )
     has_test_scope_changes = len(test_scope_files) > 0
 
     hits = []

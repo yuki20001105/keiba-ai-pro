@@ -46,6 +46,11 @@ def _reset_origin_develop_to_head(repo: Path) -> None:
     _run(["git", "update-ref", "refs/remotes/origin/develop", "HEAD"], repo)
 
 
+def _assert_clean_worktree(repo: Path) -> None:
+    status = _run(["git", "status", "--porcelain"], repo)
+    assert status.stdout.strip() == ""
+
+
 def _fake_secret() -> str:
     return "".join(["sk", "_live_", "A" * 20])
 
@@ -131,6 +136,65 @@ def test_weakening_scanner_fail_closed_when_test_scope_changes_but_input_zero(tm
     assert report["test_scope_file_count"] >= 1
     assert report["scanned_line_count"] == 0
     assert report["coverage_error"] is not None
+
+
+def test_weakening_scanner_clean_worktree_committed_comment_only_test_change_fails_closed(tmp_path: Path) -> None:
+    repo = _init_temp_repo(tmp_path)
+
+    test_file = repo / "python-api" / "tests" / "test_comment_only_committed.py"
+    test_file.parent.mkdir(parents=True, exist_ok=True)
+    test_file.write_text("# committed comment only\n", encoding="utf-8")
+    _run(["git", "add", "python-api/tests/test_comment_only_committed.py"], repo)
+    _run(["git", "commit", "-m", "committed comment-only test change"], repo)
+    _assert_clean_worktree(repo)
+
+    code, report = _run_scanner(WEAKENING_SCANNER, repo)
+    assert code == 1
+    assert report["has_working_tree_changes"] is False
+    assert report["has_test_scope_changes"] is True
+    assert report["scanned_line_count"] == 0
+    assert report["coverage_error"] is not None
+
+
+def test_weakening_scanner_clean_worktree_committed_normal_test_change_passes(tmp_path: Path) -> None:
+    repo = _init_temp_repo(tmp_path)
+
+    test_file = repo / "python-api" / "tests" / "test_committed_normal.py"
+    test_file.parent.mkdir(parents=True, exist_ok=True)
+    test_file.write_text(
+        "def test_committed_normal():\n"
+        "    value = 1 + 1\n"
+        "    assert value == 2\n",
+        encoding="utf-8",
+    )
+    _run(["git", "add", "python-api/tests/test_committed_normal.py"], repo)
+    _run(["git", "commit", "-m", "committed normal test change"], repo)
+    _assert_clean_worktree(repo)
+
+    code, report = _run_scanner(WEAKENING_SCANNER, repo)
+    assert code == 0
+    assert report["has_working_tree_changes"] is False
+    assert report["has_test_scope_changes"] is True
+    assert report["scanned_line_count"] > 0
+    assert report["coverage_error"] is None
+
+
+def test_weakening_scanner_clean_worktree_committed_docs_only_change_passes(tmp_path: Path) -> None:
+    repo = _init_temp_repo(tmp_path)
+
+    doc = repo / "docs" / "committed.md"
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("committed docs only\n", encoding="utf-8")
+    _run(["git", "add", "docs/committed.md"], repo)
+    _run(["git", "commit", "-m", "committed docs-only change"], repo)
+    _assert_clean_worktree(repo)
+
+    code, report = _run_scanner(WEAKENING_SCANNER, repo)
+    assert code == 0
+    assert report["has_working_tree_changes"] is False
+    assert report["has_test_scope_changes"] is False
+    assert report["scanned_line_count"] == 0
+    assert report["coverage_error"] is None
 
 
 def test_secret_scanner_detects_tracked_unstaged_secret(tmp_path: Path) -> None:
