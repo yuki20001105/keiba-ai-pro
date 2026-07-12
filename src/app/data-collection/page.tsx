@@ -220,7 +220,6 @@ export default function DataCollectionPage() {
   const [persistedUncertainty, setPersistedUncertainty] = useState<PersistedUncertaintyLock | null>(null)
   const [uncertaintyHydrated, setUncertaintyHydrated] = useState(false)
   const [transientUncertaintyDismissed, setTransientUncertaintyDismissed] = useState(false)
-  const [manualUncertaintyUnlock, setManualUncertaintyUnlock] = useState(false)
   const [reconcileLoading, setReconcileLoading] = useState(false)
   const [reconcileMessage, setReconcileMessage] = useState('')
   const [fetchHistory, setFetchHistory] = useState<FetchSummaryHistoryItem[]>([])
@@ -241,6 +240,7 @@ export default function DataCollectionPage() {
     progress: batchProgress,
     result: batchResult,
     start: startBatchScrape,
+    clearExecutionLockAfterReconciliation,
   } = useBatchScrape()
   const lastRequestSnapshotRef = useRef<BatchRequestSnapshot | null>(null)
   const isBatchBusy = batchLoading || batchStatus === 'queued' || batchStatus === 'running'
@@ -300,7 +300,7 @@ export default function DataCollectionPage() {
   const effectiveUncertaintyKind = persistedUncertainty?.failureKind ?? effectiveTransientUncertainty
   const shouldShowUncertaintyWarning = effectiveUncertaintyKind === 'monitoring' || effectiveUncertaintyKind === 'client_stop'
   const effectiveUncertaintyJobId = persistedUncertainty?.jobId ?? activeJobId ?? null
-  const executeBlockedByUncertainty = !uncertaintyHydrated || (!manualUncertaintyUnlock && (isExecutionLocked || shouldShowUncertaintyWarning))
+  const executeBlockedByUncertainty = !uncertaintyHydrated || isExecutionLocked || shouldShowUncertaintyWarning
 
   const persistUncertaintyLock = (kind: UncertaintyFailureKind, jobId: string | null, request: BatchRequestSnapshot | null) => {
     if (!request) return
@@ -318,7 +318,6 @@ export default function DataCollectionPage() {
     }
     setPersistedUncertainty(lock)
     setTransientUncertaintyDismissed(false)
-    setManualUncertaintyUnlock(false)
   }
 
   const clearPersistedUncertainty = () => {
@@ -329,7 +328,6 @@ export default function DataCollectionPage() {
     }
     setPersistedUncertainty(null)
     setTransientUncertaintyDismissed(true)
-    setManualUncertaintyUnlock(true)
   }
 
   const checkLocalApi = async () => {
@@ -455,7 +453,6 @@ export default function DataCollectionPage() {
 
     const target = override ?? { startPeriod, endPeriod, forceRescrape }
     setTransientUncertaintyDismissed(false)
-    setManualUncertaintyUnlock(false)
     lastRequestSnapshotRef.current = target
     const validation = validatePeriodRange(target.startPeriod, target.endPeriod)
     if (!validation.ok) {
@@ -532,6 +529,11 @@ export default function DataCollectionPage() {
       }
 
       if (payload.status === 'error') {
+        const unlocked = clearExecutionLockAfterReconciliation()
+        if (!unlocked) {
+          setReconcileMessage('状態再確認は完了しましたが、処理中のためlock解除は保留されました。')
+          return
+        }
         clearPersistedUncertainty()
         setReconcileMessage('対象jobは終端エラーでした。lockを解除しました。必要に応じて再実行してください。')
         return
@@ -540,6 +542,11 @@ export default function DataCollectionPage() {
       if (payload.status === 'completed') {
         if (!hasStrictCompletedResult(payload.result)) {
           setReconcileMessage(COMPLETED_CONTRACT_MESSAGE)
+          return
+        }
+        const unlocked = clearExecutionLockAfterReconciliation()
+        if (!unlocked) {
+          setReconcileMessage('対象jobは完了を確認しましたが、処理中のためlock解除は保留されました。')
           return
         }
         clearPersistedUncertainty()

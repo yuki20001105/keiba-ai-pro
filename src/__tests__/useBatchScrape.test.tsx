@@ -428,6 +428,60 @@ describe('useBatchScrape', () => {
     expect(mockedAuthFetch).not.toHaveBeenCalled()
   })
 
+  it('rejects invalid month format and keeps no-retry validation state', async () => {
+    const { result } = await renderBatchHook()
+    const rejected = await result.current.start('2026-13', '2026-01', false).catch(error => error)
+
+    expect(rejected).toBeInstanceOf(BatchScrapeError)
+    expect((rejected as BatchScrapeError).kind).toBe('validation')
+    expect(mockedAuthFetch).not.toHaveBeenCalled()
+    await waitFor(() => {
+      expect(result.current.status).toBe('error')
+      expect(result.current.canRetry).toBe(false)
+    })
+  })
+
+  it('allows real re-start only after reconciliation lock clear', async () => {
+    let postCount = 0
+    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/scrape' && init?.method === 'POST') {
+        postCount += 1
+        return jsonResponse({ job_id: postCount === 1 ? 'job-lock' : 'job-after-reconcile' })
+      }
+      if (url === '/api/scrape/status/job-lock') {
+        return jsonResponse({ status: 'not_found' })
+      }
+      if (url === '/api/scrape/status/job-after-reconcile') {
+        return jsonResponse({ status: 'completed', result: { races_collected: 2 } })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    const { result } = await renderBatchHook({ ...FAST_OPTIONS, maxConsecutiveStatusFailures: 1 })
+
+    const firstError = await result.current.start('2026-01', '2026-01', false).catch(error => error)
+    expect((firstError as BatchScrapeError).kind).toBe('monitoring')
+    expect(postCount).toBe(1)
+
+    const blocked = await result.current.start('2026-01', '2026-01', false).catch(error => error)
+    expect((blocked as BatchScrapeError).kind).toBe('busy')
+    expect(postCount).toBe(1)
+
+    await act(async () => {
+      expect(result.current.clearExecutionLockAfterReconciliation()).toBe(true)
+    })
+
+    let resolved: any
+    await act(async () => {
+      resolved = await result.current.start('2026-01', '2026-01', false)
+    })
+
+    expect(postCount).toBe(2)
+    expect(resolved.races_collected).toBe(2)
+    expect(result.current.status).toBe('completed')
+  })
+
   it('rejects non-2xx start as start_rejected and retry-safe', async () => {
     mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)

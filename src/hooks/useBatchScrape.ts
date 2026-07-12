@@ -386,6 +386,15 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
     abortRef.current = true
   }, [])
 
+  const clearExecutionLockAfterReconciliation = useCallback((): boolean => {
+    if (inFlightRef.current) {
+      return false
+    }
+    executionLockedRef.current = false
+    setIsExecutionLocked(false)
+    return true
+  }, [])
+
   return {
     loading,
     status,
@@ -398,5 +407,6 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
     result,
     start,
     abort,
+    clearExecutionLockAfterReconciliation,
   }
 }
