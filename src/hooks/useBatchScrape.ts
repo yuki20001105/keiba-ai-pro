@@ -1,6 +1,7 @@
 'use client'
 import { useState, useRef, useCallback } from 'react'
 import { authFetch } from '@/lib/auth-fetch'
+import type { JobStatus } from '@/lib/types'
 
 export type BatchProgress = {
   current: number
@@ -22,6 +23,9 @@ export type BatchResult = {
  */
 export function useBatchScrape() {
   const [loading, setLoading] = useState(false)
+  const [status, setStatus] = useState<JobStatus>('idle')
+  const [error, setError] = useState<string | null>(null)
+  const [jobId, setJobId] = useState<string | null>(null)
   const [progress, setProgress] = useState<BatchProgress>({ current: 0, total: 100, message: '', eta: '' })
   const [result, setResult] = useState<BatchResult | null>(null)
   const abortRef = useRef(false)
@@ -50,6 +54,9 @@ export function useBatchScrape() {
     const totalMonths = months.length
 
     setLoading(true)
+    setStatus('queued')
+    setError(null)
+    setJobId(null)
     setResult(null)
     abortRef.current = false
     startTimeRef.current = Date.now()
@@ -58,7 +65,9 @@ export function useBatchScrape() {
 
     try {
       for (const { year, month } of months) {
-        if (abortRef.current) break
+        if (abortRef.current) {
+          throw new Error('取得が中止されました')
+        }
 
         const pad = (n: number) => String(n).padStart(2, '0')
         const startDateStr = `${year}${pad(month)}01`
@@ -68,9 +77,10 @@ export function useBatchScrape() {
         setProgress({
           current: Math.round((completedMonths / totalMonths) * 95),
           total: 100,
-          message: `${year}年${month}月を取得中… (${completedMonths + 1}/${totalMonths}ヶ月)`,
+          message: `${year}年${month}月の開始待ち (${completedMonths + 1}/${totalMonths}ヶ月)`,
           eta: '',
         })
+        setStatus('queued')
 
         const startRes = await authFetch('/api/scrape', {
           method: 'POST',
@@ -82,6 +92,8 @@ export function useBatchScrape() {
           throw new Error(err.detail || `HTTP ${startRes.status}`)
         }
         const { job_id } = await startRes.json()
+        setJobId(job_id)
+        setStatus('queued')
 
         // ジョブ完了までポーリング（3秒間隔）
         let done = false
@@ -112,25 +124,43 @@ export function useBatchScrape() {
             const remainingSec = Math.round(msPerMonth * (totalMonths - completedMonths) / 1000)
             eta = remainingSec >= 60 ? `残り約${Math.ceil(remainingSec / 60)}分` : `残り約${remainingSec}秒`
           }
+
+          const rawStatus = typeof status.status === 'string' ? status.status : ''
+          if (rawStatus === 'queued') {
+            setStatus('queued')
+          } else if (rawStatus === 'running') {
+            setStatus('running')
+          }
+
           setProgress({
             current: overallPct,
             total: 100,
-            message: `${year}年${month}月 (${completedMonths + 1}/${totalMonths}ヶ月): ${prog.message || '処理中...'}`,
+            message: rawStatus === 'queued'
+              ? `${year}年${month}月 (${completedMonths + 1}/${totalMonths}ヶ月): 開始待ち`
+              : `${year}年${month}月 (${completedMonths + 1}/${totalMonths}ヶ月): ${prog.message || '取得実行中...'}`,
             eta,
           })
 
-          if (status.status === 'completed') {
+          if (rawStatus === 'completed') {
             done = true
             totalRaces += status.result?.races_collected || 0
             completedMonths++
-          } else if (status.status === 'error') {
-            throw new Error(status.error || `${year}年${month}月のスクレイピングが失敗しました`)
+          } else if (rawStatus === 'error') {
+            const message = status.error || `${year}年${month}月のスクレイピングが失敗しました`
+            setStatus('error')
+            setError(message)
+            throw new Error(message)
           }
         }
       }
 
+      if (abortRef.current || completedMonths !== totalMonths) {
+        throw new Error('取得が中止されました')
+      }
+
       const elapsed = Math.round((Date.now() - startTimeRef.current) / 1000)
       setProgress({ current: 100, total: 100, message: `完了: ${totalRaces}レース取得`, eta: '' })
+      setStatus('completed')
       const batchResult: BatchResult = {
         races_collected: totalRaces,
         elapsed_time: elapsed,
@@ -139,7 +169,10 @@ export function useBatchScrape() {
       setResult(batchResult)
       return batchResult
     } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'エラーが発生しました'
       setProgress({ current: 0, total: 100, message: 'エラーが発生しました', eta: '' })
+      setStatus('error')
+      setError(message)
       throw error
     } finally {
       setLoading(false)
@@ -148,5 +181,5 @@ export function useBatchScrape() {
 
   const abort = useCallback(() => { abortRef.current = true }, [])
 
-  return { loading, progress, result, start, abort }
+  return { loading, status, error, jobId, progress, result, start, abort }
 }

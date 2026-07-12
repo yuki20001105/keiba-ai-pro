@@ -86,6 +86,8 @@ export default function DataCollectionPage() {
   const [dryRunLoading, setDryRunLoading] = useState(false)
   const [dryRunResult, setDryRunResult] = useState<ScrapeDryRunResult | null>(null)
   const [dryRunExecuted, setDryRunExecuted] = useState(false)
+  const [dryRunPendingMessage, setDryRunPendingMessage] = useState('')
+  const [dryRunErrorMessage, setDryRunErrorMessage] = useState('')
   const [executeWarn, setExecuteWarn] = useState('')
   const [fetchHistory, setFetchHistory] = useState<FetchSummaryHistoryItem[]>([])
   const [fetchHistoryLoading, setFetchHistoryLoading] = useState(false)
@@ -94,7 +96,16 @@ export default function DataCollectionPage() {
     setToast({ visible: true, message, type })
 
   // バッチスクレイピング（月単位ループ + ポーリングをフックが担当）
-  const { loading: batchLoading, progress: batchProgress, result: batchResult, start: startBatchScrape } = useBatchScrape()
+  const {
+    loading: batchLoading,
+    status: batchStatus,
+    error: batchError,
+    jobId: activeJobId,
+    progress: batchProgress,
+    result: batchResult,
+    start: startBatchScrape,
+  } = useBatchScrape()
+  const isBatchBusy = batchLoading || batchStatus === 'queued' || batchStatus === 'running'
 
   // データ統計と表示
   const [dataStats, setDataStats] = useState({ totalRaces: 0, totalResults: 0, latestDate: '' })
@@ -224,6 +235,8 @@ export default function DataCollectionPage() {
 
   // 🚀 期間指定バッチスクレイピング（バリデーション・確認ダイアログのみ担当）
   const handlePeriodBatchScrape = async () => {
+    if (isBatchBusy) return
+
     const [startYearStr, startMonthStr] = startPeriod.split('-')
     const [endYearStr, endMonthStr] = endPeriod.split('-')
     const startYear = parseInt(startYearStr, 10)
@@ -279,6 +292,8 @@ export default function DataCollectionPage() {
   const handleDryRun = async () => {
     setDryRunLoading(true)
     setExecuteWarn('')
+    setDryRunPendingMessage('')
+    setDryRunErrorMessage('')
     try {
       const { startDateStr, endDateStr } = periodToDateRange(startPeriod, endPeriod)
       const startRes = await authFetch('/api/scrape', {
@@ -299,18 +314,30 @@ export default function DataCollectionPage() {
 
       const { job_id } = await startRes.json()
       let resultPayload: any = null
+      let reachedTerminal = false
       for (let i = 0; i < 10; i++) {
         await new Promise(resolve => setTimeout(resolve, 500))
         const statusRes = await authFetch(`/api/scrape/status/${job_id}`)
         if (!statusRes.ok) continue
         const statusData = await statusRes.json().catch(() => ({}))
-        if (statusData?.status === 'completed') {
+        const dryRunStatus = statusData?.status
+        if (dryRunStatus === 'completed') {
+          reachedTerminal = true
           resultPayload = statusData?.result
           break
         }
-        if (statusData?.status === 'error') {
+        if (dryRunStatus === 'error') {
+          reachedTerminal = true
           throw new Error(statusData?.error || 'Dry-run failed')
         }
+      }
+
+      if (!reachedTerminal || !resultPayload) {
+        setDryRunResult(null)
+        setDryRunExecuted(false)
+        setDryRunPendingMessage('Dry-runはまだ処理中です。しばらく待って再実行してください。')
+        showToast('Dry-runはまだ処理中です。しばらく待って再実行してください。', 'error')
+        return
       }
 
       const fetchSummary = resultPayload?.fetch_summary || {}
@@ -332,10 +359,15 @@ export default function DataCollectionPage() {
       }
       setDryRunResult(normalized)
       setDryRunExecuted(true)
+      setDryRunPendingMessage('')
+      setDryRunErrorMessage('')
       showToast('Dry-run完了（HTTPアクセスなし）')
       loadFetchSummaryHistory()
     } catch (error: any) {
       setDryRunResult(null)
+      setDryRunExecuted(false)
+      setDryRunPendingMessage('')
+      setDryRunErrorMessage(error?.message || 'Dry-run failed')
       showToast(`Dry-runエラー: ${error.message}`, 'error')
     } finally {
       setDryRunLoading(false)
@@ -462,9 +494,9 @@ export default function DataCollectionPage() {
             <div className="flex items-center gap-2">
               <button
                 onClick={handleDryRun}
-                disabled={batchLoading || dryRunLoading || isApiUnavailable}
+                disabled={isBatchBusy || dryRunLoading || isApiUnavailable}
                 className={`flex items-center gap-2 px-4 py-2.5 rounded-lg font-medium text-sm transition-colors ${
-                  batchLoading || dryRunLoading || isApiUnavailable
+                  isBatchBusy || dryRunLoading || isApiUnavailable
                     ? 'bg-[#222] text-[#555] cursor-not-allowed'
                     : 'bg-[#1e293b] text-[#dbeafe] hover:bg-[#334155]'
                 }`}
@@ -474,14 +506,14 @@ export default function DataCollectionPage() {
 
               <button
                 onClick={handlePeriodBatchScrape}
-                disabled={batchLoading || isApiUnavailable}
+                disabled={isBatchBusy || isApiUnavailable}
                 className={`flex items-center gap-2 px-6 py-2.5 rounded-lg font-medium text-sm transition-colors ${
-                  batchLoading || isApiUnavailable
+                  isBatchBusy || isApiUnavailable
                     ? 'bg-[#222] text-[#555] cursor-not-allowed'
                     : 'bg-white text-black hover:bg-[#eee]'
                 }`}
               >
-                {batchLoading ? (
+                {isBatchBusy ? (
                   <>
                     <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
@@ -493,6 +525,18 @@ export default function DataCollectionPage() {
               </button>
             </div>
           </div>
+
+          {dryRunPendingMessage && (
+            <div className="rounded border border-[#1e3a8a] bg-[#0b1220] px-3 py-2 text-xs text-[#93c5fd]" role="status" aria-live="polite">
+              {dryRunPendingMessage}
+            </div>
+          )}
+
+          {dryRunErrorMessage && (
+            <div className="rounded border border-[#4a1d1d] bg-[#220d0d] px-3 py-2 text-xs text-[#fca5a5]" role="alert">
+              Dry-run失敗: {dryRunErrorMessage}
+            </div>
+          )}
 
           {executeWarn && (
             <div className="rounded border border-[#4a3b0f] bg-[#201a08] px-3 py-2 text-xs text-[#facc15]">
@@ -539,30 +583,78 @@ export default function DataCollectionPage() {
             </div>
           )}
 
-          {/* 進捗バー */}
-          {batchLoading && (
-            <div className="space-y-1.5">
-              <div className="flex justify-between text-xs text-[#888]">
-                <span>{batchProgress.message}</span>
-                <span className="flex gap-3">
-                  {batchProgress.eta && <span className="text-yellow-400">{batchProgress.eta}</span>}
-                  <span>{batchProgress.current}%</span>
-                </span>
-              </div>
-              <div className="w-full bg-[#1e1e1e] rounded-full h-1.5 overflow-hidden">
-                <div className="bg-white h-1.5 rounded-full transition-all duration-500" style={{ width: `${batchProgress.current}%` }} />
-              </div>
+          {/* 実行状態パネル */}
+          {batchStatus !== 'idle' && (
+            <div className="rounded-lg border border-[#1e1e1e] bg-[#0a0a0a] p-4 space-y-2" data-testid="batch-status-panel">
+              {(batchStatus === 'queued' || batchStatus === 'running') && (
+                <div className="space-y-1.5" role="status" aria-live="polite">
+                  <div className="flex justify-between text-xs text-[#888]">
+                    <span>
+                      {batchStatus === 'queued' ? '開始待ち' : '取得実行中'}
+                      {activeJobId ? ` · job_id: ${activeJobId}` : ''}
+                    </span>
+                    <span className="flex gap-3">
+                      {batchProgress.eta && <span className="text-yellow-400">{batchProgress.eta}</span>}
+                      <span>{batchProgress.current}%</span>
+                    </span>
+                  </div>
+                  <div className="text-xs text-[#666]">{batchProgress.message || (batchStatus === 'queued' ? '開始待ち' : '取得実行中')}</div>
+                  <div className="w-full bg-[#1e1e1e] rounded-full h-1.5 overflow-hidden">
+                    <div className="bg-white h-1.5 rounded-full transition-all duration-500" style={{ width: `${batchProgress.current}%` }} />
+                  </div>
+                </div>
+              )}
+
+              {batchStatus === 'completed' && batchResult && (
+                <div className="text-xs text-[#4ade80]" role="status" aria-live="polite">
+                  取得完了: {batchResult.races_collected}レース（{batchResult.races_collected === 0 ? '0レース・正常完了' : '正常完了'}）
+                </div>
+              )}
+
+              {batchStatus === 'error' && (
+                <div className="space-y-2" role="alert">
+                  <div className="text-xs text-[#fca5a5]">取得失敗: {batchError || '不明なエラー'}</div>
+                  <button
+                    onClick={handlePeriodBatchScrape}
+                    disabled={isBatchBusy || isApiUnavailable}
+                    className={`px-4 py-2 rounded text-xs font-medium transition-colors ${
+                      isBatchBusy || isApiUnavailable
+                        ? 'bg-[#222] text-[#555] cursor-not-allowed'
+                        : 'bg-white text-black hover:bg-[#eee]'
+                    }`}
+                  >
+                    再実行
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>
 
         {/* 取得完了サマリー */}
-        {batchResult && batchResult.stats?.period && (
+        {batchStatus === 'completed' && batchResult && batchResult.stats?.period && (
           <div className="bg-[#0a1a0a] border border-[#1a3a1a] rounded-lg px-5 py-4 flex flex-wrap gap-5 items-center">
             <span className="text-xs text-[#4ade80] font-medium">✓ 取得完了</span>
             <span className="text-xs text-[#888]">{batchResult.stats.period} · {batchResult.stats.total_months}ヶ月</span>
             <span className="text-xs text-white font-medium">{batchResult.races_collected}レース</span>
             <span className="text-xs text-[#555]">{batchResult.elapsed_time}秒</span>
+            {batchResult.races_collected === 0 && <span className="text-xs text-[#93c5fd]">0レース・正常完了</span>}
+          </div>
+        )}
+
+        {/* 完了後の品質確認ブリッジ（read-only導線のみ） */}
+        {batchStatus === 'completed' && (
+          <div className="bg-[#111827] border border-[#1f2937] rounded-lg px-5 py-4 space-y-2" data-testid="quality-bridge-card">
+            <div className="text-xs text-[#93c5fd]">取得は完了しましたが、品質確認は未実施です</div>
+            <div className="text-xs text-[#6b7280]">以下は read-only preview です（自動実行・自動遷移は行いません）。</div>
+            <div className="flex flex-wrap gap-3 pt-1">
+              <Link href="/data-collection/refresh-plan" className="text-xs text-[#bfdbfe] hover:text-white transition-colors" data-testid="quality-bridge-refresh-link">
+                Refresh Plan（read-only preview）
+              </Link>
+              <Link href="/data-collection/p0-repair-plan" className="text-xs text-[#bfdbfe] hover:text-white transition-colors" data-testid="quality-bridge-p0-link">
+                P0 Repair Plan（read-only preview）
+              </Link>
+            </div>
           </div>
         )}
 
