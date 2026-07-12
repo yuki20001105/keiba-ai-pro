@@ -1,0 +1,155 @@
+# Phase 3 Staging E2E Baseline (Persisted in Phase 3A)
+
+## 0. Baseline Metadata
+- baseline created at: `2026-07-12`
+- workspace: `C:/Users/yuki2/Documents/ws/keiba-ai-pro-phase3`
+- branch: `feature/phase-3-staging-e2e`
+- current HEAD: `80556e8ca2fae2280a0d2f5913ed14068d248d8e`
+- `origin/develop`: `80556e8ca2fae2280a0d2f5913ed14068d248d8e`
+- `origin/develop..HEAD`: `0`
+
+Progress split (required):
+- 全体進捗推定: 50〜55%
+- Phase 3 L3/L4 readiness: 18%
+
+---
+
+## 1. Environment Matrix (Observed)
+
+| axis | local | CI | preview | staging | production |
+|---|---|---|---|---|---|
+| Next runtime | yes | yes | partially documented | partially documented | yes |
+| FastAPI runtime | yes | import/static/test verification | outside CI runtime | environment-specific | yes |
+| scrape write flags (`NETKEIBA_RACE_WRITE_ENABLED`, `ALLOW_STAGING_WRITE`) | configurable | forced safe in CI policy | not fully evidenced in repo docs | guarded/stub paths observed | guarded by env + code |
+| scheduler | configurable | disabled in CI | unspecified | env-controlled | env-controlled |
+| auth boundary | Supabase token pass-through | test fixtures and gate tests | env dependent | env dependent | enforced |
+
+Notes:
+- Repo contains strong local/CI evidence.
+- Preview/staging/prod exact deployment wiring exists only partially in repository artifacts; some details are operational configuration outside repository.
+
+---
+
+## 2. 15 Flow Inventory (UI/Next/FastAPI/DB/Policy)
+
+Legend: L0 not started, L1 isolated, L2 contract-ready, L3 staging-integrated, L4 production-proven.
+
+| # | flow | UI | Next/API | FastAPI/Script | DB/persistence | policy/auth | current level | target |
+|---|---|---|---|---|---|---|---|---|
+| 1 | login/session bootstrap | implemented | implemented | n/a | Supabase | auth enforced | L3 | L4 |
+| 2 | data-collection dry-run start | implemented | `/api/scrape` | `/api/scrape/start` | no write (dry-run) | admin path | L3 | L4 |
+| 3 | scrape job polling | implemented | `/api/scrape/status/{id}` | `/api/scrape/status/{id}` | job state | guarded | L3 | L4 |
+| 4 | scrape execute | implemented | `/api/scrape` | job execution | writes in execute path | admin + safeguards | L2 | L3 |
+| 5 | fetch summary history | implemented | `/api/scrape/history` | `/api/scrape/history` | persisted summaries | guarded | L3 | L4 |
+| 6 | scrape health | implemented | `/api/scrape/health` | `/api/scrape/health` | read-only | guarded | L3 | L4 |
+| 7 | refresh plan preview | implemented | `/api/scrape/refresh-plan` | `plan_scrape_refresh.py` | read-only | premium/admin | L3 | L4 |
+| 8 | refresh execute | disabled UI | `PUT /api/scrape/refresh-plan` | none (`501`) | none | intentionally blocked | L1 | L3 |
+| 9 | p0 repair plan preview | implemented | `/api/scrape/p0-repair-plan` | `plan_p0_scrape_repair.py` | read-only | premium/admin | L3 | L4 |
+| 10 | p0 repair execute | disabled UI | `PUT /api/scrape/p0-repair-plan` | none (`501`) | none | intentionally blocked | L1 | L3 |
+| 11 | targeted refetch planning | script-led | not first-class UI | `plan_p0_targeted_refetch.py` | report output | operator-run | L1 | L3 |
+| 12 | live validation | script-led | not first-class UI | `validate_p0_targeted_refetch_live.py` | report output | bounded run | L1 | L3 |
+| 13 | prediction + quota consume | implemented | Next proxy routes | FastAPI + quota deps | Supabase RPC + logs | authz + quota contract | L2 | L4 |
+| 14 | purchase history write/read | implemented | Next + direct Supabase paths | mixed | Supabase tables | legacy policy documented | L2 | L4 |
+| 15 | production-readiness orchestration | implemented | `/api/production-readiness` | allowlisted python/git checks | reports + status | premium/admin | L2 | L3 |
+
+---
+
+## 3. L3/L4 Gap Summary
+
+### Gaps to L3
+1. Refresh and P0 execution paths intentionally remain disabled (`501`).
+2. Targeted refetch/live validation remain script-centric, not full staging UI flow.
+3. Multi-step operator handoff between execute and quality actions is still fragmented.
+
+### Gaps to L4
+1. End-to-end staging evidence for all critical write-sensitive flows is incomplete.
+2. Approval-based staged rollout policy for repair execution is not yet active.
+3. Full production proof artifacts for each high-risk flow are not yet consolidated.
+
+---
+
+## 4. Phase 3A-3H Plan
+
+### Phase 3A (this step)
+- Restore and reconcile missing docs from source worktree.
+- Persist this baseline with explicit gap inventory.
+
+### Phase 3B
+- Consolidate post-execute quality bridge in UI.
+- Normalize operator messaging for pending/error/complete semantics.
+
+### Phase 3C
+- Add first-class targeted refetch planning UI (still read-only).
+
+### Phase 3D
+- Add first-class live validation UI (bounded, no DB write).
+
+### Phase 3E
+- Add approval scaffold for repair execution without unlocking writes.
+
+### Phase 3F
+- Stage-gated dry-run of execution orchestration with strict audit logs.
+
+### Phase 3G
+- Controlled partial unlock in staging with rollback drills.
+
+### Phase 3H
+- Production readiness decision gate based on evidence package and explicit approvals.
+
+---
+
+## 5. Required Approvals and Boundaries
+- Any move from read-only planning to execution unlock requires explicit approval.
+- Supabase RPC and RLS boundaries must remain least-privilege.
+- service_role usage is restricted to server-side trusted contexts.
+- No external environment mutation (deploy/migration/apply) is in scope for this baseline.
+
+---
+
+## 6. Migration / RLS / RPC Boundary Notes
+- Migration assets exist for prediction count and purchase history related contracts.
+- Batch consume RPC (`pred_count_batch`) boundary is documented and service-role sensitive.
+- RLS assumptions are policy-critical; rollout must include explicit policy verification per environment.
+
+---
+
+## 7. Rollback Sufficiency Assessment
+Current rollback posture is partial.
+- Strong: code-level guards, execute-disabled endpoints, CI checks.
+- Weak: end-to-end rollback runbooks for staged repair execution not fully institutionalized.
+Conclusion: rollback controls are **insufficient for broad execution unlock** without Phase 3E-3G completion.
+
+---
+
+## 8. Risk Register (Severity)
+
+| risk | severity | rationale |
+|---|---|---|
+| accidental write unlock in planning surfaces | High | routes are currently safe, but unlock work is pending |
+| stale env mismatch across staging/prod | High | repo evidence for non-local envs is partial |
+| operator misread of pending vs zero-result | Medium | mitigated in UI, still needs consistency across flows |
+| script-only diagnostics fragmentation | Medium | slows incident response and repeatability |
+| quota/purchase contract drift | Medium | mixed boundaries across Next/FastAPI/Supabase |
+
+---
+
+## 9. Exit Criteria
+1. All high-risk flows reach at least L3 with staging evidence.
+2. Targeted refetch/live validation become first-class operator flows.
+3. Approval-gated execution scaffold verified with dry-run drills.
+4. Rollback playbooks validated for staged unlock scenarios.
+5. L3/L4 evidence package is complete and auditable.
+
+---
+
+## 10. Blockers
+1. Execution endpoints intentionally disabled by design (required but blocks progress to L3/L4).
+2. Script-only diagnostics not yet integrated into unified UI path.
+3. Environment-specific deployment proofs partially outside repository.
+
+---
+
+## 11. Technical Debt Snapshot
+1. Contract duplication across UI/Next/FastAPI responses.
+2. Incomplete unification of quality and remediation operator experience.
+3. Partial reliance on scripts over route-level typed interfaces for advanced flows.
