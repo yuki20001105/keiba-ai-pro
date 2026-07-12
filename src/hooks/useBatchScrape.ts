@@ -56,6 +56,7 @@ const DEFAULT_OPTIONS = {
 
 const PERIOD_PATTERN = /^(\d{4})-(0[1-9]|1[0-2])$/
 const CLIENT_STOP_MESSAGE = 'ブラウザ側の監視と次月投入を停止しました。開始済みのサーバージョブは継続している可能性があります。'
+const COMPLETED_CONTRACT_MESSAGE = '完了応答の形式を確認できないため、サーバージョブの状態確認が必要'
 
 function parsePeriod(input: string): ParsedPeriod | null {
   if (typeof input !== 'string') return null
@@ -92,6 +93,12 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
   const abortRef = useRef(false)
   const startTimeRef = useRef(0)
   const inFlightRef = useRef(false)
+  const executionLockedRef = useRef(false)
+
+  const setExecutionLock = (locked: boolean) => {
+    executionLockedRef.current = locked
+    setIsExecutionLocked(locked)
+  }
 
   const pollIntervalMs = Math.max(0, hookOptions?.pollIntervalMs ?? DEFAULT_OPTIONS.pollIntervalMs)
   const maxPollAttempts = Math.max(1, hookOptions?.maxPollAttempts ?? DEFAULT_OPTIONS.maxPollAttempts)
@@ -108,7 +115,7 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
     if (inFlightRef.current) {
       throw new BatchScrapeError('前回の取得処理が進行中です', 'busy', false)
     }
-    if (isExecutionLocked) {
+    if (executionLockedRef.current) {
       throw new BatchScrapeError(
         '実行状態を確認できません。履歴またはjob statusを確認するまで新規実行しないでください。',
         'busy',
@@ -164,6 +171,7 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
       setCanRetry(false)
       setJobId(null)
       setResult(null)
+      setExecutionLock(false)
       abortRef.current = false
       startTimeRef.current = Date.now()
 
@@ -303,12 +311,22 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
           })
 
           if (rawStatus === 'completed') {
+            if (!isRecord(statusPayload.result)) {
+              fail(COMPLETED_CONTRACT_MESSAGE, 'monitoring', false)
+            }
+            const resultPayload = statusPayload.result as Record<string, unknown>
+            const racesCollected = resultPayload.races_collected
+            if (
+              typeof racesCollected !== 'number'
+              || !Number.isFinite(racesCollected)
+              || !Number.isInteger(racesCollected)
+              || racesCollected < 0
+            ) {
+              fail(COMPLETED_CONTRACT_MESSAGE, 'monitoring', false)
+            }
+            const racesCollectedNumber = racesCollected as number
             done = true
-            const resultPayload = isRecord(statusPayload.result) ? statusPayload.result : {}
-            const racesCollected = typeof resultPayload.races_collected === 'number' && Number.isFinite(resultPayload.races_collected)
-              ? resultPayload.races_collected
-              : 0
-            totalRaces += racesCollected
+            totalRaces += racesCollectedNumber
             completedMonths += 1
           } else if (rawStatus === 'error') {
             const message = typeof statusPayload.error === 'string' && statusPayload.error.trim().length > 0
@@ -338,7 +356,7 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
       setResult(batchResult)
       setFailureKind(null)
       setCanRetry(false)
-      setIsExecutionLocked(false)
+      setExecutionLock(false)
       return batchResult
     } catch (error: unknown) {
       const normalized = error instanceof BatchScrapeError
@@ -355,14 +373,14 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
       setFailureKind(normalized.kind)
       setCanRetry(normalized.safeToRetry)
       if (normalized.kind === 'monitoring' || normalized.kind === 'client_stop') {
-        setIsExecutionLocked(true)
+        setExecutionLock(true)
       }
       throw normalized
     } finally {
       setLoading(false)
       inFlightRef.current = false
     }
-  }, [isExecutionLocked, maxConsecutiveStatusFailures, maxPollAttempts, pollIntervalMs])
+  }, [maxConsecutiveStatusFailures, maxPollAttempts, pollIntervalMs])
 
   const abort = useCallback(() => {
     abortRef.current = true

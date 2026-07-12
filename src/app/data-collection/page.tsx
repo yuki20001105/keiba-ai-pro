@@ -1,6 +1,6 @@
 ﻿'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { Logo } from '@/components/Logo'
 import { Toast } from '@/components/Toast'
@@ -86,7 +86,56 @@ type BatchRequestSnapshot = {
   forceRescrape: boolean
 }
 
+type UncertaintyFailureKind = Extract<NonNullable<BatchScrapeError['kind']>, 'monitoring' | 'client_stop'>
+
+type PersistedUncertaintyLock = {
+  version: 1
+  failureKind: UncertaintyFailureKind
+  jobId?: string
+  request: BatchRequestSnapshot
+  occurredAt: string
+}
+
 const PERIOD_PATTERN = /^(\d{4})-(0[1-9]|1[0-2])$/
+const UNCERTAINTY_STORAGE_KEY = 'keiba-ai-pro:phase3b:scrape-uncertainty:v1'
+const COMPLETED_CONTRACT_MESSAGE = '完了応答の形式を確認できないため、サーバージョブの状態確認が必要'
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function isValidRequestSnapshot(value: unknown): value is BatchRequestSnapshot {
+  return isObject(value)
+    && typeof value.startPeriod === 'string'
+    && typeof value.endPeriod === 'string'
+    && typeof value.forceRescrape === 'boolean'
+}
+
+function parsePersistedUncertaintyLock(value: unknown): PersistedUncertaintyLock | null {
+  if (!isObject(value)) return null
+  if (value.version !== 1) return null
+  if (value.failureKind !== 'monitoring' && value.failureKind !== 'client_stop') return null
+  if (typeof value.occurredAt !== 'string' || value.occurredAt.length === 0) return null
+  if (!isValidRequestSnapshot(value.request)) return null
+  if (value.jobId !== undefined && typeof value.jobId !== 'string') return null
+
+  return {
+    version: 1,
+    failureKind: value.failureKind,
+    request: value.request,
+    occurredAt: value.occurredAt,
+    ...(typeof value.jobId === 'string' && value.jobId.trim().length > 0 ? { jobId: value.jobId.trim() } : {}),
+  }
+}
+
+function hasStrictCompletedResult(payload: unknown): boolean {
+  if (!isObject(payload)) return false
+  const racesCollected = payload.races_collected
+  return typeof racesCollected === 'number'
+    && Number.isFinite(racesCollected)
+    && Number.isInteger(racesCollected)
+    && racesCollected >= 0
+}
 
 function validatePeriodRange(startPeriod: string, endPeriod: string): PeriodValidation {
   if (!PERIOD_PATTERN.test(startPeriod) || !PERIOD_PATTERN.test(endPeriod)) {
@@ -168,6 +217,12 @@ export default function DataCollectionPage() {
   const [periodErrorMessage, setPeriodErrorMessage] = useState('')
   const [retrySnapshot, setRetrySnapshot] = useState<BatchRequestSnapshot | null>(null)
   const [executeWarn, setExecuteWarn] = useState('')
+  const [persistedUncertainty, setPersistedUncertainty] = useState<PersistedUncertaintyLock | null>(null)
+  const [uncertaintyHydrated, setUncertaintyHydrated] = useState(false)
+  const [transientUncertaintyDismissed, setTransientUncertaintyDismissed] = useState(false)
+  const [manualUncertaintyUnlock, setManualUncertaintyUnlock] = useState(false)
+  const [reconcileLoading, setReconcileLoading] = useState(false)
+  const [reconcileMessage, setReconcileMessage] = useState('')
   const [fetchHistory, setFetchHistory] = useState<FetchSummaryHistoryItem[]>([])
   const [fetchHistoryLoading, setFetchHistoryLoading] = useState(false)
   const [toast, setToast] = useState({ visible: false, message: '', type: 'success' as 'success' | 'error' })
@@ -187,6 +242,7 @@ export default function DataCollectionPage() {
     result: batchResult,
     start: startBatchScrape,
   } = useBatchScrape()
+  const lastRequestSnapshotRef = useRef<BatchRequestSnapshot | null>(null)
   const isBatchBusy = batchLoading || batchStatus === 'queued' || batchStatus === 'running'
   const isOperationBusy = isBatchBusy || dryRunLoading
   const periodValidation = validatePeriodRange(startPeriod, endPeriod)
@@ -237,8 +293,44 @@ export default function DataCollectionPage() {
 
   const isApiUnavailable = localApiStatus === 'unhealthy' || localApiStatus === 'unknown'
   const effectivePeriodError = periodErrorMessage || (!isPeriodValid ? periodValidation.message || '' : '')
-  const shouldShowUncertaintyWarning = failureKind === 'monitoring' || failureKind === 'client_stop'
-  const executeBlockedByUncertainty = isExecutionLocked || shouldShowUncertaintyWarning
+  const transientUncertaintyKind: UncertaintyFailureKind | null = failureKind === 'monitoring' || failureKind === 'client_stop'
+    ? failureKind
+    : null
+  const effectiveTransientUncertainty = transientUncertaintyDismissed ? null : transientUncertaintyKind
+  const effectiveUncertaintyKind = persistedUncertainty?.failureKind ?? effectiveTransientUncertainty
+  const shouldShowUncertaintyWarning = effectiveUncertaintyKind === 'monitoring' || effectiveUncertaintyKind === 'client_stop'
+  const effectiveUncertaintyJobId = persistedUncertainty?.jobId ?? activeJobId ?? null
+  const executeBlockedByUncertainty = !uncertaintyHydrated || (!manualUncertaintyUnlock && (isExecutionLocked || shouldShowUncertaintyWarning))
+
+  const persistUncertaintyLock = (kind: UncertaintyFailureKind, jobId: string | null, request: BatchRequestSnapshot | null) => {
+    if (!request) return
+    const lock: PersistedUncertaintyLock = {
+      version: 1,
+      failureKind: kind,
+      occurredAt: new Date().toISOString(),
+      request,
+      ...(jobId && jobId.trim().length > 0 ? { jobId: jobId.trim() } : {}),
+    }
+    try {
+      localStorage.setItem(UNCERTAINTY_STORAGE_KEY, JSON.stringify(lock))
+    } catch {
+      // keep runtime lock even if localStorage is unavailable
+    }
+    setPersistedUncertainty(lock)
+    setTransientUncertaintyDismissed(false)
+    setManualUncertaintyUnlock(false)
+  }
+
+  const clearPersistedUncertainty = () => {
+    try {
+      localStorage.removeItem(UNCERTAINTY_STORAGE_KEY)
+    } catch {
+      // no-op
+    }
+    setPersistedUncertainty(null)
+    setTransientUncertaintyDismissed(true)
+    setManualUncertaintyUnlock(true)
+  }
 
   const checkLocalApi = async () => {
     setLocalApiStatus('checking')
@@ -265,6 +357,38 @@ export default function DataCollectionPage() {
     checkLocalApi()
     loadFetchSummaryHistory()
   }, [])
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(UNCERTAINTY_STORAGE_KEY)
+      if (!raw) {
+        setPersistedUncertainty(null)
+      } else {
+        const parsed = parsePersistedUncertaintyLock(JSON.parse(raw))
+        if (!parsed) {
+          localStorage.removeItem(UNCERTAINTY_STORAGE_KEY)
+          setPersistedUncertainty(null)
+        } else {
+          setPersistedUncertainty(parsed)
+          setReconcileMessage('前回の実行は状態不明で終了しました。新規取得前に状態を再確認してください。')
+        }
+      }
+    } catch {
+      setPersistedUncertainty(null)
+    } finally {
+      setUncertaintyHydrated(true)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!transientUncertaintyKind) return
+    persistUncertaintyLock(transientUncertaintyKind, activeJobId, lastRequestSnapshotRef.current)
+    if (transientUncertaintyKind === 'monitoring') {
+      setReconcileMessage(COMPLETED_CONTRACT_MESSAGE)
+    } else {
+      setReconcileMessage('ブラウザ側の監視停止が発生しました。サーバージョブ継続の可能性があります。')
+    }
+  }, [activeJobId, transientUncertaintyKind])
 
   const loadFetchSummaryHistory = async () => {
     setFetchHistoryLoading(true)
@@ -330,6 +454,9 @@ export default function DataCollectionPage() {
     }
 
     const target = override ?? { startPeriod, endPeriod, forceRescrape }
+    setTransientUncertaintyDismissed(false)
+    setManualUncertaintyUnlock(false)
+    lastRequestSnapshotRef.current = target
     const validation = validatePeriodRange(target.startPeriod, target.endPeriod)
     if (!validation.ok) {
       const message = validation.message || '期間指定が不正です'
@@ -367,12 +494,64 @@ export default function DataCollectionPage() {
       const result = await startBatchScrape(target.startPeriod, target.endPeriod, target.forceRescrape)
       showToast(`取得完了 — ${result.stats.total_months}ヶ月 / ${result.races_collected}レース / 所要: ${result.elapsed_time}秒`)
       setRetrySnapshot(null)
+      setReconcileMessage('')
       loadStats()
       loadFetchSummaryHistory()
     } catch (error: any) {
       const safeToRetry = error instanceof BatchScrapeError ? error.safeToRetry : false
+      if (error instanceof BatchScrapeError && (error.kind === 'monitoring' || error.kind === 'client_stop')) {
+        persistUncertaintyLock(error.kind, activeJobId, target)
+        if (error.kind === 'monitoring') {
+          setReconcileMessage(COMPLETED_CONTRACT_MESSAGE)
+        }
+      }
       setRetrySnapshot(safeToRetry ? target : null)
       showToast(`取得エラー: ${error.message}`, 'error')
+    }
+  }
+
+  const handleReconcileStatus = async () => {
+    if (!effectiveUncertaintyJobId || reconcileLoading) return
+    setReconcileLoading(true)
+    try {
+      const res = await authFetch(`/api/scrape/status/${effectiveUncertaintyJobId}`, { signal: AbortSignal.timeout(10000) })
+      if (!res.ok) {
+        setReconcileMessage('状態再確認に失敗しました。lockを維持します。')
+        return
+      }
+
+      const payload = await res.json().catch(() => null)
+      if (!isObject(payload) || typeof payload.status !== 'string') {
+        setReconcileMessage('状態応答形式が不正です。lockを維持します。')
+        return
+      }
+
+      if (payload.status === 'queued' || payload.status === 'running' || payload.status === 'not_found') {
+        setReconcileMessage('対象jobは未終端です。lockを維持します。')
+        return
+      }
+
+      if (payload.status === 'error') {
+        clearPersistedUncertainty()
+        setReconcileMessage('対象jobは終端エラーでした。lockを解除しました。必要に応じて再実行してください。')
+        return
+      }
+
+      if (payload.status === 'completed') {
+        if (!hasStrictCompletedResult(payload.result)) {
+          setReconcileMessage(COMPLETED_CONTRACT_MESSAGE)
+          return
+        }
+        clearPersistedUncertainty()
+        setReconcileMessage('対象jobは完了。履歴で全体範囲を確認してください')
+        return
+      }
+
+      setReconcileMessage('状態を判定できないためlockを維持します。')
+    } catch {
+      setReconcileMessage('状態再確認に失敗しました。lockを維持します。')
+    } finally {
+      setReconcileLoading(false)
     }
   }
 
@@ -630,17 +809,34 @@ export default function DataCollectionPage() {
                     </svg>
                     取得中...
                   </>
-                ) : isApiUnavailable ? 'API確認不可' : !isPeriodValid ? '期間不正' : executeBlockedByUncertainty ? '実行確認待ち' : '取得開始'}
+                ) : !uncertaintyHydrated ? '状態確認中' : isApiUnavailable ? 'API確認不可' : !isPeriodValid ? '期間不正' : executeBlockedByUncertainty ? '実行確認待ち' : '取得開始'}
               </button>
             </div>
           </div>
 
           {shouldShowUncertaintyWarning && (
-            <div className="rounded border border-[#4a1d1d] bg-[#220d0d] px-3 py-2 text-xs text-[#fca5a5]" role="alert">
-              <div>実行状態を確認できません</div>
-              {activeJobId && <div>job_id: {activeJobId}</div>}
+            <div className="rounded border border-[#4a1d1d] bg-[#220d0d] px-3 py-2 text-xs text-[#fca5a5] space-y-1" role="alert" data-testid="uncertainty-panel">
+              <div>実行状態不明</div>
+              {effectiveUncertaintyJobId && <div>job_id: {effectiveUncertaintyJobId}</div>}
+              <div>{COMPLETED_CONTRACT_MESSAGE}</div>
               <div>開始済みのサーバージョブは継続している可能性があります</div>
-              <div>履歴またはjob statusを確認するまで新規実行しないでください</div>
+              {!effectiveUncertaintyJobId && <div>job_idがないため自動解除できません（approval scaffold対象）。</div>}
+              {reconcileMessage && <div>{reconcileMessage}</div>}
+              {effectiveUncertaintyJobId && (
+                <button
+                  type="button"
+                  data-testid="reconcile-status-button"
+                  onClick={handleReconcileStatus}
+                  disabled={reconcileLoading}
+                  className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${
+                    reconcileLoading
+                      ? 'bg-[#222] text-[#555] cursor-not-allowed'
+                      : 'bg-white text-black hover:bg-[#eee]'
+                  }`}
+                >
+                  {reconcileLoading ? '確認中...' : '状態を再確認'}
+                </button>
+              )}
             </div>
           )}
 
@@ -737,7 +933,21 @@ export default function DataCollectionPage() {
 
               {batchStatus === 'error' && (
                 <div className="space-y-2" role="alert">
-                  <div className="text-xs text-[#fca5a5]">取得失敗: {batchError || '不明なエラー'}</div>
+                  <div className="text-xs text-[#fca5a5]">
+                    {(() => {
+                      const titles: Record<string, string> = {
+                        execution: '取得失敗',
+                        start_rejected: '開始拒否',
+                        monitoring: '実行状態不明',
+                        client_stop: 'ブラウザ側の監視停止',
+                        validation: '入力エラー',
+                        busy: '取得処理中',
+                      }
+                      const key = typeof failureKind === 'string' ? failureKind : 'execution'
+                      const title = titles[key] || '取得失敗'
+                      return `${title}: ${batchError || '不明なエラー'}`
+                    })()}
+                  </div>
                   {canRetry && retrySnapshot && (failureKind === 'execution' || failureKind === 'start_rejected') && (
                     <button
                       data-testid="retry-button"
