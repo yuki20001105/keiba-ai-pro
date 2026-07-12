@@ -22,6 +22,27 @@ export type UseBatchScrapeOptions = {
   maxConsecutiveStatusFailures?: number
 }
 
+export type BatchFailureKind =
+  | 'validation'
+  | 'start_rejected'
+  | 'execution'
+  | 'monitoring'
+  | 'client_stop'
+  | 'busy'
+  | null
+
+export class BatchScrapeError extends Error {
+  readonly kind: Exclude<BatchFailureKind, null>
+  readonly safeToRetry: boolean
+
+  constructor(message: string, kind: Exclude<BatchFailureKind, null>, safeToRetry: boolean) {
+    super(message)
+    this.name = 'BatchScrapeError'
+    this.kind = kind
+    this.safeToRetry = safeToRetry
+  }
+}
+
 type ParsedPeriod = {
   year: number
   month: number
@@ -34,7 +55,7 @@ const DEFAULT_OPTIONS = {
 } as const
 
 const PERIOD_PATTERN = /^(\d{4})-(0[1-9]|1[0-2])$/
-const ABORT_MESSAGE = '取得を中断しました'
+const CLIENT_STOP_MESSAGE = 'ブラウザ側の監視と次月投入を停止しました。開始済みのサーバージョブは継続している可能性があります。'
 
 function parsePeriod(input: string): ParsedPeriod | null {
   if (typeof input !== 'string') return null
@@ -49,20 +70,29 @@ function parsePeriod(input: string): ParsedPeriod | null {
   return { year, month }
 }
 
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null
+}
+
 /**
  * 期間指定バッチスクレイピングフック。
- * 月単位でジョブを順次投入し、各ジョブが完了するまで 3 秒間隔でポーリングする。
- * `start()` は完了時に BatchResult を返し、エラー時はスローする。
+ * 月単位でジョブを順次投入し、各ジョブが完了するまでポーリングする。
+ * `start()` は完了時に BatchResult を返し、エラー時は BatchScrapeError をスローする。
  */
 export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
   const [loading, setLoading] = useState(false)
   const [status, setStatus] = useState<JobStatus>('idle')
   const [error, setError] = useState<string | null>(null)
+  const [failureKind, setFailureKind] = useState<BatchFailureKind>(null)
+  const [canRetry, setCanRetry] = useState(false)
+  const [isExecutionLocked, setIsExecutionLocked] = useState(false)
   const [jobId, setJobId] = useState<string | null>(null)
   const [progress, setProgress] = useState<BatchProgress>({ current: 0, total: 100, message: '', eta: '' })
   const [result, setResult] = useState<BatchResult | null>(null)
   const abortRef = useRef(false)
   const startTimeRef = useRef(0)
+  const inFlightRef = useRef(false)
+
   const pollIntervalMs = Math.max(0, hookOptions?.pollIntervalMs ?? DEFAULT_OPTIONS.pollIntervalMs)
   const maxPollAttempts = Math.max(1, hookOptions?.maxPollAttempts ?? DEFAULT_OPTIONS.maxPollAttempts)
   const maxConsecutiveStatusFailures = Math.max(
@@ -75,68 +105,74 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
     endPeriod: string,
     forceRescrape: boolean,
   ): Promise<BatchResult> => {
-    if (loading || status === 'queued' || status === 'running') {
-      const message = '前回の取得処理が進行中です'
-      setStatus('error')
-      setError(message)
-      setProgress({ current: 0, total: 100, message, eta: '' })
-      throw new Error(message)
+    if (inFlightRef.current) {
+      throw new BatchScrapeError('前回の取得処理が進行中です', 'busy', false)
+    }
+    if (isExecutionLocked) {
+      throw new BatchScrapeError(
+        '実行状態を確認できません。履歴またはjob statusを確認するまで新規実行しないでください。',
+        'busy',
+        false,
+      )
     }
 
-    const parsedStart = parsePeriod(startPeriod)
-    const parsedEnd = parsePeriod(endPeriod)
-    if (!parsedStart || !parsedEnd) {
-      const message = '期間指定が不正です（YYYY-MM, 月は01-12）'
-      setStatus('error')
-      setError(message)
-      setProgress({ current: 0, total: 100, message, eta: '' })
-      throw new Error(message)
-    }
+    inFlightRef.current = true
 
-    const startYear = parsedStart.year
-    const startMonth = parsedStart.month
-    const endYear = parsedEnd.year
-    const endMonth = parsedEnd.month
-
-    if (new Date(startYear, startMonth - 1, 1) > new Date(endYear, endMonth - 1, 1)) {
-      const message = '期間指定が不正です（開始年月は終了年月以前にしてください）'
-      setStatus('error')
-      setError(message)
-      setProgress({ current: 0, total: 100, message, eta: '' })
-      throw new Error(message)
+    const fail = (message: string, kind: Exclude<BatchFailureKind, null>, safeToRetry: boolean): never => {
+      throw new BatchScrapeError(message, kind, safeToRetry)
     }
-
-    // 取得対象の月リストを生成
-    const months: { year: number; month: number }[] = []
-    let y = startYear, m = startMonth
-    while (y < endYear || (y === endYear && m <= endMonth)) {
-      months.push({ year: y, month: m })
-      m++
-      if (m > 12) { m = 1; y++ }
-    }
-    const totalMonths = months.length
-    if (totalMonths <= 0) {
-      const message = '期間指定が不正です（対象月が0件です）'
-      setStatus('error')
-      setError(message)
-      setProgress({ current: 0, total: 100, message, eta: '' })
-      throw new Error(message)
-    }
-
-    setLoading(true)
-    setStatus('queued')
-    setError(null)
-    setJobId(null)
-    setResult(null)
-    abortRef.current = false
-    startTimeRef.current = Date.now()
-    let totalRaces = 0
-    let completedMonths = 0
 
     try {
+      const parsedStart = parsePeriod(startPeriod)
+      const parsedEnd = parsePeriod(endPeriod)
+      if (!parsedStart || !parsedEnd) {
+        fail('期間指定が不正です（YYYY-MM, 月は01-12）', 'validation', false)
+      }
+      const startParsed = parsedStart as ParsedPeriod
+      const endParsed = parsedEnd as ParsedPeriod
+
+      const startYear = startParsed.year
+      const startMonth = startParsed.month
+      const endYear = endParsed.year
+      const endMonth = endParsed.month
+
+      if (new Date(startYear, startMonth - 1, 1) > new Date(endYear, endMonth - 1, 1)) {
+        fail('期間指定が不正です（開始年月は終了年月以前にしてください）', 'validation', false)
+      }
+
+      const months: { year: number; month: number }[] = []
+      let y = startYear
+      let m = startMonth
+      while (y < endYear || (y === endYear && m <= endMonth)) {
+        months.push({ year: y, month: m })
+        m += 1
+        if (m > 12) {
+          m = 1
+          y += 1
+        }
+      }
+
+      const totalMonths = months.length
+      if (totalMonths <= 0) {
+        fail('期間指定が不正です（対象月が0件です）', 'validation', false)
+      }
+
+      setLoading(true)
+      setStatus('queued')
+      setError(null)
+      setFailureKind(null)
+      setCanRetry(false)
+      setJobId(null)
+      setResult(null)
+      abortRef.current = false
+      startTimeRef.current = Date.now()
+
+      let totalRaces = 0
+      let completedMonths = 0
+
       for (const { year, month } of months) {
         if (abortRef.current) {
-          throw new Error('取得が中止されました')
+          fail(CLIENT_STOP_MESSAGE, 'client_stop', false)
         }
 
         const pad = (n: number) => String(n).padStart(2, '0')
@@ -157,50 +193,92 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ start_date: startDateStr, end_date: endDateStr, force_rescrape: forceRescrape }),
         })
+
         if (!startRes.ok) {
-          const err = await startRes.json()
-          throw new Error(err.detail || `HTTP ${startRes.status}`)
+          let detail = ''
+          try {
+            const err = await startRes.json()
+            if (isRecord(err) && typeof err.detail === 'string') {
+              detail = err.detail
+            }
+          } catch {
+            // fall through to status code message
+          }
+          fail(detail || `HTTP ${startRes.status}`, 'start_rejected', true)
         }
-        const { job_id } = await startRes.json()
-        if (typeof job_id !== 'string' || job_id.trim().length === 0) {
-          throw new Error('ジョブ開始応答が不正です（job_id）')
+
+        let startPayload: unknown
+        try {
+          startPayload = await startRes.json()
+        } catch {
+          fail('ジョブ開始応答が不正です（JSON）', 'monitoring', false)
         }
-        setJobId(job_id)
+        const currentJobIdRaw = isRecord(startPayload) ? startPayload.job_id : undefined
+        if (typeof currentJobIdRaw !== 'string' || currentJobIdRaw.trim().length === 0) {
+          fail('ジョブ開始応答が不正です（job_id）', 'monitoring', false)
+        }
+        const currentJobId = currentJobIdRaw as string
+
+        setJobId(currentJobId)
         setStatus('queued')
 
-        // ジョブ完了までポーリング（3秒間隔）
         let done = false
         let pollAttempts = 0
         let consecutiveTransportFailures = 0
         let consecutiveNotFound = 0
+
         while (!done && !abortRef.current) {
           pollAttempts += 1
           if (pollAttempts > maxPollAttempts) {
-            throw new Error(`ステータス取得が上限回数に達しました (job_id: ${job_id})`)
+            fail(`ステータス取得が上限回数に達しました (job_id: ${currentJobId})`, 'monitoring', false)
           }
+
           await new Promise(resolve => setTimeout(resolve, pollIntervalMs))
-          const statusRes = await authFetch(`/api/scrape/status/${job_id}`)
+
+          const statusRes = await authFetch(`/api/scrape/status/${currentJobId}`)
           if (!statusRes.ok) {
             consecutiveTransportFailures += 1
             if (consecutiveTransportFailures >= maxConsecutiveStatusFailures) {
-              throw new Error(`ステータス取得失敗 (job_id: ${job_id})`)
+              fail(`ステータス取得失敗 (job_id: ${currentJobId})`, 'monitoring', false)
             }
             continue
           }
-
           consecutiveTransportFailures = 0
-          const status = await statusRes.json()
-          if (status.status === 'not_found') {
+
+          let statusPayloadUnknown: unknown
+          try {
+            statusPayloadUnknown = await statusRes.json()
+          } catch {
+            fail(`ステータス応答が不正です（JSON, job_id: ${currentJobId}）`, 'monitoring', false)
+          }
+          if (!isRecord(statusPayloadUnknown)) {
+            fail(`ステータス応答が不正です（object, job_id: ${currentJobId}）`, 'monitoring', false)
+          }
+          const statusPayload = statusPayloadUnknown as Record<string, unknown>
+
+          if (statusPayload.status === 'not_found') {
             consecutiveNotFound += 1
             if (consecutiveNotFound >= maxConsecutiveStatusFailures) {
-              throw new Error(`ジョブが見つかりません (job_id: ${job_id})`)
+              fail(`ジョブが見つかりません (job_id: ${currentJobId})`, 'monitoring', false)
             }
             continue
           }
 
-          const prog = status.progress || {}
-          const monthPct = prog.total > 0 ? prog.done / prog.total : 0
+          const rawStatus = typeof statusPayload.status === 'string' ? statusPayload.status : ''
+          if (rawStatus === 'queued' || rawStatus === 'running') {
+            consecutiveNotFound = 0
+          }
+
+          const progressPayload = isRecord(statusPayload.progress) ? statusPayload.progress : {}
+          const doneCount = typeof progressPayload.done === 'number' && Number.isFinite(progressPayload.done)
+            ? progressPayload.done
+            : 0
+          const totalCount = typeof progressPayload.total === 'number' && Number.isFinite(progressPayload.total)
+            ? progressPayload.total
+            : 0
+          const monthPct = totalCount > 0 ? doneCount / totalCount : 0
           const overallPct = Math.round(((completedMonths + monthPct) / totalMonths) * 95)
+
           let eta = ''
           if (completedMonths > 0) {
             const elapsed = Date.now() - startTimeRef.current
@@ -209,12 +287,9 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
             eta = remainingSec >= 60 ? `残り約${Math.ceil(remainingSec / 60)}分` : `残り約${remainingSec}秒`
           }
 
-          const rawStatus = typeof status.status === 'string' ? status.status : ''
           if (rawStatus === 'queued') {
-            consecutiveNotFound = 0
             setStatus('queued')
           } else if (rawStatus === 'running') {
-            consecutiveNotFound = 0
             setStatus('running')
           }
 
@@ -223,25 +298,33 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
             total: 100,
             message: rawStatus === 'queued'
               ? `${year}年${month}月 (${completedMonths + 1}/${totalMonths}ヶ月): 開始待ち`
-              : `${year}年${month}月 (${completedMonths + 1}/${totalMonths}ヶ月): ${prog.message || '取得実行中...'}`,
+              : `${year}年${month}月 (${completedMonths + 1}/${totalMonths}ヶ月): ${typeof progressPayload.message === 'string' ? progressPayload.message : '取得実行中...'}`,
             eta,
           })
 
           if (rawStatus === 'completed') {
             done = true
-            totalRaces += status.result?.races_collected || 0
-            completedMonths++
+            const resultPayload = isRecord(statusPayload.result) ? statusPayload.result : {}
+            const racesCollected = typeof resultPayload.races_collected === 'number' && Number.isFinite(resultPayload.races_collected)
+              ? resultPayload.races_collected
+              : 0
+            totalRaces += racesCollected
+            completedMonths += 1
           } else if (rawStatus === 'error') {
-            const message = status.error || `${year}年${month}月のスクレイピングが失敗しました`
-            setStatus('error')
-            setError(message)
-            throw new Error(message)
+            const message = typeof statusPayload.error === 'string' && statusPayload.error.trim().length > 0
+              ? statusPayload.error
+              : `${year}年${month}月のスクレイピングが失敗しました`
+            fail(message, 'execution', true)
           }
+        }
+
+        if (abortRef.current) {
+          fail(CLIENT_STOP_MESSAGE, 'client_stop', false)
         }
       }
 
-      if (abortRef.current || completedMonths !== totalMonths) {
-        throw new Error(ABORT_MESSAGE)
+      if (completedMonths !== totalMonths) {
+        fail('実行状態を確認できません。開始済みのサーバージョブは継続している可能性があります。', 'monitoring', false)
       }
 
       const elapsed = Math.round((Date.now() - startTimeRef.current) / 1000)
@@ -253,19 +336,49 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
         stats: { period: `${startYear}年${startMonth}月〜${endYear}年${endMonth}月`, total_months: totalMonths },
       }
       setResult(batchResult)
+      setFailureKind(null)
+      setCanRetry(false)
+      setIsExecutionLocked(false)
       return batchResult
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'エラーが発生しました'
+      const normalized = error instanceof BatchScrapeError
+        ? error
+        : new BatchScrapeError(
+          error instanceof Error ? error.message : 'エラーが発生しました',
+          'monitoring',
+          false,
+        )
+
       setProgress({ current: 0, total: 100, message: 'エラーが発生しました', eta: '' })
       setStatus('error')
-      setError(message)
-      throw error
+      setError(normalized.message)
+      setFailureKind(normalized.kind)
+      setCanRetry(normalized.safeToRetry)
+      if (normalized.kind === 'monitoring' || normalized.kind === 'client_stop') {
+        setIsExecutionLocked(true)
+      }
+      throw normalized
     } finally {
       setLoading(false)
+      inFlightRef.current = false
     }
-  }, [loading, maxConsecutiveStatusFailures, maxPollAttempts, pollIntervalMs, status])
+  }, [isExecutionLocked, maxConsecutiveStatusFailures, maxPollAttempts, pollIntervalMs])
 
-  const abort = useCallback(() => { abortRef.current = true }, [])
+  const abort = useCallback(() => {
+    abortRef.current = true
+  }, [])
 
-  return { loading, status, error, jobId, progress, result, start, abort }
+  return {
+    loading,
+    status,
+    error,
+    failureKind,
+    canRetry,
+    isExecutionLocked,
+    jobId,
+    progress,
+    result,
+    start,
+    abort,
+  }
 }

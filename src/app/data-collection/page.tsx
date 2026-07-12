@@ -6,7 +6,7 @@ import { Logo } from '@/components/Logo'
 import { Toast } from '@/components/Toast'
 import { authFetch } from '@/lib/auth-fetch'
 import { useJobPoller } from '@/hooks/useJobPoller'
-import { useBatchScrape } from '@/hooks/useBatchScrape'
+import { BatchScrapeError, useBatchScrape } from '@/hooks/useBatchScrape'
 
 type ScrapeHealthStatus = 'healthy' | 'degraded' | 'unhealthy' | 'unknown'
 type LocalApiStatus = 'checking' | ScrapeHealthStatus
@@ -125,34 +125,26 @@ function normalizeDryRunResult(resultPayload: any): ScrapeDryRunResult {
     throw new Error('Dry-run結果形式が不正です（fetch_summary.dry_run）')
   }
 
-  const numericKeys: Array<keyof ScrapeDryRunSummary> = [
-    'total_target_count',
-    'unique_url_count',
-    'estimated_request_count',
-    'cache_hit_count',
-    'cache_miss_count',
-    'resume_hit_count',
-    'skipped_count',
-    'estimated_runtime_sec',
-  ]
-
-  for (const key of numericKeys) {
-    const value = Number(dryRun[key])
-    if (!Number.isFinite(value) || value < 0) {
+  const parseStrictNumber = (value: unknown, key: string, integerOnly: boolean): number => {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
       throw new Error(`Dry-run結果形式が不正です（${key}）`)
     }
+    if (integerOnly && !Number.isInteger(value)) {
+      throw new Error(`Dry-run結果形式が不正です（${key}）`)
+    }
+    return value
   }
 
   return {
     dry_run: {
-      total_target_count: Number(dryRun.total_target_count),
-      unique_url_count: Number(dryRun.unique_url_count),
-      estimated_request_count: Number(dryRun.estimated_request_count),
-      cache_hit_count: Number(dryRun.cache_hit_count),
-      cache_miss_count: Number(dryRun.cache_miss_count),
-      resume_hit_count: Number(dryRun.resume_hit_count),
-      skipped_count: Number(dryRun.skipped_count),
-      estimated_runtime_sec: Number(dryRun.estimated_runtime_sec),
+      total_target_count: parseStrictNumber(dryRun.total_target_count, 'total_target_count', true),
+      unique_url_count: parseStrictNumber(dryRun.unique_url_count, 'unique_url_count', true),
+      estimated_request_count: parseStrictNumber(dryRun.estimated_request_count, 'estimated_request_count', true),
+      cache_hit_count: parseStrictNumber(dryRun.cache_hit_count, 'cache_hit_count', true),
+      cache_miss_count: parseStrictNumber(dryRun.cache_miss_count, 'cache_miss_count', true),
+      resume_hit_count: parseStrictNumber(dryRun.resume_hit_count, 'resume_hit_count', true),
+      skipped_count: parseStrictNumber(dryRun.skipped_count, 'skipped_count', true),
+      estimated_runtime_sec: parseStrictNumber(dryRun.estimated_runtime_sec, 'estimated_runtime_sec', false),
     },
     rate_limit_policy: fetchSummary?.rate_limit_policy || {},
     retry_backoff_policy: fetchSummary?.retry_backoff_policy || {},
@@ -187,12 +179,16 @@ export default function DataCollectionPage() {
     loading: batchLoading,
     status: batchStatus,
     error: batchError,
+    failureKind,
+    canRetry,
+    isExecutionLocked,
     jobId: activeJobId,
     progress: batchProgress,
     result: batchResult,
     start: startBatchScrape,
   } = useBatchScrape()
   const isBatchBusy = batchLoading || batchStatus === 'queued' || batchStatus === 'running'
+  const isOperationBusy = isBatchBusy || dryRunLoading
   const periodValidation = validatePeriodRange(startPeriod, endPeriod)
   const isPeriodValid = periodValidation.ok
 
@@ -241,6 +237,8 @@ export default function DataCollectionPage() {
 
   const isApiUnavailable = localApiStatus === 'unhealthy' || localApiStatus === 'unknown'
   const effectivePeriodError = periodErrorMessage || (!isPeriodValid ? periodValidation.message || '' : '')
+  const shouldShowUncertaintyWarning = failureKind === 'monitoring' || failureKind === 'client_stop'
+  const executeBlockedByUncertainty = isExecutionLocked || shouldShowUncertaintyWarning
 
   const checkLocalApi = async () => {
     setLocalApiStatus('checking')
@@ -325,7 +323,11 @@ export default function DataCollectionPage() {
 
   // 🚀 期間指定バッチスクレイピング（バリデーション・確認ダイアログのみ担当）
   const handlePeriodBatchScrape = async (override?: BatchRequestSnapshot) => {
-    if (isBatchBusy) return
+    if (isOperationBusy) return
+    if (executeBlockedByUncertainty) {
+      showToast('実行状態を確認できません。履歴またはjob statusを確認するまで新規実行しないでください。', 'error')
+      return
+    }
 
     const target = override ?? { startPeriod, endPeriod, forceRescrape }
     const validation = validatePeriodRange(target.startPeriod, target.endPeriod)
@@ -359,7 +361,7 @@ export default function DataCollectionPage() {
     }
 
     const _dryRunState = dryRunExecuted ? 'Dry-run実行済み' : 'Dry-run未実行（推奨）'
-    if (!confirm(`${startYear}年${startMonth}月 ～ ${endYear}年${endMonth}月（${totalMonths}ヶ月分）を月単位で順次取得します。\n中断するとこの実行は失敗として扱われます。\n\n${_dryRunState}\n続行しますか？`)) return
+    if (!confirm(`${startYear}年${startMonth}月 ～ ${endYear}年${endMonth}月（${totalMonths}ヶ月分）を月単位で順次取得します。\nブラウザ側で停止しても開始済みのサーバージョブは継続している可能性があります。\n\n${_dryRunState}\n続行しますか？`)) return
 
     try {
       const result = await startBatchScrape(target.startPeriod, target.endPeriod, target.forceRescrape)
@@ -368,7 +370,8 @@ export default function DataCollectionPage() {
       loadStats()
       loadFetchSummaryHistory()
     } catch (error: any) {
-      setRetrySnapshot(target)
+      const safeToRetry = error instanceof BatchScrapeError ? error.safeToRetry : false
+      setRetrySnapshot(safeToRetry ? target : null)
       showToast(`取得エラー: ${error.message}`, 'error')
     }
   }
@@ -541,6 +544,8 @@ export default function DataCollectionPage() {
               <input
                 type="month"
                 value={startPeriod}
+                data-testid="start-period-input"
+                disabled={isOperationBusy || executeBlockedByUncertainty}
                 onChange={e => {
                   setStartPeriod(e.target.value)
                   setPeriodErrorMessage('')
@@ -554,6 +559,8 @@ export default function DataCollectionPage() {
               <input
                 type="month"
                 value={endPeriod}
+                data-testid="end-period-input"
+                disabled={isOperationBusy || executeBlockedByUncertainty}
                 onChange={e => {
                   setEndPeriod(e.target.value)
                   setPeriodErrorMessage('')
@@ -582,7 +589,9 @@ export default function DataCollectionPage() {
             <label className="flex items-center gap-2 cursor-pointer select-none">
               <input
                 type="checkbox"
+                data-testid="force-rescrape-input"
                 checked={forceRescrape}
+                disabled={isOperationBusy || executeBlockedByUncertainty}
                 onChange={e => setForceRescrape(e.target.checked)}
                 className="w-3.5 h-3.5 accent-white"
               />
@@ -592,9 +601,10 @@ export default function DataCollectionPage() {
             <div className="flex items-center gap-2">
               <button
                 onClick={handleDryRun}
-                disabled={isBatchBusy || dryRunLoading || isApiUnavailable || !isPeriodValid}
+                data-testid="dry-run-button"
+                disabled={isOperationBusy || isApiUnavailable || !isPeriodValid || executeBlockedByUncertainty}
                 className={`flex items-center gap-2 px-4 py-2.5 rounded-lg font-medium text-sm transition-colors ${
-                  isBatchBusy || dryRunLoading || isApiUnavailable || !isPeriodValid
+                  isOperationBusy || isApiUnavailable || !isPeriodValid || executeBlockedByUncertainty
                     ? 'bg-[#222] text-[#555] cursor-not-allowed'
                     : 'bg-[#1e293b] text-[#dbeafe] hover:bg-[#334155]'
                 }`}
@@ -604,9 +614,10 @@ export default function DataCollectionPage() {
 
               <button
                 onClick={() => handlePeriodBatchScrape()}
-                disabled={isBatchBusy || isApiUnavailable || !isPeriodValid}
+                data-testid="execute-button"
+                disabled={isOperationBusy || isApiUnavailable || !isPeriodValid || executeBlockedByUncertainty}
                 className={`flex items-center gap-2 px-6 py-2.5 rounded-lg font-medium text-sm transition-colors ${
-                  isBatchBusy || isApiUnavailable || !isPeriodValid
+                  isOperationBusy || isApiUnavailable || !isPeriodValid || executeBlockedByUncertainty
                     ? 'bg-[#222] text-[#555] cursor-not-allowed'
                     : 'bg-white text-black hover:bg-[#eee]'
                 }`}
@@ -619,10 +630,19 @@ export default function DataCollectionPage() {
                     </svg>
                     取得中...
                   </>
-                ) : isApiUnavailable ? 'API確認不可' : !isPeriodValid ? '期間不正' : '取得開始'}
+                ) : isApiUnavailable ? 'API確認不可' : !isPeriodValid ? '期間不正' : executeBlockedByUncertainty ? '実行確認待ち' : '取得開始'}
               </button>
             </div>
           </div>
+
+          {shouldShowUncertaintyWarning && (
+            <div className="rounded border border-[#4a1d1d] bg-[#220d0d] px-3 py-2 text-xs text-[#fca5a5]" role="alert">
+              <div>実行状態を確認できません</div>
+              {activeJobId && <div>job_id: {activeJobId}</div>}
+              <div>開始済みのサーバージョブは継続している可能性があります</div>
+              <div>履歴またはjob statusを確認するまで新規実行しないでください</div>
+            </div>
+          )}
 
           {effectivePeriodError && (
             <div className="rounded border border-[#4a1d1d] bg-[#220d0d] px-3 py-2 text-xs text-[#fca5a5]" role="alert">
@@ -718,17 +738,20 @@ export default function DataCollectionPage() {
               {batchStatus === 'error' && (
                 <div className="space-y-2" role="alert">
                   <div className="text-xs text-[#fca5a5]">取得失敗: {batchError || '不明なエラー'}</div>
-                  <button
-                    onClick={() => handlePeriodBatchScrape(retrySnapshot || undefined)}
-                    disabled={isBatchBusy || isApiUnavailable}
-                    className={`px-4 py-2 rounded text-xs font-medium transition-colors ${
-                      isBatchBusy || isApiUnavailable
-                        ? 'bg-[#222] text-[#555] cursor-not-allowed'
-                        : 'bg-white text-black hover:bg-[#eee]'
-                    }`}
-                  >
-                    再実行
-                  </button>
+                  {canRetry && retrySnapshot && (failureKind === 'execution' || failureKind === 'start_rejected') && (
+                    <button
+                      data-testid="retry-button"
+                      onClick={() => handlePeriodBatchScrape(retrySnapshot)}
+                      disabled={isOperationBusy || isApiUnavailable}
+                      className={`px-4 py-2 rounded text-xs font-medium transition-colors ${
+                        isOperationBusy || isApiUnavailable
+                          ? 'bg-[#222] text-[#555] cursor-not-allowed'
+                          : 'bg-white text-black hover:bg-[#eee]'
+                      }`}
+                    >
+                      再実行
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -767,6 +790,7 @@ export default function DataCollectionPage() {
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-sm font-medium text-white">fetch summary 履歴</h2>
             <button
+              data-testid="refresh-history-button"
               onClick={loadFetchSummaryHistory}
               className="text-xs text-[#555] hover:text-[#888] transition-colors"
             >

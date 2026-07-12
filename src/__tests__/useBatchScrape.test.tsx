@@ -1,16 +1,16 @@
-import { renderHook, act } from '@testing-library/react'
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { renderHook, act, waitFor } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { mockedAuthFetch } = vi.hoisted(() => ({ mockedAuthFetch: vi.fn() }))
 
 vi.mock('@/lib/auth-fetch', () => ({ authFetch: mockedAuthFetch }))
 
-import { useBatchScrape } from '@/hooks/useBatchScrape'
+import { BatchScrapeError, useBatchScrape } from '@/hooks/useBatchScrape'
 
 const FAST_OPTIONS = {
-  pollIntervalMs: 0,
+  pollIntervalMs: 1,
   maxPollAttempts: 10,
-  maxConsecutiveStatusFailures: 3,
+  maxConsecutiveStatusFailures: 2,
 }
 
 function jsonResponse(payload: unknown, status = 200): Response {
@@ -20,12 +20,26 @@ function jsonResponse(payload: unknown, status = 200): Response {
   })
 }
 
-async function flushMicrotasks(times = 2) {
-  for (let i = 0; i < times; i += 1) {
-    await act(async () => {
-      await Promise.resolve()
-    })
-  }
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(r => {
+    resolve = r
+  })
+  return { promise, resolve }
+}
+
+async function sleep(ms = 5) {
+  await act(async () => {
+    await new Promise(resolve => setTimeout(resolve, ms))
+  })
+}
+
+async function renderBatchHook(options = FAST_OPTIONS) {
+  const hook = renderHook(() => useBatchScrape(options))
+  await waitFor(() => {
+    expect(hook.result.current).toBeTruthy()
+  })
+  return hook
 }
 
 describe('useBatchScrape', () => {
@@ -33,201 +47,253 @@ describe('useBatchScrape', () => {
     mockedAuthFetch.mockReset()
   })
 
-  it('idle -> queued -> running -> completed', async () => {
-    let pollCount = 0
-    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url === '/api/scrape' && init?.method === 'POST') return jsonResponse({ job_id: 'job-1' })
-      if (url === '/api/scrape/status/job-1') {
-        pollCount += 1
-        if (pollCount === 1) return jsonResponse({ status: 'queued', progress: { done: 0, total: 10, message: 'queued' } })
-        if (pollCount === 2) return jsonResponse({ status: 'running', progress: { done: 5, total: 10, message: 'running' } })
-        return jsonResponse({ status: 'completed', result: { races_collected: 4 } })
-      }
-      throw new Error(`unexpected request: ${url}`)
-    })
+  it('observes queued and running before completed', async () => {
+    const statusDeferred: Array<ReturnType<typeof deferred<Response>>> = []
 
-    const { result } = renderHook(() => useBatchScrape(FAST_OPTIONS))
-    const promise = result.current.start('2026-01', '2026-01', false)
-    let resolved: any
-    await act(async () => {
-      resolved = await promise
-    })
-    expect(resolved).toMatchObject({ races_collected: 4 })
-    expect(result.current.status).toBe('completed')
-    expect(result.current.jobId).toBe('job-1')
-  })
-
-  it('completed with zero races', async () => {
-    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url === '/api/scrape' && init?.method === 'POST') return jsonResponse({ job_id: 'job-zero' })
-      if (url === '/api/scrape/status/job-zero') return jsonResponse({ status: 'completed', result: { races_collected: 0 } })
-      throw new Error(`unexpected request: ${url}`)
-    })
-
-    const { result } = renderHook(() => useBatchScrape(FAST_OPTIONS))
-    const promise = result.current.start('2026-01', '2026-01', false)
-    let resolved: any
-    await act(async () => {
-      resolved = await promise
-    })
-    expect(resolved).toMatchObject({ races_collected: 0 })
-    expect(result.current.status).toBe('completed')
-    expect(result.current.result?.races_collected).toBe(0)
-  })
-
-  it('backend error -> error', async () => {
-    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url === '/api/scrape' && init?.method === 'POST') return jsonResponse({ job_id: 'job-err' })
-      if (url === '/api/scrape/status/job-err') return jsonResponse({ status: 'error', error: 'backend failed' })
-      throw new Error(`unexpected request: ${url}`)
-    })
-
-    const { result } = renderHook(() => useBatchScrape(FAST_OPTIONS))
-    const promise = result.current.start('2026-01', '2026-01', false)
-    let rejected: any
-    await act(async () => {
-      try {
-        await promise
-      } catch (error) {
-        rejected = error
-      }
-    })
-    expect(rejected).toBeInstanceOf(Error)
-    expect((rejected as Error).message).toBe('backend failed')
-    expect(result.current.status).toBe('error')
-    expect(result.current.error).toBe('backend failed')
-  })
-
-  it('re-run resets previous error/result/jobId', async () => {
-    let run = 0
-    let secondPollCount = 0
     mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       if (url === '/api/scrape' && init?.method === 'POST') {
-        run += 1
-        return jsonResponse({ job_id: run === 1 ? 'job-first' : 'job-second' })
+        return jsonResponse({ job_id: 'job-1' })
       }
-      if (url === '/api/scrape/status/job-first') return jsonResponse({ status: 'error', error: 'first failed' })
-      if (url === '/api/scrape/status/job-second') {
-        secondPollCount += 1
-        if (secondPollCount === 1) {
-          return jsonResponse({ status: 'running', progress: { done: 1, total: 10, message: 'running' } })
-        }
-        return jsonResponse({ status: 'completed', result: { races_collected: 1 } })
+      if (url === '/api/scrape/status/job-1') {
+        const d = deferred<Response>()
+        statusDeferred.push(d)
+        return d.promise
       }
       throw new Error(`unexpected request: ${url}`)
     })
 
-    const { result } = renderHook(() => useBatchScrape(FAST_OPTIONS))
-    const firstPromise = result.current.start('2026-01', '2026-01', false)
+    const { result } = await renderBatchHook()
+    const promise = result.current.start('2026-01', '2026-01', false)
+    const handled = promise.catch(error => error)
+
+    await sleep()
+    expect(result.current.status).toBe('queued')
+
     await act(async () => {
-      try {
-        await firstPromise
-      } catch {
-        // expected
-      }
+      statusDeferred.shift()?.resolve(jsonResponse({ status: 'queued', progress: { done: 0, total: 10, message: 'queued' } }))
+    })
+    await sleep()
+    expect(result.current.status).toBe('queued')
+
+    await act(async () => {
+      statusDeferred.shift()?.resolve(jsonResponse({ status: 'running', progress: { done: 3, total: 10, message: 'running' } }))
+    })
+    await sleep()
+    expect(result.current.status).toBe('running')
+
+    await act(async () => {
+      statusDeferred.shift()?.resolve(jsonResponse({ status: 'completed', result: { races_collected: 4 } }))
     })
 
-    const second = result.current.start('2026-01', '2026-01', false)
-    await flushMicrotasks()
-    expect(result.current.error).toBeNull()
-    expect(result.current.result).toBeNull()
-    let secondResolved: any
+    let resolved: any
     await act(async () => {
-      secondResolved = await second
+      resolved = await promise
     })
-    expect(secondResolved).toMatchObject({ races_collected: 1 })
-    expect(result.current.jobId).toBe('job-second')
+
+    expect(resolved).toMatchObject({ races_collected: 4 })
+    expect(result.current.status).toBe('completed')
   })
 
-  it('multiple months do not complete globally at intermediate completion', async () => {
+  it('keeps status non-completed and result null during second-month running', async () => {
     let postCount = 0
-    let febPollCount = 0
+    const febStatusDeferred: Array<ReturnType<typeof deferred<Response>>> = []
+
     mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       if (url === '/api/scrape' && init?.method === 'POST') {
         postCount += 1
         return jsonResponse({ job_id: postCount === 1 ? 'job-jan' : 'job-feb' })
       }
-      if (url === '/api/scrape/status/job-jan') return jsonResponse({ status: 'completed', result: { races_collected: 2 } })
-      if (url === '/api/scrape/status/job-feb') {
-        febPollCount += 1
-        if (febPollCount === 1) return jsonResponse({ status: 'running', progress: { done: 1, total: 10, message: 'running' } })
-        return jsonResponse({ status: 'completed', result: { races_collected: 3 } })
+      if (url === '/api/scrape/status/job-jan') {
+        return jsonResponse({ status: 'completed', result: { races_collected: 2 } })
       }
-      if (url.startsWith('/api/scrape/status/')) {
-        return jsonResponse({ status: 'error', error: 'unexpected status url' })
+      if (url === '/api/scrape/status/job-feb') {
+        const d = deferred<Response>()
+        febStatusDeferred.push(d)
+        return d.promise
       }
       throw new Error(`unexpected request: ${url}`)
     })
 
-    const { result } = renderHook(() => useBatchScrape(FAST_OPTIONS))
+    const { result } = await renderBatchHook()
     const promise = result.current.start('2026-01', '2026-02', false)
+
+    await waitFor(() => {
+      expect(febStatusDeferred.length).toBeGreaterThan(0)
+    })
+
+    await act(async () => {
+      febStatusDeferred.shift()?.resolve(jsonResponse({ status: 'running', progress: { done: 1, total: 10, message: 'running feb' } }))
+    })
+    await sleep()
+    expect(result.current.status).toBe('running')
+    expect(result.current.status).not.toBe('completed')
+    expect(result.current.result).toBeNull()
+
+    await waitFor(() => {
+      expect(febStatusDeferred.length).toBeGreaterThan(0)
+    })
+    await act(async () => {
+      febStatusDeferred.shift()?.resolve(jsonResponse({ status: 'completed', result: { races_collected: 3 } }))
+    })
+
     let resolved: any
     await act(async () => {
       resolved = await promise
     })
+
     expect(resolved).toMatchObject({ races_collected: 5 })
     expect(result.current.status).toBe('completed')
   })
 
-  it('unknown nonterminal is not treated as completed until terminal completed arrives', async () => {
-    let pollCount = 0
+  it('blocks concurrent start atomically and keeps first run state intact', async () => {
+    const statusDeferred: Array<ReturnType<typeof deferred<Response>>> = []
+    let postCount = 0
+
     mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
-      if (url === '/api/scrape' && init?.method === 'POST') return jsonResponse({ job_id: 'job-unknown' })
-      if (url === '/api/scrape/status/job-unknown') {
-        pollCount += 1
-        if (pollCount === 1) return jsonResponse({ status: 'mystery', progress: { done: 0, total: 10, message: 'mystery' } })
-        return jsonResponse({ status: 'completed', result: { races_collected: 2 } })
+      if (url === '/api/scrape' && init?.method === 'POST') {
+        postCount += 1
+        return jsonResponse({ job_id: 'job-concurrent' })
       }
-      if (url.startsWith('/api/scrape/status/')) {
-        return jsonResponse({ status: 'error', error: 'unexpected status url' })
+      if (url === '/api/scrape/status/job-concurrent') {
+        const d = deferred<Response>()
+        statusDeferred.push(d)
+        return d.promise
       }
       throw new Error(`unexpected request: ${url}`)
     })
 
-    const { result } = renderHook(() => useBatchScrape(FAST_OPTIONS))
-    const promise = result.current.start('2026-01', '2026-01', false)
-    let resolved: any
+    const { result } = await renderBatchHook()
+    const first = result.current.start('2026-01', '2026-01', false)
+    await sleep()
+
+    const second = result.current.start('2026-01', '2026-01', false).catch(error => error)
+    const secondError = await second
+    expect(secondError).toBeInstanceOf(BatchScrapeError)
+    expect((secondError as BatchScrapeError).kind).toBe('busy')
+    expect(postCount).toBe(1)
+    expect(result.current.status).not.toBe('error')
+
     await act(async () => {
-      resolved = await promise
+      statusDeferred.shift()?.resolve(jsonResponse({ status: 'running', progress: { done: 4, total: 10, message: 'running' } }))
     })
-    expect(resolved).toMatchObject({ races_collected: 2 })
+    await sleep()
+    expect(result.current.status).toBe('running')
+
+    await act(async () => {
+      statusDeferred.shift()?.resolve(jsonResponse({ status: 'completed', result: { races_collected: 2 } }))
+    })
+    await act(async () => {
+      await first
+    })
+
     expect(result.current.status).toBe('completed')
+    expect(result.current.result?.races_collected).toBe(2)
   })
 
-  it('abort is not treated as completed', async () => {
+  it('marks execution failure as retry-safe', async () => {
+    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/scrape' && init?.method === 'POST') return jsonResponse({ job_id: 'job-exec' })
+      if (url === '/api/scrape/status/job-exec') return jsonResponse({ status: 'error', error: 'backend failed' })
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    const { result } = await renderBatchHook()
+    const promise = result.current.start('2026-01', '2026-01', false)
+    const handled = promise.catch(error => error)
+    let rejected: any
+    await act(async () => {
+      rejected = await handled
+    })
+
+    expect(rejected).toBeInstanceOf(BatchScrapeError)
+    expect((rejected as BatchScrapeError).kind).toBe('execution')
+    expect((rejected as BatchScrapeError).safeToRetry).toBe(true)
+    expect(result.current.failureKind).toBe('execution')
+    expect(result.current.canRetry).toBe(true)
+  })
+
+  it('marks monitoring failure as not retry-safe and locks further start', async () => {
+    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/scrape' && init?.method === 'POST') return jsonResponse({ job_id: 'job-nf' })
+      if (url === '/api/scrape/status/job-nf') return jsonResponse({ status: 'not_found' })
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    const { result } = await renderBatchHook({ ...FAST_OPTIONS, maxConsecutiveStatusFailures: 2 })
+    const first = result.current.start('2026-01', '2026-01', false)
+    let firstError: any
+    await act(async () => {
+      try {
+        await first
+      } catch (error) {
+        firstError = error
+      }
+    })
+
+    expect(firstError).toBeInstanceOf(BatchScrapeError)
+    expect((firstError as BatchScrapeError).kind).toBe('monitoring')
+    expect((firstError as BatchScrapeError).safeToRetry).toBe(false)
+    expect(result.current.failureKind).toBe('monitoring')
+    expect(result.current.canRetry).toBe(false)
+    expect(result.current.isExecutionLocked).toBe(true)
+
+    const callsAfterFailure = mockedAuthFetch.mock.calls.length
+    const second = result.current.start('2026-01', '2026-01', false).catch(error => error)
+    const secondError = await second
+    expect(secondError).toBeInstanceOf(BatchScrapeError)
+    expect((secondError as BatchScrapeError).kind).toBe('busy')
+    expect(mockedAuthFetch.mock.calls.length).toBe(callsAfterFailure)
+  })
+
+  it('client abort uses monitoring-stop semantics without backend error mock', async () => {
+    const statusDeferred: Array<ReturnType<typeof deferred<Response>>> = []
+
     mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       if (url === '/api/scrape' && init?.method === 'POST') return jsonResponse({ job_id: 'job-abort' })
       if (url === '/api/scrape/status/job-abort') {
-        return jsonResponse({ status: 'error', error: '取得を中断しました' })
+        const d = deferred<Response>()
+        statusDeferred.push(d)
+        return d.promise
       }
       throw new Error(`unexpected request: ${url}`)
     })
 
-    const { result } = renderHook(() => useBatchScrape(FAST_OPTIONS))
+    const { result } = await renderBatchHook()
     const promise = result.current.start('2026-01', '2026-01', false)
     const handled = promise.catch(error => error)
+
+    await sleep()
+    expect(result.current.status).toBe('queued')
+
     await act(async () => {
       result.current.abort()
+    })
+
+    await act(async () => {
+      statusDeferred.shift()?.resolve(jsonResponse({ status: 'running', progress: { done: 1, total: 10, message: 'running' } }))
     })
 
     let rejected: any
     await act(async () => {
       rejected = await handled
     })
-    expect(rejected).toBeInstanceOf(Error)
-    expect((rejected as Error).message).toBe('取得を中断しました')
-    expect(result.current.status).toBe('error')
+
+    expect(rejected).toBeInstanceOf(BatchScrapeError)
+    expect((rejected as BatchScrapeError).kind).toBe('client_stop')
+    expect((rejected as BatchScrapeError).safeToRetry).toBe(false)
+    expect(result.current.failureKind).toBe('client_stop')
+    expect(result.current.canRetry).toBe(false)
+    expect(result.current.error).toContain('開始済みのサーバージョブは継続している可能性があります')
   })
 
-  it('rejects invalid period format without authFetch calls', async () => {
-    const { result } = renderHook(() => useBatchScrape(FAST_OPTIONS))
+  it('rejects invalid period format without authFetch call', async () => {
+    const { result } = await renderBatchHook()
     const promise = result.current.start('2026-13', '2026-01', false)
     let rejected: any
     await act(async () => {
@@ -238,38 +304,22 @@ describe('useBatchScrape', () => {
       }
     })
 
-    expect(rejected).toBeInstanceOf(Error)
-    expect((rejected as Error).message).toContain('期間指定が不正')
+    expect(rejected).toBeInstanceOf(BatchScrapeError)
+    expect((rejected as BatchScrapeError).kind).toBe('validation')
     expect(mockedAuthFetch).not.toHaveBeenCalled()
-    expect(result.current.status).toBe('error')
+    expect(result.current.canRetry).toBe(false)
   })
 
-  it('rejects start > end without authFetch calls', async () => {
-    const { result } = renderHook(() => useBatchScrape(FAST_OPTIONS))
-    const promise = result.current.start('2026-02', '2026-01', false)
-    let rejected: any
-    await act(async () => {
-      try {
-        await promise
-      } catch (error) {
-        rejected = error
-      }
-    })
-
-    expect(rejected).toBeInstanceOf(Error)
-    expect((rejected as Error).message).toContain('開始年月')
-    expect(mockedAuthFetch).not.toHaveBeenCalled()
-    expect(result.current.status).toBe('error')
-  })
-
-  it('fails when start response job_id is empty', async () => {
+  it('rejects non-2xx start as start_rejected and retry-safe', async () => {
     mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
-      if (url === '/api/scrape' && init?.method === 'POST') return jsonResponse({ job_id: '' })
+      if (url === '/api/scrape' && init?.method === 'POST') {
+        return jsonResponse({ detail: 'rejected by backend' }, 400)
+      }
       throw new Error(`unexpected request: ${url}`)
     })
 
-    const { result } = renderHook(() => useBatchScrape(FAST_OPTIONS))
+    const { result } = await renderBatchHook()
     const promise = result.current.start('2026-01', '2026-01', false)
     let rejected: any
     await act(async () => {
@@ -280,57 +330,9 @@ describe('useBatchScrape', () => {
       }
     })
 
-    expect(rejected).toBeInstanceOf(Error)
-    expect((rejected as Error).message).toContain('job_id')
-    expect(result.current.status).toBe('error')
-  })
-
-  it('stops polling after consecutive not_found failures', async () => {
-    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url === '/api/scrape' && init?.method === 'POST') return jsonResponse({ job_id: 'job-nf' })
-      if (url === '/api/scrape/status/job-nf') return jsonResponse({ status: 'not_found' })
-      throw new Error(`unexpected request: ${url}`)
-    })
-
-    const { result } = renderHook(() => useBatchScrape({ ...FAST_OPTIONS, maxConsecutiveStatusFailures: 2 }))
-    const promise = result.current.start('2026-01', '2026-01', false)
-    let rejected: any
-    await act(async () => {
-      try {
-        await promise
-      } catch (error) {
-        rejected = error
-      }
-    })
-
-    expect(rejected).toBeInstanceOf(Error)
-    expect((rejected as Error).message).toContain('ジョブが見つかりません')
-    expect(result.current.status).toBe('error')
-  })
-
-  it('stops polling after max attempts on unknown status', async () => {
-    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url === '/api/scrape' && init?.method === 'POST') return jsonResponse({ job_id: 'job-unknown-loop' })
-      if (url === '/api/scrape/status/job-unknown-loop') return jsonResponse({ status: 'mystery', progress: { done: 0, total: 10 } })
-      throw new Error(`unexpected request: ${url}`)
-    })
-
-    const { result } = renderHook(() => useBatchScrape({ ...FAST_OPTIONS, maxPollAttempts: 2 }))
-    const promise = result.current.start('2026-01', '2026-01', false)
-    let rejected: any
-    await act(async () => {
-      try {
-        await promise
-      } catch (error) {
-        rejected = error
-      }
-    })
-
-    expect(rejected).toBeInstanceOf(Error)
-    expect((rejected as Error).message).toContain('上限回数')
-    expect(result.current.status).toBe('error')
-    expect(result.current.status).not.toBe('completed')
+    expect(rejected).toBeInstanceOf(BatchScrapeError)
+    expect((rejected as BatchScrapeError).kind).toBe('start_rejected')
+    expect((rejected as BatchScrapeError).safeToRetry).toBe(true)
+    expect(result.current.canRetry).toBe(true)
   })
 })
