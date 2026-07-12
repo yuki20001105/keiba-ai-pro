@@ -87,12 +87,25 @@ async function setSingleMonthRange(page: Page, month: string) {
   await page.locator('input[type="month"]').nth(1).fill(month)
 }
 
+function trackExternalRequests(page: Page, baseURL: string) {
+  const externalRequests: string[] = []
+  page.on('request', request => {
+    const url = request.url()
+    if (url.startsWith(baseURL)) return
+    if (url.startsWith('http://127.0.0.1:54321')) return
+    if (url.startsWith('about:') || url.startsWith('data:') || url.startsWith('blob:')) return
+    externalRequests.push(url)
+  })
+  return externalRequests
+}
+
 test.describe('Phase3B Data Collection workflow', () => {
   test('queued/running/completed, quality bridge, and no quality API auto-call', async ({ page, baseURL }) => {
     if (!baseURL) throw new Error('Playwright baseURL is required')
 
     let refreshApiCalls = 0
     let p0ApiCalls = 0
+    const externalRequests = trackExternalRequests(page, baseURL)
 
     await setupAuthorizedPage(page, baseURL)
     await mockBatchWorkflow(page, [
@@ -106,11 +119,11 @@ test.describe('Phase3B Data Collection workflow', () => {
       },
     ])
 
-    await page.route('**/api/data-collection/refresh-plan**', route => {
+    await page.route('**/api/scrape/refresh-plan**', route => {
       refreshApiCalls += 1
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({}) })
     })
-    await page.route('**/api/data-collection/p0-repair-plan**', route => {
+    await page.route('**/api/scrape/p0-repair-plan**', route => {
       p0ApiCalls += 1
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({}) })
     })
@@ -122,8 +135,11 @@ test.describe('Phase3B Data Collection workflow', () => {
     await page.getByRole('button', { name: '取得開始' }).click()
 
     const statusPanel = page.getByTestId('batch-status-panel')
+    await expect(page.getByTestId('quality-bridge-card')).toHaveCount(0)
     await expect(statusPanel).toContainText('開始待ち')
+    await expect(page.getByTestId('quality-bridge-card')).toHaveCount(0)
     await expect(statusPanel).toContainText('取得実行中')
+    await expect(page.getByTestId('quality-bridge-card')).toHaveCount(0)
     await expect(statusPanel).toContainText('取得完了')
 
     const qualityCard = page.getByTestId('quality-bridge-card')
@@ -135,6 +151,7 @@ test.describe('Phase3B Data Collection workflow', () => {
 
     expect(refreshApiCalls).toBe(0)
     expect(p0ApiCalls).toBe(0)
+    expect(externalRequests).toEqual([])
   })
 
   test('completed zero is shown as normal completion and distinct from pending', async ({ page, baseURL }) => {
@@ -165,12 +182,14 @@ test.describe('Phase3B Data Collection workflow', () => {
     if (!baseURL) throw new Error('Playwright baseURL is required')
 
     let postCount = 0
+    const postBodies: Array<Record<string, unknown>> = []
     const pollCount: Record<string, number> = {}
 
     await setupAuthorizedPage(page, baseURL)
 
     await page.route('**/api/scrape', async route => {
       if (route.request().method() !== 'POST') return route.fallback()
+      postBodies.push((route.request().postDataJSON() as Record<string, unknown>) || {})
       postCount += 1
       return route.fulfill({
         status: 200,
@@ -197,6 +216,8 @@ test.describe('Phase3B Data Collection workflow', () => {
     await expect(page.locator('[data-testid="batch-status-panel"] [role="alert"]').first()).toContainText('取得失敗: backend error detail')
     await page.getByRole('button', { name: '再実行' }).click()
     await expect(page.getByTestId('batch-status-panel')).toContainText('取得完了')
+    expect(postBodies).toHaveLength(2)
+    expect(postBodies[0]).toEqual(postBodies[1])
   })
 
   test('multiple months do not become globally completed on first month completion', async ({ page, baseURL }) => {
@@ -239,6 +260,51 @@ test.describe('Phase3B Data Collection workflow', () => {
     await page.getByRole('button', { name: 'Dry-run' }).click()
 
     await expect(page.getByRole('status').filter({ hasText: 'Dry-runはまだ処理中です。しばらく待って再実行してください。' }).first()).toBeVisible()
+    await expect(page.getByText('Dry-run 結果（実取得なし）')).not.toBeVisible()
+  })
+
+  test('invalid period is fail-closed and sends zero POST requests', async ({ page, baseURL }) => {
+    if (!baseURL) throw new Error('Playwright baseURL is required')
+
+    let scrapePostCount = 0
+    await setupAuthorizedPage(page, baseURL)
+
+    await page.route('**/api/scrape', async route => {
+      if (route.request().method() === 'POST') {
+        scrapePostCount += 1
+      }
+      return route.fallback()
+    })
+
+    await page.goto('/data-collection')
+    await page.locator('input[type="month"]').first().fill('2026-02')
+    await page.locator('input[type="month"]').nth(1).fill('2026-01')
+
+    const startButton = page.getByRole('button', { name: '期間不正' })
+    await expect(startButton).toBeDisabled()
+    await expect(page.getByRole('alert').filter({ hasText: '期間エラー:' }).first()).toBeVisible()
+    expect(scrapePostCount).toBe(0)
+  })
+
+  test('malformed dry-run completed payload is rejected and no result card is shown', async ({ page, baseURL }) => {
+    if (!baseURL) throw new Error('Playwright baseURL is required')
+
+    await setupAuthorizedPage(page, baseURL)
+
+    await page.route('**/api/scrape', async route => {
+      if (route.request().method() !== 'POST') return route.fallback()
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ job_id: 'dry-invalid' }) })
+    })
+
+    await page.route('**/api/scrape/status/dry-invalid', route =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'completed', result: {} }) })
+    )
+
+    await page.goto('/data-collection')
+    await setSingleMonthRange(page, '2026-01')
+    await page.getByRole('button', { name: 'Dry-run' }).click()
+
+    await expect(page.getByRole('alert').filter({ hasText: 'Dry-run失敗:' }).first()).toBeVisible()
     await expect(page.getByText('Dry-run 結果（実取得なし）')).not.toBeVisible()
   })
 })
