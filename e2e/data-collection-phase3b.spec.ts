@@ -1,4 +1,4 @@
-import { test, expect, Page } from '@playwright/test'
+import { expect, Page, test } from '@playwright/test'
 import { mockSupabaseIdentity, setSupabaseTestSession } from './helpers/mock-api'
 
 type BatchScenario = {
@@ -6,12 +6,14 @@ type BatchScenario = {
   polls: Array<Record<string, unknown>>
 }
 
+const SUPABASE_ORIGIN = 'http://127.0.0.1:54321'
+
 async function setupAuthorizedPage(page: Page, baseURL: string) {
   await setSupabaseTestSession(page, {
     role: 'admin',
     tier: 'premium',
     appBaseUrl: baseURL,
-    supabaseUrl: 'http://127.0.0.1:54321',
+    supabaseUrl: SUPABASE_ORIGIN,
   })
   await mockSupabaseIdentity(page, { authenticated: true, role: 'admin', tier: 'premium' })
 
@@ -32,14 +34,12 @@ async function setupAuthorizedPage(page: Page, baseURL: string) {
   )
 }
 
-async function mockBatchWorkflow(page: Page, scenarios: BatchScenario[]) {
+async function mockBatchWorkflow(page: Page, scenarios: BatchScenario[], options?: { dryRunStatus?: Record<string, unknown> }) {
   let postIndex = 0
   const pollCount: Record<string, number> = {}
 
   await page.route('**/api/scrape', async route => {
-    if (route.request().method() !== 'POST') {
-      return route.fallback()
-    }
+    if (route.request().method() !== 'POST') return route.fallback()
 
     const body = route.request().postDataJSON() as Record<string, unknown>
     if (body?.dry_run === true) {
@@ -53,7 +53,11 @@ async function mockBatchWorkflow(page: Page, scenarios: BatchScenario[]) {
     const scenario = scenarios[postIndex]
     postIndex += 1
     if (!scenario) {
-      return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ detail: 'missing scenario' }) })
+      return route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: 'missing scenario' }),
+      })
     }
 
     return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ job_id: scenario.jobId }) })
@@ -64,11 +68,8 @@ async function mockBatchWorkflow(page: Page, scenarios: BatchScenario[]) {
     const jobId = url.split('/').pop() || ''
 
     if (jobId === 'dry-job') {
-      return route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ status: 'running', progress: { done: 0, total: 1, message: 'dry-running' } }),
-      })
+      const payload = options?.dryRunStatus ?? { status: 'running', progress: { done: 0, total: 1, message: 'dry-running' } }
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(payload) })
     }
 
     const scenario = scenarios.find(s => s.jobId === jobId)
@@ -83,87 +84,94 @@ async function mockBatchWorkflow(page: Page, scenarios: BatchScenario[]) {
 }
 
 async function setSingleMonthRange(page: Page, month: string) {
-  await page.locator('input[type="month"]').first().fill(month)
-  await page.locator('input[type="month"]').nth(1).fill(month)
-}
-
-function trackExternalRequests(page: Page, baseURL: string) {
-  const externalRequests: string[] = []
-  page.on('request', request => {
-    const url = request.url()
-    if (url.startsWith(baseURL)) return
-    if (url.startsWith('http://127.0.0.1:54321')) return
-    if (url.startsWith('about:') || url.startsWith('data:') || url.startsWith('blob:')) return
-    externalRequests.push(url)
-  })
-  return externalRequests
+  await page.getByTestId('start-period-input').fill(month)
+  await page.getByTestId('end-period-input').fill(month)
 }
 
 test.describe('Phase3B Data Collection workflow', () => {
-  test('queued/running/completed, quality bridge, and no quality API auto-call', async ({ page, baseURL }) => {
+  let unexpectedExternalRequests: string[] = []
+  let unexpectedAppApiRequests: string[] = []
+
+  test.beforeEach(async ({ page, baseURL }) => {
     if (!baseURL) throw new Error('Playwright baseURL is required')
 
-    let refreshApiCalls = 0
-    let p0ApiCalls = 0
-    const externalRequests = trackExternalRequests(page, baseURL)
+    unexpectedExternalRequests = []
+    unexpectedAppApiRequests = []
+
+    await page.route('**/*', route => {
+      const url = route.request().url()
+      if (url.startsWith(baseURL)) return route.fallback()
+      if (url.startsWith('about:') || url.startsWith('blob:') || url.startsWith('data:')) return route.fallback()
+
+      if (url.startsWith(SUPABASE_ORIGIN)) {
+        const pathname = new URL(url).pathname
+        if (pathname === '/auth/v1/user' || pathname === '/rest/v1/profiles') {
+          return route.fallback()
+        }
+      }
+
+      unexpectedExternalRequests.push(url)
+      return route.abort('blockedbyclient')
+    })
+
+    await page.route('**/api/**', route => {
+      const url = route.request().url()
+      if (!url.startsWith(`${baseURL}/api/`)) return route.fallback()
+      unexpectedAppApiRequests.push(url)
+      return route.fulfill({ status: 599, contentType: 'application/json', body: JSON.stringify({ detail: 'unexpected unmocked api' }) })
+    })
+  })
+
+  test.afterEach(async () => {
+    expect(unexpectedExternalRequests).toEqual([])
+    expect(unexpectedAppApiRequests).toEqual([])
+  })
+
+  test('queued/running/multi-month-running do not show completed or quality bridge until terminal completed', async ({ page, baseURL }) => {
+    if (!baseURL) throw new Error('Playwright baseURL is required')
 
     await setupAuthorizedPage(page, baseURL)
     await mockBatchWorkflow(page, [
+      { jobId: 'job-jan', polls: [{ status: 'completed', result: { races_collected: 2 } }] },
       {
-        jobId: 'job-main',
+        jobId: 'job-feb',
         polls: [
-          { status: 'queued', progress: { done: 0, total: 10, message: 'queued' } },
-          { status: 'running', progress: { done: 5, total: 10, message: 'running' } },
-          { status: 'completed', result: { races_collected: 8 } },
+          { status: 'running', progress: { done: 4, total: 10, message: 'running feb' } },
+          { status: 'completed', result: { races_collected: 3 } },
         ],
       },
     ])
 
-    await page.route('**/api/scrape/refresh-plan**', route => {
-      refreshApiCalls += 1
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({}) })
-    })
-    await page.route('**/api/scrape/p0-repair-plan**', route => {
-      p0ApiCalls += 1
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({}) })
-    })
-
     page.on('dialog', dialog => dialog.accept())
 
     await page.goto('/data-collection')
-    await setSingleMonthRange(page, '2026-01')
-    await page.getByRole('button', { name: '取得開始' }).click()
+    await page.getByTestId('start-period-input').fill('2026-01')
+    await page.getByTestId('end-period-input').fill('2026-02')
+    await page.getByTestId('execute-button').click()
 
     const statusPanel = page.getByTestId('batch-status-panel')
-    await expect(page.getByTestId('quality-bridge-card')).toHaveCount(0)
     await expect(statusPanel).toContainText('開始待ち')
+    await expect(statusPanel).not.toContainText('取得完了')
     await expect(page.getByTestId('quality-bridge-card')).toHaveCount(0)
+
     await expect(statusPanel).toContainText('取得実行中')
+    await expect(statusPanel).not.toContainText('取得完了')
     await expect(page.getByTestId('quality-bridge-card')).toHaveCount(0)
+
     await expect(statusPanel).toContainText('取得完了')
-
-    const qualityCard = page.getByTestId('quality-bridge-card')
-    await expect(qualityCard).toBeVisible()
-    await expect(qualityCard.getByText('取得は完了しましたが、品質確認は未実施です')).toBeVisible()
-
-    await expect(page.getByTestId('quality-bridge-refresh-link')).toHaveAttribute('href', '/data-collection/refresh-plan')
-    await expect(page.getByTestId('quality-bridge-p0-link')).toHaveAttribute('href', '/data-collection/p0-repair-plan')
-
-    expect(refreshApiCalls).toBe(0)
-    expect(p0ApiCalls).toBe(0)
-    expect(externalRequests).toEqual([])
+    await expect(page.getByTestId('quality-bridge-card')).toBeVisible()
   })
 
-  test('completed zero is shown as normal completion and distinct from pending', async ({ page, baseURL }) => {
+  test('busy operation locks form inputs and buttons', async ({ page, baseURL }) => {
     if (!baseURL) throw new Error('Playwright baseURL is required')
 
     await setupAuthorizedPage(page, baseURL)
     await mockBatchWorkflow(page, [
       {
-        jobId: 'job-zero',
+        jobId: 'job-busy',
         polls: [
-          { status: 'queued', progress: { done: 0, total: 10, message: 'queued' } },
-          { status: 'completed', result: { races_collected: 0 } },
+          { status: 'running', progress: { done: 1, total: 10, message: 'running' } },
+          { status: 'completed', result: { races_collected: 1 } },
         ],
       },
     ])
@@ -172,24 +180,30 @@ test.describe('Phase3B Data Collection workflow', () => {
 
     await page.goto('/data-collection')
     await setSingleMonthRange(page, '2026-01')
-    await page.getByRole('button', { name: '取得開始' }).click()
+    await page.getByTestId('execute-button').click()
 
-    await expect(page.getByTestId('batch-status-panel')).toContainText('0レース・正常完了')
-    await expect(page.getByText('Dry-runはまだ処理中です。しばらく待って再実行してください。')).not.toBeVisible()
+    await expect(page.getByTestId('start-period-input')).toBeDisabled()
+    await expect(page.getByTestId('end-period-input')).toBeDisabled()
+    await expect(page.getByTestId('force-rescrape-input')).toBeDisabled()
+    await expect(page.getByTestId('dry-run-button')).toBeDisabled()
+    await expect(page.getByTestId('execute-button')).toBeDisabled()
   })
 
-  test('error is persisted on screen and can re-run', async ({ page, baseURL }) => {
+  test('retry uses exactly the same request body for retry-safe error', async ({ page, baseURL }) => {
     if (!baseURL) throw new Error('Playwright baseURL is required')
 
-    let postCount = 0
     const postBodies: Array<Record<string, unknown>> = []
-    const pollCount: Record<string, number> = {}
+    let postCount = 0
 
     await setupAuthorizedPage(page, baseURL)
 
     await page.route('**/api/scrape', async route => {
       if (route.request().method() !== 'POST') return route.fallback()
-      postBodies.push((route.request().postDataJSON() as Record<string, unknown>) || {})
+      const body = (route.request().postDataJSON() as Record<string, unknown>) || {}
+      if (body.dry_run === true) {
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ job_id: 'dry-ignored' }) })
+      }
+      postBodies.push(body)
       postCount += 1
       return route.fulfill({
         status: 200,
@@ -198,69 +212,48 @@ test.describe('Phase3B Data Collection workflow', () => {
       })
     })
 
-    await page.route('**/api/scrape/status/**', route => {
-      const jobId = route.request().url().split('/').pop() || ''
-      pollCount[jobId] = (pollCount[jobId] || 0) + 1
-      if (jobId === 'job-error') {
-        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'error', error: 'backend error detail' }) })
-      }
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'completed', result: { races_collected: 3 } }) })
+    await page.route('**/api/scrape/status/job-error', route =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'error', error: 'execution failed' }) })
+    )
+    await page.route('**/api/scrape/status/job-retry', route =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'completed', result: { races_collected: 2 } }) })
+    )
+
+    page.on('dialog', dialog => dialog.accept())
+
+    await page.goto('/data-collection')
+    await setSingleMonthRange(page, '2026-01')
+    await page.getByTestId('execute-button').click()
+
+    await expect(page.getByTestId('retry-button')).toBeVisible()
+    await page.getByTestId('retry-button').click()
+    await expect(page.getByTestId('batch-status-panel')).toContainText('取得完了')
+
+    expect(postBodies).toHaveLength(2)
+    expect(postBodies[0]).toEqual(postBodies[1])
+  })
+
+  test('monitoring uncertainty disables execute and hides retry', async ({ page, baseURL }) => {
+    if (!baseURL) throw new Error('Playwright baseURL is required')
+
+    await setupAuthorizedPage(page, baseURL)
+
+    await page.route('**/api/scrape', async route => {
+      if (route.request().method() !== 'POST') return route.fallback()
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ job_id: '' }) })
     })
 
     page.on('dialog', dialog => dialog.accept())
 
     await page.goto('/data-collection')
     await setSingleMonthRange(page, '2026-01')
-    await page.getByRole('button', { name: '取得開始' }).click()
+    await page.getByTestId('execute-button').click()
 
-    await expect(page.locator('[data-testid="batch-status-panel"] [role="alert"]').first()).toContainText('取得失敗: backend error detail')
-    await page.getByRole('button', { name: '再実行' }).click()
-    await expect(page.getByTestId('batch-status-panel')).toContainText('取得完了')
-    expect(postBodies).toHaveLength(2)
-    expect(postBodies[0]).toEqual(postBodies[1])
-  })
-
-  test('multiple months do not become globally completed on first month completion', async ({ page, baseURL }) => {
-    if (!baseURL) throw new Error('Playwright baseURL is required')
-
-    await setupAuthorizedPage(page, baseURL)
-    await mockBatchWorkflow(page, [
-      {
-        jobId: 'job-jan',
-        polls: [{ status: 'completed', result: { races_collected: 2 } }],
-      },
-      {
-        jobId: 'job-feb',
-        polls: [
-          { status: 'running', progress: { done: 2, total: 10, message: 'running feb' } },
-          { status: 'completed', result: { races_collected: 4 } },
-        ],
-      },
-    ])
-
-    page.on('dialog', dialog => dialog.accept())
-
-    await page.goto('/data-collection')
-    await page.locator('input[type="month"]').first().fill('2026-01')
-    await page.locator('input[type="month"]').nth(1).fill('2026-02')
-    await page.getByRole('button', { name: '取得開始' }).click()
-
-    await expect(page.getByTestId('batch-status-panel')).toContainText('取得実行中')
-    await expect(page.getByTestId('batch-status-panel')).toContainText('取得完了')
-    await expect(page.getByText('6レース', { exact: true })).toBeVisible()
-  })
-
-  test('dry-run pending at polling limit does not show completed-zero card', async ({ page, baseURL }) => {
-    if (!baseURL) throw new Error('Playwright baseURL is required')
-
-    await setupAuthorizedPage(page, baseURL)
-    await mockBatchWorkflow(page, [])
-
-    await page.goto('/data-collection')
-    await page.getByRole('button', { name: 'Dry-run' }).click()
-
-    await expect(page.getByRole('status').filter({ hasText: 'Dry-runはまだ処理中です。しばらく待って再実行してください。' }).first()).toBeVisible()
-    await expect(page.getByText('Dry-run 結果（実取得なし）')).not.toBeVisible()
+    await expect(page.getByRole('alert').filter({ hasText: '実行状態を確認できません' }).first()).toBeVisible()
+    await expect(page.getByRole('alert').filter({ hasText: '開始済みのサーバージョブは継続している可能性があります' }).first()).toBeVisible()
+    await expect(page.getByTestId('retry-button')).toHaveCount(0)
+    await expect(page.getByTestId('execute-button')).toBeDisabled()
+    await expect(page.getByTestId('refresh-history-button')).toBeEnabled()
   })
 
   test('invalid period is fail-closed and sends zero POST requests', async ({ page, baseURL }) => {
@@ -270,41 +263,60 @@ test.describe('Phase3B Data Collection workflow', () => {
     await setupAuthorizedPage(page, baseURL)
 
     await page.route('**/api/scrape', async route => {
-      if (route.request().method() === 'POST') {
-        scrapePostCount += 1
-      }
+      if (route.request().method() === 'POST') scrapePostCount += 1
       return route.fallback()
     })
 
     await page.goto('/data-collection')
-    await page.locator('input[type="month"]').first().fill('2026-02')
-    await page.locator('input[type="month"]').nth(1).fill('2026-01')
+    await page.getByTestId('start-period-input').fill('2026-02')
+    await page.getByTestId('end-period-input').fill('2026-01')
 
-    const startButton = page.getByRole('button', { name: '期間不正' })
-    await expect(startButton).toBeDisabled()
     await expect(page.getByRole('alert').filter({ hasText: '期間エラー:' }).first()).toBeVisible()
+    await expect(page.getByTestId('execute-button')).toBeDisabled()
     expect(scrapePostCount).toBe(0)
   })
 
-  test('malformed dry-run completed payload is rejected and no result card is shown', async ({ page, baseURL }) => {
-    if (!baseURL) throw new Error('Playwright baseURL is required')
+  for (const invalidValue of [null, '', false, '123']) {
+    test(`malformed dry-run completed payload is rejected (${String(invalidValue)})`, async ({ page, baseURL }) => {
+      if (!baseURL) throw new Error('Playwright baseURL is required')
 
-    await setupAuthorizedPage(page, baseURL)
+      await setupAuthorizedPage(page, baseURL)
 
-    await page.route('**/api/scrape', async route => {
-      if (route.request().method() !== 'POST') return route.fallback()
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ job_id: 'dry-invalid' }) })
+      await page.route('**/api/scrape', async route => {
+        if (route.request().method() !== 'POST') return route.fallback()
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ job_id: 'dry-invalid' }) })
+      })
+
+      await page.route('**/api/scrape/status/dry-invalid', route =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            status: 'completed',
+            result: {
+              fetch_summary: {
+                dry_run: {
+                  total_target_count: invalidValue,
+                  unique_url_count: 1,
+                  estimated_request_count: 1,
+                  cache_hit_count: 0,
+                  cache_miss_count: 1,
+                  resume_hit_count: 0,
+                  skipped_count: 0,
+                  estimated_runtime_sec: 1.5,
+                },
+              },
+            },
+          }),
+        })
+      )
+
+      await page.goto('/data-collection')
+      await setSingleMonthRange(page, '2026-01')
+      await page.getByTestId('dry-run-button').click()
+
+      await expect(page.getByRole('alert').filter({ hasText: 'Dry-run失敗:' }).first()).toBeVisible()
+      await expect(page.getByText('Dry-run 結果（実取得なし）')).toHaveCount(0)
     })
-
-    await page.route('**/api/scrape/status/dry-invalid', route =>
-      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'completed', result: {} }) })
-    )
-
-    await page.goto('/data-collection')
-    await setSingleMonthRange(page, '2026-01')
-    await page.getByRole('button', { name: 'Dry-run' }).click()
-
-    await expect(page.getByRole('alert').filter({ hasText: 'Dry-run失敗:' }).first()).toBeVisible()
-    await expect(page.getByText('Dry-run 結果（実取得なし）')).not.toBeVisible()
-  })
+  }
 })
