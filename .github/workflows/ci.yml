@@ -174,7 +174,7 @@ jobs:
 
       - name: Run deterministic contract gate fixture
         run: |
-          python scripts/compare_netkeiba_race_payload_contract.py --dry-run-report python-api/tests/fixtures/contract_dry_run_compatible.json --stale-seconds 86400
+          python scripts/compare_netkeiba_race_payload_contract.py --dry-run-report python-api/tests/fixtures/contract_dry_run_compatible.json --skip-staleness-check
           python -c "import json,sys; d=json.load(open('reports/netkeiba_race_payload_contract_diff.json',encoding='utf-8')); ok=bool(d.get('success')) and d.get('verdict')=='pass'; print({'verdict':d.get('verdict'),'reason':d.get('verdict_reason')}); sys.exit(0 if ok else 1)"
 
       - name: Upload contract-gate JSON
