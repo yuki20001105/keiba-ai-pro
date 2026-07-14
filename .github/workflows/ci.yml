@@ -213,11 +213,8 @@ jobs:
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
 
-      - name: Run public/fixture smoke E2E
-        run: npx playwright test e2e/public-fixture-smoke.spec.ts --trace=on --reporter=html,list
-
-      - name: Run phase2 authz E2E
-        run: npx playwright test e2e/phase2-authz.spec.ts --trace=on --reporter=html,list
+      - name: Run release-blocking Playwright E2E trio
+        run: npx playwright test e2e/public-fixture-smoke.spec.ts e2e/phase2-authz.spec.ts e2e/data-collection-phase3b.spec.ts --trace=on
 
       - name: Upload Playwright artifacts
         if: always()

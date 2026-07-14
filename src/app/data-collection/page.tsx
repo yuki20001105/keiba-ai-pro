@@ -1,12 +1,12 @@
 ﻿'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { Logo } from '@/components/Logo'
 import { Toast } from '@/components/Toast'
 import { authFetch } from '@/lib/auth-fetch'
 import { useJobPoller } from '@/hooks/useJobPoller'
-import { useBatchScrape } from '@/hooks/useBatchScrape'
+import { BatchScrapeError, useBatchScrape } from '@/hooks/useBatchScrape'
 
 type ScrapeHealthStatus = 'healthy' | 'degraded' | 'unhealthy' | 'unknown'
 type LocalApiStatus = 'checking' | ScrapeHealthStatus
@@ -75,6 +75,132 @@ type FetchSummaryHistoryItem = {
   }
 }
 
+type PeriodValidation = {
+  ok: boolean
+  message?: string
+}
+
+type BatchRequestSnapshot = {
+  startPeriod: string
+  endPeriod: string
+  forceRescrape: boolean
+}
+
+type UncertaintyFailureKind = Extract<NonNullable<BatchScrapeError['kind']>, 'monitoring' | 'client_stop'>
+
+type PersistedUncertaintyLock = {
+  version: 1
+  failureKind: UncertaintyFailureKind
+  jobId?: string
+  request: BatchRequestSnapshot
+  occurredAt: string
+}
+
+const PERIOD_PATTERN = /^(\d{4})-(0[1-9]|1[0-2])$/
+const UNCERTAINTY_STORAGE_KEY = 'keiba-ai-pro:phase3b:scrape-uncertainty:v1'
+const COMPLETED_CONTRACT_MESSAGE = '完了応答の形式を確認できないため、サーバージョブの状態確認が必要'
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function isValidRequestSnapshot(value: unknown): value is BatchRequestSnapshot {
+  return isObject(value)
+    && typeof value.startPeriod === 'string'
+    && typeof value.endPeriod === 'string'
+    && typeof value.forceRescrape === 'boolean'
+}
+
+function parsePersistedUncertaintyLock(value: unknown): PersistedUncertaintyLock | null {
+  if (!isObject(value)) return null
+  if (value.version !== 1) return null
+  if (value.failureKind !== 'monitoring' && value.failureKind !== 'client_stop') return null
+  if (typeof value.occurredAt !== 'string' || value.occurredAt.length === 0) return null
+  if (!isValidRequestSnapshot(value.request)) return null
+  if (value.jobId !== undefined && typeof value.jobId !== 'string') return null
+
+  return {
+    version: 1,
+    failureKind: value.failureKind,
+    request: value.request,
+    occurredAt: value.occurredAt,
+    ...(typeof value.jobId === 'string' && value.jobId.trim().length > 0 ? { jobId: value.jobId.trim() } : {}),
+  }
+}
+
+function hasStrictCompletedResult(payload: unknown): boolean {
+  if (!isObject(payload)) return false
+  const racesCollected = payload.races_collected
+  return typeof racesCollected === 'number'
+    && Number.isFinite(racesCollected)
+    && Number.isInteger(racesCollected)
+    && racesCollected >= 0
+}
+
+function validatePeriodRange(startPeriod: string, endPeriod: string): PeriodValidation {
+  if (!PERIOD_PATTERN.test(startPeriod) || !PERIOD_PATTERN.test(endPeriod)) {
+    return { ok: false, message: '期間指定が不正です（YYYY-MM形式、月は01〜12）' }
+  }
+
+  const [startYearStr, startMonthStr] = startPeriod.split('-')
+  const [endYearStr, endMonthStr] = endPeriod.split('-')
+  const sy = Number(startYearStr)
+  const sm = Number(startMonthStr)
+  const ey = Number(endYearStr)
+  const em = Number(endMonthStr)
+
+  if (![sy, sm, ey, em].every(Number.isFinite)) {
+    return { ok: false, message: '期間指定に数値以外が含まれています' }
+  }
+  if (sm < 1 || sm > 12 || em < 1 || em > 12) {
+    return { ok: false, message: '月の指定が不正です（01〜12）' }
+  }
+  if (new Date(sy, sm - 1, 1) > new Date(ey, em - 1, 1)) {
+    return { ok: false, message: '開始年月は終了年月以前にしてください' }
+  }
+
+  const totalMonths = (ey - sy) * 12 + (em - sm) + 1
+  if (!Number.isFinite(totalMonths) || totalMonths <= 0) {
+    return { ok: false, message: '期間内の対象月が0件です' }
+  }
+
+  return { ok: true }
+}
+
+function normalizeDryRunResult(resultPayload: any): ScrapeDryRunResult {
+  const fetchSummary = resultPayload?.fetch_summary
+  const dryRun = fetchSummary?.dry_run
+  if (!fetchSummary || typeof fetchSummary !== 'object' || !dryRun || typeof dryRun !== 'object') {
+    throw new Error('Dry-run結果形式が不正です（fetch_summary.dry_run）')
+  }
+
+  const parseStrictNumber = (value: unknown, key: string, integerOnly: boolean): number => {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+      throw new Error(`Dry-run結果形式が不正です（${key}）`)
+    }
+    if (integerOnly && !Number.isInteger(value)) {
+      throw new Error(`Dry-run結果形式が不正です（${key}）`)
+    }
+    return value
+  }
+
+  return {
+    dry_run: {
+      total_target_count: parseStrictNumber(dryRun.total_target_count, 'total_target_count', true),
+      unique_url_count: parseStrictNumber(dryRun.unique_url_count, 'unique_url_count', true),
+      estimated_request_count: parseStrictNumber(dryRun.estimated_request_count, 'estimated_request_count', true),
+      cache_hit_count: parseStrictNumber(dryRun.cache_hit_count, 'cache_hit_count', true),
+      cache_miss_count: parseStrictNumber(dryRun.cache_miss_count, 'cache_miss_count', true),
+      resume_hit_count: parseStrictNumber(dryRun.resume_hit_count, 'resume_hit_count', true),
+      skipped_count: parseStrictNumber(dryRun.skipped_count, 'skipped_count', true),
+      estimated_runtime_sec: parseStrictNumber(dryRun.estimated_runtime_sec, 'estimated_runtime_sec', false),
+    },
+    rate_limit_policy: fetchSummary?.rate_limit_policy || {},
+    retry_backoff_policy: fetchSummary?.retry_backoff_policy || {},
+    circuit_breaker_policy: fetchSummary?.circuit_breaker_policy || {},
+  }
+}
+
 export default function DataCollectionPage() {
   // 期間指定用
   const now = new Date()
@@ -86,7 +212,16 @@ export default function DataCollectionPage() {
   const [dryRunLoading, setDryRunLoading] = useState(false)
   const [dryRunResult, setDryRunResult] = useState<ScrapeDryRunResult | null>(null)
   const [dryRunExecuted, setDryRunExecuted] = useState(false)
+  const [dryRunPendingMessage, setDryRunPendingMessage] = useState('')
+  const [dryRunErrorMessage, setDryRunErrorMessage] = useState('')
+  const [periodErrorMessage, setPeriodErrorMessage] = useState('')
+  const [retrySnapshot, setRetrySnapshot] = useState<BatchRequestSnapshot | null>(null)
   const [executeWarn, setExecuteWarn] = useState('')
+  const [persistedUncertainty, setPersistedUncertainty] = useState<PersistedUncertaintyLock | null>(null)
+  const [uncertaintyHydrated, setUncertaintyHydrated] = useState(false)
+  const [transientUncertaintyDismissed, setTransientUncertaintyDismissed] = useState(false)
+  const [reconcileLoading, setReconcileLoading] = useState(false)
+  const [reconcileMessage, setReconcileMessage] = useState('')
   const [fetchHistory, setFetchHistory] = useState<FetchSummaryHistoryItem[]>([])
   const [fetchHistoryLoading, setFetchHistoryLoading] = useState(false)
   const [toast, setToast] = useState({ visible: false, message: '', type: 'success' as 'success' | 'error' })
@@ -94,7 +229,24 @@ export default function DataCollectionPage() {
     setToast({ visible: true, message, type })
 
   // バッチスクレイピング（月単位ループ + ポーリングをフックが担当）
-  const { loading: batchLoading, progress: batchProgress, result: batchResult, start: startBatchScrape } = useBatchScrape()
+  const {
+    loading: batchLoading,
+    status: batchStatus,
+    error: batchError,
+    failureKind,
+    canRetry,
+    isExecutionLocked,
+    jobId: activeJobId,
+    progress: batchProgress,
+    result: batchResult,
+    start: startBatchScrape,
+    clearExecutionLockAfterReconciliation,
+  } = useBatchScrape()
+  const lastRequestSnapshotRef = useRef<BatchRequestSnapshot | null>(null)
+  const isBatchBusy = batchLoading || batchStatus === 'queued' || batchStatus === 'running'
+  const isOperationBusy = isBatchBusy || dryRunLoading
+  const periodValidation = validatePeriodRange(startPeriod, endPeriod)
+  const isPeriodValid = periodValidation.ok
 
   // データ統計と表示
   const [dataStats, setDataStats] = useState({ totalRaces: 0, totalResults: 0, latestDate: '' })
@@ -140,6 +292,43 @@ export default function DataCollectionPage() {
   }
 
   const isApiUnavailable = localApiStatus === 'unhealthy' || localApiStatus === 'unknown'
+  const effectivePeriodError = periodErrorMessage || (!isPeriodValid ? periodValidation.message || '' : '')
+  const transientUncertaintyKind: UncertaintyFailureKind | null = failureKind === 'monitoring' || failureKind === 'client_stop'
+    ? failureKind
+    : null
+  const effectiveTransientUncertainty = transientUncertaintyDismissed ? null : transientUncertaintyKind
+  const effectiveUncertaintyKind = persistedUncertainty?.failureKind ?? effectiveTransientUncertainty
+  const shouldShowUncertaintyWarning = effectiveUncertaintyKind === 'monitoring' || effectiveUncertaintyKind === 'client_stop'
+  const effectiveUncertaintyJobId = persistedUncertainty?.jobId ?? activeJobId ?? null
+  const executeBlockedByUncertainty = !uncertaintyHydrated || isExecutionLocked || shouldShowUncertaintyWarning
+
+  const persistUncertaintyLock = (kind: UncertaintyFailureKind, jobId: string | null, request: BatchRequestSnapshot | null) => {
+    if (!request) return
+    const lock: PersistedUncertaintyLock = {
+      version: 1,
+      failureKind: kind,
+      occurredAt: new Date().toISOString(),
+      request,
+      ...(jobId && jobId.trim().length > 0 ? { jobId: jobId.trim() } : {}),
+    }
+    try {
+      localStorage.setItem(UNCERTAINTY_STORAGE_KEY, JSON.stringify(lock))
+    } catch {
+      // keep runtime lock even if localStorage is unavailable
+    }
+    setPersistedUncertainty(lock)
+    setTransientUncertaintyDismissed(false)
+  }
+
+  const clearPersistedUncertainty = () => {
+    try {
+      localStorage.removeItem(UNCERTAINTY_STORAGE_KEY)
+    } catch {
+      // no-op
+    }
+    setPersistedUncertainty(null)
+    setTransientUncertaintyDismissed(true)
+  }
 
   const checkLocalApi = async () => {
     setLocalApiStatus('checking')
@@ -166,6 +355,38 @@ export default function DataCollectionPage() {
     checkLocalApi()
     loadFetchSummaryHistory()
   }, [])
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(UNCERTAINTY_STORAGE_KEY)
+      if (!raw) {
+        setPersistedUncertainty(null)
+      } else {
+        const parsed = parsePersistedUncertaintyLock(JSON.parse(raw))
+        if (!parsed) {
+          localStorage.removeItem(UNCERTAINTY_STORAGE_KEY)
+          setPersistedUncertainty(null)
+        } else {
+          setPersistedUncertainty(parsed)
+          setReconcileMessage('前回の実行は状態不明で終了しました。新規取得前に状態を再確認してください。')
+        }
+      }
+    } catch {
+      setPersistedUncertainty(null)
+    } finally {
+      setUncertaintyHydrated(true)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!transientUncertaintyKind) return
+    persistUncertaintyLock(transientUncertaintyKind, activeJobId, lastRequestSnapshotRef.current)
+    if (transientUncertaintyKind === 'monitoring') {
+      setReconcileMessage(COMPLETED_CONTRACT_MESSAGE)
+    } else {
+      setReconcileMessage('ブラウザ側の監視停止が発生しました。サーバージョブ継続の可能性があります。')
+    }
+  }, [activeJobId, transientUncertaintyKind])
 
   const loadFetchSummaryHistory = async () => {
     setFetchHistoryLoading(true)
@@ -223,18 +444,32 @@ export default function DataCollectionPage() {
   }
 
   // 🚀 期間指定バッチスクレイピング（バリデーション・確認ダイアログのみ担当）
-  const handlePeriodBatchScrape = async () => {
-    const [startYearStr, startMonthStr] = startPeriod.split('-')
-    const [endYearStr, endMonthStr] = endPeriod.split('-')
+  const handlePeriodBatchScrape = async (override?: BatchRequestSnapshot) => {
+    if (isOperationBusy) return
+    if (executeBlockedByUncertainty) {
+      showToast('実行状態を確認できません。履歴またはjob statusを確認するまで新規実行しないでください。', 'error')
+      return
+    }
+
+    const target = override ?? { startPeriod, endPeriod, forceRescrape }
+    setTransientUncertaintyDismissed(false)
+    lastRequestSnapshotRef.current = target
+    const validation = validatePeriodRange(target.startPeriod, target.endPeriod)
+    if (!validation.ok) {
+      const message = validation.message || '期間指定が不正です'
+      setPeriodErrorMessage(message)
+      showToast(message, 'error')
+      return
+    }
+    setPeriodErrorMessage('')
+    setDryRunErrorMessage('')
+
+    const [startYearStr, startMonthStr] = target.startPeriod.split('-')
+    const [endYearStr, endMonthStr] = target.endPeriod.split('-')
     const startYear = parseInt(startYearStr, 10)
     const startMonth = parseInt(startMonthStr, 10)
     const endYear = parseInt(endYearStr, 10)
     const endMonth = parseInt(endMonthStr, 10)
-
-    if (new Date(startYear, startMonth - 1) > new Date(endYear, endMonth - 1)) {
-      alert('開始年月が終了年月より後になっています')
-      return
-    }
 
     // 月数カウント（確認ダイアログ用）
     let totalMonths = 0
@@ -250,15 +485,80 @@ export default function DataCollectionPage() {
     }
 
     const _dryRunState = dryRunExecuted ? 'Dry-run実行済み' : 'Dry-run未実行（推奨）'
-    if (!confirm(`${startYear}年${startMonth}月 ～ ${endYear}年${endMonth}月（${totalMonths}ヶ月分）を月単位で順次取得します。\n中断するにはページをリロードしてください。\n\n${_dryRunState}\n続行しますか？`)) return
+    if (!confirm(`${startYear}年${startMonth}月 ～ ${endYear}年${endMonth}月（${totalMonths}ヶ月分）を月単位で順次取得します。\nブラウザ側で停止しても開始済みのサーバージョブは継続している可能性があります。\n\n${_dryRunState}\n続行しますか？`)) return
 
     try {
-      const result = await startBatchScrape(startPeriod, endPeriod, forceRescrape)
+      const result = await startBatchScrape(target.startPeriod, target.endPeriod, target.forceRescrape)
       showToast(`取得完了 — ${result.stats.total_months}ヶ月 / ${result.races_collected}レース / 所要: ${result.elapsed_time}秒`)
+      setRetrySnapshot(null)
+      setReconcileMessage('')
       loadStats()
       loadFetchSummaryHistory()
     } catch (error: any) {
+      const safeToRetry = error instanceof BatchScrapeError ? error.safeToRetry : false
+      if (error instanceof BatchScrapeError && (error.kind === 'monitoring' || error.kind === 'client_stop')) {
+        persistUncertaintyLock(error.kind, activeJobId, target)
+        if (error.kind === 'monitoring') {
+          setReconcileMessage(COMPLETED_CONTRACT_MESSAGE)
+        }
+      }
+      setRetrySnapshot(safeToRetry ? target : null)
       showToast(`取得エラー: ${error.message}`, 'error')
+    }
+  }
+
+  const handleReconcileStatus = async () => {
+    if (!effectiveUncertaintyJobId || reconcileLoading) return
+    setReconcileLoading(true)
+    try {
+      const res = await authFetch(`/api/scrape/status/${effectiveUncertaintyJobId}`, { signal: AbortSignal.timeout(10000) })
+      if (!res.ok) {
+        setReconcileMessage('状態再確認に失敗しました。lockを維持します。')
+        return
+      }
+
+      const payload = await res.json().catch(() => null)
+      if (!isObject(payload) || typeof payload.status !== 'string') {
+        setReconcileMessage('状態応答形式が不正です。lockを維持します。')
+        return
+      }
+
+      if (payload.status === 'queued' || payload.status === 'running' || payload.status === 'not_found') {
+        setReconcileMessage('対象jobは未終端です。lockを維持します。')
+        return
+      }
+
+      if (payload.status === 'error') {
+        const unlocked = clearExecutionLockAfterReconciliation()
+        if (!unlocked) {
+          setReconcileMessage('状態再確認は完了しましたが、処理中のためlock解除は保留されました。')
+          return
+        }
+        clearPersistedUncertainty()
+        setReconcileMessage('対象jobは終端エラーでした。lockを解除しました。必要に応じて再実行してください。')
+        return
+      }
+
+      if (payload.status === 'completed') {
+        if (!hasStrictCompletedResult(payload.result)) {
+          setReconcileMessage(COMPLETED_CONTRACT_MESSAGE)
+          return
+        }
+        const unlocked = clearExecutionLockAfterReconciliation()
+        if (!unlocked) {
+          setReconcileMessage('対象jobは完了を確認しましたが、処理中のためlock解除は保留されました。')
+          return
+        }
+        clearPersistedUncertainty()
+        setReconcileMessage('対象jobは完了。履歴で全体範囲を確認してください')
+        return
+      }
+
+      setReconcileMessage('状態を判定できないためlockを維持します。')
+    } catch {
+      setReconcileMessage('状態再確認に失敗しました。lockを維持します。')
+    } finally {
+      setReconcileLoading(false)
     }
   }
 
@@ -277,8 +577,20 @@ export default function DataCollectionPage() {
   }
 
   const handleDryRun = async () => {
+    const validation = validatePeriodRange(startPeriod, endPeriod)
+    if (!validation.ok) {
+      const message = validation.message || '期間指定が不正です'
+      setPeriodErrorMessage(message)
+      setDryRunResult(null)
+      setDryRunExecuted(false)
+      showToast(message, 'error')
+      return
+    }
+    setPeriodErrorMessage('')
     setDryRunLoading(true)
     setExecuteWarn('')
+    setDryRunPendingMessage('')
+    setDryRunErrorMessage('')
     try {
       const { startDateStr, endDateStr } = periodToDateRange(startPeriod, endPeriod)
       const startRes = await authFetch('/api/scrape', {
@@ -299,43 +611,44 @@ export default function DataCollectionPage() {
 
       const { job_id } = await startRes.json()
       let resultPayload: any = null
+      let reachedTerminal = false
       for (let i = 0; i < 10; i++) {
         await new Promise(resolve => setTimeout(resolve, 500))
         const statusRes = await authFetch(`/api/scrape/status/${job_id}`)
         if (!statusRes.ok) continue
         const statusData = await statusRes.json().catch(() => ({}))
-        if (statusData?.status === 'completed') {
+        const dryRunStatus = statusData?.status
+        if (dryRunStatus === 'completed') {
+          reachedTerminal = true
           resultPayload = statusData?.result
           break
         }
-        if (statusData?.status === 'error') {
+        if (dryRunStatus === 'error') {
+          reachedTerminal = true
           throw new Error(statusData?.error || 'Dry-run failed')
         }
       }
 
-      const fetchSummary = resultPayload?.fetch_summary || {}
-      const dryRun = fetchSummary?.dry_run || {}
-      const normalized: ScrapeDryRunResult = {
-        dry_run: {
-          total_target_count: Number(dryRun.total_target_count || 0),
-          unique_url_count: Number(dryRun.unique_url_count || 0),
-          estimated_request_count: Number(dryRun.estimated_request_count || 0),
-          cache_hit_count: Number(dryRun.cache_hit_count || 0),
-          cache_miss_count: Number(dryRun.cache_miss_count || 0),
-          resume_hit_count: Number(dryRun.resume_hit_count || 0),
-          skipped_count: Number(dryRun.skipped_count || 0),
-          estimated_runtime_sec: Number(dryRun.estimated_runtime_sec || 0),
-        },
-        rate_limit_policy: fetchSummary?.rate_limit_policy || {},
-        retry_backoff_policy: fetchSummary?.retry_backoff_policy || {},
-        circuit_breaker_policy: fetchSummary?.circuit_breaker_policy || {},
+      if (!reachedTerminal || !resultPayload) {
+        setDryRunResult(null)
+        setDryRunExecuted(false)
+        setDryRunPendingMessage('Dry-runはまだ処理中です。しばらく待って再実行してください。')
+        showToast('Dry-runはまだ処理中です。しばらく待って再実行してください。', 'error')
+        return
       }
+
+      const normalized = normalizeDryRunResult(resultPayload)
       setDryRunResult(normalized)
       setDryRunExecuted(true)
+      setDryRunPendingMessage('')
+      setDryRunErrorMessage('')
       showToast('Dry-run完了（HTTPアクセスなし）')
       loadFetchSummaryHistory()
     } catch (error: any) {
       setDryRunResult(null)
+      setDryRunExecuted(false)
+      setDryRunPendingMessage('')
+      setDryRunErrorMessage(error?.message || 'Dry-run failed')
       showToast(`Dry-runエラー: ${error.message}`, 'error')
     } finally {
       setDryRunLoading(false)
@@ -417,7 +730,12 @@ export default function DataCollectionPage() {
               <input
                 type="month"
                 value={startPeriod}
-                onChange={e => setStartPeriod(e.target.value)}
+                data-testid="start-period-input"
+                disabled={isOperationBusy || executeBlockedByUncertainty}
+                onChange={e => {
+                  setStartPeriod(e.target.value)
+                  setPeriodErrorMessage('')
+                }}
                 max={endPeriod}
                 className="w-full px-4 py-3 bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg text-white focus:outline-none focus:border-[#333] transition-colors"
               />
@@ -427,7 +745,12 @@ export default function DataCollectionPage() {
               <input
                 type="month"
                 value={endPeriod}
-                onChange={e => setEndPeriod(e.target.value)}
+                data-testid="end-period-input"
+                disabled={isOperationBusy || executeBlockedByUncertainty}
+                onChange={e => {
+                  setEndPeriod(e.target.value)
+                  setPeriodErrorMessage('')
+                }}
                 min={startPeriod}
                 className="w-full px-4 py-3 bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg text-white focus:outline-none focus:border-[#333] transition-colors"
               />
@@ -452,7 +775,9 @@ export default function DataCollectionPage() {
             <label className="flex items-center gap-2 cursor-pointer select-none">
               <input
                 type="checkbox"
+                data-testid="force-rescrape-input"
                 checked={forceRescrape}
+                disabled={isOperationBusy || executeBlockedByUncertainty}
                 onChange={e => setForceRescrape(e.target.checked)}
                 className="w-3.5 h-3.5 accent-white"
               />
@@ -462,9 +787,10 @@ export default function DataCollectionPage() {
             <div className="flex items-center gap-2">
               <button
                 onClick={handleDryRun}
-                disabled={batchLoading || dryRunLoading || isApiUnavailable}
+                data-testid="dry-run-button"
+                disabled={isOperationBusy || isApiUnavailable || !isPeriodValid || executeBlockedByUncertainty}
                 className={`flex items-center gap-2 px-4 py-2.5 rounded-lg font-medium text-sm transition-colors ${
-                  batchLoading || dryRunLoading || isApiUnavailable
+                  isOperationBusy || isApiUnavailable || !isPeriodValid || executeBlockedByUncertainty
                     ? 'bg-[#222] text-[#555] cursor-not-allowed'
                     : 'bg-[#1e293b] text-[#dbeafe] hover:bg-[#334155]'
                 }`}
@@ -473,15 +799,16 @@ export default function DataCollectionPage() {
               </button>
 
               <button
-                onClick={handlePeriodBatchScrape}
-                disabled={batchLoading || isApiUnavailable}
+                onClick={() => handlePeriodBatchScrape()}
+                data-testid="execute-button"
+                disabled={isOperationBusy || isApiUnavailable || !isPeriodValid || executeBlockedByUncertainty}
                 className={`flex items-center gap-2 px-6 py-2.5 rounded-lg font-medium text-sm transition-colors ${
-                  batchLoading || isApiUnavailable
+                  isOperationBusy || isApiUnavailable || !isPeriodValid || executeBlockedByUncertainty
                     ? 'bg-[#222] text-[#555] cursor-not-allowed'
                     : 'bg-white text-black hover:bg-[#eee]'
                 }`}
               >
-                {batchLoading ? (
+                {isBatchBusy ? (
                   <>
                     <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
@@ -489,10 +816,54 @@ export default function DataCollectionPage() {
                     </svg>
                     取得中...
                   </>
-                ) : isApiUnavailable ? 'API確認不可' : '取得開始'}
+                ) : !uncertaintyHydrated ? '状態確認中' : isApiUnavailable ? 'API確認不可' : !isPeriodValid ? '期間不正' : executeBlockedByUncertainty ? '実行確認待ち' : '取得開始'}
               </button>
             </div>
           </div>
+
+          {shouldShowUncertaintyWarning && (
+            <div className="rounded border border-[#4a1d1d] bg-[#220d0d] px-3 py-2 text-xs text-[#fca5a5] space-y-1" role="alert" data-testid="uncertainty-panel">
+              <div>実行状態不明</div>
+              {effectiveUncertaintyJobId && <div>job_id: {effectiveUncertaintyJobId}</div>}
+              <div>{COMPLETED_CONTRACT_MESSAGE}</div>
+              <div>開始済みのサーバージョブは継続している可能性があります</div>
+              {!effectiveUncertaintyJobId && <div>job_idがないため自動解除できません（approval scaffold対象）。</div>}
+              {reconcileMessage && <div>{reconcileMessage}</div>}
+              {effectiveUncertaintyJobId && (
+                <button
+                  type="button"
+                  data-testid="reconcile-status-button"
+                  onClick={handleReconcileStatus}
+                  disabled={reconcileLoading}
+                  className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${
+                    reconcileLoading
+                      ? 'bg-[#222] text-[#555] cursor-not-allowed'
+                      : 'bg-white text-black hover:bg-[#eee]'
+                  }`}
+                >
+                  {reconcileLoading ? '確認中...' : '状態を再確認'}
+                </button>
+              )}
+            </div>
+          )}
+
+          {effectivePeriodError && (
+            <div className="rounded border border-[#4a1d1d] bg-[#220d0d] px-3 py-2 text-xs text-[#fca5a5]" role="alert">
+              期間エラー: {effectivePeriodError}
+            </div>
+          )}
+
+          {dryRunPendingMessage && (
+            <div className="rounded border border-[#1e3a8a] bg-[#0b1220] px-3 py-2 text-xs text-[#93c5fd]" role="status" aria-live="polite">
+              {dryRunPendingMessage}
+            </div>
+          )}
+
+          {dryRunErrorMessage && (
+            <div className="rounded border border-[#4a1d1d] bg-[#220d0d] px-3 py-2 text-xs text-[#fca5a5]" role="alert">
+              Dry-run失敗: {dryRunErrorMessage}
+            </div>
+          )}
 
           {executeWarn && (
             <div className="rounded border border-[#4a3b0f] bg-[#201a08] px-3 py-2 text-xs text-[#facc15]">
@@ -539,30 +910,95 @@ export default function DataCollectionPage() {
             </div>
           )}
 
-          {/* 進捗バー */}
-          {batchLoading && (
-            <div className="space-y-1.5">
-              <div className="flex justify-between text-xs text-[#888]">
-                <span>{batchProgress.message}</span>
-                <span className="flex gap-3">
-                  {batchProgress.eta && <span className="text-yellow-400">{batchProgress.eta}</span>}
-                  <span>{batchProgress.current}%</span>
-                </span>
-              </div>
-              <div className="w-full bg-[#1e1e1e] rounded-full h-1.5 overflow-hidden">
-                <div className="bg-white h-1.5 rounded-full transition-all duration-500" style={{ width: `${batchProgress.current}%` }} />
-              </div>
+          {/* 実行状態パネル */}
+          {batchStatus !== 'idle' && (
+            <div className="rounded-lg border border-[#1e1e1e] bg-[#0a0a0a] p-4 space-y-2" data-testid="batch-status-panel">
+              {(batchStatus === 'queued' || batchStatus === 'running') && (
+                <div className="space-y-1.5" role="status" aria-live="polite">
+                  <div className="flex justify-between text-xs text-[#888]">
+                    <span>
+                      {batchStatus === 'queued' ? '開始待ち' : '取得実行中'}
+                      {activeJobId ? ` · job_id: ${activeJobId}` : ''}
+                    </span>
+                    <span className="flex gap-3">
+                      {batchProgress.eta && <span className="text-yellow-400">{batchProgress.eta}</span>}
+                      <span>{batchProgress.current}%</span>
+                    </span>
+                  </div>
+                  <div className="text-xs text-[#666]">{batchProgress.message || (batchStatus === 'queued' ? '開始待ち' : '取得実行中')}</div>
+                  <div className="w-full bg-[#1e1e1e] rounded-full h-1.5 overflow-hidden">
+                    <div className="bg-white h-1.5 rounded-full transition-all duration-500" style={{ width: `${batchProgress.current}%` }} />
+                  </div>
+                </div>
+              )}
+
+              {batchStatus === 'completed' && batchResult && (
+                <div className="text-xs text-[#4ade80]" role="status" aria-live="polite">
+                  取得完了: {batchResult.races_collected}レース（{batchResult.races_collected === 0 ? '0レース・正常完了' : '正常完了'}）
+                </div>
+              )}
+
+              {batchStatus === 'error' && (
+                <div className="space-y-2" role="alert">
+                  <div className="text-xs text-[#fca5a5]">
+                    {(() => {
+                      const titles: Record<string, string> = {
+                        execution: '取得失敗',
+                        start_rejected: '開始拒否',
+                        monitoring: '実行状態不明',
+                        client_stop: 'ブラウザ側の監視停止',
+                        validation: '入力エラー',
+                        busy: '取得処理中',
+                      }
+                      const key = typeof failureKind === 'string' ? failureKind : 'execution'
+                      const title = titles[key] || '取得失敗'
+                      return `${title}: ${batchError || '不明なエラー'}`
+                    })()}
+                  </div>
+                  {canRetry && retrySnapshot && (failureKind === 'execution' || failureKind === 'start_rejected') && (
+                    <button
+                      data-testid="retry-button"
+                      onClick={() => handlePeriodBatchScrape(retrySnapshot)}
+                      disabled={isOperationBusy || isApiUnavailable}
+                      className={`px-4 py-2 rounded text-xs font-medium transition-colors ${
+                        isOperationBusy || isApiUnavailable
+                          ? 'bg-[#222] text-[#555] cursor-not-allowed'
+                          : 'bg-white text-black hover:bg-[#eee]'
+                      }`}
+                    >
+                      再実行
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>
 
         {/* 取得完了サマリー */}
-        {batchResult && batchResult.stats?.period && (
+        {batchStatus === 'completed' && batchResult && batchResult.stats?.period && (
           <div className="bg-[#0a1a0a] border border-[#1a3a1a] rounded-lg px-5 py-4 flex flex-wrap gap-5 items-center">
             <span className="text-xs text-[#4ade80] font-medium">✓ 取得完了</span>
             <span className="text-xs text-[#888]">{batchResult.stats.period} · {batchResult.stats.total_months}ヶ月</span>
             <span className="text-xs text-white font-medium">{batchResult.races_collected}レース</span>
             <span className="text-xs text-[#555]">{batchResult.elapsed_time}秒</span>
+            {batchResult.races_collected === 0 && <span className="text-xs text-[#93c5fd]">0レース・正常完了</span>}
+          </div>
+        )}
+
+        {/* 完了後の品質確認ブリッジ（read-only導線のみ） */}
+        {batchStatus === 'completed' && (
+          <div className="bg-[#111827] border border-[#1f2937] rounded-lg px-5 py-4 space-y-2" data-testid="quality-bridge-card">
+            <div className="text-xs text-[#93c5fd]">取得は完了しましたが、品質確認は未実施です</div>
+            <div className="text-xs text-[#6b7280]">以下は read-only preview です（自動実行・自動遷移は行いません）。</div>
+            <div className="flex flex-wrap gap-3 pt-1">
+              <Link href="/data-collection/refresh-plan" className="text-xs text-[#bfdbfe] hover:text-white transition-colors" data-testid="quality-bridge-refresh-link">
+                Refresh Plan（read-only preview）
+              </Link>
+              <Link href="/data-collection/p0-repair-plan" className="text-xs text-[#bfdbfe] hover:text-white transition-colors" data-testid="quality-bridge-p0-link">
+                P0 Repair Plan（read-only preview）
+              </Link>
+            </div>
           </div>
         )}
 
@@ -571,6 +1007,7 @@ export default function DataCollectionPage() {
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-sm font-medium text-white">fetch summary 履歴</h2>
             <button
+              data-testid="refresh-history-button"
               onClick={loadFetchSummaryHistory}
               className="text-xs text-[#555] hover:text-[#888] transition-colors"
             >
