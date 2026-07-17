@@ -16,6 +16,7 @@ This document covers the Data Collection frontend and adjacent read-only plannin
   - `src/app/data-collection/page.tsx`
   - `src/app/data-collection/refresh-plan/page.tsx`
   - `src/app/data-collection/p0-repair-plan/page.tsx`
+  - `src/app/data-collection/targeted-refetch-plan/page.tsx`
 - Next API routes:
   - `src/app/api/scrape/*`
   - `src/app/api/data-stats/route.ts`
@@ -63,6 +64,15 @@ Observed mismatch from source document:
   - Returns `dry_run: true`, `read_only: true`, `update_enabled: false`.
   - `PUT` responds `501 not-implemented`.
 
+### 2.4 Targeted Refetch Plan page and route
+- UI is preview-only and does not expose execution controls.
+- Next route `src/app/api/scrape/targeted-refetch-plan/route.ts`:
+  - Authz enforced with `verifyRequestAuth(...requirePremiumOrAdmin...)`.
+  - Runs `scripts/plan_p0_targeted_refetch.py`.
+  - Returns `dry_run: true`, `read_only: true`, `execution_enabled: false`.
+  - Applies fail-closed report validation for numeric fields, URL samples, and safety flags.
+  - Rejects unknown/path-like inputs and strips server filesystem paths from responses.
+
 ### 2.4 FastAPI scrape contracts relevant to frontend
 - `POST /api/scrape/start`: starts async scrape job.
 - `GET /api/scrape/status/{job_id}`: job status/progress/result.
@@ -97,6 +107,7 @@ Observed mismatch from source document:
 | Refresh Plan execute | `/api/scrape/refresh-plan` | none | PUT | yes | no | no | disabled (`501`) |
 | P0 Repair Plan | `/api/scrape/p0-repair-plan` | `plan_p0_scrape_repair.py` | POST/GET | yes | no | no | implemented |
 | P0 Repair execute | `/api/scrape/p0-repair-plan` | none | PUT | yes | no | no | disabled (`501`) |
+| Targeted Refetch Plan | `/api/scrape/targeted-refetch-plan` | `plan_p0_targeted_refetch.py` | POST | yes | no | no | implemented |
 
 ---
 
