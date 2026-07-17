@@ -114,12 +114,23 @@ function hasControlChars(value: string): boolean {
 function isForbiddenPathString(value: string): boolean {
   const text = value.trim()
   if (!text) return false
-  // Reject absolute path/file URI patterns even when embedded in a sentence.
-  if (/(^|\s)file:\/\//i.test(text)) return true
-  if (/(^|\s)[A-Za-z]:[\\/]/.test(text)) return true
-  if (/(^|\s)\\\\[^\s]+/.test(text)) return true
-  if (/(^|\s)\/(?:[^\s/]+\/)*[^\s/]+/.test(text)) return true
-  if (/(^|\s)~[\\/]/.test(text)) return true
+
+  // `file://` URI anywhere in the surfaced display string.
+  if (/file:\/\//i.test(text)) return true
+
+  // Windows absolute path anywhere, e.g. path=C:\secret\a.json, (D:/tmp/a).
+  if (/[A-Za-z]:[\\/]/.test(text)) return true
+
+  // UNC path anywhere, e.g. note=\\server\share\file.
+  if (/\\\\[A-Za-z0-9.$_-]+\\[^\s]/.test(text)) return true
+
+  // Unix absolute path when preceded by non-word or start, e.g. source=/etc/passwd.
+  if (/(^|[^A-Za-z0-9_])\/[A-Za-z0-9._-]/.test(text)) return true
+
+  // Home path and traversal segments anywhere in surfaced display strings.
+  if (/(^|[^A-Za-z0-9_])~[\\/]/.test(text)) return true
+  if (/(^|[^A-Za-z0-9_])\.\.[\\/]/.test(text)) return true
+
   return false
 }
 

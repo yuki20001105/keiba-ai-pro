@@ -457,7 +457,7 @@ describe('targeted-refetch-plan route', () => {
     const child = new MockChild()
     spawnMock.mockImplementation(() => child)
     const reportWindows = validReport('all')
-    ;(reportWindows.sample_urls.result_page[0] as any).reason = 'failed at C:\\secret\\data.json'
+    ;(reportWindows.sample_urls.result_page[0] as any).reason = 'path=C:\\secret\\data.json'
     fsReadFileMock.mockResolvedValueOnce(JSON.stringify(reportWindows))
 
     const { POST } = await import('@/app/api/scrape/targeted-refetch-plan/route')
@@ -470,7 +470,7 @@ describe('targeted-refetch-plan route', () => {
     const child2 = new MockChild()
     spawnMock.mockImplementationOnce(() => child2)
     const reportUnix = validReport('all')
-    ;(reportUnix.sample_urls.result_page[0] as any).recommended_next_action = '/etc/passwd を確認'
+    ;(reportUnix.sample_urls.result_page[0] as any).source = 'source=/etc/passwd'
     fsReadFileMock.mockResolvedValueOnce(JSON.stringify(reportUnix))
     promise = POST(makeRequest({ target: 'all', max_targets: 10 }) as any)
     await waitForSpawnCalls(2)
@@ -481,7 +481,7 @@ describe('targeted-refetch-plan route', () => {
     const child3 = new MockChild()
     spawnMock.mockImplementationOnce(() => child3)
     const reportFileUri = validReport('all')
-    ;(reportFileUri.sample_urls.result_page[0] as any).source = 'file:///tmp/source'
+    ;(reportFileUri.sample_urls.result_page[0] as any).source = 'value=file:///tmp/source'
     fsReadFileMock.mockResolvedValueOnce(JSON.stringify(reportFileUri))
     promise = POST(makeRequest({ target: 'all', max_targets: 10 }) as any)
     await waitForSpawnCalls(3)
@@ -492,7 +492,7 @@ describe('targeted-refetch-plan route', () => {
     const child4 = new MockChild()
     spawnMock.mockImplementationOnce(() => child4)
     const reportUnc = validReport('all')
-    ;(reportUnc.sample_urls.result_page[0] as any).source = 'UNC \\\\server\\share\\a.json'
+    ;(reportUnc.sample_urls.result_page[0] as any).source = 'note=\\\\server\\share\\file'
     fsReadFileMock.mockResolvedValueOnce(JSON.stringify(reportUnc))
     promise = POST(makeRequest({ target: 'all', max_targets: 10 }) as any)
     await waitForSpawnCalls(4)
@@ -502,12 +502,47 @@ describe('targeted-refetch-plan route', () => {
 
     const child5 = new MockChild()
     spawnMock.mockImplementationOnce(() => child5)
-    const safeText = validReport('all')
-    ;(safeText.sample_urls.result_page[0] as any).recommended_next_action = 'date/race_id 分割で段階実行を検討'
-    fsReadFileMock.mockResolvedValueOnce(JSON.stringify(safeText))
+    const reportHome = validReport('all')
+    ;(reportHome.sample_urls.result_page[0] as any).recommended_next_action = 'path=~/secret'
+    fsReadFileMock.mockResolvedValueOnce(JSON.stringify(reportHome))
     promise = POST(makeRequest({ target: 'all', max_targets: 10 }) as any)
     await waitForSpawnCalls(5)
     child5.emitClose(0)
+    res = await promise
+    expect(res.status).toBe(502)
+
+    const child6 = new MockChild()
+    spawnMock.mockImplementationOnce(() => child6)
+    const reportTraversal = validReport('all')
+    ;(reportTraversal.sample_urls.result_page[0] as any).recommended_next_action = '../relative-secret'
+    fsReadFileMock.mockResolvedValueOnce(JSON.stringify(reportTraversal))
+    promise = POST(makeRequest({ target: 'all', max_targets: 10 }) as any)
+    await waitForSpawnCalls(6)
+    child6.emitClose(0)
+    res = await promise
+    expect(res.status).toBe(502)
+
+    const child7 = new MockChild()
+    spawnMock.mockImplementationOnce(() => child7)
+    const reportParenWindows = validReport('all')
+    ;(reportParenWindows.sample_urls.result_page[0] as any).reason = '(C:\\secret\\data.json)'
+    fsReadFileMock.mockResolvedValueOnce(JSON.stringify(reportParenWindows))
+    promise = POST(makeRequest({ target: 'all', max_targets: 10 }) as any)
+    await waitForSpawnCalls(7)
+    child7.emitClose(0)
+    res = await promise
+    expect(res.status).toBe(502)
+
+    const child8 = new MockChild()
+    spawnMock.mockImplementationOnce(() => child8)
+    const safeText = validReport('all')
+    ;(safeText.sample_urls.result_page[0] as any).recommended_next_action = 'date/race_id 分割で段階実行を検討'
+    ;(safeText.sample_urls.result_page[0] as any).reason = 'race detail/result page'
+    ;(safeText.sample_urls.result_page[0] as any).source = 'targeted refetch dry-run'
+    fsReadFileMock.mockResolvedValueOnce(JSON.stringify(safeText))
+    promise = POST(makeRequest({ target: 'all', max_targets: 10 }) as any)
+    await waitForSpawnCalls(8)
+    child8.emitClose(0)
     res = await promise
     expect(res.status).toBe(200)
   })

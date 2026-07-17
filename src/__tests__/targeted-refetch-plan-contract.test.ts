@@ -172,24 +172,41 @@ describe('targeted refetch plan response contract', () => {
 
   test('rejects surfaced path attacks and allows safe slash wording', () => {
     const withWindowsPath = validPlan()
-    ;(withWindowsPath.sample_urls.result_page[0] as any).reason = 'failed at C:\\secret\\data.json'
+    ;(withWindowsPath.sample_urls.result_page[0] as any).reason = 'path=C:\\secret\\data.json'
     expect(validateTargetedRefetchPlanReport(withWindowsPath, { target: 'all', max_targets: 10 }).ok).toBe(false)
 
+    const withParenWindowsPath = validPlan()
+    ;(withParenWindowsPath.sample_urls.result_page[0] as any).reason = '(C:\\secret\\data.json)'
+    expect(validateTargetedRefetchPlanReport(withParenWindowsPath, { target: 'all', max_targets: 10 }).ok).toBe(false)
+
     const withUnixPath = validPlan()
-    ;(withUnixPath.sample_urls.result_page[0] as any).recommended_next_action = '/etc/passwd を確認'
+    ;(withUnixPath.sample_urls.result_page[0] as any).source = 'source=/etc/passwd'
     expect(validateTargetedRefetchPlanReport(withUnixPath, { target: 'all', max_targets: 10 }).ok).toBe(false)
 
     const withFileUri = validPlan()
-    ;(withFileUri.sample_urls.result_page[0] as any).source = 'file:///tmp/source'
+    ;(withFileUri.sample_urls.result_page[0] as any).source = 'value=file:///tmp/source'
     expect(validateTargetedRefetchPlanReport(withFileUri, { target: 'all', max_targets: 10 }).ok).toBe(false)
 
     const withUnc = validPlan()
-    ;(withUnc.sample_urls.result_page[0] as any).source = 'UNC \\\\server\\share\\x.json'
+    ;(withUnc.sample_urls.result_page[0] as any).source = 'note=\\\\server\\share\\file'
     expect(validateTargetedRefetchPlanReport(withUnc, { target: 'all', max_targets: 10 }).ok).toBe(false)
+
+    const withHomePath = validPlan()
+    ;(withHomePath.sample_urls.result_page[0] as any).recommended_next_action = 'path=~/secret'
+    expect(validateTargetedRefetchPlanReport(withHomePath, { target: 'all', max_targets: 10 }).ok).toBe(false)
+
+    const withTraversal = validPlan()
+    ;(withTraversal.sample_urls.result_page[0] as any).recommended_next_action = '../relative-secret'
+    expect(validateTargetedRefetchPlanReport(withTraversal, { target: 'all', max_targets: 10 }).ok).toBe(false)
 
     const safeSlashWording = validPlan()
     ;(safeSlashWording.sample_urls.result_page[0] as any).recommended_next_action = 'date/race_id 分割で段階実行を検討'
     expect(validateTargetedRefetchPlanReport(safeSlashWording, { target: 'all', max_targets: 10 }).ok).toBe(true)
+
+    const safeCommonWording = validPlan()
+    ;(safeCommonWording.sample_urls.result_page[0] as any).reason = 'race detail/result page'
+    ;(safeCommonWording.sample_urls.result_page[0] as any).source = 'targeted refetch dry-run'
+    expect(validateTargetedRefetchPlanReport(safeCommonWording, { target: 'all', max_targets: 10 }).ok).toBe(true)
   })
 
   test('rejects invalid IDs and oversized actions', () => {
