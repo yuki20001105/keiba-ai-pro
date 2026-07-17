@@ -114,11 +114,12 @@ function hasControlChars(value: string): boolean {
 function isForbiddenPathString(value: string): boolean {
   const text = value.trim()
   if (!text) return false
-  if (/^file:\/\//i.test(text)) return true
-  if (/^[A-Za-z]:[\\/]/.test(text)) return true
-  if (/^\\\\/.test(text)) return true
-  if (/^\//.test(text)) return true
-  if (/^~[\\/]/.test(text)) return true
+  // Reject absolute path/file URI patterns even when embedded in a sentence.
+  if (/(^|\s)file:\/\//i.test(text)) return true
+  if (/(^|\s)[A-Za-z]:[\\/]/.test(text)) return true
+  if (/(^|\s)\\\\[^\s]+/.test(text)) return true
+  if (/(^|\s)\/(?:[^\s/]+\/)*[^\s/]+/.test(text)) return true
+  if (/(^|\s)~[\\/]/.test(text)) return true
   return false
 }
 
@@ -137,19 +138,6 @@ function isSafeId(value: unknown): value is string {
   if (value.length > MAX_ID_LENGTH) return false
   if (!/^[A-Za-z0-9_-]+$/.test(value)) return false
   return true
-}
-
-function hasForbiddenPathInObject(value: unknown): boolean {
-  if (typeof value === 'string') {
-    return isForbiddenPathString(value)
-  }
-  if (Array.isArray(value)) {
-    return value.some(item => hasForbiddenPathInObject(item))
-  }
-  if (isObject(value)) {
-    return Object.values(value).some(item => hasForbiddenPathInObject(item))
-  }
-  return false
 }
 
 function isAllowedTarget(value: unknown): value is TargetedRefetchTarget {
@@ -244,10 +232,6 @@ export function validateTargetedRefetchPlanReport(
   | { ok: false; error: string } {
   if (!isObject(raw)) {
     return { ok: false, error: 'planner report must be an object' }
-  }
-
-  if (hasForbiddenPathInObject(raw)) {
-    return { ok: false, error: 'planner report contains forbidden path-like value' }
   }
 
   if (raw.target !== expected.target) {

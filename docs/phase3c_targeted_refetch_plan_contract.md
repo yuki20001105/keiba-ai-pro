@@ -94,7 +94,9 @@ Required safety_flags (all true):
 - no_force_refresh_execute
 
 Any missing/invalid condition returns 502.
-If report contains server filesystem path-like values, return 502.
+Planner internal provenance paths may exist in raw input (for example input_audit/input_p0_plan/input_cache_diagnosis).
+These fields are never projected to response.
+Response-adopted display fields are path-sanitized and fail-closed (502) when path-like values are detected.
 
 ## Response Contract
 Success response:
@@ -105,10 +107,14 @@ Success response:
 
 Response exclusions:
 - no input_audit path
+- no input_p0_plan path
+- no input_cache_diagnosis path
 - no db path
 - no output file path
 - no temp path
 - no raw stderr
+- no timestamp
+- no unknown extra fields (explicit allowlist projection only)
 
 ## HTTP and Cache Behavior
 - Cache-Control: no-store

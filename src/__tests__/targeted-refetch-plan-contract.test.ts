@@ -153,6 +153,45 @@ describe('targeted refetch plan response contract', () => {
     expect(parsed.ok).toBe(false)
   })
 
+  test('accepts real planner shape with internal provenance paths', () => {
+    const plan = {
+      ...validPlan('all'),
+      timestamp: '2026-07-18T02:00:00Z',
+      p0_plan_total_count: 12,
+      audit_p0_true_missing_count: 4,
+      rate_limit_policy: 'conservative',
+      cache_diagnosis_note: 'cache-only review',
+      input_audit: 'C:\\Users\\test\\AppData\\Local\\Temp\\planner\\audit.json',
+      input_p0_plan: 'C:\\Users\\test\\AppData\\Local\\Temp\\planner\\p0_plan.json',
+      input_cache_diagnosis: 'C:\\Users\\test\\AppData\\Local\\Temp\\planner\\cache.json',
+    }
+
+    const parsed = validateTargetedRefetchPlanReport(plan, { target: 'all', max_targets: 10 })
+    expect(parsed.ok).toBe(true)
+  })
+
+  test('rejects surfaced path attacks and allows safe slash wording', () => {
+    const withWindowsPath = validPlan()
+    ;(withWindowsPath.sample_urls.result_page[0] as any).reason = 'failed at C:\\secret\\data.json'
+    expect(validateTargetedRefetchPlanReport(withWindowsPath, { target: 'all', max_targets: 10 }).ok).toBe(false)
+
+    const withUnixPath = validPlan()
+    ;(withUnixPath.sample_urls.result_page[0] as any).recommended_next_action = '/etc/passwd を確認'
+    expect(validateTargetedRefetchPlanReport(withUnixPath, { target: 'all', max_targets: 10 }).ok).toBe(false)
+
+    const withFileUri = validPlan()
+    ;(withFileUri.sample_urls.result_page[0] as any).source = 'file:///tmp/source'
+    expect(validateTargetedRefetchPlanReport(withFileUri, { target: 'all', max_targets: 10 }).ok).toBe(false)
+
+    const withUnc = validPlan()
+    ;(withUnc.sample_urls.result_page[0] as any).source = 'UNC \\\\server\\share\\x.json'
+    expect(validateTargetedRefetchPlanReport(withUnc, { target: 'all', max_targets: 10 }).ok).toBe(false)
+
+    const safeSlashWording = validPlan()
+    ;(safeSlashWording.sample_urls.result_page[0] as any).recommended_next_action = 'date/race_id 分割で段階実行を検討'
+    expect(validateTargetedRefetchPlanReport(safeSlashWording, { target: 'all', max_targets: 10 }).ok).toBe(true)
+  })
+
   test('rejects invalid IDs and oversized actions', () => {
     const plan = validPlan()
     ;(plan.sample_urls.result_page[0] as any).race_id = '2026/01010101'

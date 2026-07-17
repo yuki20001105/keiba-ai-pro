@@ -176,6 +176,20 @@ function validReport(target = 'all') {
   }
 }
 
+function realPlannerShapeReport(target = 'all') {
+  return {
+    ...validReport(target),
+    timestamp: '2026-07-18T02:00:00Z',
+    p0_plan_total_count: 12,
+    audit_p0_true_missing_count: 4,
+    rate_limit_policy: 'conservative',
+    cache_diagnosis_note: 'cache-only review',
+    input_audit: 'C:\\Users\\test\\AppData\\Local\\Temp\\planner\\audit.json',
+    input_p0_plan: 'C:\\Users\\test\\AppData\\Local\\Temp\\planner\\p0_plan.json',
+    input_cache_diagnosis: 'C:\\Users\\test\\AppData\\Local\\Temp\\planner\\cache.json',
+  }
+}
+
 async function waitForSpawnCalls(expectedCalls: number): Promise<void> {
   for (let i = 0; i < 20; i += 1) {
     if (spawnMock.mock.calls.length >= expectedCalls) return
@@ -261,7 +275,7 @@ describe('targeted-refetch-plan route', () => {
   test('spawn uses shell=false and validates response contract', async () => {
     const child = new MockChild()
     spawnMock.mockImplementation(() => child)
-    fsReadFileMock.mockResolvedValue(JSON.stringify(validReport('race')))
+    fsReadFileMock.mockResolvedValue(JSON.stringify(realPlannerShapeReport('race')))
 
     const { POST } = await import('@/app/api/scrape/targeted-refetch-plan/route')
     const promise = POST(makeRequest({ target: 'race', max_targets: 10 }) as any)
@@ -280,7 +294,13 @@ describe('targeted-refetch-plan route', () => {
     expect(body.execution_enabled).toBe(false)
     expect((body.plan as any).target).toBe('race')
     expect((body.plan as any).input_audit).toBeUndefined()
+    expect((body.plan as any).input_p0_plan).toBeUndefined()
+    expect((body.plan as any).input_cache_diagnosis).toBeUndefined()
+    expect((body.plan as any).timestamp).toBeUndefined()
+    expect((body.plan as any).rate_limit_policy).toBeUndefined()
     expect((body.plan as any).output).toBeUndefined()
+    expect(JSON.stringify(body)).not.toContain('C:\\Users')
+    expect(JSON.stringify(body)).not.toContain('AppData\\Local\\Temp')
   })
 
   test('returns 502 for malformed numeric values / target mismatch / missing safety flag', async () => {
@@ -433,19 +453,63 @@ describe('targeted-refetch-plan route', () => {
     })
   })
 
-  test('rejects report containing filesystem path values', async () => {
+  test('rejects report containing surfaced filesystem path attacks', async () => {
     const child = new MockChild()
     spawnMock.mockImplementation(() => child)
-    const report = validReport('all')
-    ;(report.sample_urls.result_page[0] as any).reason = '/var/tmp/secret.log'
-    fsReadFileMock.mockResolvedValue(JSON.stringify(report))
+    const reportWindows = validReport('all')
+    ;(reportWindows.sample_urls.result_page[0] as any).reason = 'failed at C:\\secret\\data.json'
+    fsReadFileMock.mockResolvedValueOnce(JSON.stringify(reportWindows))
 
     const { POST } = await import('@/app/api/scrape/targeted-refetch-plan/route')
-    const promise = POST(makeRequest({ target: 'all', max_targets: 10 }) as any)
+    let promise = POST(makeRequest({ target: 'all', max_targets: 10 }) as any)
     await waitForSpawnCalls(1)
     child.emitClose(0)
-    const res = await promise
+    let res = await promise
     expect(res.status).toBe(502)
+
+    const child2 = new MockChild()
+    spawnMock.mockImplementationOnce(() => child2)
+    const reportUnix = validReport('all')
+    ;(reportUnix.sample_urls.result_page[0] as any).recommended_next_action = '/etc/passwd を確認'
+    fsReadFileMock.mockResolvedValueOnce(JSON.stringify(reportUnix))
+    promise = POST(makeRequest({ target: 'all', max_targets: 10 }) as any)
+    await waitForSpawnCalls(2)
+    child2.emitClose(0)
+    res = await promise
+    expect(res.status).toBe(502)
+
+    const child3 = new MockChild()
+    spawnMock.mockImplementationOnce(() => child3)
+    const reportFileUri = validReport('all')
+    ;(reportFileUri.sample_urls.result_page[0] as any).source = 'file:///tmp/source'
+    fsReadFileMock.mockResolvedValueOnce(JSON.stringify(reportFileUri))
+    promise = POST(makeRequest({ target: 'all', max_targets: 10 }) as any)
+    await waitForSpawnCalls(3)
+    child3.emitClose(0)
+    res = await promise
+    expect(res.status).toBe(502)
+
+    const child4 = new MockChild()
+    spawnMock.mockImplementationOnce(() => child4)
+    const reportUnc = validReport('all')
+    ;(reportUnc.sample_urls.result_page[0] as any).source = 'UNC \\\\server\\share\\a.json'
+    fsReadFileMock.mockResolvedValueOnce(JSON.stringify(reportUnc))
+    promise = POST(makeRequest({ target: 'all', max_targets: 10 }) as any)
+    await waitForSpawnCalls(4)
+    child4.emitClose(0)
+    res = await promise
+    expect(res.status).toBe(502)
+
+    const child5 = new MockChild()
+    spawnMock.mockImplementationOnce(() => child5)
+    const safeText = validReport('all')
+    ;(safeText.sample_urls.result_page[0] as any).recommended_next_action = 'date/race_id 分割で段階実行を検討'
+    fsReadFileMock.mockResolvedValueOnce(JSON.stringify(safeText))
+    promise = POST(makeRequest({ target: 'all', max_targets: 10 }) as any)
+    await waitForSpawnCalls(5)
+    child5.emitClose(0)
+    res = await promise
+    expect(res.status).toBe(200)
   })
 
   test('enforces single-flight and blocks second concurrent planner request', async () => {
