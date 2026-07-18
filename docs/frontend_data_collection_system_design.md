@@ -17,6 +17,7 @@ This document covers the Data Collection frontend and adjacent read-only plannin
   - `src/app/data-collection/refresh-plan/page.tsx`
   - `src/app/data-collection/p0-repair-plan/page.tsx`
   - `src/app/data-collection/targeted-refetch-plan/page.tsx`
+  - `src/app/data-collection/live-validation/page.tsx`
 - Next API routes:
   - `src/app/api/scrape/*`
   - `src/app/api/data-stats/route.ts`
@@ -73,7 +74,27 @@ Observed mismatch from source document:
   - Applies fail-closed report validation for numeric fields, URL samples, and safety flags.
   - Rejects unknown/path-like inputs and strips server filesystem paths from responses.
 
-### 2.4 FastAPI scrape contracts relevant to frontend
+### 2.5 Bounded Live Validation page and route
+- UI requires an explicit confirmation before any external HTTP request.
+- UI caps validation at 3 sequential URLs and exposes pass/warn/partial/error/busy as separate states.
+- Each selected URL permits one outbound attempt with no automatic retry, so one run performs at most 3 external HTTP requests.
+- Next route `src/app/api/scrape/live-validation/route.ts`:
+  - re-verifies Admin authorization;
+  - accepts only `target`, `url_type`, `max_urls`, and literal `confirm_live_fetch=true`;
+  - forwards the verified bearer token to FastAPI;
+  - validates and allowlist-projects the response;
+  - never starts Python and never accepts a URL or filesystem path.
+- FastAPI route `POST /api/scrape/live-validation`:
+  - independently enforces Admin authorization;
+  - runs fixed server-owned planner/validator commands with shell disabled;
+  - disables redirects and bounds timeout, body size, output size, concurrency, cooldown and total runtime;
+  - treats only non-expired cache rows as available in both planning and validation;
+  - requires response-derived horse identity and real pedigree evidence instead of trusting request URLs as parse evidence;
+  - recomputes result counts and verdict from validated sample rows before returning evidence;
+  - performs no DB repair/upsert/cache write and removes temporary reports on all paths.
+- Runtime prerequisites are server-owned report inputs plus read-only data/cache volumes at the documented container paths. Reports mount at `/app/keiba/data/live-validation-inputs:ro`; operational data remains under `/app/keiba/data`. Neither is bundled into the image or Next/Vercel deployment, and missing prerequisites fail closed before external HTTP.
+
+### 2.6 FastAPI scrape contracts relevant to frontend
 - `POST /api/scrape/start`: starts async scrape job.
 - `GET /api/scrape/status/{job_id}`: job status/progress/result.
 - `GET /api/scrape/history`: recent jobs.
@@ -85,7 +106,7 @@ Observed mismatch from source document:
 ---
 
 ## 3. Planned (Future)
-- UI-first integration for targeted refetch plan and live validation.
+- Controlled staging evidence for the bounded live-validation UI and FastAPI service.
 - Unified operational dashboard that joins:
   - refresh dry-run
   - p0 repair dry-run
@@ -108,6 +129,7 @@ Observed mismatch from source document:
 | P0 Repair Plan | `/api/scrape/p0-repair-plan` | `plan_p0_scrape_repair.py` | POST/GET | yes | no | no | implemented |
 | P0 Repair execute | `/api/scrape/p0-repair-plan` | none | PUT | yes | no | no | disabled (`501`) |
 | Targeted Refetch Plan | `/api/scrape/targeted-refetch-plan` | `plan_p0_targeted_refetch.py` | POST | yes | no | no | implemented |
+| Bounded Live Validation | `/api/scrape/live-validation` | FastAPI `/api/scrape/live-validation` + fixed planner/validator | POST | yes | yes (max 3, sequential) | no | implemented, L2 contract-ready |
 
 ---
 

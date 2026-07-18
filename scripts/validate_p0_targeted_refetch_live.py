@@ -14,7 +14,7 @@ import re
 import sqlite3
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -41,6 +41,25 @@ except Exception:  # pragma: no cover
 DEFAULT_REFETCH_PLAN_INPUT = ROOT_DIR / "reports" / "p0_targeted_refetch_plan.json"
 DEFAULT_OUTPUT = ROOT_DIR / "reports" / "p0_targeted_refetch_live_validation.json"
 DEFAULT_CACHE_DB = ROOT_DIR / "keiba" / "data" / "fetch_cache.db"
+
+ALLOWED_ORIGIN = "https://db.netkeiba.com"
+MAX_SUPPORTED_URLS = 10
+PER_REQUEST_TIMEOUT_SEC = 10.0
+TOTAL_TIMEOUT_SEC = 45.0
+MAX_BODY_BYTES = 2 * 1024 * 1024
+MAX_RETRY_AFTER_SEC = 0.0
+# fetch_pipeline interprets max_retries as the maximum total attempts.  Live
+# validation promises at most one outbound request per selected URL, so one
+# means a single attempt with no automatic retry.
+MAX_RETRIES = 1
+RETRY_BASE_SEC = 0.0
+RETRY_JITTER_SEC = 0.0
+
+_RACE_PATH_RE = re.compile(r"/race/(?P<id>[0-9]{12})/")
+_HORSE_RESULT_PATH_RE = re.compile(r"/horse/result/(?P<id>[0-9]{10})/")
+_HORSE_PED_PATH_RE = re.compile(r"/horse/ped/(?P<id>[0-9]{10})/")
+_RACE_ID_RE = re.compile(r"[0-9]{12}")
+_HORSE_ID_RE = re.compile(r"[0-9]{10}")
 
 URL_TYPE_MAP = {
     "race-result": "result_page",
@@ -129,7 +148,11 @@ def _load_json(path: Path, label: str) -> dict[str, Any]:
 def _open_ro_db(path: Path) -> sqlite3.Connection:
     if not path.exists():
         raise SystemExit(f"error: database not found: {path}")
-    return sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+    # mode=ro preserves visibility of committed WAL entries while preventing
+    # application writes through this validation-only connection.
+    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    conn.execute("PRAGMA query_only=ON")
+    return conn
 
 
 def _normalize_url(url: str) -> str:
@@ -145,7 +168,11 @@ def _target_allowed(column: str, target: str) -> bool:
 
 def _cache_has_url(conn: sqlite3.Connection, url: str) -> bool:
     normalized = _normalize_url(url)
-    row = conn.execute("SELECT 1 FROM http_cache WHERE normalized_url = ?", (normalized,)).fetchone()
+    now = time.time()
+    row = conn.execute(
+        "SELECT 1 FROM http_cache WHERE normalized_url = ? AND expires_at > ?",
+        (normalized, now),
+    ).fetchone()
     if row:
         return True
 
@@ -154,24 +181,36 @@ def _cache_has_url(conn: sqlite3.Connection, url: str) -> bool:
         race_id = path.split("/race/", 1)[1].strip("/")
         if race_id:
             row = conn.execute(
-                "SELECT 1 FROM http_cache WHERE normalized_url LIKE ? OR final_url LIKE ? LIMIT 1",
-                (f"%/race/{race_id}/%", f"%/race/{race_id}/%"),
+                """
+                SELECT 1 FROM http_cache
+                WHERE (normalized_url LIKE ? OR final_url LIKE ?) AND expires_at > ?
+                LIMIT 1
+                """,
+                (f"%/race/{race_id}/%", f"%/race/{race_id}/%", now),
             ).fetchone()
             return bool(row)
     if "/horse/result/" in path:
         horse_id = path.split("/horse/result/", 1)[1].strip("/")
         if horse_id:
             row = conn.execute(
-                "SELECT 1 FROM http_cache WHERE normalized_url LIKE ? OR final_url LIKE ? LIMIT 1",
-                (f"%/horse/result/{horse_id}/%", f"%/horse/result/{horse_id}/%"),
+                """
+                SELECT 1 FROM http_cache
+                WHERE (normalized_url LIKE ? OR final_url LIKE ?) AND expires_at > ?
+                LIMIT 1
+                """,
+                (f"%/horse/result/{horse_id}/%", f"%/horse/result/{horse_id}/%", now),
             ).fetchone()
             return bool(row)
     if "/horse/ped/" in path:
         horse_id = path.split("/horse/ped/", 1)[1].strip("/")
         if horse_id:
             row = conn.execute(
-                "SELECT 1 FROM http_cache WHERE normalized_url LIKE ? OR final_url LIKE ? LIMIT 1",
-                (f"%/horse/ped/{horse_id}/%", f"%/horse/ped/{horse_id}/%"),
+                """
+                SELECT 1 FROM http_cache
+                WHERE (normalized_url LIKE ? OR final_url LIKE ?) AND expires_at > ?
+                LIMIT 1
+                """,
+                (f"%/horse/ped/{horse_id}/%", f"%/horse/ped/{horse_id}/%", now),
             ).fetchone()
             return bool(row)
     return False
@@ -187,6 +226,67 @@ def _canonical_url_type(raw: str) -> str:
     if raw in {"pedigree", "horse-pedigree"}:
         return "pedigree"
     return raw
+
+
+def _validate_target_url(target: ValidationTarget) -> tuple[ValidationTarget | None, str | None]:
+    """Validate a plan URL independently of any upstream planner guarantees."""
+
+    raw_url = target.url
+    if not raw_url or raw_url != raw_url.strip():
+        return None, "invalid-url-whitespace"
+    try:
+        parts = urlsplit(raw_url)
+        # Accessing port deliberately catches malformed/non-numeric ports.
+        explicit_port = parts.port
+    except ValueError:
+        return None, "invalid-url-port"
+
+    if f"{parts.scheme}://{parts.netloc}" != ALLOWED_ORIGIN or parts.hostname != "db.netkeiba.com":
+        return None, "invalid-url-origin"
+    if parts.username is not None or parts.password is not None:
+        return None, "invalid-url-userinfo"
+    if explicit_port is not None:
+        return None, "invalid-url-port"
+    if parts.query:
+        return None, "invalid-url-query"
+    if parts.fragment:
+        return None, "invalid-url-fragment"
+
+    canonical_type = _canonical_url_type(target.url_type)
+    path_id: str
+    id_kind: str
+    if canonical_type in {"result_page", "race_detail"}:
+        match = _RACE_PATH_RE.fullmatch(parts.path)
+        id_kind = "race"
+    elif canonical_type == "horse_detail":
+        match = _HORSE_RESULT_PATH_RE.fullmatch(parts.path)
+        id_kind = "horse"
+    elif canonical_type == "pedigree":
+        match = _HORSE_PED_PATH_RE.fullmatch(parts.path)
+        id_kind = "horse"
+    else:
+        return None, "invalid-url-type"
+
+    if match is None:
+        return None, "invalid-url-path-for-type"
+    path_id = match.group("id")
+
+    if target.race_id is not None and _RACE_ID_RE.fullmatch(target.race_id) is None:
+        return None, "invalid-race-id"
+    if target.horse_id is not None and _HORSE_ID_RE.fullmatch(target.horse_id) is None:
+        return None, "invalid-horse-id"
+
+    if id_kind == "race":
+        if target.race_id is not None and target.race_id != path_id:
+            return None, "race-id-url-mismatch"
+        return replace(target, url_type=canonical_type, race_id=path_id), None
+
+    if target.horse_id is not None and target.horse_id != path_id:
+        return None, "horse-id-url-mismatch"
+    # The URL is authoritative only after its exact origin/path/type checks.
+    # This preserves older plans that omitted horse_id while still giving the
+    # parser the requested ID as a safe fallback.
+    return replace(target, url_type=canonical_type, horse_id=path_id), None
 
 
 def _read_targets_from_plan(plan: dict[str, Any]) -> list[ValidationTarget]:
@@ -247,27 +347,78 @@ def _read_targets_from_plan(plan: dict[str, Any]) -> list[ValidationTarget]:
 def _expected_type_for_url_type(url_type: str) -> str:
     if url_type in {"result_page", "race_detail"}:
         return "race-detail"
-    if url_type in {"horse_detail", "pedigree"}:
+    if url_type == "horse_detail":
         return "horse-detail"
+    if url_type == "pedigree":
+        return "horse-pedigree"
     return "unknown"
 
 
-def _detect_page_type(url: str, html: str) -> str:
-    lower_html = html.lower()
-    if re.search(r"/race/\d{12}/", url):
+def _horse_page_identity(soup: BeautifulSoup) -> tuple[str, str, bool] | None:
+    """Return verified response-derived horse name/id and result-page marker."""
+
+    title = soup.title.get_text(" ", strip=True) if soup.title else ""
+    result_match = re.fullmatch(r"(.+?)の競走成績\s*\|\s*競走馬データ\s*-\s*netkeiba", title)
+    profile_match = re.fullmatch(r"(.+?)\s*\|\s*競走馬データ\s*-\s*netkeiba", title)
+    match = result_match or profile_match
+    if match is None:
+        return None
+
+    og_type = soup.find("meta", attrs={"property": "og:type"})
+    og_title = soup.find("meta", attrs={"property": "og:title"})
+    og_url = soup.find("meta", attrs={"property": "og:url"})
+    if (
+        str(og_type.get("content") or "") if og_type else ""
+    ) != "article" or (
+        str(og_title.get("content") or "") if og_title else ""
+    ).strip() != title:
+        return None
+
+    content = str(og_url.get("content") or "") if og_url else ""
+    try:
+        parts = urlsplit(content)
+        if parts.port is not None:
+            return None
+    except ValueError:
+        return None
+    if (
+        parts.scheme != "https"
+        or parts.hostname != "db.netkeiba.com"
+        or parts.username is not None
+        or parts.password is not None
+        or parts.query
+        or parts.fragment
+    ):
+        return None
+    id_match = re.fullmatch(r"/+horse/(?:result/)?([0-9]{10})/", parts.path)
+    horse_name = re.sub(r"\s*\([^)]*\)\s*$", "", match.group(1)).strip()
+    if id_match is None or not horse_name:
+        return None
+    return horse_name, id_match.group(1), result_match is not None
+
+
+def _detect_page_type(_url: str, html: str) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+    if soup.find("table", class_="race_table_01") is not None:
         return "race-detail"
-    if "/horse/result/" in url or "/horse/ped/" in url:
-        return "horse-detail"
-    if "race_table_01" in lower_html:
-        return "race-detail"
-    if "blood_table" in lower_html:
+    if soup.find("table", class_="blood_table") is not None:
+        return "horse-pedigree"
+    identity = _horse_page_identity(soup)
+    if identity is not None and identity[2]:
         return "horse-detail"
     return "unknown"
 
 
 def _is_error_page(html: str) -> bool:
     lowered = html.lower()
-    if "access denied" in lowered or "forbidden" in lowered or "error" in lowered[:500]:
+    if (
+        "access denied" in lowered
+        or "forbidden" in lowered
+        or "error" in lowered[:500]
+        or "maintenance" in lowered
+        or "メンテナンス" in html
+        or "一時的にご利用いただけません" in html
+    ):
         return True
     try:
         if is_cloudflare_block(html.encode("utf-8", errors="ignore")):
@@ -342,7 +493,10 @@ def _extract_race_fields(html: str, race_id: str | None, horse_id: str | None) -
             if str(entry.get("horse_id") or "") == horse_id:
                 target_entry = entry
                 break
-    if target_entry is None and entries:
+    # Never substitute a different horse when the requested horse is absent.
+    # Falling back to the first row would report another horse's values as a
+    # successful repair for the requested ID.
+    if target_entry is None and entries and not horse_id:
         target_entry = entries[0]
     if isinstance(target_entry, dict):
         out.update(target_entry)
@@ -369,12 +523,14 @@ def _extract_race_fields(html: str, race_id: str | None, horse_id: str | None) -
     return out
 
 
-def _extract_horse_fields(html: str) -> dict[str, Any]:
+def _extract_horse_fields(html: str, requested_horse_id: str | None = None) -> dict[str, Any]:
     out: dict[str, Any] = {}
     soup = BeautifulSoup(html, "html.parser")
-    title = soup.find("h1")
-    if title:
-        out["horse_name"] = title.get_text(strip=True) or None
+    identity = _horse_page_identity(soup)
+    if identity is not None:
+        horse_name, response_horse_id, _is_result_page = identity
+        out["horse_name"] = horse_name
+        out["horse_id"] = response_horse_id
 
     blood_table = soup.find("table", class_="blood_table")
     if blood_table:
@@ -392,18 +548,17 @@ def _extract_horse_fields(html: str) -> dict[str, Any]:
                 if len(mid) >= 2 and mid[1].find("a"):
                     out["broodmare_sire"] = mid[1].find("a").get_text(strip=True)
 
-    horse_link = soup.find("a", href=re.compile(r"/horse/(?:result/)?[A-Za-z0-9]+/?"))
-    if horse_link:
-        href = str(horse_link.get("href") or "")
-        m = re.search(r"/horse/(?:result/)?([A-Za-z0-9]+)(?:/|$)", href)
-        if m:
-            out["horse_id"] = m.group(1)
+    # The requested ID is never injected as parse evidence.  It is used only
+    # to reject a response whose own canonical identity disagrees with the
+    # independently validated request URL.
+    if requested_horse_id and out.get("horse_id") != requested_horse_id:
+        out.pop("horse_id", None)
     return out
 
 
 def _missing_fields_before(target: ValidationTarget) -> list[str]:
     if target.reason == "consistency:race_without_horse_data":
-        return ["horse_id", "horse_name", "frame_number", "horse_number"]
+        return ["horse_id", "horse_name", "frame_number", "horse_number", "(check)"]
     if target.column in {"race_number", "margin"}:
         return []
     if target.column:
@@ -427,9 +582,18 @@ def _parse_for_target(target: ValidationTarget, html: str) -> tuple[str, dict[st
     if target.url_type in {"result_page", "race_detail"}:
         fields = _extract_race_fields(html, target.race_id, target.horse_id)
     else:
-        fields = _extract_horse_fields(html)
+        fields = _extract_horse_fields(html, target.horse_id)
 
-    if not fields:
+    if target.url_type == "horse_detail":
+        if fields.get("horse_id") != target.horse_id or not str(fields.get("horse_name") or "").strip():
+            return "parse_failed", {}, "missing-horse-identity"
+    elif target.url_type == "pedigree":
+        pedigree_fields = ("sire", "dam", "broodmare_sire")
+        if fields.get("horse_id") != target.horse_id or not any(
+            str(fields.get(name) or "").strip() for name in pedigree_fields
+        ):
+            return "parse_failed", {}, "missing-pedigree-evidence"
+    elif not fields:
         return "parse_failed", {}, "no-fields"
     return "parse_success", fields, None
 
@@ -452,6 +616,8 @@ def _field_names_found(fields: dict[str, Any]) -> list[str]:
     out = []
     for k, v in fields.items():
         if k == "entries":
+            if isinstance(v, list) and v:
+                out.append("(check)")
             continue
         if v not in (None, "", []):
             out.append(k)
@@ -483,6 +649,7 @@ def _select_targets(
         "domain_allowed": 0,
         "metadata_repair": 0,
         "cache_available": 0,
+        "unsafe_url": 0,
     }
 
     chosen: list[ValidationTarget] = []
@@ -493,6 +660,12 @@ def _select_targets(
     wanted_type = URL_TYPE_MAP.get(url_type, "all")
 
     for item in all_targets:
+        validated_item, _validation_error = _validate_target_url(item)
+        if validated_item is None:
+            excluded["unsafe_url"] += 1
+            continue
+        item = validated_item
+
         if not _target_allowed(item.column, target):
             continue
         if item.reason in {"derived-field-candidate", "alias-candidate"} or item.column == "race_number":
@@ -505,7 +678,7 @@ def _select_targets(
             excluded["metadata_repair"] += 1
             continue
 
-        canonical = _canonical_url_type(item.url_type)
+        canonical = item.url_type
         if wanted_type != "all" and canonical != wanted_type:
             continue
 
@@ -537,6 +710,7 @@ async def _fetch_live(
     *,
     fixture_map: dict[str, dict[str, Any]] | None,
     metric_before: dict[str, int],
+    total_timeout_sec: float,
 ) -> tuple[int, str, str, int, bool, bool, bool, float]:
     started = time.perf_counter()
     if fixture_map is not None:
@@ -549,24 +723,31 @@ async def _fetch_live(
         backoff_observed = bool(data.get("backoff_observed", attempts > 1))
         circuit_observed = bool(data.get("circuit_open_observed", False))
         cache_hit = source == "cache"
+        if len(body.encode("utf-8", errors="replace")) > MAX_BODY_BYTES:
+            return 0, "", "fixture-rejected", attempts, False, backoff_observed, circuit_observed, elapsed
         return status, body, source, attempts, cache_hit, backoff_observed, circuit_observed, elapsed
 
     import aiohttp  # type: ignore
 
-    timeout = aiohttp.ClientTimeout(total=60)
+    request_timeout = max(0.001, min(PER_REQUEST_TIMEOUT_SEC, total_timeout_sec))
+    timeout = aiohttp.ClientTimeout(total=request_timeout)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         result, text = await fetch_text(
             session,
             target.url,
             use_cache=False,
-            force_refresh=True,
+            force_refresh=False,
             dry_run=False,
             min_interval_sec=1.0,
-            max_retries=3,
-            retry_base_sec=2.0,
-            retry_jitter_sec=0.7,
+            max_retries=MAX_RETRIES,
+            retry_base_sec=RETRY_BASE_SEC,
+            retry_jitter_sec=RETRY_JITTER_SEC,
             circuit_threshold=3,
             circuit_cooldown_sec=120.0,
+            allow_redirects=False,
+            max_body_bytes=MAX_BODY_BYTES,
+            max_retry_after_sec=MAX_RETRY_AFTER_SEC,
+            total_timeout_sec=total_timeout_sec,
         )
 
     metric_after = get_fetch_metrics(reset=False)
@@ -598,12 +779,14 @@ def _load_fixture_map(path: Path | None) -> dict[str, dict[str, Any]] | None:
 
 
 async def _run_validation(args: argparse.Namespace) -> dict[str, Any]:
+    started_all = time.perf_counter()
+    deadline = started_all + TOTAL_TIMEOUT_SEC
     plan = _load_json(Path(args.input_refetch_plan), "input-refetch-plan")
     all_targets = _read_targets_from_plan(plan)
     requested_max_urls = int(args.max_urls)
     if requested_max_urls <= 0:
         raise SystemExit("error: --max-urls must be >= 1")
-    max_urls_applied = min(requested_max_urls, 10)
+    max_urls_applied = min(requested_max_urls, MAX_SUPPORTED_URLS)
 
     cache_conn = _open_ro_db(Path(args.cache_db))
     fixture_map = _load_fixture_map(Path(args.fixture_json) if args.fixture_json else None)
@@ -616,17 +799,34 @@ async def _run_validation(args: argparse.Namespace) -> dict[str, Any]:
             cache_conn=cache_conn,
         )
 
-        started_all = time.perf_counter()
         get_fetch_metrics(reset=True)
 
         observed: list[FetchObserved] = []
         for target in selected:
+            started_target = time.perf_counter()
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0:
+                break
             metric_before = get_fetch_metrics(reset=False)
-            http_status, html, _source, retry_count, cache_hit, backoff_observed, circuit_observed, elapsed = await _fetch_live(
-                target,
-                fixture_map=fixture_map,
-                metric_before=metric_before,
-            )
+            try:
+                http_status, html, _source, retry_count, cache_hit, backoff_observed, circuit_observed, elapsed = await asyncio.wait_for(
+                    _fetch_live(
+                        target,
+                        fixture_map=fixture_map,
+                        metric_before=metric_before,
+                        total_timeout_sec=remaining,
+                    ),
+                    timeout=max(0.001, remaining),
+                )
+            except asyncio.TimeoutError:
+                http_status = 0
+                html = ""
+                _source = "runtime-limit"
+                retry_count = 0
+                cache_hit = False
+                backoff_observed = False
+                circuit_observed = False
+                elapsed = round(time.perf_counter() - started_target, 3)
 
             missing_before = _missing_fields_before(target)
             if http_status < 200 or http_status >= 300:
@@ -670,6 +870,8 @@ async def _run_validation(args: argparse.Namespace) -> dict[str, Any]:
                     would_fix_columns=would_fix,
                 )
             )
+            if time.perf_counter() >= deadline:
+                break
 
         elapsed_seconds = round(time.perf_counter() - started_all, 3)
         metrics = get_fetch_metrics(reset=False)
@@ -751,16 +953,21 @@ async def _run_validation(args: argparse.Namespace) -> dict[str, Any]:
             "excluded_domain_allowed_count": excluded_counts["domain_allowed"],
             "excluded_metadata_repair_count": excluded_counts["metadata_repair"],
             "excluded_cache_available_count": excluded_counts["cache_available"],
+            "excluded_unsafe_url_count": excluded_counts["unsafe_url"],
             "sample_results": sample_results,
             "recommended_next_actions": recommended_next_actions,
             "rate_limit_policy": {
                 "max_urls": max_urls_applied,
-                "max_supported_urls": 10,
+                "max_supported_urls": MAX_SUPPORTED_URLS,
                 "min_interval_sec": 1.0,
-                "max_retries": 3,
-                "retry_base_sec": 2.0,
-                "retry_jitter_sec": 0.7,
-                "retry_after_enabled": True,
+                "max_retries": MAX_RETRIES,
+                "retry_base_sec": RETRY_BASE_SEC,
+                "retry_jitter_sec": RETRY_JITTER_SEC,
+                "retry_after_enabled": False,
+                "max_retry_after_sec": MAX_RETRY_AFTER_SEC,
+                "per_request_timeout_sec": PER_REQUEST_TIMEOUT_SEC,
+                "total_timeout_sec": TOTAL_TIMEOUT_SEC,
+                "max_body_bytes": MAX_BODY_BYTES,
                 "circuit_breaker": {"threshold": 3, "cooldown_sec": 120.0},
                 "parallelism": 1,
                 "fetch_pipeline_used": True,
@@ -774,6 +981,9 @@ async def _run_validation(args: argparse.Namespace) -> dict[str, Any]:
                 "no_production_table_write": True,
                 "no_force_refresh_execute": True,
                 "no_bulk_refetch": True,
+                "redirects_disabled": True,
+                "bounded_response_body": True,
+                "bounded_total_runtime": True,
             },
             "verdict": verdict,
             "verdict_reason": "small-live-validation",
@@ -796,8 +1006,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = _build_parser().parse_args()
-    if int(args.max_urls) > 10:
-        args.max_urls = 10
+    if int(args.max_urls) > MAX_SUPPORTED_URLS:
+        args.max_urls = MAX_SUPPORTED_URLS
 
     payload = asyncio.run(_run_validation(args))
 

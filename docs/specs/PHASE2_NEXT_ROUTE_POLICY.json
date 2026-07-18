@@ -572,6 +572,17 @@
     "detail_error_passthrough_reason": ""
   },
   {
+    "route": "/api/scrape/live-validation",
+    "method": "POST",
+    "policy": "Admin",
+    "auth_header_forward": true,
+    "status_propagation": true,
+    "detail_error_passthrough": true,
+    "auth_header_forward_reason": "",
+    "status_propagation_reason": "",
+    "detail_error_passthrough_reason": ""
+  },
+  {
     "route": "/api/scrape/p0-repair-plan",
     "method": "GET",
     "policy": "PremiumOrAdmin",

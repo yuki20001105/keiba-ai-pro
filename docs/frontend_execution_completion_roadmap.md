@@ -32,7 +32,7 @@ Target state is a frontend-led scrape operation where operator can:
 
 ### 2.2 Partially complete
 - Quality/audit experiences are split across pages/scripts and not fully unified in one dashboard.
-- Live validation remains script-oriented and is not yet first-class UI flow.
+- Live validation is now a first-class bounded Admin UI, but controlled staging evidence is still outstanding.
 
 ### 2.3 Not complete
 - Approval-gated production repair execution with staged release controls.
@@ -83,7 +83,11 @@ Target state is a frontend-led scrape operation where operator can:
 
 ## Phase 6 (in progress): Targeted refetch/live validation UI
 - Targeted refetch planning is now first-class read-only UI/route.
-- Live validation remains planned for the next phase.
+- Bounded live validation is now a first-class Admin UI backed by a FastAPI service.
+- Client input is limited to target/type/count plus explicit confirmation; URLs and filesystem paths remain server-owned.
+- The bounded path performs no automatic HTTP retry: at most three selected URLs means at most three outbound attempts.
+- Local one-URL evidence confirmed an unchanged main DB and caches, but it is not deployed staging evidence.
+- Code and deterministic CI are L2-ready. A controlled staging run with real external HTTP and zero DB mutation evidence is required for L3.
 
 ## Phase 7 (planned): Approval-gated repair execution scaffold
 - Keep write-disabled by default.

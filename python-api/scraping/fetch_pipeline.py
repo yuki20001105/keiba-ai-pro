@@ -22,6 +22,7 @@ _CACHE_DB_PATH = Path(__file__).parent.parent.parent / "keiba" / "data" / "fetch
 _SUMMARY_JSON_PATH = Path(__file__).parent.parent.parent / "reports" / "fetch_summary.json"
 
 _STATE_LOCK = Lock()
+_CACHE_INIT_LOCK = Lock()
 _LAST_REQUEST_TS: dict[str, float] = {}
 _CIRCUIT_UNTIL: dict[str, float] = {}
 _FAILURE_COUNTS: dict[str, int] = {}
@@ -40,6 +41,8 @@ _METRICS: dict[str, int] = {
     "status_500": 0,
     "status_503": 0,
     "timeout_count": 0,
+    "body_limit_count": 0,
+    "total_timeout_count": 0,
 }
 
 
@@ -55,41 +58,56 @@ class FetchResult:
 
 
 def _init_cache_db() -> None:
-    _CACHE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(_CACHE_DB_PATH))
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS http_cache (
-            normalized_url TEXT PRIMARY KEY,
-            final_url TEXT NOT NULL,
-            status INTEGER NOT NULL,
-            headers_json TEXT NOT NULL,
-            body BLOB NOT NULL,
-            fetched_at REAL NOT NULL,
-            expires_at REAL NOT NULL
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS fetch_resume (
-            resume_key TEXT PRIMARY KEY,
-            normalized_url TEXT NOT NULL,
-            status TEXT NOT NULL,
-            source TEXT NOT NULL,
-            http_status INTEGER NOT NULL,
-            attempts INTEGER NOT NULL,
-            updated_at REAL NOT NULL,
-            error TEXT
-        )
-        """
-    )
-    conn.commit()
-    conn.close()
+    """Create cache storage on the first write, never merely on import/read."""
+
+    with _CACHE_INIT_LOCK:
+        _CACHE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(_CACHE_DB_PATH))
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS http_cache (
+                    normalized_url TEXT PRIMARY KEY,
+                    final_url TEXT NOT NULL,
+                    status INTEGER NOT NULL,
+                    headers_json TEXT NOT NULL,
+                    body BLOB NOT NULL,
+                    fetched_at REAL NOT NULL,
+                    expires_at REAL NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS fetch_resume (
+                    resume_key TEXT PRIMARY KEY,
+                    normalized_url TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    http_status INTEGER NOT NULL,
+                    attempts INTEGER NOT NULL,
+                    updated_at REAL NOT NULL,
+                    error TEXT
+                )
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
 
-_init_cache_db()
+def _open_cache_db_read_only() -> sqlite3.Connection | None:
+    """Open an existing cache without creating a database or journal files."""
+
+    if not _CACHE_DB_PATH.is_file():
+        return None
+    try:
+        conn = sqlite3.connect(f"{_CACHE_DB_PATH.resolve().as_uri()}?mode=ro", uri=True)
+        conn.execute("PRAGMA query_only=ON")
+        return conn
+    except sqlite3.Error:
+        return None
 
 
 def _normalize_url(url: str) -> str:
@@ -100,32 +118,40 @@ def _normalize_url(url: str) -> str:
     return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), path, query_sorted, ""))
 
 
-def _parse_retry_after(headers: dict[str, str]) -> float:
+def _parse_retry_after(headers: dict[str, str], max_seconds: float | None = None) -> float:
     raw = headers.get("Retry-After") or headers.get("retry-after")
     if not raw:
         return 0.0
     raw = str(raw).strip()
     if raw.isdigit():
-        return max(0.0, float(raw))
+        value = max(0.0, float(raw))
+        return min(value, max(0.0, max_seconds)) if max_seconds is not None else value
     try:
         dt = parsedate_to_datetime(raw)
-        return max(0.0, dt.timestamp() - time.time())
+        value = max(0.0, dt.timestamp() - time.time())
+        return min(value, max(0.0, max_seconds)) if max_seconds is not None else value
     except Exception:
         return 0.0
 
 
 def _read_cache(normalized_url: str) -> dict[str, Any] | None:
     now = time.time()
-    conn = sqlite3.connect(str(_CACHE_DB_PATH))
-    row = conn.execute(
-        """
-        SELECT final_url, status, headers_json, body, fetched_at, expires_at
-        FROM http_cache
-        WHERE normalized_url = ?
-        """,
-        (normalized_url,),
-    ).fetchone()
-    conn.close()
+    conn = _open_cache_db_read_only()
+    if conn is None:
+        return None
+    try:
+        row = conn.execute(
+            """
+            SELECT final_url, status, headers_json, body, fetched_at, expires_at
+            FROM http_cache
+            WHERE normalized_url = ?
+            """,
+            (normalized_url,),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
     if not row:
         return None
     expires_at = float(row[5])
@@ -144,6 +170,7 @@ def _read_cache(normalized_url: str) -> dict[str, Any] | None:
 def _write_cache(normalized_url: str, final_url: str, status: int, headers: dict[str, str], body: bytes, ttl_sec: float) -> None:
     now = time.time()
     expires_at = now + max(1.0, ttl_sec)
+    _init_cache_db()
     conn = sqlite3.connect(str(_CACHE_DB_PATH))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
@@ -167,16 +194,22 @@ def _write_cache(normalized_url: str, final_url: str, status: int, headers: dict
 
 
 def _read_resume(resume_key: str) -> dict[str, Any] | None:
-    conn = sqlite3.connect(str(_CACHE_DB_PATH))
-    row = conn.execute(
-        """
-        SELECT normalized_url, status, source, http_status, attempts, updated_at, error
-        FROM fetch_resume
-        WHERE resume_key = ?
-        """,
-        (resume_key,),
-    ).fetchone()
-    conn.close()
+    conn = _open_cache_db_read_only()
+    if conn is None:
+        return None
+    try:
+        row = conn.execute(
+            """
+            SELECT normalized_url, status, source, http_status, attempts, updated_at, error
+            FROM fetch_resume
+            WHERE resume_key = ?
+            """,
+            (resume_key,),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
     if not row:
         return None
     return {
@@ -199,6 +232,7 @@ def _write_resume(
     attempts: int,
     error: str | None,
 ) -> None:
+    _init_cache_db()
     conn = sqlite3.connect(str(_CACHE_DB_PATH))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
@@ -264,6 +298,9 @@ async def _network_fetch(
     retry_statuses: set[int],
     circuit_threshold: int,
     circuit_cooldown_sec: float,
+    allow_redirects: bool,
+    max_body_bytes: int | None,
+    max_retry_after_sec: float | None,
 ) -> FetchResult:
     host = urlsplit(normalized_url).netloc
     last_error: str | None = None
@@ -273,10 +310,13 @@ async def _network_fetch(
         _record_request_start(host)
 
         try:
-            async with session.get(url) as resp:
+            # Keep the legacy call shape for default callers and simple test
+            # sessions. Safety-sensitive callers explicitly disable redirects.
+            request = session.get(url) if allow_redirects else session.get(url, allow_redirects=False)
+            async with request as resp:
                 status = int(resp.status)
-                body = await resp.read()
                 headers = {k: v for k, v in resp.headers.items()}
+                body, body_too_large = await _read_response_body(resp, max_body_bytes)
                 _metrics_inc("network_requests", 1)
                 if status == 429:
                     _metrics_inc("status_429", 1)
@@ -287,9 +327,21 @@ async def _network_fetch(
                 elif status == 503:
                     _metrics_inc("status_503", 1)
 
+                if body_too_large:
+                    _metrics_inc("body_limit_count", 1)
+                    return FetchResult(
+                        url=url,
+                        normalized_url=normalized_url,
+                        status=0,
+                        body=b"",
+                        source="network-rejected",
+                        attempts=attempt,
+                        error=f"response-body-too-large:{max_body_bytes}",
+                    )
+
                 if status in retry_statuses and attempt < max_retries:
                     _record_failure(host, circuit_threshold, circuit_cooldown_sec)
-                    retry_after = _parse_retry_after(headers)
+                    retry_after = _parse_retry_after(headers, max_retry_after_sec)
                     backoff = retry_base_sec * (2 ** (attempt - 1)) + random.uniform(0.0, max(0.0, retry_jitter_sec))
                     wait_sec = max(retry_after, backoff)
                     _metrics_inc("retry_count", 1)
@@ -344,6 +396,37 @@ async def _network_fetch(
     )
 
 
+async def _read_response_body(resp: Any, max_body_bytes: int | None) -> tuple[bytes, bool]:
+    """Read at most ``max_body_bytes + 1`` decompressed response bytes."""
+
+    if max_body_bytes is None:
+        return bytes(await resp.read()), False
+
+    limit = max(0, int(max_body_bytes))
+    content = getattr(resp, "content", None)
+    if content is not None and hasattr(content, "iter_chunked"):
+        chunks: list[bytes] = []
+        size = 0
+        async for raw_chunk in content.iter_chunked(min(64 * 1024, limit + 1)):
+            chunk = bytes(raw_chunk)
+            remaining = (limit + 1) - size
+            if remaining <= 0:
+                break
+            chunks.append(chunk[:remaining])
+            size += min(len(chunk), remaining)
+            if size > limit:
+                return b"", True
+        body = b"".join(chunks)
+    else:
+        # Compatibility fallback for minimal response doubles. Real aiohttp
+        # responses take the bounded streaming branch above.
+        body = bytes(await resp.read())
+
+    if len(body) > limit:
+        return b"", True
+    return body, False
+
+
 async def fetch_bytes(
     session,
     url: str,
@@ -360,6 +443,10 @@ async def fetch_bytes(
     retry_statuses: set[int] | None = None,
     circuit_threshold: int = 3,
     circuit_cooldown_sec: float = 90.0,
+    allow_redirects: bool = True,
+    max_body_bytes: int | None = None,
+    max_retry_after_sec: float | None = None,
+    total_timeout_sec: float | None = None,
 ) -> FetchResult:
     normalized_url = _normalize_url(url)
 
@@ -432,7 +519,7 @@ async def fetch_bytes(
         return result
 
     try:
-        result = await _network_fetch(
+        network_fetch = _network_fetch(
             session,
             url,
             normalized_url,
@@ -443,7 +530,26 @@ async def fetch_bytes(
             retry_statuses=retry_statuses,
             circuit_threshold=circuit_threshold,
             circuit_cooldown_sec=circuit_cooldown_sec,
+            allow_redirects=allow_redirects,
+            max_body_bytes=max_body_bytes,
+            max_retry_after_sec=max_retry_after_sec,
         )
+        try:
+            if total_timeout_sec is None:
+                result = await network_fetch
+            else:
+                result = await asyncio.wait_for(network_fetch, timeout=max(0.001, float(total_timeout_sec)))
+        except asyncio.TimeoutError:
+            _metrics_inc("total_timeout_count", 1)
+            result = FetchResult(
+                url=url,
+                normalized_url=normalized_url,
+                status=0,
+                body=b"",
+                source="network-timeout",
+                attempts=max(1, max_retries),
+                error="total-timeout",
+            )
 
         if use_cache and result.status == 200 and result.body:
             await asyncio.to_thread(

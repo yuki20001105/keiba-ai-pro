@@ -10,9 +10,11 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONPATH=/app/keiba
+      - LIVE_VALIDATION_INPUT_DIR=/app/keiba/data/live-validation-inputs
       - TZ=Asia/Tokyo
     volumes:
       - ./keiba/data:/app/keiba/data
+      - ./reports:/app/keiba/data/live-validation-inputs:ro
       - ./python-api/models:/app/python-api/models
       - ./data/logs:/app/python-api/logs
     restart: unless-stopped

@@ -9,8 +9,8 @@
 - `origin/develop..HEAD`: `0`
 
 Progress split (required):
-- 全体進捗推定: 50〜55%
-- Phase 3 L3/L4 readiness: 18%
+- 全体進捗推定: 65〜70%
+- Phase 3 L3/L4 readiness: 30〜35%
 
 ---
 
@@ -47,7 +47,7 @@ Legend: L0 not started, L1 isolated, L2 contract-ready, L3 staging-integrated, L
 | 9 | p0 repair plan preview | implemented | `/api/scrape/p0-repair-plan` | `plan_p0_scrape_repair.py` | read-only | premium/admin | L3 | L4 |
 | 10 | p0 repair execute | disabled UI | `PUT /api/scrape/p0-repair-plan` | none (`501`) | none | intentionally blocked | L1 | L3 |
 | 11 | targeted refetch planning | implemented | `/api/scrape/targeted-refetch-plan` | `plan_p0_targeted_refetch.py` | read-only report output | premium/admin | L2 | L3 |
-| 12 | live validation | script-led | not first-class UI | `validate_p0_targeted_refetch_live.py` | report output | bounded run | L1 | L3 |
+| 12 | live validation | explicit-confirm Admin UI | Next Admin proxy | FastAPI bounded service + `validate_p0_targeted_refetch_live.py` | temporary report only; DB read-only | Admin + SSRF/runtime bounds | L2 | L3 |
 | 13 | prediction + quota consume | implemented | Next proxy routes | FastAPI + quota deps | Supabase RPC + logs | authz + quota contract | L2 | L4 |
 | 14 | purchase history write/read | implemented | Next + direct Supabase paths | mixed | Supabase tables | legacy policy documented | L2 | L4 |
 | 15 | production-readiness orchestration | implemented | `/api/production-readiness` | allowlisted python/git checks | reports + status | premium/admin | L2 | L3 |
@@ -58,7 +58,7 @@ Legend: L0 not started, L1 isolated, L2 contract-ready, L3 staging-integrated, L
 
 ### Gaps to L3
 1. Refresh and P0 execution paths intentionally remain disabled (`501`).
-2. Live validation remains script-centric and not yet first-class UI flow.
+2. Live validation is first-class and contract-ready, but controlled staging evidence has not yet been acquired.
 3. Multi-step operator handoff between execute and quality actions is still fragmented.
 
 ### Gaps to L4
@@ -84,6 +84,13 @@ Legend: L0 not started, L1 isolated, L2 contract-ready, L3 staging-integrated, L
 
 ### Phase 3D
 - Add first-class live validation UI (bounded, no DB write).
+- Implemented as an Admin-only Next proxy to a FastAPI service; the browser cannot provide URLs, report paths, cache paths, or fixture inputs.
+- Import-time SQLite writes, redirect following, unbounded body reads and unbounded total runtime are prohibited by contract and regression tests.
+- Runtime reports are a read-only server mount, operational DB data is never baked into the image, and missing prerequisites fail closed before any external HTTP request.
+- FastAPI and Next independently recompute sample-derived counts/verdicts so contradictory or zero-attempt `pass` evidence is rejected.
+- Automatic HTTP retry is disabled; the explicit 1-3 URL bound is also the total outbound-attempt bound.
+- Local one-URL evidence on 2026-07-18 showed one HTTP/parse success and unchanged DB/cache hashes, sizes and mtimes. This is not staging evidence and does not raise the level.
+- Phase 3D is code/CI ready at L2. L3 remains unclaimed until a controlled staging run captures external-HTTP evidence and confirms zero DB mutation.
 
 ### Phase 3E
 - Add approval scaffold for repair execution without unlocking writes.
@@ -145,7 +152,7 @@ Conclusion: rollback controls are **insufficient for broad execution unlock** wi
 
 ## 10. Blockers
 1. Execution endpoints intentionally disabled by design (required but blocks progress to L3/L4).
-2. Script-only diagnostics not yet integrated into unified UI path.
+2. Live validation is integrated, but server-owned reports/data volumes and staging evidence remain environment-specific prerequisites.
 3. Environment-specific deployment proofs partially outside repository.
 
 ---
@@ -153,4 +160,4 @@ Conclusion: rollback controls are **insufficient for broad execution unlock** wi
 ## 11. Technical Debt Snapshot
 1. Contract duplication across UI/Next/FastAPI responses.
 2. Incomplete unification of quality and remediation operator experience.
-3. Partial reliance on scripts over route-level typed interfaces for advanced flows.
+3. Planner/validator internals still use fixed scripts behind a typed FastAPI service; future extraction into pure service modules may simplify operations.
