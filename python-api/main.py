@@ -51,6 +51,7 @@ from routers import (  # type: ignore
     export,
     feature_analysis,
     internal,
+    live_validation,
     models_mgmt,
     predict,
     prediction_history,
@@ -110,11 +111,21 @@ app.include_router(export.router)
 app.include_router(profiling.router)
 app.include_router(races.router)
 app.include_router(internal.router)
+app.include_router(live_validation.router)
 app.include_router(debug_data.router)
 app.include_router(realtime_odds.router)
 app.include_router(bet_export.router)
 app.include_router(feature_analysis.router)
 app.include_router(prediction_history.router)
+
+
+@app.middleware("http")
+async def live_validation_no_store(request, call_next):
+    """Never cache live-validation success, validation, or auth responses."""
+    response = await call_next(request)
+    if request.url.path == "/api/scrape/live-validation":
+        response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/health")

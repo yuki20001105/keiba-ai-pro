@@ -17,6 +17,12 @@ COPY keiba/ ./keiba/
 # python-api をコピー
 COPY python-api/ ./python-api/
 
+# Bounded Phase 3D live validation commands (all other scripts stay excluded)
+COPY scripts/plan_p0_targeted_refetch.py scripts/validate_p0_targeted_refetch_live.py ./scripts/
+
+# Runtime databases and planner inputs are mounted, never baked into the image.
+RUN mkdir -p /app/keiba/data/live-validation-inputs
+
 # 依存パッケージをインストール（ロックファイルがあれば優先）
 RUN if [ -f python-api/requirements-lock.txt ]; then \
       pip install --no-cache-dir -r python-api/requirements-lock.txt; \
@@ -32,5 +38,6 @@ WORKDIR /app/python-api
 
 ENV PYTHONPATH=/app/keiba:$PYTHONPATH
 ENV PYTHONUNBUFFERED=1
+ENV LIVE_VALIDATION_INPUT_DIR=/app/keiba/data/live-validation-inputs
 
 CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}

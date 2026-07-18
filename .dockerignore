@@ -25,7 +25,12 @@ __pycache__/
 tools/
 validation/
 docs/
-scripts/
+reports/
+keiba/data/
+# FastAPI live validation packages only its two fixed server-owned commands.
+scripts/*
+!scripts/plan_p0_targeted_refetch.py
+!scripts/validate_p0_targeted_refetch_live.py
 *.html
 *.csv
 # ルート直下の txt のみ除外（python-api/requirements.txt は除外しない）
