@@ -7,6 +7,20 @@ import { Toast } from '@/components/Toast'
 import { authFetch } from '@/lib/auth-fetch'
 import { useJobPoller } from '@/hooks/useJobPoller'
 import { BatchScrapeError, useBatchScrape } from '@/hooks/useBatchScrape'
+import {
+  UNCERTAINTY_REVIEW_STORAGE_KEY,
+  UNCERTAINTY_STORAGE_KEY,
+  createPendingUncertaintyReview,
+  fingerprintUncertaintyLock,
+  parsePendingUncertaintyReview,
+  parsePersistedUncertaintyLock,
+  reviewMatchesLock,
+  validateReviewReason,
+  type BatchRequestSnapshot,
+  type PendingUncertaintyReview,
+  type PersistedUncertaintyLock,
+  type UncertaintyFailureKind,
+} from '@/lib/scrape-uncertainty-approval'
 
 type ScrapeHealthStatus = 'healthy' | 'degraded' | 'unhealthy' | 'unknown'
 type LocalApiStatus = 'checking' | ScrapeHealthStatus
@@ -80,52 +94,11 @@ type PeriodValidation = {
   message?: string
 }
 
-type BatchRequestSnapshot = {
-  startPeriod: string
-  endPeriod: string
-  forceRescrape: boolean
-}
-
-type UncertaintyFailureKind = Extract<NonNullable<BatchScrapeError['kind']>, 'monitoring' | 'client_stop'>
-
-type PersistedUncertaintyLock = {
-  version: 1
-  failureKind: UncertaintyFailureKind
-  jobId?: string
-  request: BatchRequestSnapshot
-  occurredAt: string
-}
-
 const PERIOD_PATTERN = /^(\d{4})-(0[1-9]|1[0-2])$/
-const UNCERTAINTY_STORAGE_KEY = 'keiba-ai-pro:phase3b:scrape-uncertainty:v1'
 const COMPLETED_CONTRACT_MESSAGE = '完了応答の形式を確認できないため、サーバージョブの状態確認が必要'
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
-}
-
-function isValidRequestSnapshot(value: unknown): value is BatchRequestSnapshot {
-  return isObject(value)
-    && typeof value.startPeriod === 'string'
-    && typeof value.endPeriod === 'string'
-    && typeof value.forceRescrape === 'boolean'
-}
-
-function parsePersistedUncertaintyLock(value: unknown): PersistedUncertaintyLock | null {
-  if (!isObject(value)) return null
-  if (value.version !== 1) return null
-  if (value.failureKind !== 'monitoring' && value.failureKind !== 'client_stop') return null
-  if (typeof value.occurredAt !== 'string' || value.occurredAt.length === 0) return null
-  if (!isValidRequestSnapshot(value.request)) return null
-  if (value.jobId !== undefined && typeof value.jobId !== 'string') return null
-
-  return {
-    version: 1,
-    failureKind: value.failureKind,
-    request: value.request,
-    occurredAt: value.occurredAt,
-    ...(typeof value.jobId === 'string' && value.jobId.trim().length > 0 ? { jobId: value.jobId.trim() } : {}),
-  }
 }
 
 function hasStrictCompletedResult(payload: unknown): boolean {
@@ -219,9 +192,16 @@ export default function DataCollectionPage() {
   const [executeWarn, setExecuteWarn] = useState('')
   const [persistedUncertainty, setPersistedUncertainty] = useState<PersistedUncertaintyLock | null>(null)
   const [uncertaintyHydrated, setUncertaintyHydrated] = useState(false)
+  const [uncertaintyStorageBlocked, setUncertaintyStorageBlocked] = useState(false)
   const [transientUncertaintyDismissed, setTransientUncertaintyDismissed] = useState(false)
   const [reconcileLoading, setReconcileLoading] = useState(false)
   const [reconcileMessage, setReconcileMessage] = useState('')
+  const [reviewHydrated, setReviewHydrated] = useState(false)
+  const [pendingReview, setPendingReview] = useState<PendingUncertaintyReview | null>(null)
+  const [reviewReason, setReviewReason] = useState('')
+  const [ackServerStateUnverified, setAckServerStateUnverified] = useState(false)
+  const [ackNoUnlockOrRetry, setAckNoUnlockOrRetry] = useState(false)
+  const [reviewPersistError, setReviewPersistError] = useState('')
   const [fetchHistory, setFetchHistory] = useState<FetchSummaryHistoryItem[]>([])
   const [fetchHistoryLoading, setFetchHistoryLoading] = useState(false)
   const [toast, setToast] = useState({ visible: false, message: '', type: 'success' as 'success' | 'error' })
@@ -300,7 +280,23 @@ export default function DataCollectionPage() {
   const effectiveUncertaintyKind = persistedUncertainty?.failureKind ?? effectiveTransientUncertainty
   const shouldShowUncertaintyWarning = effectiveUncertaintyKind === 'monitoring' || effectiveUncertaintyKind === 'client_stop'
   const effectiveUncertaintyJobId = persistedUncertainty?.jobId ?? activeJobId ?? null
-  const executeBlockedByUncertainty = !uncertaintyHydrated || isExecutionLocked || shouldShowUncertaintyWarning
+  const joblessReviewLock = persistedUncertainty && !persistedUncertainty.jobId ? persistedUncertainty : null
+  const reviewReasonIsValid = validateReviewReason(reviewReason) !== null
+  const canRecordPendingReview = Boolean(
+    uncertaintyHydrated
+    && reviewHydrated
+    && !uncertaintyStorageBlocked
+    && joblessReviewLock
+    && !pendingReview
+    && reviewReasonIsValid
+    && ackServerStateUnverified
+    && ackNoUnlockOrRetry,
+  )
+  const executeBlockedByUncertainty = !uncertaintyHydrated
+    || !reviewHydrated
+    || uncertaintyStorageBlocked
+    || isExecutionLocked
+    || shouldShowUncertaintyWarning
 
   const persistUncertaintyLock = (kind: UncertaintyFailureKind, jobId: string | null, request: BatchRequestSnapshot | null) => {
     if (!request) return
@@ -313,21 +309,73 @@ export default function DataCollectionPage() {
     }
     try {
       localStorage.setItem(UNCERTAINTY_STORAGE_KEY, JSON.stringify(lock))
+      localStorage.removeItem(UNCERTAINTY_REVIEW_STORAGE_KEY)
+      setUncertaintyStorageBlocked(false)
     } catch {
-      // keep runtime lock even if localStorage is unavailable
+      setUncertaintyStorageBlocked(true)
     }
     setPersistedUncertainty(lock)
+    setPendingReview(null)
+    setReviewReason('')
+    setAckServerStateUnverified(false)
+    setAckNoUnlockOrRetry(false)
     setTransientUncertaintyDismissed(false)
   }
 
-  const clearPersistedUncertainty = () => {
+  const clearPersistedUncertainty = (): boolean => {
     try {
       localStorage.removeItem(UNCERTAINTY_STORAGE_KEY)
+      localStorage.removeItem(UNCERTAINTY_REVIEW_STORAGE_KEY)
     } catch {
-      // no-op
+      setUncertaintyStorageBlocked(true)
+      return false
     }
     setPersistedUncertainty(null)
+    setPendingReview(null)
+    setReviewPersistError('')
+    setUncertaintyStorageBlocked(false)
     setTransientUncertaintyDismissed(true)
+    return true
+  }
+
+  const handleRecordPendingReview = () => {
+    if (!joblessReviewLock || !canRecordPendingReview) return
+    setReviewPersistError('')
+    if (!globalThis.crypto?.randomUUID) {
+      setReviewPersistError('承認依頼IDを安全に生成できないため記録できません。lockを維持します。')
+      return
+    }
+    try {
+      const durableLockRaw = localStorage.getItem(UNCERTAINTY_STORAGE_KEY)
+      const durableLock = parsePersistedUncertaintyLock(JSON.parse(durableLockRaw || 'null'))
+      if (!durableLock || durableLock.jobId || fingerprintUncertaintyLock(durableLock) !== fingerprintUncertaintyLock(joblessReviewLock)) {
+        throw new Error('durable lock verification failed')
+      }
+      const review = createPendingUncertaintyReview({
+        lock: durableLock,
+        requestId: globalThis.crypto.randomUUID(),
+        requestedAt: new Date().toISOString(),
+        reason: reviewReason,
+        serverStateUnverified: ackServerStateUnverified,
+        noUnlockOrRetry: ackNoUnlockOrRetry,
+      })
+      if (!review) throw new Error('review input validation failed')
+      localStorage.setItem(UNCERTAINTY_REVIEW_STORAGE_KEY, JSON.stringify(review))
+      const readBack = parsePendingUncertaintyReview(JSON.parse(localStorage.getItem(UNCERTAINTY_REVIEW_STORAGE_KEY) || 'null'))
+      const lockReadBack = parsePersistedUncertaintyLock(JSON.parse(localStorage.getItem(UNCERTAINTY_STORAGE_KEY) || 'null'))
+      if (!readBack || !lockReadBack || !reviewMatchesLock(readBack, lockReadBack)) {
+        throw new Error('review persistence verification failed')
+      }
+      setPendingReview(readBack)
+    } catch {
+      try {
+        localStorage.removeItem(UNCERTAINTY_REVIEW_STORAGE_KEY)
+      } catch {
+        setUncertaintyStorageBlocked(true)
+      }
+      setReviewPersistError('承認依頼を保存できません。pending扱いにはせず、lockを維持します。')
+      setPendingReview(null)
+    }
   }
 
   const checkLocalApi = async () => {
@@ -357,25 +405,92 @@ export default function DataCollectionPage() {
   }, [])
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(UNCERTAINTY_STORAGE_KEY)
-      if (!raw) {
-        setPersistedUncertainty(null)
-      } else {
-        const parsed = parsePersistedUncertaintyLock(JSON.parse(raw))
-        if (!parsed) {
-          localStorage.removeItem(UNCERTAINTY_STORAGE_KEY)
+    const syncFromStorage = () => {
+      try {
+        const raw = localStorage.getItem(UNCERTAINTY_STORAGE_KEY)
+        if (!raw) {
           setPersistedUncertainty(null)
+          setPendingReview(null)
+          setUncertaintyStorageBlocked(false)
         } else {
-          setPersistedUncertainty(parsed)
-          setReconcileMessage('前回の実行は状態不明で終了しました。新規取得前に状態を再確認してください。')
+          let decoded: unknown = null
+          try {
+            decoded = JSON.parse(raw)
+          } catch {
+            decoded = null
+          }
+          const parsed = parsePersistedUncertaintyLock(decoded)
+          if (!parsed) {
+            setPersistedUncertainty(null)
+            setPendingReview(null)
+            setUncertaintyStorageBlocked(true)
+            setReconcileMessage('保存済みlockの形式を確認できません。自動削除せず、新規実行を停止しています。')
+          } else {
+            setPersistedUncertainty(parsed)
+            setUncertaintyStorageBlocked(false)
+            setReconcileMessage('前回の実行は状態不明で終了しました。新規取得前に状態を再確認してください。')
+            if (!parsed.jobId) {
+              const reviewRaw = localStorage.getItem(UNCERTAINTY_REVIEW_STORAGE_KEY)
+              let reviewDecoded: unknown = null
+              try {
+                reviewDecoded = reviewRaw ? JSON.parse(reviewRaw) : null
+              } catch {
+                reviewDecoded = null
+              }
+              const restored = parsePendingUncertaintyReview(reviewDecoded)
+              if (restored && reviewMatchesLock(restored, parsed)) {
+                setPendingReview(restored)
+                setReviewPersistError('')
+              } else {
+                setPendingReview(null)
+                if (reviewRaw) setReviewPersistError('保存済み承認依頼は現在のlockと一致しないため無効です。lockは維持します。')
+              }
+            } else {
+              setPendingReview(null)
+            }
+          }
         }
+      } catch {
+        setPersistedUncertainty(null)
+        setPendingReview(null)
+        setUncertaintyStorageBlocked(true)
+        setReconcileMessage('lock保存領域を確認できません。新規実行を停止しています。')
+      } finally {
+        setUncertaintyHydrated(true)
+        setReviewHydrated(true)
       }
-    } catch {
-      setPersistedUncertainty(null)
-    } finally {
-      setUncertaintyHydrated(true)
     }
+
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key !== null && event.key !== UNCERTAINTY_STORAGE_KEY && event.key !== UNCERTAINTY_REVIEW_STORAGE_KEY) return
+      if (
+        event.key === null
+        || (event.key === UNCERTAINTY_STORAGE_KEY && event.oldValue !== null && event.newValue === null)
+      ) {
+        setUncertaintyStorageBlocked(true)
+        setPendingReview(null)
+        setReconcileMessage('別タブでlock保存領域が削除されました。解除証拠として扱わず、新規実行を停止しています。')
+        setUncertaintyHydrated(true)
+        setReviewHydrated(true)
+        let previousLock: ReturnType<typeof parsePersistedUncertaintyLock> = null
+        if (event.oldValue) {
+          try {
+            previousLock = parsePersistedUncertaintyLock(JSON.parse(event.oldValue))
+          } catch {
+            previousLock = null
+          }
+        }
+        if (previousLock) setPersistedUncertainty(previousLock)
+        return
+      }
+      setUncertaintyHydrated(false)
+      setReviewHydrated(false)
+      syncFromStorage()
+    }
+
+    syncFromStorage()
+    window.addEventListener('storage', handleStorage)
+    return () => window.removeEventListener('storage', handleStorage)
   }, [])
 
   useEffect(() => {
@@ -534,7 +649,10 @@ export default function DataCollectionPage() {
           setReconcileMessage('状態再確認は完了しましたが、処理中のためlock解除は保留されました。')
           return
         }
-        clearPersistedUncertainty()
+        if (!clearPersistedUncertainty()) {
+          setReconcileMessage('終端状態は確認しましたが、lock保存領域を更新できないため新規実行を停止しています。')
+          return
+        }
         setReconcileMessage('対象jobは終端エラーでした。lockを解除しました。必要に応じて再実行してください。')
         return
       }
@@ -549,7 +667,10 @@ export default function DataCollectionPage() {
           setReconcileMessage('対象jobは完了を確認しましたが、処理中のためlock解除は保留されました。')
           return
         }
-        clearPersistedUncertainty()
+        if (!clearPersistedUncertainty()) {
+          setReconcileMessage('完了状態は確認しましたが、lock保存領域を更新できないため新規実行を停止しています。')
+          return
+        }
         setReconcileMessage('対象jobは完了。履歴で全体範囲を確認してください')
         return
       }
@@ -822,10 +943,18 @@ export default function DataCollectionPage() {
                     </svg>
                     取得中...
                   </>
-                ) : !uncertaintyHydrated ? '状態確認中' : isApiUnavailable ? 'API確認不可' : !isPeriodValid ? '期間不正' : executeBlockedByUncertainty ? '実行確認待ち' : '取得開始'}
+                ) : !uncertaintyHydrated || !reviewHydrated ? '状態確認中' : isApiUnavailable ? 'API確認不可' : !isPeriodValid ? '期間不正' : executeBlockedByUncertainty ? '実行確認待ち' : '取得開始'}
               </button>
             </div>
           </div>
+
+          {uncertaintyStorageBlocked && (
+            <div className="rounded border border-[#4a1d1d] bg-[#220d0d] px-3 py-2 text-xs text-[#fca5a5] space-y-1" role="alert" data-testid="uncertainty-storage-blocked">
+              <div>保存済みlockを安全に確認できません</div>
+              <div>lockを自動削除せず、Dry-runと取得開始を停止しています。サーバー状態と監査証跡を確認してください。</div>
+              {reconcileMessage && <div>{reconcileMessage}</div>}
+            </div>
+          )}
 
           {shouldShowUncertaintyWarning && (
             <div className="rounded border border-[#4a1d1d] bg-[#220d0d] px-3 py-2 text-xs text-[#fca5a5] space-y-1" role="alert" data-testid="uncertainty-panel">
@@ -833,8 +962,60 @@ export default function DataCollectionPage() {
               {effectiveUncertaintyJobId && <div>job_id: {effectiveUncertaintyJobId}</div>}
               <div>{COMPLETED_CONTRACT_MESSAGE}</div>
               <div>開始済みのサーバージョブは継続している可能性があります</div>
-              {!effectiveUncertaintyJobId && <div>job_idがないため自動解除できません（approval scaffold対象）。</div>}
+              {!effectiveUncertaintyJobId && <div>job_idがないため自動解除できません。Phase 3Eでは承認依頼の記録だけを行い、lockは解除しません。</div>}
               {reconcileMessage && <div>{reconcileMessage}</div>}
+              {!effectiveUncertaintyJobId && joblessReviewLock && !pendingReview && (
+                <div className="mt-3 space-y-2 rounded border border-[#713f12] bg-[#1c1206] p-3 text-[#fde68a]" data-testid="phase3e-review-form">
+                  <div className="font-medium">非実行型の承認依頼（pending review）</div>
+                  <div>この記録はローカル・非権威です。承認、再実行許可、lock解除のいずれにもなりません。</div>
+                  <textarea
+                    data-testid="phase3e-review-reason"
+                    value={reviewReason}
+                    onChange={event => setReviewReason(event.target.value)}
+                    maxLength={500}
+                    rows={3}
+                    placeholder="調査理由を20文字以上で入力"
+                    className="w-full rounded border border-[#713f12] bg-[#0a0a0a] px-2 py-1.5 text-xs text-white"
+                  />
+                  <label className="flex items-start gap-2">
+                    <input
+                      type="checkbox"
+                      data-testid="phase3e-ack-unverified"
+                      checked={ackServerStateUnverified}
+                      onChange={event => setAckServerStateUnverified(event.target.checked)}
+                    />
+                    <span>サーバー実行状態は未確認であり、処理が継続中の可能性があることを確認しました。</span>
+                  </label>
+                  <label className="flex items-start gap-2">
+                    <input
+                      type="checkbox"
+                      data-testid="phase3e-ack-no-unlock"
+                      checked={ackNoUnlockOrRetry}
+                      onChange={event => setAckNoUnlockOrRetry(event.target.checked)}
+                    />
+                    <span>この依頼ではlock解除・retry・scrape開始を行わないことを確認しました。</span>
+                  </label>
+                  <button
+                    type="button"
+                    data-testid="phase3e-record-review"
+                    onClick={handleRecordPendingReview}
+                    disabled={!canRecordPendingReview}
+                    className={`rounded px-3 py-1.5 text-xs font-medium ${canRecordPendingReview ? 'bg-[#f59e0b] text-black' : 'bg-[#222] text-[#555] cursor-not-allowed'}`}
+                  >
+                    承認依頼を記録（lock維持）
+                  </button>
+                  {reviewPersistError && <div role="alert" data-testid="phase3e-review-error">{reviewPersistError}</div>}
+                </div>
+              )}
+              {!effectiveUncertaintyJobId && pendingReview && (
+                <div className="mt-3 space-y-1 rounded border border-[#854d0e] bg-[#1c1206] p-3 text-[#fde68a]" data-testid="phase3e-pending-review">
+                  <div className="font-medium">status: pending_review</div>
+                  <div>request_id: {pendingReview.requestId}</div>
+                  <div>lock_fingerprint: {pendingReview.lockFingerprint}</div>
+                  <div>authoritative=false / execution_enabled=false / lock_release_allowed=false</div>
+                  <div>サーバー側の承認記録ではありません。lockは維持されています。</div>
+                </div>
+              )}
               {effectiveUncertaintyJobId && (
                 <button
                   type="button"

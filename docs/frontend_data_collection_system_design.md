@@ -95,13 +95,20 @@ Observed mismatch from source document:
 - Runtime prerequisites are server-owned report inputs plus read-only data/cache volumes at the documented container paths. Reports mount at `/app/keiba/data/live-validation-inputs:ro`; operational data remains under `/app/keiba/data`. Neither is bundled into the image or Next/Vercel deployment, and missing prerequisites fail closed before external HTTP.
 
 ### 2.6 FastAPI scrape contracts relevant to frontend
-- `POST /api/scrape/start`: starts async scrape job.
-- `GET /api/scrape/status/{job_id}`: job status/progress/result.
-- `GET /api/scrape/history`: recent jobs.
+- `POST /api/scrape/start`: starts one owner-bound async scrape job per Admin, using a complete UUID and durable pre-thread state.
+- `GET /api/scrape/status/{job_id}`: Admin-only, owner-scoped job status/progress/result.
+- `GET /api/scrape/history`: Admin-only, owner-scoped recent jobs; legacy ownerless rows are hidden.
 - `GET /api/scrape/health`: scrape health contract.
 - Legacy/specialized paths remain available (not all wired by UI):
   - `POST /api/scrape`
   - `POST /api/rescrape_incomplete`
+
+### 2.7 Jobless uncertainty review scaffold
+- A strict jobless monitoring/client-stop lock can be accompanied by a local `pending_review` packet.
+- The packet is explicitly non-authoritative and cannot release the hook lock, enable execute/dry-run/retry, or invoke an API.
+- The durable lock is re-read before writing the review and both records are read back and matched.
+- Malformed/stale/tampered records fail closed and remain blocked; storage events propagate a new lock to already-open tabs.
+- This is an operator handoff scaffold, not an approval system. Server-authoritative approval and audit persistence remain future work.
 
 ---
 
@@ -113,6 +120,7 @@ Observed mismatch from source document:
   - targeted refetch dry-run
   - cache/reparse diagnostics
 - Controlled, approval-gated execution phase for refresh/p0 repair (currently intentionally disabled).
+- Server-authoritative uncertainty review ledger with immutable audit events before any execution-lock release is considered.
 
 ---
 
@@ -121,8 +129,8 @@ Observed mismatch from source document:
 | frontend screen | Next route | backend/script | method | read-only | external HTTP | DB write | status |
 |---|---|---|---|---|---|---|---|
 | Data Collection | `/api/scrape` | FastAPI `/api/scrape/start` | POST | dry-run yes / execute no | dry-run: no, execute: yes | dry-run: no, execute: yes | implemented |
-| Data Collection | `/api/scrape/status/{jobId}` | FastAPI `/api/scrape/status/{job_id}` | GET | yes | no | no | implemented |
-| Data Collection | `/api/scrape/history` | FastAPI `/api/scrape/history` | GET | yes | no | no | implemented |
+| Data Collection | `/api/scrape/status/{jobId}` | FastAPI `/api/scrape/status/{job_id}` | GET | yes | no | no | implemented; Admin + owner scoped |
+| Data Collection | `/api/scrape/history` | FastAPI `/api/scrape/history` | GET | yes | no | no | implemented; Admin + owner scoped |
 | Data Collection | `/api/scrape/health` | FastAPI `/api/scrape/health` | GET | yes | no | no | implemented |
 | Refresh Plan | `/api/scrape/refresh-plan` | `plan_scrape_refresh.py` | POST/GET | yes | no | no | implemented |
 | Refresh Plan execute | `/api/scrape/refresh-plan` | none | PUT | yes | no | no | disabled (`501`) |

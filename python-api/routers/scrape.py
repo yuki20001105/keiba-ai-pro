@@ -34,7 +34,17 @@ from deps.auth import require_admin  # type: ignore
 from models import ScrapeRequest, ScrapeResponse, RescrapeResponse  # type: ignore
 from scraping.constants import SCRAPE_HEADERS  # type: ignore
 from scraping.fetch_pipeline import fetch_text  # type: ignore
-from scraping.jobs import _scrape_jobs, _JOBS_LOCK, _purge_old_jobs, _run_scrape_job, get_job, list_recent_jobs  # type: ignore
+from scraping.jobs import (  # type: ignore
+    JobStoreUnavailable,
+    _JOBS_LOCK,
+    _persist_job_or_raise,
+    _purge_old_jobs,
+    _run_scrape_job,
+    _scrape_jobs,
+    create_job_if_owner_idle,
+    get_job,
+    list_recent_jobs,
+)
 from scraping.race import scrape_race_full  # type: ignore
 from scraping.storage import _save_race_to_ultimate_db  # type: ignore
 
@@ -237,17 +247,50 @@ async def netkeiba_race_sandbox_precheck() -> dict[str, Any]:
 
 
 @router.post("/api/scrape/start")
-async def scrape_start(request: ScrapeRequest, _: dict = Depends(require_admin)):
+async def scrape_start(request: ScrapeRequest, admin_user: dict = Depends(require_admin)):
     """スクレイピングをバックグラウンドで開始し、即座に job_id を返す（Admin専用）"""
-    job_id = str(uuid.uuid4())[:8]
+    owner_user_id = str(admin_user.get("user_id") or "").strip()
+    if not owner_user_id:
+        raise HTTPException(status_code=503, detail="管理者IDを確認できません")
+
+    job_id = str(uuid.uuid4())
+    request_hash = hashlib.sha256(
+        json.dumps(
+            {
+                "dry_run": bool(request.dry_run),
+                "end_date": request.end_date.strip(),
+                "force_rescrape": bool(request.force_rescrape),
+                "start_date": request.start_date.strip(),
+            },
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    job = {
+        "status": "queued",
+        "progress": {"done": 0, "total": 0, "message": "開始待ち"},
+        "result": None,
+        "error": None,
+        "owner_user_id": owner_user_id,
+        "request_hash": request_hash,
+    }
     with _JOBS_LOCK:
+        active_in_memory = any(
+            str(job.get("owner_user_id") or "") == owner_user_id
+            and job.get("status") in {"queued", "running"}
+            for job in _scrape_jobs.values()
+        )
+        if active_in_memory:
+            raise HTTPException(status_code=409, detail="進行中のスクレイピングジョブがあります")
         _purge_old_jobs(_scrape_jobs)
-        _scrape_jobs[job_id] = {
-            "status": "queued",
-            "progress": {"done": 0, "total": 0, "message": "開始待ち"},
-            "result": None,
-            "error": None,
-        }
+        creation = create_job_if_owner_idle(job_id, job)
+        if creation == "active":
+            raise HTTPException(status_code=409, detail="進行中のスクレイピングジョブがあります")
+        if creation != "created":
+            raise HTTPException(status_code=503, detail="ジョブ状態を安全に保存できません")
+        _scrape_jobs[job_id] = job
+
     try:
         import threading
         def _bg() -> None:
@@ -276,8 +319,14 @@ async def scrape_start(request: ScrapeRequest, _: dict = Depends(require_admin))
         logger.info(f"ジョブ {job_id} をスレッドでスケジュール済み")
     except Exception as e:
         logger.error(f"スレッド起動失敗: {e}")
-        _scrape_jobs[job_id]["status"] = "error"
-        _scrape_jobs[job_id]["error"] = f"タスク起動失敗: {e}"
+        with _JOBS_LOCK:
+            _scrape_jobs[job_id]["status"] = "error"
+            _scrape_jobs[job_id]["error"] = f"タスク起動失敗: {e}"
+        try:
+            _persist_job_or_raise(job_id, _scrape_jobs[job_id])
+        except JobStoreUnavailable:
+            pass
+        raise HTTPException(status_code=503, detail="ジョブを開始できません")
     return {
         "job_id": job_id,
         "status": _scrape_jobs[job_id]["status"],
@@ -286,9 +335,22 @@ async def scrape_start(request: ScrapeRequest, _: dict = Depends(require_admin))
 
 
 @router.get("/api/scrape/status/{job_id}")
-async def scrape_status(job_id: str):
+async def scrape_status(job_id: str, admin_user: dict = Depends(require_admin)):
     """スクレイピングジョブの進捗・結果を返す（メモリ → SQLite の順で検索）"""
-    job = get_job(job_id)
+    try:
+        canonical_job_id = str(uuid.UUID(job_id))
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=400, detail="job_id は完全なUUID形式で指定してください")
+    if canonical_job_id != job_id.lower():
+        raise HTTPException(status_code=400, detail="job_id は完全なUUID形式で指定してください")
+    job_id = canonical_job_id
+    owner_user_id = str(admin_user.get("user_id") or "").strip()
+    if not owner_user_id:
+        raise HTTPException(status_code=503, detail="管理者IDを確認できません")
+    try:
+        job = get_job(job_id, owner_user_id=owner_user_id)
+    except JobStoreUnavailable as exc:
+        raise HTTPException(status_code=503, detail="ジョブ状態を安全に確認できません") from exc
     if not job:
         return {
             "job_id": job_id,
@@ -307,9 +369,15 @@ async def scrape_status(job_id: str):
 
 
 @router.get("/api/scrape/history")
-async def scrape_history(limit: int = 20):
+async def scrape_history(limit: int = 20, admin_user: dict = Depends(require_admin)):
     """最近のスクレイピングジョブ履歴を返す。"""
-    jobs = list_recent_jobs(limit=limit)
+    owner_user_id = str(admin_user.get("user_id") or "").strip()
+    if not owner_user_id:
+        raise HTTPException(status_code=503, detail="管理者IDを確認できません")
+    try:
+        jobs = list_recent_jobs(limit=limit, owner_user_id=owner_user_id)
+    except JobStoreUnavailable as exc:
+        raise HTTPException(status_code=503, detail="ジョブ履歴を安全に確認できません") from exc
     return {
         "count": len(jobs),
         "jobs": jobs,
