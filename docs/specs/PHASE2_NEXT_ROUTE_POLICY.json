@@ -563,7 +563,7 @@
   {
     "route": "/api/scrape/history",
     "method": "GET",
-    "policy": "Authenticated",
+    "policy": "Admin",
     "auth_header_forward": true,
     "status_propagation": true,
     "detail_error_passthrough": true,
@@ -684,7 +684,7 @@
   {
     "route": "/api/scrape/status/[jobId]",
     "method": "GET",
-    "policy": "Authenticated",
+    "policy": "Admin",
     "auth_header_forward": true,
     "status_propagation": true,
     "detail_error_passthrough": true,

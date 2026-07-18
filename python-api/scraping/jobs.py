@@ -10,6 +10,7 @@ import re
 import sqlite3
 import threading
 from pathlib import Path
+from typing import Literal
 
 import aiohttp
 import httpx
@@ -43,6 +44,10 @@ except ImportError:
 _JOBS_DB_PATH: Path = Path(__file__).parent.parent.parent / "keiba" / "data" / "scrape_jobs.db"
 
 
+class JobStoreUnavailable(RuntimeError):
+    """Raised when durable scrape-job state cannot be read or written safely."""
+
+
 def _init_jobs_db() -> None:
     try:
         _JOBS_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -55,54 +60,165 @@ def _init_jobs_db() -> None:
                 progress TEXT DEFAULT '{}',
                 result TEXT DEFAULT 'null',
                 error TEXT DEFAULT 'null',
+                owner_user_id TEXT NOT NULL DEFAULT '',
+                request_hash TEXT NOT NULL DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(scrape_jobs)").fetchall()}
+        if "owner_user_id" not in columns:
+            conn.execute("ALTER TABLE scrape_jobs ADD COLUMN owner_user_id TEXT NOT NULL DEFAULT ''")
+        if "request_hash" not in columns:
+            conn.execute("ALTER TABLE scrape_jobs ADD COLUMN request_hash TEXT NOT NULL DEFAULT ''")
         conn.commit()
         conn.close()
     except Exception as e:
         logger.warning(f"ジョブDB初期化失敗: {e}")
 
 
-def _persist_job(job_id: str, job: dict) -> None:
-    """ジョブ状態を SQLite に永続化する（失敗は握り潰す）"""
+def _persist_job(job_id: str, job: dict) -> bool:
+    """Persist job state and report whether the durable write succeeded."""
+    conn: sqlite3.Connection | None = None
     try:
         conn = sqlite3.connect(str(_JOBS_DB_PATH))
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("""
-            INSERT OR REPLACE INTO scrape_jobs (job_id, status, progress, result, error, updated_at)
-            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        cursor = conn.execute("""
+            INSERT INTO scrape_jobs (
+                job_id, status, progress, result, error,
+                owner_user_id, request_hash, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(job_id) DO UPDATE SET
+                status = excluded.status,
+                progress = excluded.progress,
+                result = excluded.result,
+                error = excluded.error,
+                owner_user_id = scrape_jobs.owner_user_id,
+                request_hash = scrape_jobs.request_hash,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE scrape_jobs.owner_user_id = excluded.owner_user_id
+              AND scrape_jobs.request_hash = excluded.request_hash
         """, (
             job_id,
             job.get("status", "unknown"),
             json.dumps(job.get("progress", {}), ensure_ascii=False),
             json.dumps(job.get("result"), ensure_ascii=False),
             json.dumps(job.get("error"), ensure_ascii=False),
+            str(job.get("owner_user_id") or ""),
+            str(job.get("request_hash") or ""),
         ))
+        if cursor.rowcount != 1:
+            conn.rollback()
+            logger.error("scrape job binding mismatch for %s", job_id)
+            return False
         conn.commit()
-        conn.close()
-    except Exception:
-        pass  # ログスパム防止
+        return True
+    except Exception as exc:
+        logger.error("scrape job persistence failed for %s: %s", job_id, exc)
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _persist_job_or_raise(job_id: str, job: dict) -> None:
+    """Persist a lifecycle transition or fail closed for status readers."""
+    if not _persist_job(job_id, job):
+        with _JOBS_LOCK:
+            current = _scrape_jobs.get(job_id)
+            if current is not None:
+                current["_store_unavailable"] = True
+        raise JobStoreUnavailable(f"scrape job state could not be persisted: {job_id}")
+
+    with _JOBS_LOCK:
+        current = _scrape_jobs.get(job_id)
+        if current is not None:
+            current.pop("_store_unavailable", None)
+
+
+def create_job_if_owner_idle(job_id: str, job: dict) -> Literal["created", "active", "unavailable"]:
+    """Atomically reject an active owner job or durably create a queued job."""
+    owner_user_id = str(job.get("owner_user_id") or "")
+    request_hash = str(job.get("request_hash") or "")
+    if not owner_user_id or not request_hash:
+        return "unavailable"
+
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(str(_JOBS_DB_PATH), timeout=10.0)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("BEGIN IMMEDIATE")
+        active = conn.execute(
+            """
+            SELECT 1
+            FROM scrape_jobs
+            WHERE owner_user_id = ? AND status IN ('queued', 'running')
+            LIMIT 1
+            """,
+            (owner_user_id,),
+        ).fetchone()
+        if active is not None:
+            conn.rollback()
+            return "active"
+        conn.execute(
+            """
+            INSERT INTO scrape_jobs (
+                job_id, status, progress, result, error,
+                owner_user_id, request_hash, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+            (
+                job_id,
+                job.get("status", "queued"),
+                json.dumps(job.get("progress", {}), ensure_ascii=False),
+                json.dumps(job.get("result"), ensure_ascii=False),
+                json.dumps(job.get("error"), ensure_ascii=False),
+                owner_user_id,
+                request_hash,
+            ),
+        )
+        conn.commit()
+        return "created"
+    except Exception as exc:
+        if conn is not None:
+            conn.rollback()
+        logger.error("atomic scrape job creation failed for %s: %s", job_id, exc)
+        return "unavailable"
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def _load_job_from_db(job_id: str) -> dict | None:
     """SQLite からジョブ状態を復元する"""
+    conn: sqlite3.Connection | None = None
     try:
         conn = sqlite3.connect(str(_JOBS_DB_PATH))
         row = conn.execute(
-            "SELECT status, progress, result, error FROM scrape_jobs WHERE job_id = ?", (job_id,)
+            """
+            SELECT status, progress, result, error, owner_user_id, request_hash
+            FROM scrape_jobs
+            WHERE job_id = ?
+            """,
+            (job_id,),
         ).fetchone()
-        conn.close()
         if row:
             return {
                 "status": row[0],
                 "progress": json.loads(row[1] or "{}"),
                 "result": json.loads(row[2] or "null"),
                 "error": json.loads(row[3] or "null"),
+                "owner_user_id": str(row[4] or ""),
+                "request_hash": str(row[5] or ""),
             }
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.error("scrape job load failed for %s: %s", job_id, exc)
+        raise JobStoreUnavailable(f"scrape job state could not be loaded: {job_id}") from exc
+    finally:
+        if conn is not None:
+            conn.close()
     return None
 
 
@@ -211,30 +327,70 @@ def _purge_old_jobs(store: dict, max_keep: int = _MAX_JOBS) -> None:
             del store[key]
 
 
-def get_job(job_id: str) -> dict | None:
-    """メモリ → SQLite の順でジョブを取得する"""
-    if job_id in _scrape_jobs:
-        return _scrape_jobs[job_id]
-    return _load_job_from_db(job_id)
+def get_job(job_id: str, *, owner_user_id: str) -> dict | None:
+    """Return an owner-bound job from memory or SQLite."""
+    if not owner_user_id:
+        return None
+    with _JOBS_LOCK:
+        job = _scrape_jobs.get(job_id)
+        if job is not None and job.get("_store_unavailable") is True:
+            raise JobStoreUnavailable(f"scrape job state is not durable: {job_id}")
+    if job is None:
+        job = _load_job_from_db(job_id)
+    if not job or str(job.get("owner_user_id") or "") != owner_user_id:
+        return None
+    return job
 
 
-def list_recent_jobs(limit: int = 20) -> list[dict]:
+def has_active_job(owner_user_id: str) -> bool | None:
+    """Return active-job presence, or None when durable state cannot be checked."""
+    if not owner_user_id:
+        return None
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(str(_JOBS_DB_PATH))
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM scrape_jobs
+            WHERE owner_user_id = ? AND status IN ('queued', 'running')
+            LIMIT 1
+            """,
+            (owner_user_id,),
+        ).fetchone()
+        return row is not None
+    except Exception as exc:
+        logger.error("active scrape job check failed for owner %s: %s", owner_user_id, exc)
+        return None
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def list_recent_jobs(*, owner_user_id: str, limit: int = 20) -> list[dict]:
     """SQLite から最近のジョブ履歴を取得する（fetch_summary 抜粋付き）。"""
+    if not owner_user_id:
+        return []
     safe_limit = max(1, min(int(limit), 100))
+    conn: sqlite3.Connection | None = None
     try:
         conn = sqlite3.connect(str(_JOBS_DB_PATH))
         rows = conn.execute(
             """
             SELECT job_id, status, progress, result, error, created_at, updated_at
             FROM scrape_jobs
+            WHERE owner_user_id = ?
             ORDER BY datetime(updated_at) DESC
             LIMIT ?
             """,
-            (safe_limit,),
+            (owner_user_id, safe_limit),
         ).fetchall()
-        conn.close()
-    except Exception:
-        return []
+    except Exception as exc:
+        logger.error("scrape job history load failed for owner %s: %s", owner_user_id, exc)
+        raise JobStoreUnavailable("scrape job history could not be loaded") from exc
+    finally:
+        if conn is not None:
+            conn.close()
 
     history: list[dict] = []
     for row in rows:
@@ -259,8 +415,9 @@ def list_recent_jobs(limit: int = 20) -> list[dict]:
                     "fetch_summary": fetch_summary,
                 }
             )
-        except Exception:
-            continue
+        except Exception as exc:
+            logger.error("malformed scrape job history row for owner %s: %s", owner_user_id, exc)
+            raise JobStoreUnavailable("scrape job history contains invalid durable state") from exc
     return history
 
 
@@ -282,6 +439,7 @@ async def _run_scrape_job(
 
         job = _scrape_jobs[job_id]
         job["status"] = "running"
+        _persist_job_or_raise(job_id, job)
 
         ULTIMATE_DB = Path(__file__).parent.parent.parent / "keiba" / "data" / "keiba_ultimate.db"
         _init_sqlite_db(ULTIMATE_DB)
@@ -395,7 +553,7 @@ async def _run_scrape_job(
                     "fetch_summary": summary,
                     "fetch_summary_path": str(report_path),
                 }
-            _persist_job(job_id, job)
+            _persist_job_or_raise(job_id, job)
             return
 
         # ── ② 前処理B: 取得済み日付を SQLite から読み込み（レジューム）──
@@ -606,7 +764,7 @@ async def _run_scrape_job(
                 except Exception:
                     pass
                 # 進捗を SQLite に永続化（Render スピンダウン対策）
-                _persist_job(job_id, job)
+                _persist_job_or_raise(job_id, job)
                 # 日付間インターバル（最終日以外）
                 if i < total - 1:
                     await asyncio.sleep(_post_sleep)
@@ -651,11 +809,22 @@ async def _run_scrape_job(
                 "fetch_summary": fetch_summary,
                 "fetch_summary_path": str(report_path),
             }
-        _persist_job(job_id, job)
+        _persist_job_or_raise(job_id, job)
     except Exception as e:
         logger.error(f"スクレイピングジョブ失敗 {job_id}: {e}")
         with _JOBS_LOCK:
             if job_id in _scrape_jobs:
                 _scrape_jobs[job_id]["status"] = "error"
                 _scrape_jobs[job_id]["error"] = str(e)
-        _persist_job(job_id, _scrape_jobs.get(job_id, {}))
+                _scrape_jobs[job_id]["result"] = None
+        error_job = _scrape_jobs.get(job_id, {})
+        if _persist_job(job_id, error_job):
+            with _JOBS_LOCK:
+                current = _scrape_jobs.get(job_id)
+                if current is not None:
+                    current.pop("_store_unavailable", None)
+        else:
+            with _JOBS_LOCK:
+                current = _scrape_jobs.get(job_id)
+                if current is not None:
+                    current["_store_unavailable"] = True

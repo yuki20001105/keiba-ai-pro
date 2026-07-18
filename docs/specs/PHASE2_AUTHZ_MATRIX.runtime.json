@@ -501,8 +501,10 @@
       {
         "endpoint": "/api/scrape/history",
         "method": "GET",
-        "policy": "Authenticated",
+        "policy": "Admin",
         "dependency_names": [
+          "get_current_user",
+          "require_admin",
           "scrape_history"
         ],
         "source": "python-api/routers/scrape.py"
@@ -543,8 +545,10 @@
       {
         "endpoint": "/api/scrape/status/{job_id}",
         "method": "GET",
-        "policy": "Authenticated",
+        "policy": "Admin",
         "dependency_names": [
+          "get_current_user",
+          "require_admin",
           "scrape_status"
         ],
         "source": "python-api/routers/scrape.py"
@@ -1247,10 +1251,10 @@
       {
         "route": "/api/scrape/history",
         "method": "GET",
-        "policy": "Authenticated",
+        "policy": "Admin",
         "backend_endpoint": "/api/scrape/history",
         "backend_method": "GET",
-        "backend_policy": "Authenticated",
+        "backend_policy": "Admin",
         "auth_header_forward": true,
         "status_propagation": true,
         "detail_error_passthrough": true,
@@ -1367,10 +1371,10 @@
       {
         "route": "/api/scrape/status/[jobId]",
         "method": "GET",
-        "policy": "Authenticated",
+        "policy": "Admin",
         "backend_endpoint": "/api/scrape/status/{param}",
         "backend_method": "GET",
-        "backend_policy": "Authenticated",
+        "backend_policy": "Admin",
         "auth_header_forward": true,
         "status_propagation": true,
         "detail_error_passthrough": true,
