@@ -276,17 +276,36 @@ describe('useBatchScrape', () => {
   })
 
   it('rejects empty job_id as monitoring uncertainty', async () => {
+    let postCount = 0
     mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
-      if (url === '/api/scrape' && init?.method === 'POST') return jsonResponse({ job_id: '' })
+      if (url === '/api/scrape' && init?.method === 'POST') {
+        postCount += 1
+        return jsonResponse({ job_id: '' })
+      }
       throw new Error(`unexpected request: ${url}`)
     })
 
     const { result } = await renderBatchHook()
-    const rejected = await result.current.start('2026-01', '2026-01', false).catch(error => error)
+    let rejected: unknown
+    await act(async () => {
+      rejected = await result.current.start('2026-01', '2026-01', false).catch(error => error)
+    })
     expect(rejected).toBeInstanceOf(BatchScrapeError)
     expect((rejected as BatchScrapeError).kind).toBe('monitoring')
     expect(result.current.canRetry).toBe(false)
+    await waitFor(() => {
+      expect(result.current.jobId).toBeNull()
+      expect(result.current.isExecutionLocked).toBe(true)
+    })
+
+    let blocked: unknown
+    await act(async () => {
+      blocked = await result.current.start('2026-01', '2026-01', false).catch(error => error)
+    })
+    expect(blocked).toBeInstanceOf(BatchScrapeError)
+    expect((blocked as BatchScrapeError).kind).toBe('busy')
+    expect(postCount).toBe(1)
   })
 
   it('unknown status finishes within maxPollAttempts as monitoring uncertainty', async () => {

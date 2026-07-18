@@ -107,6 +107,9 @@ jobs:
       - name: Phase3D live validation safety (release-blocking)
         run: python -m pytest python-api/tests/test_live_validation.py python-api/tests/test_p0_live_validator_safety.py -q
 
+      - name: Phase3E scrape job ownership and persistence (release-blocking)
+        run: python -m pytest python-api/tests/test_phase3e_scrape_job_security.py -q
+
   contract-smoke-aux:
     name: Contract smoke aux (warn-allowed)
     runs-on: ubuntu-latest
@@ -217,7 +220,7 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Run release-blocking Playwright E2E suite
-        run: npx playwright test e2e/public-fixture-smoke.spec.ts e2e/phase2-authz.spec.ts e2e/data-collection-phase3b.spec.ts e2e/data-collection-phase3c.spec.ts e2e/data-collection-phase3d.spec.ts --trace=on
+        run: npx playwright test e2e/public-fixture-smoke.spec.ts e2e/phase2-authz.spec.ts e2e/data-collection-phase3b.spec.ts e2e/data-collection-phase3c.spec.ts e2e/data-collection-phase3d.spec.ts e2e/data-collection-phase3e.spec.ts --trace=on
 
       - name: Upload Playwright artifacts
         if: always()
