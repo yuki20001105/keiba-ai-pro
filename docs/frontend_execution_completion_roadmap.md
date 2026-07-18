@@ -89,9 +89,11 @@ Target state is a frontend-led scrape operation where operator can:
 - Local one-URL evidence confirmed an unchanged main DB and caches, but it is not deployed staging evidence.
 - Code and deterministic CI are L2-ready. A controlled staging run with real external HTTP and zero DB mutation evidence is required for L3.
 
-## Phase 7 (planned): Approval-gated repair execution scaffold
-- Keep write-disabled by default.
-- Introduce staged unlocking policy with explicit approvals and audit trails.
+## Phase 7 (in progress): Uncertainty review before approval authority
+- Phase 3E adds a local, non-authoritative `pending_review` record for jobless monitoring uncertainty.
+- Recording/restoring the packet keeps execute, dry-run and retry locked and performs no API write.
+- Complete UUIDs, owner-scoped Admin status/history, durable initial persistence and per-owner active-job single-flight harden the underlying job boundary.
+- A server-authoritative approval ledger, immutable audit trail and staging proof remain future work; localStorage must never unlock execution.
 
 ---
 

@@ -38,9 +38,9 @@ Legend: L0 not started, L1 isolated, L2 contract-ready, L3 staging-integrated, L
 |---|---|---|---|---|---|---|---|---|
 | 1 | login/session bootstrap | implemented | implemented | n/a | Supabase | auth enforced | L3 | L4 |
 | 2 | data-collection dry-run start | implemented | `/api/scrape` | `/api/scrape/start` | no write (dry-run) | admin path | L3 | L4 |
-| 3 | scrape job polling | implemented | `/api/scrape/status/{id}` | `/api/scrape/status/{id}` | job state | guarded | L3 | L4 |
+| 3 | scrape job polling | implemented | `/api/scrape/status/{id}` | `/api/scrape/status/{id}` | owner-bound job state | Admin + owner scoped | L3 | L4 |
 | 4 | scrape execute | implemented | `/api/scrape` | job execution | writes in execute path | admin + safeguards | L2 | L3 |
-| 5 | fetch summary history | implemented | `/api/scrape/history` | `/api/scrape/history` | persisted summaries | guarded | L3 | L4 |
+| 5 | fetch summary history | implemented | `/api/scrape/history` | `/api/scrape/history` | owner-bound persisted summaries | Admin + owner scoped | L3 | L4 |
 | 6 | scrape health | implemented | `/api/scrape/health` | `/api/scrape/health` | read-only | guarded | L3 | L4 |
 | 7 | refresh plan preview | implemented | `/api/scrape/refresh-plan` | `plan_scrape_refresh.py` | read-only | premium/admin | L3 | L4 |
 | 8 | refresh execute | disabled UI | `PUT /api/scrape/refresh-plan` | none (`501`) | none | intentionally blocked | L1 | L3 |
@@ -93,7 +93,11 @@ Legend: L0 not started, L1 isolated, L2 contract-ready, L3 staging-integrated, L
 - Phase 3D is code/CI ready at L2. L3 remains unclaimed until a controlled staging run captures external-HTTP evidence and confirms zero DB mutation.
 
 ### Phase 3E
-- Add approval scaffold for repair execution without unlocking writes.
+- Add a non-executable `pending_review` scaffold for jobless scrape uncertainty.
+- The browser record is local and non-authoritative; it never unlocks, retries, approves or calls a write API.
+- Strict lock/review parsing, durable readback, cross-tab lock propagation and fail-closed storage handling are enforced.
+- Scrape job IDs are complete UUIDs; initial persistence is fail-closed; status/history are Admin-only and owner-scoped; queued/running jobs are single-flight per owner.
+- Phase 3E is L2 contract-ready only. A server-authoritative review ledger and controlled staging evidence are required before L3 can be claimed.
 
 ### Phase 3F
 - Stage-gated dry-run of execution orchestration with strict audit logs.
