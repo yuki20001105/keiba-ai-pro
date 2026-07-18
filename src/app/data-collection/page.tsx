@@ -682,6 +682,9 @@ export default function DataCollectionPage() {
           <Link href="/data-collection/p0-repair-plan" className="text-xs text-[#666] hover:text-white transition-colors">
             P0 Repair Plan
           </Link>
+          <Link href="/data-collection/targeted-refetch-plan" className="text-xs text-[#666] hover:text-white transition-colors">
+            Targeted Refetch Plan
+          </Link>
           <Link href="/home" className="flex items-center gap-1 text-xs text-[#555] hover:text-white transition-colors">
             <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
@@ -997,6 +1000,9 @@ export default function DataCollectionPage() {
               </Link>
               <Link href="/data-collection/p0-repair-plan" className="text-xs text-[#bfdbfe] hover:text-white transition-colors" data-testid="quality-bridge-p0-link">
                 P0 Repair Plan（read-only preview）
+              </Link>
+              <Link href="/data-collection/targeted-refetch-plan" className="text-xs text-[#bfdbfe] hover:text-white transition-colors" data-testid="quality-bridge-targeted-refetch-link">
+                Targeted Refetch Plan（read-only preview）
               </Link>
             </div>
           </div>

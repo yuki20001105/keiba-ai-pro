@@ -619,7 +619,7 @@
     "duplicates": []
   },
   "next": {
-    "count": 65,
+    "count": 66,
     "routes": [
       {
         "route": "/api/ai-correct",
@@ -1354,6 +1354,18 @@
         "source": "src/app/api/scrape/status/[jobId]/route.ts"
       },
       {
+        "route": "/api/scrape/targeted-refetch-plan",
+        "method": "POST",
+        "policy": "PremiumOrAdmin",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/scrape/targeted-refetch-plan/route.ts"
+      },
+      {
         "route": "/api/statistics",
         "method": "GET",
         "policy": "Authenticated",
@@ -1403,7 +1415,7 @@
       }
     ],
     "unclassified": [],
-    "canonical_entries": 65,
+    "canonical_entries": 66,
     "gate_failures": []
   },
   "gate": {

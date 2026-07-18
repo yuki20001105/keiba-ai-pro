@@ -32,7 +32,7 @@ Target state is a frontend-led scrape operation where operator can:
 
 ### 2.2 Partially complete
 - Quality/audit experiences are split across pages/scripts and not fully unified in one dashboard.
-- Targeted refetch and live validation remain script-oriented operations, not first-class UI flows.
+- Live validation remains script-oriented and is not yet first-class UI flow.
 
 ### 2.3 Not complete
 - Approval-gated production repair execution with staged release controls.
@@ -81,8 +81,9 @@ Target state is a frontend-led scrape operation where operator can:
 ## Phase 5 (planned): P0 quality dashboard
 - Visualize reason/action breakdown (cache-missing, schema-review, domain-allowed, etc.).
 
-## Phase 6 (planned): Targeted refetch/live validation UI
-- Bring currently script-centric diagnostics into guarded UI workflows.
+## Phase 6 (in progress): Targeted refetch/live validation UI
+- Targeted refetch planning is now first-class read-only UI/route.
+- Live validation remains planned for the next phase.
 
 ## Phase 7 (planned): Approval-gated repair execution scaffold
 - Keep write-disabled by default.

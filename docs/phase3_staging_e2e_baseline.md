@@ -46,7 +46,7 @@ Legend: L0 not started, L1 isolated, L2 contract-ready, L3 staging-integrated, L
 | 8 | refresh execute | disabled UI | `PUT /api/scrape/refresh-plan` | none (`501`) | none | intentionally blocked | L1 | L3 |
 | 9 | p0 repair plan preview | implemented | `/api/scrape/p0-repair-plan` | `plan_p0_scrape_repair.py` | read-only | premium/admin | L3 | L4 |
 | 10 | p0 repair execute | disabled UI | `PUT /api/scrape/p0-repair-plan` | none (`501`) | none | intentionally blocked | L1 | L3 |
-| 11 | targeted refetch planning | script-led | not first-class UI | `plan_p0_targeted_refetch.py` | report output | operator-run | L1 | L3 |
+| 11 | targeted refetch planning | implemented | `/api/scrape/targeted-refetch-plan` | `plan_p0_targeted_refetch.py` | read-only report output | premium/admin | L2 | L3 |
 | 12 | live validation | script-led | not first-class UI | `validate_p0_targeted_refetch_live.py` | report output | bounded run | L1 | L3 |
 | 13 | prediction + quota consume | implemented | Next proxy routes | FastAPI + quota deps | Supabase RPC + logs | authz + quota contract | L2 | L4 |
 | 14 | purchase history write/read | implemented | Next + direct Supabase paths | mixed | Supabase tables | legacy policy documented | L2 | L4 |
@@ -58,7 +58,7 @@ Legend: L0 not started, L1 isolated, L2 contract-ready, L3 staging-integrated, L
 
 ### Gaps to L3
 1. Refresh and P0 execution paths intentionally remain disabled (`501`).
-2. Targeted refetch/live validation remain script-centric, not full staging UI flow.
+2. Live validation remains script-centric and not yet first-class UI flow.
 3. Multi-step operator handoff between execute and quality actions is still fragmented.
 
 ### Gaps to L4
@@ -80,6 +80,7 @@ Legend: L0 not started, L1 isolated, L2 contract-ready, L3 staging-integrated, L
 
 ### Phase 3C
 - Add first-class targeted refetch planning UI (still read-only).
+- Phase 3C is code/CI ready, but L3 is not reached yet because staging evidence is not acquired.
 
 ### Phase 3D
 - Add first-class live validation UI (bounded, no DB write).

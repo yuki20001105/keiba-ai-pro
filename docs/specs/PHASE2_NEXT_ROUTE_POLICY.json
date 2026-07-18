@@ -638,6 +638,17 @@
     "detail_error_passthrough_reason": "/api/scrape/refresh-plan maps upstream detail into route-specific error payload"
   },
   {
+    "route": "/api/scrape/targeted-refetch-plan",
+    "method": "POST",
+    "policy": "PremiumOrAdmin",
+    "auth_header_forward": false,
+    "status_propagation": false,
+    "detail_error_passthrough": false,
+    "auth_header_forward_reason": "/api/scrape/targeted-refetch-plan does not proxy end-user Authorization header by design",
+    "status_propagation_reason": "/api/scrape/targeted-refetch-plan returns normalized error/status mapping instead of raw upstream status passthrough",
+    "detail_error_passthrough_reason": "/api/scrape/targeted-refetch-plan maps upstream detail into route-specific error payload"
+  },
+  {
     "route": "/api/scrape/repair/[race_id]",
     "method": "POST",
     "policy": "Admin",
