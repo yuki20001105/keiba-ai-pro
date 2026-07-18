@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime
@@ -133,7 +134,11 @@ def _target_allowed(column: str, target: str) -> bool:
 
 def _cache_lookup_http(conn: sqlite3.Connection, url: str) -> bool:
     normalized = _normalize_url(url)
-    row = conn.execute("SELECT 1 FROM http_cache WHERE normalized_url = ?", (normalized,)).fetchone()
+    now = time.time()
+    row = conn.execute(
+        "SELECT 1 FROM http_cache WHERE normalized_url = ? AND expires_at > ?",
+        (normalized, now),
+    ).fetchone()
     if row:
         return True
     path = urlsplit(url).path or ""
@@ -141,8 +146,8 @@ def _cache_lookup_http(conn: sqlite3.Connection, url: str) -> bool:
         race_id = path.split("/race/", 1)[1].strip("/")
         if race_id:
             row = conn.execute(
-                "SELECT 1 FROM http_cache WHERE normalized_url LIKE ? OR final_url LIKE ? LIMIT 1",
-                (f"%/race/{race_id}/%", f"%/race/{race_id}/%"),
+                "SELECT 1 FROM http_cache WHERE (normalized_url LIKE ? OR final_url LIKE ?) AND expires_at > ? LIMIT 1",
+                (f"%/race/{race_id}/%", f"%/race/{race_id}/%", now),
             ).fetchone()
             return bool(row)
     if "/horse/result/" in path or "/horse/ped/" in path:
@@ -153,14 +158,14 @@ def _cache_lookup_http(conn: sqlite3.Connection, url: str) -> bool:
             horse_id = path.split("/horse/ped/", 1)[1].strip("/")
         if horse_id:
             row = conn.execute(
-                "SELECT 1 FROM http_cache WHERE normalized_url LIKE ? OR final_url LIKE ? LIMIT 1",
-                (f"%/horse/result/{horse_id}/%", f"%/horse/result/{horse_id}/%"),
+                "SELECT 1 FROM http_cache WHERE (normalized_url LIKE ? OR final_url LIKE ?) AND expires_at > ? LIMIT 1",
+                (f"%/horse/result/{horse_id}/%", f"%/horse/result/{horse_id}/%", now),
             ).fetchone()
             if row:
                 return True
             row = conn.execute(
-                "SELECT 1 FROM http_cache WHERE normalized_url LIKE ? OR final_url LIKE ? LIMIT 1",
-                (f"%/horse/ped/{horse_id}/%", f"%/horse/ped/{horse_id}/%"),
+                "SELECT 1 FROM http_cache WHERE (normalized_url LIKE ? OR final_url LIKE ?) AND expires_at > ? LIMIT 1",
+                (f"%/horse/ped/{horse_id}/%", f"%/horse/ped/{horse_id}/%", now),
             ).fetchone()
             return bool(row)
     return False
