@@ -1,6 +1,6 @@
 {
   "fastapi": {
-    "count": 62,
+    "count": 63,
     "routes": [
       {
         "endpoint": "/",
@@ -508,6 +508,17 @@
         "source": "python-api/routers/scrape.py"
       },
       {
+        "endpoint": "/api/scrape/live-validation",
+        "method": "POST",
+        "policy": "Admin",
+        "dependency_names": [
+          "get_current_user",
+          "require_admin",
+          "run_live_validation"
+        ],
+        "source": "python-api/routers/live_validation.py"
+      },
+      {
         "endpoint": "/api/scrape/repair/{race_id}",
         "method": "POST",
         "policy": "Admin",
@@ -619,7 +630,7 @@
     "duplicates": []
   },
   "next": {
-    "count": 66,
+    "count": 67,
     "routes": [
       {
         "route": "/api/ai-correct",
@@ -1246,6 +1257,18 @@
         "source": "src/app/api/scrape/history/route.ts"
       },
       {
+        "route": "/api/scrape/live-validation",
+        "method": "POST",
+        "policy": "Admin",
+        "backend_endpoint": "/api/scrape/live-validation",
+        "backend_method": "POST",
+        "backend_policy": "Admin",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/scrape/live-validation/route.ts"
+      },
+      {
         "route": "/api/scrape/p0-repair-plan",
         "method": "GET",
         "policy": "PremiumOrAdmin",
@@ -1415,7 +1438,7 @@
       }
     ],
     "unclassified": [],
-    "canonical_entries": 66,
+    "canonical_entries": 67,
     "gate_failures": []
   },
   "gate": {
