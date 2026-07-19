@@ -132,6 +132,13 @@ Legend: L0 not started, L1 isolated, L2 contract-ready, L3 staging-integrated, L
 - Require guarded `effect_count=0` for observed forbidden effectful primitive attempts, and consume the same-run Phase 3H NOT_READY artifact. The model has no executable effect adapter, emitted intents are not effects, and no UI/API/worker/migration/deployment path is connected or modified.
 - Phase 3I is synthetic L2 contract evidence only; it does not prove durable persistence or multi-instance safety. Production remains NOT_READY and L3 remains unclaimed until an executable saga/outbox and controlled staging evidence are independently verified.
 
+### Phase 3J
+- Add the durable SQLite saga/event/outbox implementation and PostgreSQL execution-authorization/reservation contract, but expose them only to tests and the disposable CI evidence producer.
+- Run the exact rollback, crash/replay, claim-race, lease/fencing, stale-ack, ambiguous-remote, compensation, corruption/unavailable and approved-review-only-denial matrix against temporary SQLite and digest-pinned PostgreSQL with `--network none`, no host port and no external credentials.
+- Require zero worker dispatch, network, thread and operational writes; count temporary SQLite/PostgreSQL mutations separately and prove workspace/container cleanup.
+- Verify same-run Phase 3H and Phase 3I artifacts plus exact commit, schema, migration, contract and runtime hashes. Publish a sanitized release-blocking Phase 3J artifact.
+- Do not connect the runtime to UI/API/`jobs.py`/worker paths, and do not apply the migration externally. The correct outcome remains L2 / Production NOT_READY / `l3_eligible=false`; L3 is not claimed.
+
 ---
 
 ## 5. Required Approvals and Boundaries

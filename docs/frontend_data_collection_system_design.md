@@ -145,6 +145,14 @@ Observed mismatch from source document:
 - The Phase 3I job consumes the same-run Phase 3H artifact and emits sanitized synthetic evidence with `effect_count=0`, `production_ready=false` and `l3_eligible=false`. The counter records forbidden effectful primitive attempts observed by the harness. The model has no executable effect adapter, and emitted intents are data rather than effects; the zero count does not cover real multi-instance execution.
 - No Data Collection UI, Next/FastAPI scrape API, worker thread, operational database, Supabase migration or external environment is changed. Phase 3I remains L2 contract evidence.
 
+### 2.11 Phase 3J disposable durable saga/outbox gate
+- Phase 3J persists the Phase 3I binding and transition contract in a temporary SQLite saga/event/outbox store and exercises a separate PostgreSQL execution-authorization/reservation contract inside a digest-pinned `--network none` container.
+- The executable runtime is available only to repository tests and the disposable CI producer. It is not imported by the scrape API, `jobs.py`, the existing worker path or any browser action.
+- Preparation, recovery/replay, claim races, lease/fencing, stale acknowledgement, ambiguous remote outcomes, compensation replay and corrupt/unavailable storage are verified fail closed. PostgreSQL additionally proves that review approval alone is not execution authority.
+- Application-level worker dispatch, network, thread and operational-write counts must be zero. Temporary SQLite and disposable PostgreSQL mutations are counted separately and destroyed.
+- The gate consumes and revalidates same-run Phase 3H and Phase 3I artifacts and binds evidence to exact commit/schema/migration/contract/runtime hashes.
+- The new migration remains unapplied externally. A passing result is still L2 / Production NOT_READY / `l3_eligible=false`; it is not staging evidence and cannot unlock execution.
+
 ---
 
 ## 3. Planned (Future)
@@ -156,7 +164,7 @@ Observed mismatch from source document:
   - cache/reparse diagnostics
 - Controlled, approval-gated execution phase for refresh/p0 repair (currently intentionally disabled).
 - A separately approved staging migration/evidence run for the server-authoritative review ledger.
-- An executable cross-store implementation (durable saga/outbox, idempotent reservation/consume, durable lease ownership/CAS, downstream fencing and compensation) between the Supabase ledger and SQLite scrape jobs before any lock release is considered. Phase 3I supplies only its synthetic state-machine contract and does not prove durable or multi-instance behavior.
+- Connect the independently audited Phase 3J disposable runtime through one outbox-only worker path, remove the direct dispatch alternative, and prove idempotent downstream effects, lease renewal/progress, durable multi-process recovery and compensation in an explicitly approved staging topology before any lock release is considered.
 
 ---
 

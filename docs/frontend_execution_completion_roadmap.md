@@ -115,7 +115,11 @@ Target state is a frontend-led scrape operation where operator can:
 - Develop CI records that NOT_READY assessment as valid evidence, while main/release PRs invoke a separate promotion policy that fails until trusted READY/L3 evidence exists.
 - Phase 3I adds the non-executable saga state machine and a deterministic failure-injection gate. It validates immutable owner/job/review-version/request binding, replay conflicts, consume-before-dispatch, modeled fencing/stale-worker rejection, uncertainty outcomes and compensation rules with a guarded `effect_count=0`. It does not yet validate event-carried expected-version ordering, lease ownership, lease renewal or worker progress.
 - Phase 3I consumes the same-run Phase 3H decision and cannot promote it. Its expected result remains L2 / `production_ready=false` / `l3_eligible=false`.
-- A future phase must implement the durable SQLite saga/outbox, lease-owner/version CAS and external reservation/consume boundary, then prove downstream fencing, durable recovery and multi-instance safety in an explicitly approved staging topology. The existing direct worker path is not connected to the Phase 3I model.
+- Phase 3I leaves the durable SQLite saga/outbox, lease-owner/version CAS and external reservation/consume boundary unimplemented. The Phase 3J disposable slice below addresses those contracts without connecting the existing direct worker path; downstream fencing, durable multi-process recovery and staging safety still require later proof.
+- Phase 3J implements that store and reservation boundary only for tests and a disposable release-blocking CI topology: temporary SQLite plus a digest-pinned, network-isolated PostgreSQL container with no published port or external credentials.
+- Its failure matrix verifies atomic rollback, crash/replay, claim race, lease/fencing, stale acknowledgement, ambiguous remote stop, compensation replay, corrupt/unavailable fail-closed handling and the separation of review approval from execution authority.
+- Same-run Phase 3H/Phase 3I evidence and exact commit/schema/migration/contract/runtime hashes are mandatory. Operational worker/network/thread/write counters remain zero while disposable DB effects are counted separately.
+- Phase 3J is still L2 / Production NOT_READY / `l3_eligible=false`: no API or worker imports the executable runtime, the migration is externally unapplied, and controlled staging/multi-instance/downstream-effect evidence remains future work.
 
 ---
 
