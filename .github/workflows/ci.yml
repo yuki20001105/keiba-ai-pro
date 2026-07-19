@@ -116,6 +116,9 @@ jobs:
       - name: Phase3G runtime evidence verifier and harness contracts (release-blocking)
         run: python -m pytest python-api/tests/test_phase3g_runtime_evidence_gate.py python-api/tests/test_phase3g_review_ledger_runtime_harness.py -q
 
+      - name: Phase3H production readiness decision contract (release-blocking)
+        run: python -m pytest python-api/tests/test_phase3h_production_readiness_gate.py -q
+
   contract-smoke-aux:
     name: Contract smoke aux (warn-allowed)
     runs-on: ubuntu-latest
@@ -306,6 +309,54 @@ jobs:
           path: |
             reports/phase3g_review_ledger_runtime.json
             reports/phase3g_runtime_evidence_gate.json
+          if-no-files-found: error
+
+  phase3h-production-readiness:
+    name: Phase3H production readiness decision (release-blocking)
+    needs: phase3g-review-ledger-runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download Phase3G runtime evidence from this workflow run
+        uses: actions/download-artifact@v4
+        with:
+          name: phase3g-review-ledger-runtime-json
+          path: reports/phase3g-input
+
+      - name: Derive fail-closed production readiness decision
+        run: >-
+          python scripts/verify_phase3h_production_readiness.py
+          --manifest python-api/tests/fixtures/phase3h_production_readiness_current_not_ready.json
+          --phase3g-evidence reports/phase3g-input/phase3g_review_ledger_runtime.json
+          --expected-commit "$GITHUB_SHA"
+          --max-age-seconds 3600
+
+      - name: Block NOT_READY promotion to main or release
+        if: >-
+          (github.event_name == 'pull_request' && (github.base_ref == 'main' || github.base_ref == 'release')) ||
+          (github.event_name == 'workflow_dispatch' && (github.ref_name == 'main' || github.ref_name == 'release'))
+        run: >-
+          python scripts/verify_phase3h_production_readiness.py
+          --manifest python-api/tests/fixtures/phase3h_production_readiness_current_not_ready.json
+          --phase3g-evidence reports/phase3g-input/phase3g_review_ledger_runtime.json
+          --expected-commit "$GITHUB_SHA"
+          --max-age-seconds 3600
+          --require-ready
+
+      - name: Upload Phase3H production readiness decision
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase3h-production-readiness-json
+          path: reports/phase3h_production_readiness_gate.json
           if-no-files-found: error
 
   container-build-check:
