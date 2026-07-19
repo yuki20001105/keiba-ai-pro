@@ -164,6 +164,8 @@ def _sha256(path: Path) -> str:
 
 def _wait_for_postgres(container: str, timeout_seconds: int = 60) -> None:
     deadline = time.monotonic() + timeout_seconds
+    stable_start_time: str | None = None
+    consecutive_stable_probes = 0
     while time.monotonic() < deadline:
         ready = _docker(
             "exec",
@@ -180,7 +182,26 @@ def _wait_for_postgres(container: str, timeout_seconds: int = 60) -> None:
             timeout=10,
         )
         if ready.returncode == 0:
-            return
+            probe = _psql(
+                container,
+                "SELECT pg_postmaster_start_time()::text;",
+                timeout=10,
+            )
+            start_time = probe.stdout.strip() if probe.returncode == 0 else ""
+            if start_time:
+                if start_time == stable_start_time:
+                    consecutive_stable_probes += 1
+                else:
+                    stable_start_time = start_time
+                    consecutive_stable_probes = 1
+                if consecutive_stable_probes >= 2:
+                    return
+            else:
+                stable_start_time = None
+                consecutive_stable_probes = 0
+        else:
+            stable_start_time = None
+            consecutive_stable_probes = 0
         running = _docker("inspect", "--format", "{{.State.Running}}", container, timeout=10)
         if running.returncode != 0 or running.stdout.strip().lower() != "true":
             raise GateFailure("container_exited_before_ready")

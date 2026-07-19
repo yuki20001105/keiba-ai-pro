@@ -52,6 +52,12 @@ def _all_markers(runner: ModuleType) -> str:
     return "\n".join(f"{runner.MARKER_PREFIX}{key}" for key in keys)
 
 
+def _install_fake_clock(monkeypatch: pytest.MonkeyPatch, runner: ModuleType) -> None:
+    now = [0.0]
+    monkeypatch.setattr(runner.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(runner.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds))
+
+
 def _configure_success(monkeypatch: pytest.MonkeyPatch, runner: ModuleType, report: Path):
     calls: list[tuple[str, ...]] = []
     monkeypatch.setattr(runner, "REPORT", report)
@@ -141,6 +147,160 @@ def test_migration_hash_is_stable_across_checkout_line_endings(
 
     assert runner._sha256(lf_path) == runner._sha256(crlf_path)
     assert runner._sha256(lf_path) != runner._sha256(changed_path)
+
+
+def test_postgres_readiness_requires_two_stable_postmaster_probes(
+    monkeypatch: pytest.MonkeyPatch,
+    runner: ModuleType,
+) -> None:
+    _install_fake_clock(monkeypatch, runner)
+    probes = iter(
+        (
+            runner.CommandResult(0, "temporary-start\n", ""),
+            runner.CommandResult(1, "", "server restarted"),
+            runner.CommandResult(0, "final-start\n", ""),
+            runner.CommandResult(0, "final-start\n", ""),
+        )
+    )
+    probe_calls: list[str] = []
+
+    def fake_docker(*args: str, timeout: int = 60):
+        del timeout
+        if args[0] == "exec":
+            return runner.CommandResult(0, "accepting connections\n", "")
+        if args[0] == "inspect":
+            return runner.CommandResult(0, "true\n", "")
+        raise AssertionError(args)
+
+    def fake_psql(container: str, sql: str, timeout: int = 90):
+        del container, timeout
+        probe_calls.append(sql)
+        return next(probes)
+
+    monkeypatch.setattr(runner, "_docker", fake_docker)
+    monkeypatch.setattr(runner, "_psql", fake_psql)
+
+    runner._wait_for_postgres("container", timeout_seconds=10)
+
+    assert len(probe_calls) == 4
+    assert all("pg_postmaster_start_time" in sql for sql in probe_calls)
+
+
+def test_postgres_readiness_accepts_an_immediately_stable_postmaster(
+    monkeypatch: pytest.MonkeyPatch,
+    runner: ModuleType,
+) -> None:
+    _install_fake_clock(monkeypatch, runner)
+    probe_calls = 0
+
+    def fake_docker(*args: str, timeout: int = 60):
+        del timeout
+        if args[0] == "exec":
+            return runner.CommandResult(0, "accepting connections\n", "")
+        return runner.CommandResult(0, "true\n", "")
+
+    def fake_psql(container: str, sql: str, timeout: int = 90):
+        nonlocal probe_calls
+        del container, sql, timeout
+        probe_calls += 1
+        return runner.CommandResult(0, "stable-start\n", "")
+
+    monkeypatch.setattr(runner, "_docker", fake_docker)
+    monkeypatch.setattr(runner, "_psql", fake_psql)
+
+    runner._wait_for_postgres("container", timeout_seconds=5)
+
+    assert probe_calls == 2
+
+
+def test_postgres_readiness_resets_when_postmaster_start_time_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    runner: ModuleType,
+) -> None:
+    _install_fake_clock(monkeypatch, runner)
+    probes = iter(("temporary-start\n", "final-start\n", "final-start\n"))
+    probe_calls = 0
+
+    def fake_docker(*args: str, timeout: int = 60):
+        del timeout
+        if args[0] == "exec":
+            return runner.CommandResult(0, "accepting connections\n", "")
+        return runner.CommandResult(0, "true\n", "")
+
+    def fake_psql(container: str, sql: str, timeout: int = 90):
+        nonlocal probe_calls
+        del container, sql, timeout
+        probe_calls += 1
+        return runner.CommandResult(0, next(probes), "")
+
+    monkeypatch.setattr(runner, "_docker", fake_docker)
+    monkeypatch.setattr(runner, "_psql", fake_psql)
+
+    runner._wait_for_postgres("container", timeout_seconds=5)
+
+    assert probe_calls == 3
+
+
+def test_postgres_readiness_fails_closed_when_container_exits(
+    monkeypatch: pytest.MonkeyPatch,
+    runner: ModuleType,
+) -> None:
+    _install_fake_clock(monkeypatch, runner)
+
+    def fake_docker(*args: str, timeout: int = 60):
+        del timeout
+        if args[0] == "exec":
+            return runner.CommandResult(1, "", "not ready")
+        return runner.CommandResult(0, "false\n", "")
+
+    monkeypatch.setattr(runner, "_docker", fake_docker)
+
+    with pytest.raises(runner.GateFailure, match="container_exited_before_ready"):
+        runner._wait_for_postgres("container", timeout_seconds=5)
+
+
+def test_postgres_readiness_times_out_without_a_stable_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    runner: ModuleType,
+) -> None:
+    _install_fake_clock(monkeypatch, runner)
+
+    def fake_docker(*args: str, timeout: int = 60):
+        del timeout
+        if args[0] == "exec":
+            return runner.CommandResult(0, "accepting connections\n", "")
+        return runner.CommandResult(0, "true\n", "")
+
+    monkeypatch.setattr(runner, "_docker", fake_docker)
+    monkeypatch.setattr(
+        runner,
+        "_psql",
+        lambda container, sql, timeout=90: runner.CommandResult(1, "", "transient"),
+    )
+
+    with pytest.raises(runner.GateFailure, match="postgres_health_timeout"):
+        runner._wait_for_postgres("container", timeout_seconds=2)
+
+
+def test_bootstrap_waits_for_stable_postgres_readiness(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    runner: ModuleType,
+) -> None:
+    report = tmp_path / "runtime.json"
+    _configure_success(monkeypatch, runner, report)
+    events: list[str] = []
+    monkeypatch.setattr(runner, "_wait_for_postgres", lambda container: events.append("ready"))
+
+    def fake_psql(container: str, sql: str, timeout: int = 90):
+        del container, sql, timeout
+        events.append("psql")
+        return runner.CommandResult(0, _all_markers(runner), "")
+
+    monkeypatch.setattr(runner, "_psql", fake_psql)
+
+    assert runner.run_gate() == 0
+    assert events[:2] == ["ready", "psql"]
 
 
 def test_success_report_is_synthetic_non_l3_and_container_is_network_isolated(
