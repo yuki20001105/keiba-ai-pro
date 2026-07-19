@@ -128,6 +128,14 @@ Observed mismatch from source document:
 - Synthetic evidence is always `l3_eligible=false`; it proves an L2 runtime contract, not a staging deployment.
 - Execution reservation, consume, unlock and execute are not implemented. The Supabase ledger and SQLite scrape jobs require a cross-store saga/outbox and compensation design first.
 
+### 2.9 Phase 3H production readiness decision gate
+- A release-blocking offline verifier consumes the same-workflow Phase 3G runtime artifact and a versioned repository manifest.
+- The verifier revalidates the Phase 3G schema, freshness, tested commit, migration hash, runtime checks and cleanup before making any readiness decision.
+- Missing saga/outbox invariants, staging evidence and explicit migration/unlock/release approvals are converted into deterministic blocker codes.
+- Repository input may describe only the current absent prerequisites. It cannot self-assert a completed control, READY or L3; those transitions require a future trusted attestation boundary.
+- The sanitized report intentionally returns `verdict=not-ready`, `production_ready=false` and `l3_eligible=false` while still returning a successful contract evaluation.
+- No UI, scrape API, worker, lock, Supabase migration or external environment is changed by this gate.
+
 ---
 
 ## 3. Planned (Future)

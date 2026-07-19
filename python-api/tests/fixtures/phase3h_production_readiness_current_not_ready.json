@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "decision_mode": "repository_current_state",
+  "production_ready_claimed": false,
+  "l3_claimed": false,
+  "cross_store_saga": {
+    "stable_operation_and_job_binding": false,
+    "idempotent_reserve_and_consume": false,
+    "atomic_sqlite_job_saga_outbox": false,
+    "consume_before_worker_dispatch": false,
+    "durable_recovery": false,
+    "idempotent_compensation": false,
+    "lease_and_fencing": false,
+    "multi_instance_safety": false,
+    "failure_injection_matrix": false
+  },
+  "staging_evidence": {
+    "review_ledger_migration_applied": false,
+    "bounded_external_http_validation": false,
+    "zero_db_mutation_proven": false,
+    "non_synthetic_crash_recovery": false,
+    "trusted_evidence_producer": false
+  },
+  "approvals": {
+    "staging_migration": false,
+    "execution_unlock": false,
+    "production_release": false
+  }
+}
