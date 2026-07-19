@@ -7,6 +7,7 @@ import { Toast } from '@/components/Toast'
 import { authFetch } from '@/lib/auth-fetch'
 import { useJobPoller } from '@/hooks/useJobPoller'
 import { BatchScrapeError, useBatchScrape } from '@/hooks/useBatchScrape'
+import { useAuth } from '@/contexts/AuthContext'
 import {
   UNCERTAINTY_REVIEW_STORAGE_KEY,
   UNCERTAINTY_STORAGE_KEY,
@@ -187,6 +188,7 @@ function normalizeDryRunResult(resultPayload: any): ScrapeDryRunResult {
 }
 
 export default function DataCollectionPage() {
+  const { isAdmin } = useAuth()
   // 期間指定用
   const now = new Date()
   const [startPeriod, setStartPeriod] = useState(`${now.getFullYear() - 1}-01`)
@@ -1050,6 +1052,11 @@ export default function DataCollectionPage() {
           <Link href="/data-collection/live-validation" className="text-xs text-[#b45309] hover:text-white transition-colors" data-testid="phase3d-header-link">
             Live Validation
           </Link>
+          {isAdmin && (
+            <Link href="/data-collection/uncertainty-reviews" className="text-xs text-[#38bdf8] hover:text-white transition-colors" data-testid="phase3g-review-queue-link">
+              Review Queue
+            </Link>
+          )}
           <Link href="/home" className="flex items-center gap-1 text-xs text-[#555] hover:text-white transition-colors">
             <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />

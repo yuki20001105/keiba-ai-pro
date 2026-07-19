@@ -14,7 +14,7 @@ const ACTOR = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const REQUEST_ID = '22222222-2222-4222-8222-222222222222'
 const CLIENT_ID = '11111111-1111-4111-8111-111111111111'
 
-function dbRecord(status = 'pending_review') {
+function dbRecord(status = 'pending_review', overrides: Record<string, unknown> = {}) {
   const decided = status !== 'pending_review'
   return {
     review_id: REQUEST_ID,
@@ -30,13 +30,14 @@ function dbRecord(status = 'pending_review') {
     reason: 'Server state is unknown and requires an independent administrative review.',
     requested_at: '2026-07-18T00:02:00.000Z',
     expires_at: '2026-07-18T00:32:00.000Z',
-    decided_by: decided && status !== 'expired' ? 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' : null,
+    decided_by: decided && status !== 'expired' ? ACTOR : null,
     decided_at: decided ? '2026-07-18T00:03:00.000Z' : null,
-    decision_reason: decided ? 'Independent review completed without enabling execution.' : null,
+    decision_reason: decided ? 'Independent administrator verified the review-only evidence.' : null,
     approval_scope: 'review_only',
     authoritative: true,
     execution_enabled: false,
     lock_release_allowed: false,
+    ...overrides,
   }
 }
 
@@ -197,5 +198,24 @@ describe('Phase 3F uncertainty review routes', () => {
       reason: 'Independent administrator verified the review-only evidence.',
     }), { params: Promise.resolve({ requestId: REQUEST_ID }) })
     expect(response.status).toBe(409)
+  })
+
+  test.each([
+    ['review_id', '33333333-3333-4333-8333-333333333333'],
+    ['version', 3],
+    ['status', 'rejected'],
+    ['decided_by', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'],
+    ['decision_reason', 'A different reviewer reason must never be accepted by the route.'],
+  ])('rejects an uncorrelated transition field from the RPC: %s', async (field, value) => {
+    const { POST } = await import('@/app/api/scrape/uncertainty-review-requests/[requestId]/decision/route')
+    rpcMock.mockResolvedValueOnce({ data: [dbRecord('approved', { [field]: value })], error: null })
+
+    const response = await POST(postRequest(`/api/scrape/uncertainty-review-requests/${REQUEST_ID}/decision`, {
+      action: 'approve',
+      expected_version: 1,
+      reason: 'Independent administrator verified the review-only evidence.',
+    }), { params: Promise.resolve({ requestId: REQUEST_ID }) })
+
+    expect(response.status).toBe(502)
   })
 })

@@ -645,5 +645,20 @@ export async function transitionReviewViaRpc(
   const raw = unwrapSingleRecord(result.data)
   if (raw === null || raw === 'invalid') return { ok: false, status: 502, detail: 'review backend returned an invalid record' }
   const projected = projectReviewRecord(raw)
-  return projected.ok ? projected : { ok: false, status: 502, detail: projected.detail }
+  if (!projected.ok) return { ok: false, status: 502, detail: projected.detail }
+
+  const expectedStatus = input.action === 'approve'
+    ? 'approved'
+    : input.action === 'reject'
+      ? 'rejected'
+      : 'revoked'
+  const record = projected.value
+  if (record.request_id.toLowerCase() !== requestId.toLowerCase()
+    || record.version !== input.expected_version + 1
+    || record.status !== expectedStatus
+    || record.decided_by?.toLowerCase() !== actorUserId.toLowerCase()
+    || record.decision_reason !== input.reason) {
+    return { ok: false, status: 502, detail: 'review backend returned an uncorrelated transition record' }
+  }
+  return { ok: true, value: record }
 }

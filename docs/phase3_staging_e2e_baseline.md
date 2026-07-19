@@ -60,6 +60,7 @@ Legend: L0 not started, L1 isolated, L2 contract-ready, L3 staging-integrated, L
 1. Refresh and P0 execution paths intentionally remain disabled (`501`).
 2. Live validation is first-class and contract-ready, but controlled staging evidence has not yet been acquired.
 3. Multi-step operator handoff between execute and quality actions is still fragmented.
+4. Phase 3G validates the review ledger only in disposable synthetic PostgreSQL. The external Supabase migration is unapplied, and no atomic reservation/consume bridge exists between the Supabase ledger and SQLite scrape jobs.
 
 ### Gaps to L4
 1. End-to-end staging evidence for all critical write-sensitive flows is incomplete.
@@ -109,7 +110,12 @@ Legend: L0 not started, L1 isolated, L2 contract-ready, L3 staging-integrated, L
 - The migration is committed but intentionally unapplied. Phase 3F is L2 code/CI-ready only; L3 remains unclaimed until explicit staging migration approval and controlled evidence.
 
 ### Phase 3G
-- Add a one-time, atomically consumed staging execution reservation tied to an eligible review, then run controlled partial unlock and rollback drills.
+- Add an Admin-only reviewer console for explicit review-only approve/reject decisions. The console never unlocks, retries, executes, navigates automatically, or mutates the Phase 3E local lock.
+- Add a release-blocking disposable PostgreSQL runtime gate using a digest-pinned `postgres:17.6-bookworm` image, `--network none`, no published port, migration replay, concurrency checks, and container cleanup verification. The host image pull is allowed; the container itself has no network.
+- Add a strict evidence verifier that correlates commit and migration hashes and rejects unsanitized, stale, malformed, or schema-drifting reports.
+- Synthetic runtime evidence is always `l3_eligible=false`. No external Supabase migration is applied by this phase.
+- Execution reservation/consume/unlock remains unimplemented. Supabase ledger decisions and SQLite scrape-job creation need an explicit cross-store saga/outbox and compensation design before any controlled unlock can be considered.
+- Phase 3G is L2 code/CI-ready only; L3 remains unclaimed.
 
 ### Phase 3H
 - Production readiness decision gate based on evidence package and explicit approvals.
@@ -128,6 +134,7 @@ Legend: L0 not started, L1 isolated, L2 contract-ready, L3 staging-integrated, L
 - Migration assets exist for prediction count and purchase history related contracts.
 - Batch consume RPC (`pred_count_batch`) boundary is documented and service-role sensitive.
 - RLS assumptions are policy-critical; rollout must include explicit policy verification per environment.
+- The Phase 3F review-ledger migration is exercised only in a disposable network-isolated PostgreSQL container during Phase 3G CI. This does not apply it to Supabase or provide staging evidence.
 
 ---
 
@@ -144,6 +151,7 @@ Conclusion: rollback controls are **insufficient for broad execution unlock** wi
 | risk | severity | rationale |
 |---|---|---|
 | accidental write unlock in planning surfaces | High | routes are currently safe, but unlock work is pending |
+| cross-store review-to-job atomicity gap | High | authoritative reviews are in Supabase while scrape jobs are in SQLite; no reservation/consume saga exists |
 | stale env mismatch across staging/prod | High | repo evidence for non-local envs is partial |
 | operator misread of pending vs zero-result | Medium | mitigated in UI, still needs consistency across flows |
 | script-only diagnostics fragmentation | Medium | slows incident response and repeatability |

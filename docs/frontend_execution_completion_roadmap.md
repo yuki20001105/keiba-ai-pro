@@ -37,6 +37,7 @@ Target state is a frontend-led scrape operation where operator can:
 ### 2.3 Not complete
 - Approval-gated production repair execution with staged release controls.
 - End-to-end UI orchestration for cache-reparse/refetch diagnostics and actioning.
+- Atomic execution reservation/consume/unlock across the Supabase review ledger and SQLite scrape-job persistence.
 
 ---
 
@@ -96,7 +97,18 @@ Target state is a frontend-led scrape operation where operator can:
 - Phase 3F adds an unapplied Supabase ledger migration, immutable events, idempotent request creation, expiry/revocation and two-person review decisions.
 - The browser submits only after explicit action and retains the Phase 3E lock for every server status, including `approved`.
 - Profile update privileges prevent browser-side Admin/tier escalation; orphaned local evidence and stale locator responses remain fail-closed.
-- All Phase 3F decisions are `review_only`; execution reservation/consumption, partial unlock, staging migration application and staging proof remain Phase 3G work.
+- All Phase 3F decisions are `review_only`; they are not execution tokens.
+- Phase 3G adds an Admin-only reviewer queue that records explicit approve/reject decisions without retry, unlock, execution, navigation or local-lock mutation.
+- Phase 3G also adds a release-blocking disposable, digest-pinned `postgres:17.6-bookworm` runtime gate (`--network none`) and a strict sanitized-evidence verifier. Only the container runtime is network-isolated; the CI host may pull the immutable image from its registry.
+- Synthetic runtime evidence is always `l3_eligible=false`; the external Supabase migration remains unapplied.
+- Reservation/consumption and partial unlock are still unimplemented. Supabase review state and SQLite scrape-job creation require an explicit cross-store saga/outbox and compensation design before execution work can start.
+- Phase 3G is L2 contract-ready only. Controlled staging migration/evidence is still required for L3.
+
+## Phase 8 (planned): Cross-store reservation and controlled staging evidence
+- Design an idempotent reservation/consume protocol that cannot lose or duplicate execution across Supabase and SQLite.
+- Define durable recovery, compensation, timeout, and operator rollback semantics before exposing any unlock control.
+- Apply the review-ledger migration only through a separately approved staging operation and capture sanitized non-synthetic evidence.
+- Keep approval review-only until both the atomicity design and staging evidence pass independent audit.
 
 ---
 
