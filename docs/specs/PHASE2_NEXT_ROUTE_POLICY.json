@@ -660,6 +660,50 @@
     "detail_error_passthrough_reason": "/api/scrape/targeted-refetch-plan maps upstream detail into route-specific error payload"
   },
   {
+    "route": "/api/scrape/uncertainty-review-requests",
+    "method": "GET",
+    "policy": "Admin",
+    "auth_header_forward": false,
+    "status_propagation": false,
+    "detail_error_passthrough": false,
+    "auth_header_forward_reason": "/api/scrape/uncertainty-review-requests uses a server-side service-role RPC after verified Admin auth and never forwards the browser bearer token",
+    "status_propagation_reason": "/api/scrape/uncertainty-review-requests returns a normalized review-ledger status contract",
+    "detail_error_passthrough_reason": "/api/scrape/uncertainty-review-requests maps database errors to bounded route-specific detail"
+  },
+  {
+    "route": "/api/scrape/uncertainty-review-requests",
+    "method": "POST",
+    "policy": "Admin",
+    "auth_header_forward": false,
+    "status_propagation": false,
+    "detail_error_passthrough": false,
+    "auth_header_forward_reason": "/api/scrape/uncertainty-review-requests uses a server-side service-role RPC after verified Admin auth and never forwards the browser bearer token",
+    "status_propagation_reason": "/api/scrape/uncertainty-review-requests returns a normalized review-ledger status contract",
+    "detail_error_passthrough_reason": "/api/scrape/uncertainty-review-requests maps database errors to bounded route-specific detail"
+  },
+  {
+    "route": "/api/scrape/uncertainty-review-requests/[requestId]",
+    "method": "GET",
+    "policy": "Admin",
+    "auth_header_forward": false,
+    "status_propagation": false,
+    "detail_error_passthrough": false,
+    "auth_header_forward_reason": "/api/scrape/uncertainty-review-requests/[requestId] uses a server-side service-role RPC after verified Admin auth",
+    "status_propagation_reason": "/api/scrape/uncertainty-review-requests/[requestId] returns a normalized owner/reviewer-scoped record",
+    "detail_error_passthrough_reason": "/api/scrape/uncertainty-review-requests/[requestId] hides database and cross-owner details"
+  },
+  {
+    "route": "/api/scrape/uncertainty-review-requests/[requestId]/decision",
+    "method": "POST",
+    "policy": "Admin",
+    "auth_header_forward": false,
+    "status_propagation": false,
+    "detail_error_passthrough": false,
+    "auth_header_forward_reason": "/api/scrape/uncertainty-review-requests/[requestId]/decision uses a server-side service-role RPC after verified Admin auth",
+    "status_propagation_reason": "/api/scrape/uncertainty-review-requests/[requestId]/decision normalizes CAS and two-person decision outcomes",
+    "detail_error_passthrough_reason": "/api/scrape/uncertainty-review-requests/[requestId]/decision maps database errors to bounded conflicts or availability errors"
+  },
+  {
     "route": "/api/scrape/repair/[race_id]",
     "method": "POST",
     "policy": "Admin",

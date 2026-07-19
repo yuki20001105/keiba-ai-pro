@@ -634,7 +634,7 @@
     "duplicates": []
   },
   "next": {
-    "count": 67,
+    "count": 71,
     "routes": [
       {
         "route": "/api/ai-correct",
@@ -1393,6 +1393,54 @@
         "source": "src/app/api/scrape/targeted-refetch-plan/route.ts"
       },
       {
+        "route": "/api/scrape/uncertainty-review-requests",
+        "method": "GET",
+        "policy": "Admin",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/scrape/uncertainty-review-requests/route.ts"
+      },
+      {
+        "route": "/api/scrape/uncertainty-review-requests",
+        "method": "POST",
+        "policy": "Admin",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/scrape/uncertainty-review-requests/route.ts"
+      },
+      {
+        "route": "/api/scrape/uncertainty-review-requests/[requestId]",
+        "method": "GET",
+        "policy": "Admin",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/scrape/uncertainty-review-requests/[requestId]/route.ts"
+      },
+      {
+        "route": "/api/scrape/uncertainty-review-requests/[requestId]/decision",
+        "method": "POST",
+        "policy": "Admin",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/scrape/uncertainty-review-requests/[requestId]/decision/route.ts"
+      },
+      {
         "route": "/api/statistics",
         "method": "GET",
         "policy": "Authenticated",
@@ -1442,7 +1490,7 @@
       }
     ],
     "unclassified": [],
-    "canonical_entries": 67,
+    "canonical_entries": 71,
     "gate_failures": []
   },
   "gate": {
