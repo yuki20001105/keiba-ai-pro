@@ -1,34 +1,26 @@
-# Release: release ブランチへの push 時にタグ・通知
-name: Release
+name: Release Safety Gate
 
 on:
   push:
     branches:
       - release
     tags:
-      - 'v*'   # v2, v2.0.0 などすべての v プレフィックスタグ
+      - 'v*'
 
+permissions:
+  contents: read
+
+# This repository does not yet have trusted L3 staging evidence or an approved
+# production-readiness attestation. A release event must therefore fail closed;
+# this workflow deliberately performs no deployment and creates no GitHub Release.
 jobs:
-  notify:
-    name: Release Notification
+  production-release-blocked:
+    name: Production release blocked (READY/L3 evidence required)
     runs-on: ubuntu-latest
-    permissions:
-      contents: write   # GitHub Release 作成に必要
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Show release info
+      - name: Refuse release without trusted READY/L3 evidence
+        shell: bash
         run: |
-          echo "==============================="
-          echo "  Release deployed to production"
-          echo "  Branch : ${{ github.ref_name }}"
-          echo "  Commit : ${{ github.sha }}"
-          echo "  Time   : $(date '+%Y-%m-%d %H:%M:%S UTC')"
-          echo "==============================="
-
-      # タグが打たれたとき GitHub の Releases ページに自動作成
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true  # コミット履歴から自動でリリースノートを生成
+          echo "::error::Production release is blocked until trusted READY and L3 evidence is verified in the same release run."
+          exit 1

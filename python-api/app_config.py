@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import logging
 import sys
+from ipaddress import ip_address
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
+from urllib.parse import urlsplit
 
 import joblib
 from fastapi import HTTPException
@@ -106,24 +108,138 @@ except ImportError:
 # データ保存・モデル管理には Supabase を使用しない（ローカル SQLite 優先）。
 # 環境変数 SUPABASE_DATA_ENABLED=true を設定すると有効になる。
 import os as _os
-SUPABASE_DATA_ENABLED: bool = (
-    SUPABASE_ENABLED
-    and _os.environ.get("SUPABASE_DATA_ENABLED", "false").lower() in ("true", "1", "yes")
+
+
+class DeploymentConfigurationError(RuntimeError):
+    """Raised when a deployed process cannot establish a safe environment."""
+
+
+_MANAGED_RUNTIME_MARKERS = (
+    "RENDER",
+    "RENDER_SERVICE_ID",
+    "RENDER_SERVICE_NAME",
+    "RENDER_EXTERNAL_HOSTNAME",
+    "RAILWAY_ENVIRONMENT_ID",
+    "RAILWAY_ENVIRONMENT_NAME",
+    "RAILWAY_PROJECT_ID",
+    "RAILWAY_SERVICE_ID",
+    "RAILWAY_DEPLOYMENT_ID",
+    "K_SERVICE",
+    "WEBSITE_INSTANCE_ID",
 )
-NETKEIBA_RACE_WRITE_ENABLED: bool = _os.environ.get("NETKEIBA_RACE_WRITE_ENABLED", "false").lower() in (
-    "true", "1", "yes"
+_LOCAL_APP_ENV_ALIASES = frozenset({"development", "dev", "local", "test"})
+_DEPLOYED_APP_ENVS = frozenset({"staging", "production"})
+_TRUE_VALUES = frozenset({"true", "1", "yes"})
+_DEFAULT_DEVELOPMENT_ORIGINS = (
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
 )
-ALLOW_STAGING_WRITE: bool = _os.environ.get("ALLOW_STAGING_WRITE", "false").lower() in (
-    "true", "1", "yes"
-)
-APP_ENV: str = (_os.environ.get("APP_ENV") or "development").strip().lower()
-if APP_ENV not in {"development", "staging", "production"}:
-    APP_ENV = "development"
+
+
+def _is_managed_runtime(environ: Mapping[str, str]) -> bool:
+    return any((environ.get(name) or "").strip() for name in _MANAGED_RUNTIME_MARKERS)
+
+
+def resolve_app_env(environ: Mapping[str, str] | None = None) -> str:
+    """Resolve APP_ENV without silently widening a deployed runtime.
+
+    Local and test processes retain the historical development default. A
+    managed runtime must provide an explicit accepted value; missing and
+    ambiguous aliases such as ``prod`` fail closed.
+    """
+    values = _os.environ if environ is None else environ
+    normalized = (values.get("APP_ENV") or "").strip().lower()
+    managed_runtime = _is_managed_runtime(values)
+    if normalized in _LOCAL_APP_ENV_ALIASES:
+        if managed_runtime:
+            raise DeploymentConfigurationError("app-env-invalid")
+        return "development"
+    if normalized in _DEPLOYED_APP_ENVS:
+        return normalized
+    if not normalized and not managed_runtime:
+        return "development"
+
+    reason = "missing" if not normalized else "invalid"
+    raise DeploymentConfigurationError(f"app-env-{reason}")
+
+
+def _explicit_opt_in(name: str, environ: Mapping[str, str] | None = None) -> bool:
+    values = _os.environ if environ is None else environ
+    return (values.get(name) or "").strip().lower() in _TRUE_VALUES
+
+
+def _is_local_hostname(hostname: str) -> bool:
+    normalized = hostname.rstrip(".").lower()
+    if (
+        normalized == "localhost"
+        or normalized.endswith(".localhost")
+        or normalized.endswith(".local")
+    ):
+        return True
+    try:
+        address = ip_address(normalized)
+    except ValueError:
+        return False
+    return not address.is_global
+
+
+def resolve_allowed_origins(
+    app_env: str,
+    environ: Mapping[str, str] | None = None,
+) -> tuple[str, ...]:
+    """Parse a strict CORS origin allowlist for the selected environment."""
+    values = _os.environ if environ is None else environ
+    raw_value = values.get("ALLOWED_ORIGINS")
+    if raw_value is None or not raw_value.strip():
+        if app_env == "development":
+            return _DEFAULT_DEVELOPMENT_ORIGINS
+        raise DeploymentConfigurationError("allowed-origins-missing")
+
+    raw_origins = [item.strip() for item in raw_value.split(",") if item.strip()]
+    if not raw_origins:
+        raise DeploymentConfigurationError("allowed-origins-empty")
+
+    resolved: list[str] = []
+    for origin in raw_origins:
+        if origin == "*":
+            raise DeploymentConfigurationError("allowed-origin-wildcard-forbidden")
+        try:
+            parsed = urlsplit(origin)
+            _ = parsed.port  # Force validation of malformed ports.
+        except ValueError as exc:
+            raise DeploymentConfigurationError("allowed-origin-invalid") from exc
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in {"", "/"}
+        ):
+            raise DeploymentConfigurationError("allowed-origin-invalid")
+        if app_env in _DEPLOYED_APP_ENVS and (
+            parsed.scheme != "https" or _is_local_hostname(parsed.hostname)
+        ):
+            raise DeploymentConfigurationError("allowed-origin-not-public-https")
+
+        normalized = origin[:-1] if origin.endswith("/") else origin
+        if normalized not in resolved:
+            resolved.append(normalized)
+    return tuple(resolved)
+
+
+APP_ENV: str = resolve_app_env()
+ALLOWED_ORIGINS: tuple[str, ...] = resolve_allowed_origins(APP_ENV)
+SUPABASE_DATA_ENABLED: bool = SUPABASE_ENABLED and _explicit_opt_in("SUPABASE_DATA_ENABLED")
+NETKEIBA_RACE_WRITE_ENABLED: bool = _explicit_opt_in("NETKEIBA_RACE_WRITE_ENABLED")
+ALLOW_STAGING_WRITE: bool = _explicit_opt_in("ALLOW_STAGING_WRITE")
 if SUPABASE_ENABLED:
     logger.info(f"Supabase データ操作: {'有効' if SUPABASE_DATA_ENABLED else '無効（認証専用モード）'}")
 logger.info(f"netkeiba race write orchestration: {'有効' if NETKEIBA_RACE_WRITE_ENABLED else '無効（guarded）'}")
 logger.info(f"netkeiba staging write allowance: {'有効' if ALLOW_STAGING_WRITE else '無効（guarded）'}")
 logger.info(f"application environment: {APP_ENV}")
+logger.info(f"allowed CORS origins: {', '.join(ALLOWED_ORIGINS)}")
 
 
 # ── モデルヘルパー ──────────────────────────────────────────────────

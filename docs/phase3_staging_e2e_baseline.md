@@ -145,6 +145,15 @@ Legend: L0 not started, L1 isolated, L2 contract-ready, L3 staging-integrated, L
 - Publish full and production-only audit JSON as a release-blocking artifact and fail closed on missing/malformed reports or any Critical/High count.
 - Residual Moderate/Low findings remain visible for later maintenance. Phase 3K is L2 dependency hardening only; Production remains NOT_READY and L3 remains unclaimed.
 
+### Phase 3L-A
+- Canonicalize deployed backend variables: server-side `ML_API_URL` and `SCRAPE_API_URL` are authoritative; `NEXT_PUBLIC_API_URL` is compatibility-only. The unused legacy names `NEXT_PUBLIC_ML_API_URL` and `NEXT_PUBLIC_SCRAPING_API_URL` must not be substituted.
+- Make the deployed FastAPI boundary fail closed: managed runtimes require an explicit `APP_ENV`, deployed CORS accepts only configured public HTTPS origins, and the legacy write-capable scheduler cannot run in staging or production.
+- Disable the saga-external daily scrape workflow and replace release success claims with an explicit READY/L3 blocker; direct pushes to `main`/`release` also run the readiness CI policy.
+- Add an explicit fail-closed deployment template: production write, fail-open quota, scheduler, Phase 3J runtime, remote effects, worker dispatch and execution unlock all remain disabled.
+- Record Vercel Staging Environment, GitHub Environment/reviewer policy, repository rulesets/branch protection, staging-only backend/Supabase isolation and provider-owned variable metadata as external manual prerequisites.
+- Phase 3L-A performs no external configuration, deployment, promotion, migration, write, secret update or unlock. It is documentation/configuration canonicalization at **L2**; Production remains **NOT_READY** and `l3_eligible=false`.
+- Phase 3L-B must satisfy the concrete authenticated-provider evidence and no-side-effect exit criteria in `docs/phase3l_staging_readiness_gate.md`. Passing environment readiness alone does not claim L3.
+
 ---
 
 ## 5. Required Approvals and Boundaries
