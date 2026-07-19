@@ -113,6 +113,9 @@ jobs:
       - name: Phase3F authoritative review ledger contract (release-blocking)
         run: python -m pytest python-api/tests/test_phase3f_approval_ledger_static_contract.py -q
 
+      - name: Phase3G runtime evidence verifier and harness contracts (release-blocking)
+        run: python -m pytest python-api/tests/test_phase3g_runtime_evidence_gate.py python-api/tests/test_phase3g_review_ledger_runtime_harness.py -q
+
   contract-smoke-aux:
     name: Contract smoke aux (warn-allowed)
     runs-on: ubuntu-latest
@@ -223,7 +226,7 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Run release-blocking Playwright E2E suite
-        run: npx playwright test e2e/public-fixture-smoke.spec.ts e2e/phase2-authz.spec.ts e2e/data-collection-phase3b.spec.ts e2e/data-collection-phase3c.spec.ts e2e/data-collection-phase3d.spec.ts e2e/data-collection-phase3e.spec.ts e2e/data-collection-phase3f.spec.ts --trace=retain-on-failure --retries=0 --workers=1
+        run: npx playwright test e2e/public-fixture-smoke.spec.ts e2e/phase2-authz.spec.ts e2e/data-collection-phase3b.spec.ts e2e/data-collection-phase3c.spec.ts e2e/data-collection-phase3d.spec.ts e2e/data-collection-phase3e.spec.ts e2e/data-collection-phase3f.spec.ts e2e/data-collection-phase3g.spec.ts --trace=retain-on-failure --retries=0 --workers=1
 
       - name: Upload Playwright artifacts
         if: always()
@@ -275,6 +278,35 @@ jobs:
             reports/security_secret_scan.json
             reports/test_weakening_scan.json
           if-no-files-found: ignore
+
+  phase3g-review-ledger-runtime:
+    name: Phase3G review ledger runtime (release-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run disposable network-isolated PostgreSQL contract
+        run: python scripts/security/run_phase3g_review_ledger_runtime_gate.py
+
+      - name: Verify sanitized synthetic runtime evidence
+        run: python scripts/verify_phase3g_runtime_evidence.py --evidence reports/phase3g_review_ledger_runtime.json --expected-commit "$GITHUB_SHA" --max-age-seconds 900
+
+      - name: Upload Phase3G runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase3g-review-ledger-runtime-json
+          path: |
+            reports/phase3g_review_ledger_runtime.json
+            reports/phase3g_runtime_evidence_gate.json
+          if-no-files-found: error
 
   container-build-check:
     name: Container build check
