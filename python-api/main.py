@@ -42,6 +42,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler  # type: ignore
 from slowapi.util import get_remote_address  # type: ignore
 from slowapi.errors import RateLimitExceeded  # type: ignore
+from app_config import ALLOWED_ORIGINS  # type: ignore
 from middleware.auth import SupabaseJWTMiddleware  # type: ignore
 
 from routers import (  # type: ignore
@@ -90,10 +91,10 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 _EXEMPT_PATHS = {"/", "/health", "/docs", "/openapi.json", "/redoc"}
 app.add_middleware(SupabaseJWTMiddleware, exempt_paths=_EXEMPT_PATHS)
 
-# CORS設定（全オリジンを許可）
+# CORS設定（app_config の明示 allowlist のみ）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=list(ALLOWED_ORIGINS),
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
