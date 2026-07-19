@@ -6,6 +6,10 @@ on:
       - develop
       - main
       - release
+  push:
+    branches:
+      - main
+      - release
   workflow_dispatch:
 
 permissions:
@@ -208,6 +212,9 @@ jobs:
           python-api/tests/test_phase3j_saga_outbox_runtime_harness.py
           python-api/tests/test_phase3j_saga_outbox_runtime_gate.py
           -q
+
+      - name: Phase3L deployment workflow safety (release-blocking)
+        run: python -m pytest python-api/tests/test_phase3l_deployment_safety.py -q
 
   contract-smoke-aux:
     name: Contract smoke aux (warn-allowed)
@@ -432,6 +439,7 @@ jobs:
       - name: Block NOT_READY promotion to main or release
         if: >-
           (github.event_name == 'pull_request' && (github.base_ref == 'main' || github.base_ref == 'release')) ||
+          (github.event_name == 'push' && (github.ref_name == 'main' || github.ref_name == 'release')) ||
           (github.event_name == 'workflow_dispatch' && (github.ref_name == 'main' || github.ref_name == 'release'))
         run: >-
           python scripts/verify_phase3h_production_readiness.py
