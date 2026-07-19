@@ -118,7 +118,11 @@ Legend: L0 not started, L1 isolated, L2 contract-ready, L3 staging-integrated, L
 - Phase 3G is L2 code/CI-ready only; L3 remains unclaimed.
 
 ### Phase 3H
-- Production readiness decision gate based on evidence package and explicit approvals.
+- Add a release-blocking Production readiness decision gate that consumes the same-run Phase 3G runtime artifact.
+- Derive blockers for the missing cross-store saga/outbox/compensation contract, controlled staging evidence and explicit migration/unlock/release approvals.
+- Reject manifest self-claims, malformed or stale evidence, commit/migration drift and any attempt to claim READY or L3 without a trusted attestation producer.
+- Emit only sanitized evidence. The expected current verdict is `not-ready`, `production_ready=false` and `l3_eligible=false`.
+- Do not change UI, unlock, retry, scrape dispatch, migration state or any external environment. Phase 3H is an L2 decision-contract gate, not a production release.
 
 ---
 

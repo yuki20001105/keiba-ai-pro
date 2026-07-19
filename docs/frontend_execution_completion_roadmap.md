@@ -104,11 +104,15 @@ Target state is a frontend-led scrape operation where operator can:
 - Reservation/consumption and partial unlock are still unimplemented. Supabase review state and SQLite scrape-job creation require an explicit cross-store saga/outbox and compensation design before execution work can start.
 - Phase 3G is L2 contract-ready only. Controlled staging migration/evidence is still required for L3.
 
-## Phase 8 (planned): Cross-store reservation and controlled staging evidence
+## Phase 8 (in progress): Cross-store reservation and controlled staging evidence
 - Design an idempotent reservation/consume protocol that cannot lose or duplicate execution across Supabase and SQLite.
 - Define durable recovery, compensation, timeout, and operator rollback semantics before exposing any unlock control.
 - Apply the review-ledger migration only through a separately approved staging operation and capture sanitized non-synthetic evidence.
 - Keep approval review-only until both the atomicity design and staging evidence pass independent audit.
+- Phase 3H adds a release-blocking production-readiness decision gate. It consumes the same-run Phase 3G evidence and derives a sanitized `not-ready` verdict while saga/outbox, controlled staging evidence and explicit approvals are absent.
+- The Phase 3H manifest cannot self-assert a completed prerequisite or upgrade itself to READY/L3. A trusted attestation producer and the non-executable saga/outbox contract must be implemented and independently audited first.
+- Phase 3H changes no browser flow, scrape endpoint, worker dispatch, lock or external environment. Its correct current outcome is L2 / Production NOT_READY.
+- Develop CI records that NOT_READY assessment as valid evidence, while main/release PRs invoke a separate promotion policy that fails until trusted READY/L3 evidence exists.
 
 ---
 
