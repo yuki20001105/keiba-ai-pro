@@ -1,6 +1,6 @@
 ﻿'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import Link from 'next/link'
 import { Logo } from '@/components/Logo'
 import { Toast } from '@/components/Toast'
@@ -21,6 +21,18 @@ import {
   type PersistedUncertaintyLock,
   type UncertaintyFailureKind,
 } from '@/lib/scrape-uncertainty-approval'
+import {
+  UNCERTAINTY_SERVER_REVIEW_LOCATOR_STORAGE_KEY,
+  UNCERTAINTY_SERVER_REVIEW_LOCATOR_WRITE_LOCK_NAME,
+  buildServerReviewSubmission,
+  createServerReviewLocator,
+  parseReviewResponseEnvelope,
+  parseServerReviewLocator,
+  serverRecordMatchesLocalReview,
+  serverRecordMatchesLocator,
+  type ScrapeUncertaintyReviewLocator,
+  type ScrapeUncertaintyReviewRecord,
+} from '@/lib/scrape-uncertainty-review-server'
 
 type ScrapeHealthStatus = 'healthy' | 'degraded' | 'unhealthy' | 'unknown'
 type LocalApiStatus = 'checking' | ScrapeHealthStatus
@@ -202,6 +214,14 @@ export default function DataCollectionPage() {
   const [ackServerStateUnverified, setAckServerStateUnverified] = useState(false)
   const [ackNoUnlockOrRetry, setAckNoUnlockOrRetry] = useState(false)
   const [reviewPersistError, setReviewPersistError] = useState('')
+  const [serverReviewHydrated, setServerReviewHydrated] = useState(false)
+  const [serverReviewLocator, setServerReviewLocator] = useState<ScrapeUncertaintyReviewLocator | null>(null)
+  const [serverReviewRecord, setServerReviewRecord] = useState<ScrapeUncertaintyReviewRecord | null>(null)
+  const [serverReviewSubmissionReceipt, setServerReviewSubmissionReceipt] = useState<ScrapeUncertaintyReviewRecord | null>(null)
+  const [serverReviewSubmitLoading, setServerReviewSubmitLoading] = useState(false)
+  const [serverReviewStatusLoading, setServerReviewStatusLoading] = useState(false)
+  const [serverReviewError, setServerReviewError] = useState('')
+  const [serverReviewLastCheckedAt, setServerReviewLastCheckedAt] = useState<string | null>(null)
   const [fetchHistory, setFetchHistory] = useState<FetchSummaryHistoryItem[]>([])
   const [fetchHistoryLoading, setFetchHistoryLoading] = useState(false)
   const [toast, setToast] = useState({ visible: false, message: '', type: 'success' as 'success' | 'error' })
@@ -223,6 +243,21 @@ export default function DataCollectionPage() {
     clearExecutionLockAfterReconciliation,
   } = useBatchScrape()
   const lastRequestSnapshotRef = useRef<BatchRequestSnapshot | null>(null)
+  const serverReviewInitialFetchRef = useRef<string | null>(null)
+  const serverReviewLocatorRef = useRef<ScrapeUncertaintyReviewLocator | null>(null)
+  const serverReviewLoadGenerationRef = useRef(0)
+  const replaceActiveServerReview = useCallback((
+    locator: ScrapeUncertaintyReviewLocator | null,
+    record: ScrapeUncertaintyReviewRecord | null = null,
+  ) => {
+    serverReviewLoadGenerationRef.current += 1
+    serverReviewLocatorRef.current = locator
+    serverReviewInitialFetchRef.current = null
+    setServerReviewLocator(locator)
+    setServerReviewRecord(record)
+    setServerReviewStatusLoading(false)
+    setServerReviewLastCheckedAt(null)
+  }, [])
   const isBatchBusy = batchLoading || batchStatus === 'queued' || batchStatus === 'running'
   const isOperationBusy = isBatchBusy || dryRunLoading
   const periodValidation = validatePeriodRange(startPeriod, endPeriod)
@@ -292,13 +327,27 @@ export default function DataCollectionPage() {
     && ackServerStateUnverified
     && ackNoUnlockOrRetry,
   )
+  const canSubmitServerReview = Boolean(
+    uncertaintyHydrated
+    && reviewHydrated
+    && serverReviewHydrated
+    && !uncertaintyStorageBlocked
+    && joblessReviewLock
+    && pendingReview
+    && reviewMatchesLock(pendingReview, joblessReviewLock)
+    && !serverReviewLocator
+    && serverReviewSubmissionReceipt?.client_request_id !== pendingReview.requestId
+    && !serverReviewSubmitLoading
+    && !serverReviewStatusLoading,
+  )
   const executeBlockedByUncertainty = !uncertaintyHydrated
     || !reviewHydrated
+    || !serverReviewHydrated
     || uncertaintyStorageBlocked
     || isExecutionLocked
     || shouldShowUncertaintyWarning
 
-  const persistUncertaintyLock = (kind: UncertaintyFailureKind, jobId: string | null, request: BatchRequestSnapshot | null) => {
+  const persistUncertaintyLock = useCallback((kind: UncertaintyFailureKind, jobId: string | null, request: BatchRequestSnapshot | null) => {
     if (!request) return
     const lock: PersistedUncertaintyLock = {
       version: 1,
@@ -310,28 +359,36 @@ export default function DataCollectionPage() {
     try {
       localStorage.setItem(UNCERTAINTY_STORAGE_KEY, JSON.stringify(lock))
       localStorage.removeItem(UNCERTAINTY_REVIEW_STORAGE_KEY)
+      localStorage.removeItem(UNCERTAINTY_SERVER_REVIEW_LOCATOR_STORAGE_KEY)
       setUncertaintyStorageBlocked(false)
     } catch {
       setUncertaintyStorageBlocked(true)
     }
     setPersistedUncertainty(lock)
     setPendingReview(null)
+    setServerReviewSubmissionReceipt(null)
+    replaceActiveServerReview(null)
+    setServerReviewError('')
     setReviewReason('')
     setAckServerStateUnverified(false)
     setAckNoUnlockOrRetry(false)
     setTransientUncertaintyDismissed(false)
-  }
+  }, [replaceActiveServerReview])
 
   const clearPersistedUncertainty = (): boolean => {
     try {
       localStorage.removeItem(UNCERTAINTY_STORAGE_KEY)
       localStorage.removeItem(UNCERTAINTY_REVIEW_STORAGE_KEY)
+      localStorage.removeItem(UNCERTAINTY_SERVER_REVIEW_LOCATOR_STORAGE_KEY)
     } catch {
       setUncertaintyStorageBlocked(true)
       return false
     }
     setPersistedUncertainty(null)
     setPendingReview(null)
+    setServerReviewSubmissionReceipt(null)
+    replaceActiveServerReview(null)
+    setServerReviewError('')
     setReviewPersistError('')
     setUncertaintyStorageBlocked(false)
     setTransientUncertaintyDismissed(true)
@@ -378,6 +435,139 @@ export default function DataCollectionPage() {
     }
   }
 
+  const loadServerReviewStatus = useCallback(async (
+    locator: ScrapeUncertaintyReviewLocator,
+    localReview: PendingUncertaintyReview,
+  ) => {
+    const generation = serverReviewLoadGenerationRef.current + 1
+    serverReviewLoadGenerationRef.current = generation
+    const requestIsCurrent = () => {
+      const active = serverReviewLocatorRef.current
+      return serverReviewLoadGenerationRef.current === generation
+        && active !== null
+        && active.requestId === locator.requestId
+        && active.clientRequestId === locator.clientRequestId
+        && active.requestPayloadHash === locator.requestPayloadHash
+    }
+    setServerReviewStatusLoading(true)
+    setServerReviewError('')
+    try {
+      const response = await authFetch(
+        `/api/scrape/uncertainty-review-requests/${encodeURIComponent(locator.requestId)}`,
+        { signal: AbortSignal.timeout(8_000), cache: 'no-store' },
+      )
+      const payload = await response.json().catch(() => null)
+      if (!response.ok) {
+        const detail = payload && typeof payload.detail === 'string' ? payload.detail : `HTTP ${response.status}`
+        throw new Error(detail)
+      }
+      const parsed = parseReviewResponseEnvelope(payload)
+      if (!parsed.ok
+        || !serverRecordMatchesLocator(parsed.value, locator)
+        || !serverRecordMatchesLocalReview(parsed.value, localReview)) {
+        throw new Error('server review response did not match the durable local evidence')
+      }
+      if (!requestIsCurrent()) return
+      setServerReviewRecord(parsed.value)
+      setServerReviewLastCheckedAt(new Date().toISOString())
+    } catch {
+      if (!requestIsCurrent()) return
+      setServerReviewRecord(null)
+      setServerReviewError('サーバー監査依頼の状態を確認できません。lockを維持し、自動再試行は行いません。')
+    } finally {
+      if (requestIsCurrent()) setServerReviewStatusLoading(false)
+    }
+  }, [])
+
+  const handleSubmitServerReview = async () => {
+    if (!canSubmitServerReview || !joblessReviewLock || !pendingReview) return
+    setServerReviewSubmitLoading(true)
+    setServerReviewError('')
+    let acceptedRecord: ScrapeUncertaintyReviewRecord | null = null
+    try {
+      const lockRawBefore = localStorage.getItem(UNCERTAINTY_STORAGE_KEY)
+      const reviewRawBefore = localStorage.getItem(UNCERTAINTY_REVIEW_STORAGE_KEY)
+      const locatorRawBefore = localStorage.getItem(UNCERTAINTY_SERVER_REVIEW_LOCATOR_STORAGE_KEY)
+      const locatorGenerationBefore = serverReviewLoadGenerationRef.current
+      const durableLock = parsePersistedUncertaintyLock(JSON.parse(lockRawBefore || 'null'))
+      const durableReview = parsePendingUncertaintyReview(JSON.parse(reviewRawBefore || 'null'))
+      if (!durableLock
+        || durableLock.jobId
+        || !durableReview
+        || !reviewMatchesLock(durableReview, durableLock)
+        || durableReview.requestId !== pendingReview.requestId
+        || reviewRawBefore !== JSON.stringify(pendingReview)
+        || locatorRawBefore !== null
+        || serverReviewLocatorRef.current !== null
+        || fingerprintUncertaintyLock(durableLock) !== fingerprintUncertaintyLock(joblessReviewLock)) {
+        throw new Error('durable local review verification failed')
+      }
+
+      const response = await authFetch('/api/scrape/uncertainty-review-requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(buildServerReviewSubmission(durableReview)),
+        signal: AbortSignal.timeout(10_000),
+      })
+      const payload = await response.json().catch(() => null)
+      if (!response.ok) {
+        const detail = payload && typeof payload.detail === 'string' ? payload.detail : `HTTP ${response.status}`
+        throw new Error(detail)
+      }
+      const parsed = parseReviewResponseEnvelope(payload)
+      if (!parsed.ok || !serverRecordMatchesLocalReview(parsed.value, durableReview)) {
+        throw new Error('server review response validation failed')
+      }
+      acceptedRecord = parsed.value
+      setServerReviewSubmissionReceipt(parsed.value)
+      const locator = createServerReviewLocator(parsed.value)
+
+      if (!navigator.locks?.request) {
+        setUncertaintyStorageBlocked(true)
+        throw new Error('cross-tab storage serialization is unavailable')
+      }
+
+      await navigator.locks.request(UNCERTAINTY_SERVER_REVIEW_LOCATOR_WRITE_LOCK_NAME, { mode: 'exclusive' }, () => {
+        if (localStorage.getItem(UNCERTAINTY_SERVER_REVIEW_LOCATOR_STORAGE_KEY) !== locatorRawBefore
+          || serverReviewLocatorRef.current !== null
+          || serverReviewLoadGenerationRef.current !== locatorGenerationBefore
+          || localStorage.getItem(UNCERTAINTY_STORAGE_KEY) !== lockRawBefore
+          || localStorage.getItem(UNCERTAINTY_REVIEW_STORAGE_KEY) !== reviewRawBefore) {
+          setUncertaintyStorageBlocked(true)
+          throw new Error('durable review evidence changed during server submission')
+        }
+        replaceActiveServerReview(locator, parsed.value)
+        setServerReviewLastCheckedAt(new Date().toISOString())
+        try {
+          localStorage.setItem(UNCERTAINTY_SERVER_REVIEW_LOCATOR_STORAGE_KEY, JSON.stringify(locator))
+          const locatorReadBack = parseServerReviewLocator(JSON.parse(
+            localStorage.getItem(UNCERTAINTY_SERVER_REVIEW_LOCATOR_STORAGE_KEY) || 'null',
+          ))
+          if (!locatorReadBack
+            || !serverRecordMatchesLocator(parsed.value, locatorReadBack)
+            || localStorage.getItem(UNCERTAINTY_STORAGE_KEY) !== lockRawBefore
+            || localStorage.getItem(UNCERTAINTY_REVIEW_STORAGE_KEY) !== reviewRawBefore) {
+            throw new Error('server review locator persistence verification failed')
+          }
+        } catch {
+          serverReviewInitialFetchRef.current = [
+            locator.requestId,
+            locator.clientRequestId,
+            locator.requestPayloadHash,
+          ].join(':')
+          setUncertaintyStorageBlocked(true)
+          throw new Error('server review was accepted but locator persistence failed')
+        }
+      })
+    } catch {
+      setServerReviewError(acceptedRecord
+        ? `サーバーはrequest_id ${acceptedRecord.request_id}を受理しましたが、参照情報を確定保存できません。同一画面からの再送は停止しています。再読み込み後は同じclient_request_idによる冪等照合だけを行い、lockを維持してください。`
+        : 'サーバー監査依頼を確定できません。lockを維持し、自動再送・取消は行いません。')
+    } finally {
+      setServerReviewSubmitLoading(false)
+    }
+  }
+
   const checkLocalApi = async () => {
     setLocalApiStatus('checking')
     setLocalApiReason('')
@@ -409,9 +599,16 @@ export default function DataCollectionPage() {
       try {
         const raw = localStorage.getItem(UNCERTAINTY_STORAGE_KEY)
         if (!raw) {
+          const orphanedReviewRaw = localStorage.getItem(UNCERTAINTY_REVIEW_STORAGE_KEY)
+          const orphanedLocatorRaw = localStorage.getItem(UNCERTAINTY_SERVER_REVIEW_LOCATOR_STORAGE_KEY)
+          const hasOrphanedReviewEvidence = orphanedReviewRaw !== null || orphanedLocatorRaw !== null
           setPersistedUncertainty(null)
           setPendingReview(null)
-          setUncertaintyStorageBlocked(false)
+          replaceActiveServerReview(null)
+          setUncertaintyStorageBlocked(hasOrphanedReviewEvidence)
+          if (hasOrphanedReviewEvidence) {
+            setReconcileMessage('lock本体が見つかりませんが承認・監査証跡が残っています。解除証拠として扱わず、新規実行を停止しています。')
+          }
         } else {
           let decoded: unknown = null
           try {
@@ -423,6 +620,7 @@ export default function DataCollectionPage() {
           if (!parsed) {
             setPersistedUncertainty(null)
             setPendingReview(null)
+            replaceActiveServerReview(null)
             setUncertaintyStorageBlocked(true)
             setReconcileMessage('保存済みlockの形式を確認できません。自動削除せず、新規実行を停止しています。')
           } else {
@@ -441,37 +639,63 @@ export default function DataCollectionPage() {
               if (restored && reviewMatchesLock(restored, parsed)) {
                 setPendingReview(restored)
                 setReviewPersistError('')
+                const locatorRaw = localStorage.getItem(UNCERTAINTY_SERVER_REVIEW_LOCATOR_STORAGE_KEY)
+                let locatorDecoded: unknown = null
+                try {
+                  locatorDecoded = locatorRaw ? JSON.parse(locatorRaw) : null
+                } catch {
+                  locatorDecoded = null
+                }
+                const restoredLocator = parseServerReviewLocator(locatorDecoded)
+                if (restoredLocator && restoredLocator.clientRequestId === restored.requestId) {
+                  replaceActiveServerReview(restoredLocator)
+                  setServerReviewError('')
+                } else {
+                  replaceActiveServerReview(null)
+                  if (locatorRaw) {
+                    setServerReviewError('保存済みサーバー監査参照は現在の承認依頼と一致しません。lockを維持します。')
+                  }
+                }
               } else {
                 setPendingReview(null)
+                replaceActiveServerReview(null)
                 if (reviewRaw) setReviewPersistError('保存済み承認依頼は現在のlockと一致しないため無効です。lockは維持します。')
               }
             } else {
               setPendingReview(null)
+              replaceActiveServerReview(null)
             }
           }
         }
       } catch {
         setPersistedUncertainty(null)
         setPendingReview(null)
+        replaceActiveServerReview(null)
         setUncertaintyStorageBlocked(true)
         setReconcileMessage('lock保存領域を確認できません。新規実行を停止しています。')
       } finally {
         setUncertaintyHydrated(true)
         setReviewHydrated(true)
+        setServerReviewHydrated(true)
       }
     }
 
     const handleStorage = (event: StorageEvent) => {
-      if (event.key !== null && event.key !== UNCERTAINTY_STORAGE_KEY && event.key !== UNCERTAINTY_REVIEW_STORAGE_KEY) return
+      if (event.key !== null
+        && event.key !== UNCERTAINTY_STORAGE_KEY
+        && event.key !== UNCERTAINTY_REVIEW_STORAGE_KEY
+        && event.key !== UNCERTAINTY_SERVER_REVIEW_LOCATOR_STORAGE_KEY) return
       if (
         event.key === null
         || (event.key === UNCERTAINTY_STORAGE_KEY && event.oldValue !== null && event.newValue === null)
       ) {
         setUncertaintyStorageBlocked(true)
         setPendingReview(null)
+        replaceActiveServerReview(null)
         setReconcileMessage('別タブでlock保存領域が削除されました。解除証拠として扱わず、新規実行を停止しています。')
         setUncertaintyHydrated(true)
         setReviewHydrated(true)
+        setServerReviewHydrated(true)
         let previousLock: ReturnType<typeof parsePersistedUncertaintyLock> = null
         if (event.oldValue) {
           try {
@@ -485,13 +709,30 @@ export default function DataCollectionPage() {
       }
       setUncertaintyHydrated(false)
       setReviewHydrated(false)
+      setServerReviewHydrated(false)
+      if (event.key === UNCERTAINTY_SERVER_REVIEW_LOCATOR_STORAGE_KEY && event.newValue === null) {
+        replaceActiveServerReview(null)
+        setServerReviewError('別タブでサーバー監査参照が削除されました。解除証拠として扱わず、lockを維持します。')
+      }
       syncFromStorage()
     }
 
     syncFromStorage()
     window.addEventListener('storage', handleStorage)
     return () => window.removeEventListener('storage', handleStorage)
-  }, [])
+  }, [replaceActiveServerReview])
+
+  useEffect(() => {
+    if (!serverReviewHydrated || !serverReviewLocator || !pendingReview) return
+    const locatorKey = [
+      serverReviewLocator.requestId,
+      serverReviewLocator.clientRequestId,
+      serverReviewLocator.requestPayloadHash,
+    ].join(':')
+    if (serverReviewInitialFetchRef.current === locatorKey) return
+    serverReviewInitialFetchRef.current = locatorKey
+    void loadServerReviewStatus(serverReviewLocator, pendingReview)
+  }, [serverReviewHydrated, serverReviewLocator, pendingReview, loadServerReviewStatus])
 
   useEffect(() => {
     if (!transientUncertaintyKind) return
@@ -501,7 +742,7 @@ export default function DataCollectionPage() {
     } else {
       setReconcileMessage('ブラウザ側の監視停止が発生しました。サーバージョブ継続の可能性があります。')
     }
-  }, [activeJobId, transientUncertaintyKind])
+  }, [activeJobId, transientUncertaintyKind, persistUncertaintyLock])
 
   const loadFetchSummaryHistory = async () => {
     setFetchHistoryLoading(true)
@@ -1014,6 +1255,50 @@ export default function DataCollectionPage() {
                   <div>lock_fingerprint: {pendingReview.lockFingerprint}</div>
                   <div>authoritative=false / execution_enabled=false / lock_release_allowed=false</div>
                   <div>サーバー側の承認記録ではありません。lockは維持されています。</div>
+                  {!serverReviewLocator && (
+                    <button
+                      type="button"
+                      data-testid="phase3f-submit-review-request"
+                      onClick={() => void handleSubmitServerReview()}
+                      disabled={!canSubmitServerReview}
+                      className={`mt-2 rounded px-3 py-1.5 text-xs font-medium ${canSubmitServerReview ? 'bg-[#38bdf8] text-black' : 'bg-[#222] text-[#555] cursor-not-allowed'}`}
+                    >
+                      {serverReviewSubmitLoading ? 'サーバー記録中...' : 'サーバー監査台帳へ提出（lock維持）'}
+                    </button>
+                  )}
+                  {!serverReviewLocator && serverReviewError && (
+                    <div role="alert" data-testid="phase3f-server-review-error">{serverReviewError}</div>
+                  )}
+                </div>
+              )}
+              {!effectiveUncertaintyJobId && pendingReview && serverReviewLocator && (
+                <div className="mt-3 space-y-1 rounded border border-[#075985] bg-[#071a24] p-3 text-[#bae6fd]" data-testid="phase3f-server-review-panel">
+                  <div className="font-medium">サーバー権威の監査記録（review-only）</div>
+                  <div data-testid="phase3f-server-review-request-id">request_id: {serverReviewLocator.requestId}</div>
+                  {serverReviewRecord ? (
+                    <>
+                      <div data-testid="phase3f-server-review-status">status: {serverReviewRecord.status}</div>
+                      <div>authoritative_record=true / approval_granted={String(serverReviewRecord.approval_granted)}</div>
+                      <div>execution_enabled=false / lock_release_allowed=false / automatic_action_taken=false</div>
+                      <div>approval_scope=review_only</div>
+                    </>
+                  ) : (
+                    <div data-testid="phase3f-server-review-status">status: unknown（lock維持）</div>
+                  )}
+                  <div>approvedを含むどの状態でも、Phase 3Fでは取得開始・Dry-run・retry・lock解除を許可しません。</div>
+                  {serverReviewLastCheckedAt && <div>last_checked_at: {serverReviewLastCheckedAt}</div>}
+                  <button
+                    type="button"
+                    data-testid="phase3f-refresh-review-status"
+                    onClick={() => void loadServerReviewStatus(serverReviewLocator, pendingReview)}
+                    disabled={serverReviewStatusLoading}
+                    className={`mt-2 rounded px-3 py-1.5 text-xs font-medium ${serverReviewStatusLoading ? 'bg-[#222] text-[#555] cursor-not-allowed' : 'bg-white text-black hover:bg-[#eee]'}`}
+                  >
+                    {serverReviewStatusLoading ? '確認中...' : 'サーバー状態を再確認（read-only）'}
+                  </button>
+                  {serverReviewError && (
+                    <div role="alert" data-testid="phase3f-server-review-error">{serverReviewError}</div>
+                  )}
                 </div>
               )}
               {effectiveUncertaintyJobId && (
