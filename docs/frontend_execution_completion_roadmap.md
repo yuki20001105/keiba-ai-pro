@@ -122,6 +122,10 @@ Target state is a frontend-led scrape operation where operator can:
 - Phase 3J is still L2 / Production NOT_READY / `l3_eligible=false`: no API or worker imports the executable runtime, the migration is externally unapplied, and controlled staging/multi-instance/downstream-effect evidence remains future work.
 - Phase 3K aligns the frontend build/runtime boundary on Node 24, removes npm Critical/High findings with compatible updates, and adds full plus production-only release-blocking audit evidence.
 - Moderate/Low advisories remain explicit when no compatible non-breaking remediation exists. Phase 3K does not connect the Phase 3J runtime or apply any external migration, so the result remains L2 / Production NOT_READY / `l3_eligible=false`.
+- Phase 3L-A makes `ML_API_URL` and `SCRAPE_API_URL` the documented server-side deployment authority and records safe false values for every write/fail-open/scheduler/saga execution flag. `NEXT_PUBLIC_API_URL` remains compatibility-only; the legacy `NEXT_PUBLIC_ML_API_URL` and `NEXT_PUBLIC_SCRAPING_API_URL` names are not runtime inputs.
+- Phase 3L-A hardens repository runtime defaults, CORS, deploy manifests and release workflows in addition to docs/templates. The legacy scheduler and direct scheduled scrape remain unavailable outside local/test, and releases fail closed without READY/L3 evidence. Vercel Staging, backend staging isolation, GitHub Environment approvals, rulesets/branch protection, provider variables, deployment and migration state remain external and unchanged. The correct result is L2 / Production NOT_READY / `l3_eligible=false`.
+- Phase 3L-B must obtain authenticated, sanitized, commit-bound evidence for Production Branch=`main`, Preview/Staging-only treatment of the candidate, staging service/Supabase isolation, required reviewers and branch restrictions, required checks/rulesets, and metadata-only presence of both canonical backend variables. All dangerous flags must remain false and no deploy/migration/write/unlock may occur during inspection.
+- Phase 3L-B environment readiness is necessary but not sufficient for L3. Controlled staging execution, rollback and downstream-effect evidence remain separate later gates.
 
 ---
 
@@ -140,3 +144,4 @@ Target state is a frontend-led scrape operation where operator can:
 - M4: P0 classification and validation visible without script-only dependency.
 - M5: approval-gated repair scaffold in place before any write unlock.
 - M6: synthetic saga failure matrix is complete with zero guard-observed forbidden primitive attempts before any executable saga work begins.
+- M7: authenticated provider evidence confirms the isolated Staging topology, canonical backend variables and governance controls without exposing values or mutating an external environment.
