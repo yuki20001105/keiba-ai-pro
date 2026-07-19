@@ -281,6 +281,7 @@ test.describe('Phase 3F server-authoritative review-only ledger bridge', () => {
     })
     await authorizeAdmin(page, baseURL)
     await page.goto('/data-collection')
+    await expect(page.getByTestId('phase3f-submit-review-request')).toBeEnabled()
     await page.evaluate(({ key }) => {
       const value = JSON.parse(localStorage.getItem(key) || 'null')
       value.reason = 'This locally tampered reason must never be submitted to the ledger.'
