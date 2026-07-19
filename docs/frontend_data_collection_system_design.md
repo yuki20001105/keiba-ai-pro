@@ -18,6 +18,7 @@ This document covers the Data Collection frontend and adjacent read-only plannin
   - `src/app/data-collection/p0-repair-plan/page.tsx`
   - `src/app/data-collection/targeted-refetch-plan/page.tsx`
   - `src/app/data-collection/live-validation/page.tsx`
+  - `src/app/data-collection/uncertainty-reviews/page.tsx`
 - Next API routes:
   - `src/app/api/scrape/*`
   - `src/app/api/data-stats/route.ts`
@@ -114,7 +115,18 @@ Observed mismatch from source document:
 - Immutable events and versioned RPC transitions support independent-Admin review, requester revoke and expiry, while database constraints fix the scope to `review_only` with execution and lock release disabled.
 - A strict local locator is correlation-only. Missing, deleted, malformed or mismatched locator/status data never releases the underlying uncertainty lock.
 - Orphaned review/locator evidence without its lock and stale responses from a replaced locator both fail closed.
-- The migration is not applied by code integration, so this remains L2. A one-time execution reservation and controlled staging evidence are future Phase 3G work.
+- The migration is not applied by code integration, so the external environment remains unverified and L3 is unclaimed.
+
+### 2.8 Phase 3G reviewer console and runtime evidence gate
+- `/data-collection/uncertainty-reviews` is an Admin-only review surface over the existing server-authoritative ledger APIs.
+- Loading is explicit. Only strict pending, unexpired, review-only records are accepted; malformed, duplicate, expired or execution-capable records fail closed.
+- Approve/reject requires a review-only acknowledgement, a normalized 20-500 character reason and versioned response correlation.
+- The page uses synchronous single-flight guards and performs no scrape write, retry, unlock, automatic navigation or `localStorage` mutation.
+- CI exercises the unapplied Phase 3F migration in a disposable digest-pinned `postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3` container with `--network none`, no published port and no external database credentials. The host may contact the image registry to pull that immutable image; the test container itself has no network.
+- The runtime contract verifies migration replay, catalog/RLS/RPC boundaries, immutable events, review-only constraints, idempotency, concurrency serialization, expiry and cleanup.
+- A strict verifier binds the sanitized report to the tested commit and migration hash and rejects malformed, stale, secret/path-bearing or schema-drifting evidence.
+- Synthetic evidence is always `l3_eligible=false`; it proves an L2 runtime contract, not a staging deployment.
+- Execution reservation, consume, unlock and execute are not implemented. The Supabase ledger and SQLite scrape jobs require a cross-store saga/outbox and compensation design first.
 
 ---
 
@@ -126,7 +138,8 @@ Observed mismatch from source document:
   - targeted refetch dry-run
   - cache/reparse diagnostics
 - Controlled, approval-gated execution phase for refresh/p0 repair (currently intentionally disabled).
-- Controlled staging migration/evidence for the server-authoritative review ledger, followed by a separate atomic execution-reservation design before any lock release is considered.
+- A separately approved staging migration/evidence run for the server-authoritative review ledger.
+- A cross-store atomicity design (durable saga/outbox, idempotent reservation/consume and compensation) between the Supabase ledger and SQLite scrape jobs before any lock release is considered.
 
 ---
 
@@ -144,6 +157,8 @@ Observed mismatch from source document:
 | P0 Repair execute | `/api/scrape/p0-repair-plan` | none | PUT | yes | no | no | disabled (`501`) |
 | Targeted Refetch Plan | `/api/scrape/targeted-refetch-plan` | `plan_p0_targeted_refetch.py` | POST | yes | no | no | implemented |
 | Bounded Live Validation | `/api/scrape/live-validation` | FastAPI `/api/scrape/live-validation` + fixed planner/validator | POST | yes | yes (max 3, sequential) | no | implemented, L2 contract-ready |
+| Uncertainty Review Queue | `/api/scrape/uncertainty-review-requests?scope=reviewable` | Supabase service-role review RPC | GET | yes | no | no | implemented, Admin review-only, L2 |
+| Uncertainty Review Decision | `/api/scrape/uncertainty-review-requests/{requestId}/decision` | Supabase service-role transition RPC | POST | review-only | no | audit ledger only | implemented; no unlock/execution, L2 |
 
 ---
 
