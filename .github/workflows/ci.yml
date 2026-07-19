@@ -119,6 +119,14 @@ jobs:
       - name: Phase3H production readiness decision contract (release-blocking)
         run: python -m pytest python-api/tests/test_phase3h_production_readiness_gate.py -q
 
+      - name: Phase3I synthetic saga failure-injection contracts (release-blocking)
+        run: >-
+          python -m pytest
+          python-api/tests/test_phase3i_cross_store_saga_contract.py
+          python-api/tests/test_phase3i_saga_failure_injection_harness.py
+          python-api/tests/test_phase3i_saga_failure_injection_gate.py
+          -q
+
   contract-smoke-aux:
     name: Contract smoke aux (warn-allowed)
     runs-on: ubuntu-latest
@@ -357,6 +365,51 @@ jobs:
         with:
           name: phase3h-production-readiness-json
           path: reports/phase3h_production_readiness_gate.json
+          if-no-files-found: error
+
+  phase3i-saga-failure-injection:
+    name: Phase3I synthetic saga failure injection (release-blocking)
+    needs: phase3h-production-readiness
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download same-run Phase3H decision evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: phase3h-production-readiness-json
+          path: reports/phase3h-input
+
+      - name: Run synthetic saga failure-injection matrix
+        run: >-
+          python scripts/security/run_phase3i_saga_failure_injection_gate.py
+          --contract python-api/tests/fixtures/phase3i_saga_failure_matrix_v1.json
+          --expected-commit "$GITHUB_SHA"
+
+      - name: Verify synthetic saga evidence and Phase3H boundary
+        run: >-
+          python scripts/verify_phase3i_saga_failure_injection.py
+          --evidence reports/phase3i_saga_failure_injection_runtime.json
+          --contract python-api/tests/fixtures/phase3i_saga_failure_matrix_v1.json
+          --phase3h-evidence reports/phase3h-input/phase3h_production_readiness_gate.json
+          --expected-commit "$GITHUB_SHA"
+          --max-age-seconds 3600
+
+      - name: Upload Phase3I synthetic saga evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase3i-saga-failure-injection-json
+          path: |
+            reports/phase3i_saga_failure_injection_runtime.json
+            reports/phase3i_saga_failure_injection_gate.json
           if-no-files-found: error
 
   container-build-check:

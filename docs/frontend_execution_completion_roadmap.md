@@ -113,6 +113,9 @@ Target state is a frontend-led scrape operation where operator can:
 - The Phase 3H manifest cannot self-assert a completed prerequisite or upgrade itself to READY/L3. A trusted attestation producer and the non-executable saga/outbox contract must be implemented and independently audited first.
 - Phase 3H changes no browser flow, scrape endpoint, worker dispatch, lock or external environment. Its correct current outcome is L2 / Production NOT_READY.
 - Develop CI records that NOT_READY assessment as valid evidence, while main/release PRs invoke a separate promotion policy that fails until trusted READY/L3 evidence exists.
+- Phase 3I adds the non-executable saga state machine and a deterministic failure-injection gate. It validates immutable owner/job/review-version/request binding, replay conflicts, consume-before-dispatch, modeled fencing/stale-worker rejection, uncertainty outcomes and compensation rules with a guarded `effect_count=0`. It does not yet validate event-carried expected-version ordering, lease ownership, lease renewal or worker progress.
+- Phase 3I consumes the same-run Phase 3H decision and cannot promote it. Its expected result remains L2 / `production_ready=false` / `l3_eligible=false`.
+- A future phase must implement the durable SQLite saga/outbox, lease-owner/version CAS and external reservation/consume boundary, then prove downstream fencing, durable recovery and multi-instance safety in an explicitly approved staging topology. The existing direct worker path is not connected to the Phase 3I model.
 
 ---
 
@@ -130,3 +133,4 @@ Target state is a frontend-led scrape operation where operator can:
 - M3: post-execute quality review reachable in one operator path.
 - M4: P0 classification and validation visible without script-only dependency.
 - M5: approval-gated repair scaffold in place before any write unlock.
+- M6: synthetic saga failure matrix is complete with zero guard-observed forbidden primitive attempts before any executable saga work begins.

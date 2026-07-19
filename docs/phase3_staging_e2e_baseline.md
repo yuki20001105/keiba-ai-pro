@@ -124,6 +124,14 @@ Legend: L0 not started, L1 isolated, L2 contract-ready, L3 staging-integrated, L
 - Emit only sanitized evidence. The expected current verdict is `not-ready`, `production_ready=false` and `l3_eligible=false`.
 - Do not change UI, unlock, retry, scrape dispatch, migration state or any external environment. Phase 3H is an L2 decision-contract gate, not a production release.
 
+### Phase 3I
+- Add a pure, non-executable saga state-machine contract for the future Supabase-review-to-SQLite-job boundary.
+- Bind one stable operation, predetermined job, review/version, verified owner and request hash through separate derived review/execution hashes and one versioned combined binding hash.
+- Model reserve/local-prepare/consume/dispatch/running, success, compensation and terminal manual/failure states with exact allowlisted transitions; unknown state/event/schema and binding drift fail closed.
+- Exercise the version-1 synthetic failure matrix for modeled crash windows, lost responses, duplicate replay, invalid state ordering, concurrent recovery replay, lease expiry, stale fencing tokens, terminal immutability and compensation uncertainty. Event-carried expected-version ordering, lease ownership, renewal and progress remain unimplemented.
+- Require guarded `effect_count=0` for observed forbidden effectful primitive attempts, and consume the same-run Phase 3H NOT_READY artifact. The model has no executable effect adapter, emitted intents are not effects, and no UI/API/worker/migration/deployment path is connected or modified.
+- Phase 3I is synthetic L2 contract evidence only; it does not prove durable persistence or multi-instance safety. Production remains NOT_READY and L3 remains unclaimed until an executable saga/outbox and controlled staging evidence are independently verified.
+
 ---
 
 ## 5. Required Approvals and Boundaries
@@ -156,6 +164,7 @@ Conclusion: rollback controls are **insufficient for broad execution unlock** wi
 |---|---|---|
 | accidental write unlock in planning surfaces | High | routes are currently safe, but unlock work is pending |
 | cross-store review-to-job atomicity gap | High | authoritative reviews are in Supabase while scrape jobs are in SQLite; no reservation/consume saga exists |
+| local fencing mistaken for downstream exactly-once | High | a SQLite fencing token cannot by itself fence external HTTP or writes to another database |
 | stale env mismatch across staging/prod | High | repo evidence for non-local envs is partial |
 | operator misread of pending vs zero-result | Medium | mitigated in UI, still needs consistency across flows |
 | script-only diagnostics fragmentation | Medium | slows incident response and repeatability |

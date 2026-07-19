@@ -136,6 +136,15 @@ Observed mismatch from source document:
 - The sanitized report intentionally returns `verdict=not-ready`, `production_ready=false` and `l3_eligible=false` while still returning a successful contract evaluation.
 - No UI, scrape API, worker, lock, Supabase migration or external environment is changed by this gate.
 
+### 2.10 Phase 3I synthetic saga failure-injection gate
+- A pure state machine models immutable operation/job/review-version/owner/request-hash binding without connecting the model to an execution path.
+- Separate derived review and execution binding hashes are joined by a versioned binding digest; a future adapter must still prove the canonical mapping from current review/job hashes, and review approval is never an execution token.
+- The exact pure state model covers reserve/local-prepare/consume/dispatch/running, success, compensation and terminal manual/failure states. Unknown states/events, invalid snapshot versions, invalid state ordering and binding drift fail closed. Event-carried expected-version ordering is not modeled.
+- Stable command/event identifiers provide modeled replay idempotency. The model checks a fencing-token floor and stale-token rejection, but does not model a lease owner, renewal/progress events or durable compare-and-swap persistence.
+- The release-blocking failure matrix injects modeled cross-store crash windows, response loss, duplicate delivery, deterministic concurrent recovery calls, lease expiry, stale workers, compensation uncertainty and malformed snapshots.
+- The Phase 3I job consumes the same-run Phase 3H artifact and emits sanitized synthetic evidence with `effect_count=0`, `production_ready=false` and `l3_eligible=false`. The counter records forbidden effectful primitive attempts observed by the harness. The model has no executable effect adapter, and emitted intents are data rather than effects; the zero count does not cover real multi-instance execution.
+- No Data Collection UI, Next/FastAPI scrape API, worker thread, operational database, Supabase migration or external environment is changed. Phase 3I remains L2 contract evidence.
+
 ---
 
 ## 3. Planned (Future)
@@ -147,7 +156,7 @@ Observed mismatch from source document:
   - cache/reparse diagnostics
 - Controlled, approval-gated execution phase for refresh/p0 repair (currently intentionally disabled).
 - A separately approved staging migration/evidence run for the server-authoritative review ledger.
-- A cross-store atomicity design (durable saga/outbox, idempotent reservation/consume and compensation) between the Supabase ledger and SQLite scrape jobs before any lock release is considered.
+- An executable cross-store implementation (durable saga/outbox, idempotent reservation/consume, durable lease ownership/CAS, downstream fencing and compensation) between the Supabase ledger and SQLite scrape jobs before any lock release is considered. Phase 3I supplies only its synthetic state-machine contract and does not prove durable or multi-instance behavior.
 
 ---
 
