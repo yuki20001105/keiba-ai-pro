@@ -120,6 +120,8 @@ Target state is a frontend-led scrape operation where operator can:
 - Its failure matrix verifies atomic rollback, crash/replay, claim race, lease/fencing, stale acknowledgement, ambiguous remote stop, compensation replay, corrupt/unavailable fail-closed handling and the separation of review approval from execution authority.
 - Same-run Phase 3H/Phase 3I evidence and exact commit/schema/migration/contract/runtime hashes are mandatory. Operational worker/network/thread/write counters remain zero while disposable DB effects are counted separately.
 - Phase 3J is still L2 / Production NOT_READY / `l3_eligible=false`: no API or worker imports the executable runtime, the migration is externally unapplied, and controlled staging/multi-instance/downstream-effect evidence remains future work.
+- Phase 3K aligns the frontend build/runtime boundary on Node 24, removes npm Critical/High findings with compatible updates, and adds full plus production-only release-blocking audit evidence.
+- Moderate/Low advisories remain explicit when no compatible non-breaking remediation exists. Phase 3K does not connect the Phase 3J runtime or apply any external migration, so the result remains L2 / Production NOT_READY / `l3_eligible=false`.
 
 ---
 

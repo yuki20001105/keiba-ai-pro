@@ -30,7 +30,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
 
       - name: Install dependencies
@@ -50,6 +50,77 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  dependency-security-release-blocking:
+    name: Dependency security (release-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependency graph without lifecycle scripts
+        run: npm ci --ignore-scripts --omit=optional --no-fund
+
+      - name: Verify installed mandatory dependency tree
+        run: npm ls --all --omit=optional
+
+      - name: Generate full dependency audit report
+        continue-on-error: true
+        run: |
+          mkdir -p reports
+          npm audit --audit-level=high --json > reports/npm-audit-full.json
+
+      - name: Generate production dependency audit report
+        continue-on-error: true
+        run: |
+          mkdir -p reports
+          npm audit --omit=dev --audit-level=high --json > reports/npm-audit-production.json
+
+      - name: Enforce Node 24 and zero critical/high vulnerabilities
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs')
+
+          if (process.versions.node.split('.')[0] !== '24') {
+            throw new Error(`Expected Node 24, got ${process.version}`)
+          }
+
+          const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf8'))
+          if (packageJson.engines?.node !== '24.x') {
+            throw new Error('package.json must pin engines.node to 24.x')
+          }
+
+          for (const reportPath of [
+            'reports/npm-audit-full.json',
+            'reports/npm-audit-production.json',
+          ]) {
+            const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'))
+            const counts = report?.metadata?.vulnerabilities
+            if (!counts || !Number.isInteger(counts.critical) || !Number.isInteger(counts.high)) {
+              throw new Error(`${reportPath} is missing vulnerability counters`)
+            }
+            if (counts.critical !== 0 || counts.high !== 0) {
+              throw new Error(
+                `${reportPath} contains critical=${counts.critical}, high=${counts.high}`,
+              )
+            }
+          }
+          NODE
+
+      - name: Upload dependency security reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-security-reports
+          path: |
+            reports/npm-audit-full.json
+            reports/npm-audit-production.json
+          if-no-files-found: error
 
   python-static-and-tests:
     name: Python L1/L2 (compile/import/pytest)
@@ -238,7 +309,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
 
       - name: Install dependencies

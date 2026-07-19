@@ -332,8 +332,17 @@ def test_verifier_has_no_operational_clients() -> None:
 
 def test_ci_keeps_phase3j_release_blocking_topology_and_artifact_budget() -> None:
     workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
-    jobs = workflow["jobs"]
+    all_jobs = workflow["jobs"]
+    jobs = {
+        name: job
+        for name, job in all_jobs.items()
+        if name != "dependency-security-release-blocking"
+    }
     assert len(jobs) == 11
+    assert len(all_jobs) == 12
+    assert all_jobs["dependency-security-release-blocking"]["name"] == (
+        "Dependency security (release-blocking)"
+    )
     phase3j = jobs["phase3j-saga-outbox-runtime"]
     assert set(phase3j["needs"]) == {
         "phase3h-production-readiness",
@@ -355,11 +364,12 @@ def test_ci_keeps_phase3j_release_blocking_topology_and_artifact_budget() -> Non
     assert verifier_steps[0].get("if") == "always()"
     upload_names = [
         step.get("with", {}).get("name")
-        for job in jobs.values()
+        for job in all_jobs.values()
         for step in job.get("steps", [])
         if step.get("uses") == "actions/upload-artifact@v4"
     ]
     assert upload_names == [
+        "dependency-security-reports",
         "contract-smoke-aux-json",
         "contract-gate-json",
         "playwright-public-fixture-smoke",
