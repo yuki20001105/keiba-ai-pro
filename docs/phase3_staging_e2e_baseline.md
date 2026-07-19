@@ -139,6 +139,12 @@ Legend: L0 not started, L1 isolated, L2 contract-ready, L3 staging-integrated, L
 - Verify same-run Phase 3H and Phase 3I artifacts plus exact commit, schema, migration, contract and runtime hashes. Publish a sanitized release-blocking Phase 3J artifact.
 - Do not connect the runtime to UI/API/`jobs.py`/worker paths, and do not apply the migration externally. The correct outcome remains L2 / Production NOT_READY / `l3_eligible=false`; L3 is not claimed.
 
+### Phase 3K
+- Remove all npm Critical/High findings through compatible dependency and lockfile updates; do not use `npm audit fix`, `--force`, broad overrides, or unrelated major upgrades.
+- Align `package.json`, GitHub Actions, and the Next.js container on Node 24 and prove the installed tree with `npm ls --all`.
+- Publish full and production-only audit JSON as a release-blocking artifact and fail closed on missing/malformed reports or any Critical/High count.
+- Residual Moderate/Low findings remain visible for later maintenance. Phase 3K is L2 dependency hardening only; Production remains NOT_READY and L3 remains unclaimed.
+
 ---
 
 ## 5. Required Approvals and Boundaries

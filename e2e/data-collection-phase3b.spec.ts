@@ -84,8 +84,14 @@ async function mockBatchWorkflow(page: Page, scenarios: BatchScenario[], options
 }
 
 async function setSingleMonthRange(page: Page, month: string) {
+  await waitForPeriodInputs(page)
   await page.getByTestId('start-period-input').fill(month)
   await page.getByTestId('end-period-input').fill(month)
+}
+
+async function waitForPeriodInputs(page: Page) {
+  await expect(page.getByTestId('start-period-input')).toBeEnabled({ timeout: 15_000 })
+  await expect(page.getByTestId('end-period-input')).toBeEnabled({ timeout: 15_000 })
 }
 
 test.describe('Phase3B Data Collection workflow', () => {
@@ -163,6 +169,7 @@ test.describe('Phase3B Data Collection workflow', () => {
     page.on('dialog', dialog => dialog.accept())
 
     await page.goto('/data-collection')
+    await waitForPeriodInputs(page)
     await page.getByTestId('start-period-input').fill('2026-01')
     await page.getByTestId('end-period-input').fill('2026-02')
     await page.getByTestId('execute-button').click()
@@ -359,6 +366,7 @@ test.describe('Phase3B Data Collection workflow', () => {
     })
 
     await page.goto('/data-collection')
+    await waitForPeriodInputs(page)
     await page.getByTestId('start-period-input').fill('2026-02')
     await page.getByTestId('end-period-input').fill('2026-01')
 

@@ -40,7 +40,7 @@ export default defineConfig({
   ],
   webServer: useWebServer
     ? {
-        command: `npx next dev -p ${pwPort}`,
+        command: `npx next dev --webpack -H 127.0.0.1 -p ${pwPort}`,
         url: pwBaseUrl,
         reuseExistingServer: false,
         env: {
