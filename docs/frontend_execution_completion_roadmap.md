@@ -89,11 +89,14 @@ Target state is a frontend-led scrape operation where operator can:
 - Local one-URL evidence confirmed an unchanged main DB and caches, but it is not deployed staging evidence.
 - Code and deterministic CI are L2-ready. A controlled staging run with real external HTTP and zero DB mutation evidence is required for L3.
 
-## Phase 7 (in progress): Uncertainty review before approval authority
+## Phase 7 (in progress): Server-authoritative uncertainty review dry-run
 - Phase 3E adds a local, non-authoritative `pending_review` record for jobless monitoring uncertainty.
 - Recording/restoring the packet keeps execute, dry-run and retry locked and performs no API write.
 - Complete UUIDs, owner-scoped Admin status/history, durable initial persistence and per-owner active-job single-flight harden the underlying job boundary.
-- A server-authoritative approval ledger, immutable audit trail and staging proof remain future work; localStorage must never unlock execution.
+- Phase 3F adds an unapplied Supabase ledger migration, immutable events, idempotent request creation, expiry/revocation and two-person review decisions.
+- The browser submits only after explicit action and retains the Phase 3E lock for every server status, including `approved`.
+- Profile update privileges prevent browser-side Admin/tier escalation; orphaned local evidence and stale locator responses remain fail-closed.
+- All Phase 3F decisions are `review_only`; execution reservation/consumption, partial unlock, staging migration application and staging proof remain Phase 3G work.
 
 ---
 

@@ -103,12 +103,18 @@ Observed mismatch from source document:
   - `POST /api/scrape`
   - `POST /api/rescrape_incomplete`
 
-### 2.7 Jobless uncertainty review scaffold
+### 2.7 Jobless uncertainty review and server ledger bridge
 - A strict jobless monitoring/client-stop lock can be accompanied by a local `pending_review` packet.
 - The packet is explicitly non-authoritative and cannot release the hook lock, enable execute/dry-run/retry, or invoke an API.
 - The durable lock is re-read before writing the review and both records are read back and matched.
 - Malformed/stale/tampered records fail closed and remain blocked; storage events propagate a new lock to already-open tabs.
-- This is an operator handoff scaffold, not an approval system. Server-authoritative approval and audit persistence remain future work.
+- Phase 3F adds an explicit second-step POST to a server-authoritative Supabase ledger and a read-only status refresh. Recording the Phase 3E draft still performs no request.
+- Admin identity is server-derived; request/status/hash/expiry/actor fields cannot be injected by the browser.
+- Authenticated profile updates are restricted to non-authoritative presentation columns, preventing browser-side role/tier self-promotion.
+- Immutable events and versioned RPC transitions support independent-Admin review, requester revoke and expiry, while database constraints fix the scope to `review_only` with execution and lock release disabled.
+- A strict local locator is correlation-only. Missing, deleted, malformed or mismatched locator/status data never releases the underlying uncertainty lock.
+- Orphaned review/locator evidence without its lock and stale responses from a replaced locator both fail closed.
+- The migration is not applied by code integration, so this remains L2. A one-time execution reservation and controlled staging evidence are future Phase 3G work.
 
 ---
 
@@ -120,7 +126,7 @@ Observed mismatch from source document:
   - targeted refetch dry-run
   - cache/reparse diagnostics
 - Controlled, approval-gated execution phase for refresh/p0 repair (currently intentionally disabled).
-- Server-authoritative uncertainty review ledger with immutable audit events before any execution-lock release is considered.
+- Controlled staging migration/evidence for the server-authoritative review ledger, followed by a separate atomic execution-reservation design before any lock release is considered.
 
 ---
 

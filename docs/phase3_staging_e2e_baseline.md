@@ -100,10 +100,16 @@ Legend: L0 not started, L1 isolated, L2 contract-ready, L3 staging-integrated, L
 - Phase 3E is L2 contract-ready only. A server-authoritative review ledger and controlled staging evidence are required before L3 can be claimed.
 
 ### Phase 3F
-- Stage-gated dry-run of execution orchestration with strict audit logs.
+- Add a Supabase-backed, server-authoritative uncertainty review ledger with immutable audit events.
+- Enforce verified Admin ownership, independent-Admin approve/reject, requester-only revoke, expiry, idempotency and versioned CAS entirely inside service-role-only RPCs.
+- Restrict authenticated profile UPDATE privileges so browser users cannot self-promote role/tier/billing/quota authority.
+- Keep every decision `approval_scope=review_only`, `execution_enabled=false` and `lock_release_allowed=false`; no decision is an execution token.
+- Preserve the Phase 3E local draft as a non-authoritative correlation record and add explicit submit/read-only status UI without automatic retry or unlock.
+- Treat missing-lock orphan evidence and locator replacement races as blocking evidence, never as unlock proof.
+- The migration is committed but intentionally unapplied. Phase 3F is L2 code/CI-ready only; L3 remains unclaimed until explicit staging migration approval and controlled evidence.
 
 ### Phase 3G
-- Controlled partial unlock in staging with rollback drills.
+- Add a one-time, atomically consumed staging execution reservation tied to an eligible review, then run controlled partial unlock and rollback drills.
 
 ### Phase 3H
 - Production readiness decision gate based on evidence package and explicit approvals.
