@@ -74,7 +74,7 @@ It writes:
 
 - `reports/phase3g_runtime_evidence_gate.json`
 
-The verifier is fail-closed. It requires an expected commit in every mode and enforces an exact schema, duplicate-key rejection, bounded file size, UTF-8/JSON validity, commit correlation, migration SHA-256 correlation, freshness/future-skew bounds, exact catalog/behavior/cleanup booleans, and rejection of path-, DSN-, secret-, and raw-row-like content. It is a contract checker, not a trusted attestation producer: staging-shaped input cannot self-assert L3, so verifier output remains `l3_eligible=false` until an independently authenticated producer boundary exists.
+The verifier is fail-closed. It requires an expected commit in every mode and enforces an exact schema, duplicate-key rejection, bounded file size, UTF-8/JSON validity, commit correlation, migration SHA-256 correlation using LF-canonicalized SQL bytes so Windows and Linux checkouts agree, freshness/future-skew bounds, exact catalog/behavior/cleanup booleans, and rejection of path-, DSN-, secret-, and raw-row-like content. It is a contract checker, not a trusted attestation producer: staging-shaped input cannot self-assert L3, so verifier output remains `l3_eligible=false` until an independently authenticated producer boundary exists.
 
 Synthetic evidence produced by this gate must contain:
 

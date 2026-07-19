@@ -198,6 +198,25 @@ def test_migration_hash_must_match_the_repository_asset_exactly() -> None:
     assert "migration-sha256-mismatch" in hash_report["failure_codes"]
 
 
+def test_migration_hash_is_stable_across_checkout_line_endings(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    lf_path = tmp_path / "migration-lf.sql"
+    crlf_path = tmp_path / "migration-crlf.sql"
+    changed_path = tmp_path / "migration-changed.sql"
+    lf_path.write_bytes(b"SELECT 1;\nSELECT 2;\n")
+    crlf_path.write_bytes(b"SELECT 1;\r\nSELECT 2;\r\n")
+    changed_path.write_bytes(b"SELECT 1;\nSELECT 3;\n")
+
+    monkeypatch.setattr(gate, "MIGRATION_PATH", lf_path)
+    lf_hash = gate.expected_migration_sha256()
+    monkeypatch.setattr(gate, "MIGRATION_PATH", crlf_path)
+    assert gate.expected_migration_sha256() == lf_hash
+    monkeypatch.setattr(gate, "MIGRATION_PATH", changed_path)
+    assert gate.expected_migration_sha256() != lf_hash
+
+
 @pytest.mark.parametrize(
     "unsafe_value",
     [

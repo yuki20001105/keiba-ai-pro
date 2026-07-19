@@ -9,7 +9,7 @@
   "network_mode": "none",
   "image": "postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3",
   "tested_commit_sha": "1111111111111111111111111111111111111111",
-  "migration_sha256": "3c27790e4da03ed508d8a1b20050506441e0bae5e07f58f03c3812b814e9f0ad",
+  "migration_sha256": "6abdb1ab1fa8bee0a50834c25080682fc00f1275e6cb2959b77e1ab2c9f9e2af",
   "observed_at": "2026-07-20T00:00:00Z",
   "catalog_checks": {
     "migration_compiles": true,

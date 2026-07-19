@@ -134,7 +134,9 @@ def _reject_json_constant(_value: str) -> None:
 
 def expected_migration_sha256() -> str | None:
     try:
-        return hashlib.sha256(MIGRATION_PATH.read_bytes()).hexdigest()
+        raw = MIGRATION_PATH.read_bytes()
+        canonical = raw.replace(b"\r\n", b"\n")
+        return hashlib.sha256(canonical).hexdigest()
     except OSError:
         return None
 

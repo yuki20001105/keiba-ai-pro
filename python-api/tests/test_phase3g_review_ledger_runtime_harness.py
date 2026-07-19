@@ -128,6 +128,21 @@ def test_psql_process_uses_only_container_internal_unix_socket(
     assert captured["shell"] is False
 
 
+def test_migration_hash_is_stable_across_checkout_line_endings(
+    tmp_path: Path,
+    runner: ModuleType,
+) -> None:
+    lf_path = tmp_path / "migration-lf.sql"
+    crlf_path = tmp_path / "migration-crlf.sql"
+    changed_path = tmp_path / "migration-changed.sql"
+    lf_path.write_bytes(b"SELECT 1;\nSELECT 2;\n")
+    crlf_path.write_bytes(b"SELECT 1;\r\nSELECT 2;\r\n")
+    changed_path.write_bytes(b"SELECT 1;\nSELECT 3;\n")
+
+    assert runner._sha256(lf_path) == runner._sha256(crlf_path)
+    assert runner._sha256(lf_path) != runner._sha256(changed_path)
+
+
 def test_success_report_is_synthetic_non_l3_and_container_is_network_isolated(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -147,7 +162,7 @@ def test_success_report_is_synthetic_non_l3_and_container_is_network_isolated(
     assert payload["network_mode"] == "none"
     assert payload["image"] == runner.IMAGE
     assert payload["tested_commit_sha"] == "f" * 40
-    assert len(payload["migration_sha256"]) == 64
+    assert payload["migration_sha256"] == runner._sha256(runner.MIGRATION)
     assert payload["synthetic"] is True
     assert payload["l3_eligible"] is False
     assert all(payload["catalog_checks"].values())
