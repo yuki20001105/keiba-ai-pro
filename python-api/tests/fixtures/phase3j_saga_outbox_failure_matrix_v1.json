@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "contract_mode": "disposable-runtime",
+  "scenarios": [
+    "sqlite_prepare_rollback",
+    "sqlite_crash_replay",
+    "sqlite_claim_race",
+    "sqlite_lease_fencing",
+    "sqlite_stale_ack_rejected",
+    "sqlite_ambiguous_remote_stops",
+    "sqlite_compensation_replay",
+    "sqlite_corruption_unavailable",
+    "postgres_approved_review_only_denied",
+    "postgres_reservation_replay",
+    "postgres_consume_cas",
+    "postgres_release_replay",
+    "postgres_expiry_fencing"
+  ],
+  "invariants": [
+    "atomic_prepare",
+    "stable_operation_job_binding",
+    "replay_idempotency",
+    "single_claim_winner",
+    "lease_fencing",
+    "stale_ack_rejected",
+    "ambiguous_remote_no_dispatch",
+    "compensation_idempotent",
+    "corruption_unavailable_fail_closed",
+    "review_approval_not_execution_authority",
+    "service_role_only_reservation",
+    "zero_operational_effects"
+  ],
+  "operational_effects": [
+    "worker_dispatch",
+    "network_call",
+    "thread_start",
+    "operational_write"
+  ],
+  "runtime_assets": [
+    "python-api/scraping/cross_store_saga_codec.py",
+    "python-api/scraping/cross_store_saga_store.py",
+    "python-api/scraping/cross_store_saga_ports.py",
+    "python-api/scraping/cross_store_saga_runtime.py",
+    "python-api/scraping/saga_runtime_config.py"
+  ],
+  "migration": "supabase/migrations/20260720_scrape_execution_reservation.sql",
+  "required_boundaries": {
+    "database_scope": "temporary-sqlite-and-disposable-postgres",
+    "environment": "ci-disposable",
+    "evidence_mode": "disposable-runtime",
+    "external_migration_applied": false,
+    "l3_eligible": false,
+    "network_mode": "container-none",
+    "production_ready": false
+  }
+}

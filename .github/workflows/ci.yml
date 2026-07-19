@@ -127,6 +127,17 @@ jobs:
           python-api/tests/test_phase3i_saga_failure_injection_gate.py
           -q
 
+      - name: Phase3J disposable saga/outbox runtime contracts (release-blocking)
+        run: >-
+          python -m pytest
+          python-api/tests/test_phase3j_reservation_migration_contract.py
+          python-api/tests/test_phase3j_saga_config.py
+          python-api/tests/test_phase3j_saga_store.py
+          python-api/tests/test_phase3j_saga_runtime.py
+          python-api/tests/test_phase3j_saga_outbox_runtime_harness.py
+          python-api/tests/test_phase3j_saga_outbox_runtime_gate.py
+          -q
+
   contract-smoke-aux:
     name: Contract smoke aux (warn-allowed)
     runs-on: ubuntu-latest
@@ -410,6 +421,66 @@ jobs:
           path: |
             reports/phase3i_saga_failure_injection_runtime.json
             reports/phase3i_saga_failure_injection_gate.json
+          if-no-files-found: error
+
+  phase3j-saga-outbox-runtime:
+    name: Phase3J disposable saga/outbox runtime (release-blocking)
+    needs:
+      - phase3h-production-readiness
+      - phase3i-saga-failure-injection
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download same-run Phase3H decision evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: phase3h-production-readiness-json
+          path: reports/phase3h-input
+
+      - name: Download same-run Phase3I saga evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: phase3i-saga-failure-injection-json
+          path: reports/phase3i-input
+
+      - name: Run disposable SQLite and network-isolated PostgreSQL saga/outbox matrix
+        run: >-
+          python scripts/security/run_phase3j_saga_outbox_runtime_gate.py
+          --contract python-api/tests/fixtures/phase3j_saga_outbox_failure_matrix_v1.json
+          --migration supabase/migrations/20260720_scrape_execution_reservation.sql
+          --runtime-dir python-api/scraping
+          --expected-commit "$GITHUB_SHA"
+
+      - name: Verify Phase3J runtime and same-run Phase3H/Phase3I boundaries
+        if: always()
+        run: >-
+          python scripts/verify_phase3j_saga_outbox_runtime.py
+          --evidence reports/phase3j_saga_outbox_runtime.json
+          --contract python-api/tests/fixtures/phase3j_saga_outbox_failure_matrix_v1.json
+          --migration supabase/migrations/20260720_scrape_execution_reservation.sql
+          --store python-api/scraping/cross_store_saga_store.py
+          --runtime-dir python-api/scraping
+          --phase3h-evidence reports/phase3h-input/phase3h_production_readiness_gate.json
+          --phase3i-evidence reports/phase3i-input/phase3i_saga_failure_injection_gate.json
+          --expected-commit "$GITHUB_SHA"
+          --max-age-seconds 3600
+
+      - name: Upload Phase3J disposable saga/outbox evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase3j-saga-outbox-runtime-json
+          path: |
+            reports/phase3j_saga_outbox_runtime.json
+            reports/phase3j_saga_outbox_runtime_gate.json
           if-no-files-found: error
 
   container-build-check:
