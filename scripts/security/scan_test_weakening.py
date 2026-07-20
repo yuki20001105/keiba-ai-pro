@@ -29,7 +29,34 @@ DELETED_PATTERNS: List[Tuple[str, re.Pattern[str]]] = [
     ("deleted_pytest_raises", re.compile(r"\bpytest\.raises\s*\(")),
 ]
 
-ALLOWLIST_EXACT: Dict[str, str] = {}
+ALLOWLIST_EXACT: Dict[str, str] = {
+    # Phase 3N replaces the in-memory thread start contract with a durable,
+    # fenced Saga/outbox contract. Equivalent and stronger assertions live in
+    # test_phase3n_operational_saga_runtime.py and the rewritten Phase 3E suite.
+    "python-api/tests/test_phase3e_scrape_job_security.py:def test_start_uses_full_uuid_binds_owner_and_persists_before_thread(": "replaced by durable Phase3N enqueue/owner binding tests",
+    "python-api/tests/test_phase3e_scrape_job_security.py:assert events == [\"persist\", \"thread-created\", \"thread-started\"]": "legacy thread ordering replaced by durable enqueue-before-dispatch checks",
+    "python-api/tests/test_phase3e_scrape_job_security.py:def test_start_fails_closed_before_thread_when_initial_persistence_fails(": "replaced by fail-closed durable store tests",
+    "python-api/tests/test_phase3e_scrape_job_security.py:assert thread_calls == []": "legacy thread bypass replaced by worker/outbox non-dispatch assertions",
+    "python-api/tests/test_phase3e_scrape_job_security.py:def test_start_rejects_another_active_job_for_the_same_owner_without_thread(": "replaced by one-active-owner durable store tests",
+    "python-api/tests/test_phase3e_scrape_job_security.py:assert jobs._persist_job(JOB_A, _job(OWNER_A, status=\"running\")) is True": "legacy persistence setup removed with in-memory start path",
+    "python-api/tests/test_phase3e_scrape_job_security.py:assert visible[\"status\"] == \"running\"": "status visibility now asserted through operational store responses",
+    "python-api/tests/test_phase3e_scrape_job_security.py:assert jobs._persist_job(JOB_A, _job(OWNER_A)) is True": "legacy persistence setup replaced by operational store fixture",
+    "python-api/tests/test_phase3e_scrape_job_security.py:assert jobs._persist_job(JOB_B, _job(OWNER_B)) is True": "legacy persistence setup replaced by operational store fixture",
+    # Phase 3L previously asserted an unconditional release tombstone. It is
+    # replaced by stricter immutable-producer, signed-attestation and exact-main
+    # authorization assertions in the same test module.
+    "python-api/tests/test_phase3l_deployment_safety.py:def test_ci_blocks_not_ready_pushes_to_main_and_release() -> None:": "superseded by exact trusted-attestation promotion contract",
+    "python-api/tests/test_phase3l_deployment_safety.py:assert len(blocking_steps) == 1": "superseded by immutable producer resolver assertions",
+    "python-api/tests/test_phase3l_deployment_safety.py:assert \"github.event_name == 'push'\" in condition": "superseded by promotion event and candidate binding assertions",
+    "python-api/tests/test_phase3l_deployment_safety.py:assert \"github.ref_name == 'main'\" in condition": "superseded by exact main merge correlation assertions",
+    "python-api/tests/test_phase3l_deployment_safety.py:assert \"github.ref_name == 'release'\" in condition": "release remains fail-closed in the new resolver assertions",
+    "python-api/tests/test_phase3l_deployment_safety.py:assert \"--require-ready\" in blocking[\"run\"]": "require-ready retained in trusted promotion assertions",
+    "python-api/tests/test_phase3l_deployment_safety.py:def test_release_workflow_cannot_deploy_or_publish_a_release() -> None:": "superseded by exact attested main authorization and no-provider-command test",
+    "python-api/tests/test_phase3l_deployment_safety.py:assert workflow[\"permissions\"] == {\"contents\": \"read\"}": "permissions assertion strengthened to include minimal actions read",
+    "python-api/tests/test_phase3l_deployment_safety.py:assert set(jobs) == {\"production-release-blocked\"}": "tombstone replaced by single environment-gated authorization job",
+    "python-api/tests/test_phase3l_deployment_safety.py:assert len(steps) == 1": "replacement authorization workflow has multiple independently asserted gates",
+    "python-api/tests/test_phase3l_deployment_safety.py:assert \"exit 1\" in steps[0][\"run\"]": "unconditional tombstone replaced by multiple fail-closed exact-context gates",
+}
 
 
 def _run(cmd: List[str]) -> str:

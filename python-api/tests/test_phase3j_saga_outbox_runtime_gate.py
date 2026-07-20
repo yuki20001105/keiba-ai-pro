@@ -366,7 +366,7 @@ def test_ci_keeps_phase3j_release_blocking_topology_and_artifact_budget() -> Non
         step.get("with", {}).get("name")
         for job in all_jobs.values()
         for step in job.get("steps", [])
-        if step.get("uses") == "actions/upload-artifact@v4"
+        if step.get("uses", "").startswith("actions/upload-artifact@")
     ]
     assert upload_names == [
         "dependency-security-reports",

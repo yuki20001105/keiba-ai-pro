@@ -13,13 +13,16 @@ from typing import Any, Iterable
 
 ROOT = Path(__file__).resolve().parents[1]
 PHASE3G_VERIFIER_PATH = ROOT / "scripts" / "verify_phase3g_runtime_evidence.py"
+PHASE3N_VERIFIER_PATH = ROOT / "scripts" / "security" / "verify_phase3n_staging_evidence.py"
 REPORT_PATH = ROOT / "reports" / "phase3h_production_readiness_gate.json"
 
 REPORT_SCHEMA = "phase3h-production-readiness-gate-report"
 SCHEMA_VERSION = 1
 DEFAULT_MAX_AGE_SECONDS = 900
 MAX_MANIFEST_BYTES = 32 * 1024
+MAX_TRUSTED_ATTESTATION_BYTES = 128 * 1024
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 MANIFEST_KEYS = frozenset(
     {
@@ -122,6 +125,14 @@ def load_manifest(path: Path) -> tuple[Any | None, list[str]]:
     return _load_json(path, max_bytes=MAX_MANIFEST_BYTES, prefix="manifest")
 
 
+def load_trusted_attestation(path: Path) -> tuple[Any | None, list[str]]:
+    return _load_json(
+        path,
+        max_bytes=MAX_TRUSTED_ATTESTATION_BYTES,
+        prefix="trusted-attestation",
+    )
+
+
 def _load_phase3g_verifier() -> ModuleType:
     spec = importlib.util.spec_from_file_location("phase3h_phase3g_verifier", PHASE3G_VERIFIER_PATH)
     if spec is None or spec.loader is None:
@@ -129,6 +140,56 @@ def _load_phase3g_verifier() -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _load_phase3n_verifier() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("phase3h_phase3n_verifier", PHASE3N_VERIFIER_PATH)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Phase3N verifier is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _trusted_attestation_valid(
+    attestation: Any,
+    *,
+    expected_commit: str | None,
+    expected_run_id: int | None,
+    expected_run_attempt: int | None,
+    expected_repository: str | None,
+    expected_repository_id: str | None,
+    max_age_seconds: int,
+    now: datetime | None,
+) -> bool:
+    if not (
+        isinstance(expected_commit, str)
+        and COMMIT_PATTERN.fullmatch(expected_commit)
+        and type(expected_run_id) is int
+        and expected_run_id > 0
+        and type(expected_run_attempt) is int
+        and expected_run_attempt > 0
+        and isinstance(expected_repository, str)
+        and REPOSITORY_PATTERN.fullmatch(expected_repository)
+        and isinstance(expected_repository_id, str)
+        and re.fullmatch(r"[1-9][0-9]*", expected_repository_id)
+    ):
+        return False
+    try:
+        verifier = _load_phase3n_verifier()
+        valid, failures = verifier.validate_gate_report(
+            attestation,
+            expected_commit=expected_commit,
+            expected_run_id=str(expected_run_id),
+            expected_repository=expected_repository,
+            expected_run_attempt=expected_run_attempt,
+            expected_repository_id=expected_repository_id,
+            now=now,
+            max_age_seconds=max_age_seconds,
+        )
+    except Exception:
+        return False
+    return valid is True and failures == ()
 
 
 def _validate_boolean_group(
@@ -206,6 +267,11 @@ def build_report(
     now: datetime | None = None,
     initial_failures: Iterable[str] = (),
     require_ready: bool = False,
+    trusted_attestation: Any | None = None,
+    expected_attestation_run_id: int | None = None,
+    expected_attestation_run_attempt: int | None = None,
+    expected_repository: str | None = None,
+    expected_repository_id: str | None = None,
 ) -> dict[str, Any]:
     failures = list(dict.fromkeys(initial_failures))
     manifest_valid = _validate_manifest(manifest, failures)
@@ -214,54 +280,83 @@ def build_report(
     if not expected_commit_valid:
         _append_failure(failures, "expected-commit-required")
 
-    phase3g_report: dict[str, Any] | None = None
-    try:
-        phase3g = _load_phase3g_verifier()
-        phase3g_report = phase3g.build_report(
-            phase3g_evidence,
-            max_age_seconds=max_age_seconds,
+    trusted_requested = trusted_attestation is not None
+    trusted_valid = False
+    phase3g_valid = False
+    if trusted_requested:
+        trusted_valid = _trusted_attestation_valid(
+            trusted_attestation,
             expected_commit=expected_commit,
+            expected_run_id=expected_attestation_run_id,
+            expected_run_attempt=expected_attestation_run_attempt,
+            expected_repository=expected_repository,
+            expected_repository_id=expected_repository_id,
+            max_age_seconds=max_age_seconds,
             now=now,
         )
-    except Exception:
-        _append_failure(failures, "phase3g-verifier-unavailable")
+        if not trusted_valid:
+            _append_failure(failures, "trusted-attestation-invalid")
+    else:
+        phase3g_report: dict[str, Any] | None = None
+        try:
+            phase3g = _load_phase3g_verifier()
+            phase3g_report = phase3g.build_report(
+                phase3g_evidence,
+                max_age_seconds=max_age_seconds,
+                expected_commit=expected_commit,
+                now=now,
+            )
+        except Exception:
+            _append_failure(failures, "phase3g-verifier-unavailable")
 
-    phase3g_valid = bool(phase3g_report and phase3g_report.get("success") is True)
-    if not phase3g_valid:
-        _append_failure(failures, "phase3g-runtime-evidence-invalid")
-    if not (
-        isinstance(phase3g_evidence, dict)
-        and phase3g_evidence.get("evidence_mode") == "synthetic"
-        and phase3g_evidence.get("environment") == "ci-disposable"
-        and phase3g_evidence.get("database_scope") == "disposable_docker"
-        and phase3g_evidence.get("network_mode") == "none"
-        and phase3g_evidence.get("synthetic") is True
-        and phase3g_evidence.get("l3_eligible") is False
-    ):
-        _append_failure(failures, "phase3g-runtime-boundary-invalid")
-        phase3g_valid = False
+        phase3g_valid = bool(phase3g_report and phase3g_report.get("success") is True)
+        if not phase3g_valid:
+            _append_failure(failures, "phase3g-runtime-evidence-invalid")
+        if not (
+            isinstance(phase3g_evidence, dict)
+            and phase3g_evidence.get("evidence_mode") == "synthetic"
+            and phase3g_evidence.get("environment") == "ci-disposable"
+            and phase3g_evidence.get("database_scope") == "disposable_docker"
+            and phase3g_evidence.get("network_mode") == "none"
+            and phase3g_evidence.get("synthetic") is True
+            and phase3g_evidence.get("l3_eligible") is False
+        ):
+            _append_failure(failures, "phase3g-runtime-boundary-invalid")
+            phase3g_valid = False
 
     assessment_valid = not failures
-    blockers = list(ALL_BLOCKERS) if assessment_valid else []
-    if require_ready and assessment_valid:
+    ready = assessment_valid and trusted_valid
+    blockers = [] if ready or not assessment_valid else list(ALL_BLOCKERS)
+    if require_ready and assessment_valid and not ready:
         _append_failure(failures, "production-readiness-required")
 
     success = not failures
-    checks = {
+    verdict = "ready" if success and ready else "not-ready" if success else "fail"
+    verdict_reason = (
+        "trusted-staging-attestation-valid"
+        if success and ready
+        else "production-readiness-prerequisites-incomplete"
+        if success
+        else failures[0]
+    )
+    checks: dict[str, bool] = {
         "manifest_schema": manifest_valid,
         "expected_commit": expected_commit_valid,
-        "phase3g_runtime_evidence": phase3g_valid,
         "self_asserted_readiness_rejected": manifest_valid,
-        "production_promotion_policy": not require_ready,
+        "production_promotion_policy": not require_ready or ready,
     }
+    if trusted_requested:
+        checks["trusted_staging_attestation"] = trusted_valid
+    else:
+        checks["phase3g_runtime_evidence"] = phase3g_valid
     return {
         "report_schema": REPORT_SCHEMA,
         "schema_version": SCHEMA_VERSION,
         "success": success,
-        "verdict": "not-ready" if success else "fail",
-        "verdict_reason": "production-readiness-prerequisites-incomplete" if success else failures[0],
-        "production_ready": False,
-        "l3_eligible": False,
+        "verdict": verdict,
+        "verdict_reason": verdict_reason,
+        "production_ready": ready,
+        "l3_eligible": ready,
         "readiness_required": require_ready,
         "evaluated_commit_sha": expected_commit if expected_commit_valid else None,
         "phase3g_evidence": _safe_phase3g_projection(phase3g_evidence),
@@ -278,10 +373,22 @@ def _positive_max_age(value: str) -> int:
     return parsed
 
 
+def _positive_run_id(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("run id must be positive")
+    return parsed
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Derive the fail-closed Phase 3H production readiness decision.")
     parser.add_argument("--manifest", required=True, type=Path)
-    parser.add_argument("--phase3g-evidence", required=True, type=Path)
+    parser.add_argument("--phase3g-evidence", type=Path)
+    parser.add_argument("--trusted-attestation", type=Path)
+    parser.add_argument("--expected-attestation-run-id", type=_positive_run_id)
+    parser.add_argument("--expected-attestation-run-attempt", type=_positive_run_id)
+    parser.add_argument("--expected-repository")
+    parser.add_argument("--expected-repository-id")
     parser.add_argument("--expected-commit", required=True)
     parser.add_argument("--max-age-seconds", type=_positive_max_age, default=DEFAULT_MAX_AGE_SECONDS)
     parser.add_argument(
@@ -309,13 +416,31 @@ def main(argv: list[str] | None = None) -> int:
 
     initial_failures = list(manifest_failures)
     phase3g_evidence: Any = None
-    try:
-        phase3g = _load_phase3g_verifier()
-        phase3g_evidence, phase3g_failures = phase3g.load_evidence(args.phase3g_evidence)
-        if phase3g_failures:
-            initial_failures.append("phase3g-evidence-file-invalid")
-    except Exception:
-        initial_failures.append("phase3g-evidence-loader-unavailable")
+    trusted_attestation: Any = None
+    if args.trusted_attestation is not None:
+        trusted_attestation, trusted_failures = load_trusted_attestation(args.trusted_attestation)
+        if trusted_failures:
+            initial_failures.append("trusted-attestation-file-invalid")
+        if args.phase3g_evidence is not None:
+            initial_failures.append("evidence-mode-ambiguous")
+        if (
+            args.expected_attestation_run_id is None
+            or args.expected_attestation_run_attempt is None
+            or args.expected_repository is None
+            or args.expected_repository_id is None
+        ):
+            initial_failures.append("trusted-attestation-context-required")
+    else:
+        if args.phase3g_evidence is None:
+            initial_failures.append("phase3g-evidence-required")
+        else:
+            try:
+                phase3g = _load_phase3g_verifier()
+                phase3g_evidence, phase3g_failures = phase3g.load_evidence(args.phase3g_evidence)
+                if phase3g_failures:
+                    initial_failures.append("phase3g-evidence-file-invalid")
+            except Exception:
+                initial_failures.append("phase3g-evidence-loader-unavailable")
 
     report = build_report(
         manifest,
@@ -325,6 +450,11 @@ def main(argv: list[str] | None = None) -> int:
         now=datetime.now(timezone.utc),
         initial_failures=initial_failures,
         require_ready=args.require_ready,
+        trusted_attestation=trusted_attestation,
+        expected_attestation_run_id=args.expected_attestation_run_id,
+        expected_attestation_run_attempt=args.expected_attestation_run_attempt,
+        expected_repository=args.expected_repository,
+        expected_repository_id=args.expected_repository_id,
     )
     _write_report_atomic(report)
     print(
