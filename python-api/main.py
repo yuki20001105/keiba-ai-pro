@@ -65,6 +65,10 @@ from routers import (  # type: ignore
     train,
 )
 from scheduler import start_scheduler, stop_scheduler  # type: ignore
+from scraping.operational_saga_runtime import (  # type: ignore
+    start_operational_saga_worker,
+    stop_operational_saga_worker,
+)
 
 # ── Rate Limiter（インメモリ・Redis不要） ──────────────────────────────
 limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
@@ -73,8 +77,12 @@ limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     start_scheduler()
-    yield
-    stop_scheduler()
+    await start_operational_saga_worker()
+    try:
+        yield
+    finally:
+        await stop_operational_saga_worker()
+        stop_scheduler()
 
 
 app = FastAPI(

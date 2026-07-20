@@ -1,26 +1,170 @@
 name: Release Safety Gate
 
 on:
-  push:
-    branches:
-      - release
-    tags:
-      - 'v*'
+  workflow_dispatch:
+    inputs:
+      production_commit:
+        description: Exact two-parent merge commit on main to authorize
+        required: true
+        type: string
+      attested_candidate_sha:
+        description: Exact develop candidate SHA covered by trusted staging evidence
+        required: true
+        type: string
+      staging_evidence_run_id:
+        description: Unique successful staging-evidence workflow run ID
+        required: true
+        type: string
 
 permissions:
+  actions: read
   contents: read
 
-# This repository does not yet have trusted L3 staging evidence or an approved
-# production-readiness attestation. A release event must therefore fail closed;
-# this workflow deliberately performs no deployment and creates no GitHub Release.
+concurrency:
+  group: production-release
+  cancel-in-progress: false
+
+# This workflow authorizes an exact already-merged main tree. Provider deployment
+# remains an explicit, separately observed operation; no provider CLI or migration
+# command is allowed in this workflow.
 jobs:
-  production-release-blocked:
-    name: Production release blocked (READY/L3 evidence required)
+  production-release-authorization:
+    name: Production release authorization (trusted READY required)
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
+    environment: production-release
+    env:
+      PYTHONUTF8: '1'
+      PRODUCTION_COMMIT: ${{ inputs.production_commit }}
+      ATTESTED_CANDIDATE_SHA: ${{ inputs.attested_candidate_sha }}
+      STAGING_EVIDENCE_RUN_ID: ${{ inputs.staging_evidence_run_id }}
+      EXPECTED_STAGING_EVIDENCE_RUN_ID: ${{ vars.PHASE3N_STAGING_EVIDENCE_RUN_ID }}
+      TRUSTED_PRODUCER_SHA: ${{ vars.PHASE3N_TRUSTED_PRODUCER_SHA }}
+      TRUSTED_REF: refs/heads/security/phase3n-trusted-producer-v1
     steps:
-      - name: Refuse release without trusted READY/L3 evidence
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.11'
+
+      - name: Verify exact main merge and attested tree
         shell: bash
         run: |
-          echo "::error::Production release is blocked until trusted READY and L3 evidence is verified in the same release run."
-          exit 1
+          set -euo pipefail
+          if [[ "$GITHUB_REF_NAME" != "main" ]]; then
+            echo "::error::Production release authorization must be dispatched from main."
+            exit 1
+          fi
+          for value in "$PRODUCTION_COMMIT" "$ATTESTED_CANDIDATE_SHA"; do
+            if [[ ! "$value" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::Commit inputs must be full lowercase SHA-1 values."
+              exit 1
+            fi
+          done
+          if [[ ! "$STAGING_EVIDENCE_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Staging evidence run ID must be a positive integer."
+            exit 1
+          fi
+          if [[ "$STAGING_EVIDENCE_RUN_ID" != "$EXPECTED_STAGING_EVIDENCE_RUN_ID" ]]; then
+            echo "::error::Staging evidence run ID differs from the repository-authorized run."
+            exit 1
+          fi
+          if [[ ! "$TRUSTED_PRODUCER_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::PHASE3N_TRUSTED_PRODUCER_SHA must be a full lowercase commit SHA."
+            exit 1
+          fi
+          if [[ "$PRODUCTION_COMMIT" != "$GITHUB_SHA" ]]; then
+            echo "::error::Production commit must equal the workflow-dispatch main commit."
+            exit 1
+          fi
+          if [[ "$(git rev-parse HEAD)" != "$PRODUCTION_COMMIT" ]]; then
+            echo "::error::Checked-out commit does not match the authorized production commit."
+            exit 1
+          fi
+          git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/main"
+          if [[ "$(git rev-parse origin/main)" != "$PRODUCTION_COMMIT" ]]; then
+            echo "::error::Production commit is not the current origin/main head."
+            exit 1
+          fi
+          mapfile -t parents < <(git show -s --format=%P HEAD | tr ' ' '\n')
+          if [[ "${#parents[@]}" -ne 2 || "${parents[1]}" != "$ATTESTED_CANDIDATE_SHA" ]]; then
+            echo "::error::Production commit must be a normal merge whose second parent is the attested candidate."
+            exit 1
+          fi
+          if [[ "$(git rev-parse "$ATTESTED_CANDIDATE_SHA^{tree}")" != "$(git rev-parse 'HEAD^{tree}')" ]]; then
+            echo "::error::Production merge tree differs from the attested candidate tree."
+            exit 1
+          fi
+
+      - name: Verify selected staging evidence run provenance
+        id: staging-run
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run_json="$(gh api \
+            --method GET \
+            -H 'Accept: application/vnd.github+json' \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$STAGING_EVIDENCE_RUN_ID")"
+          jq -e \
+            --arg producer "$TRUSTED_PRODUCER_SHA" \
+            --argjson run_id "$STAGING_EVIDENCE_RUN_ID" \
+            '.id == $run_id
+              and .path == ".github/workflows/staging-evidence.yml"
+              and .head_sha == $producer
+              and .head_branch == "security/phase3n-trusted-producer-v1"
+              and .event == "workflow_dispatch"
+              and .status == "completed"
+              and .conclusion == "success"
+              and (.run_attempt | type == "number")
+              and .run_attempt >= 1' \
+            <<<"$run_json" >/dev/null
+          echo "run_attempt=$(jq -r '.run_attempt' <<<"$run_json")" >> "$GITHUB_OUTPUT"
+
+      - name: Download trusted Phase3N staging attestation
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: phase3n-staging-evidence-json
+          path: reports/phase3n-input
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.staging_evidence_run_id }}
+
+      - name: Verify GitHub-signed staging evidence provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh attestation verify
+          reports/phase3n-input/phase3n_staging_evidence_gate.json
+          --repo "$GITHUB_REPOSITORY"
+          --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/staging-evidence.yml"
+          --source-ref "$TRUSTED_REF"
+          --source-digest "$TRUSTED_PRODUCER_SHA"
+          --signer-digest "$TRUSTED_PRODUCER_SHA"
+          --deny-self-hosted-runners
+
+      - name: Require trusted Phase3H READY decision
+        run: >-
+          python scripts/verify_phase3h_production_readiness.py
+          --manifest python-api/tests/fixtures/phase3h_production_readiness_current_not_ready.json
+          --trusted-attestation reports/phase3n-input/phase3n_staging_evidence_gate.json
+          --expected-attestation-run-id "$STAGING_EVIDENCE_RUN_ID"
+          --expected-attestation-run-attempt "${{ steps.staging-run.outputs.run_attempt }}"
+          --expected-repository "$GITHUB_REPOSITORY"
+          --expected-repository-id "${{ github.repository_id }}"
+          --expected-commit "$ATTESTED_CANDIDATE_SHA"
+          --max-age-seconds 3600
+          --require-ready
+
+      - name: Upload production release authorization
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: production-release-authorization-json
+          path: reports/phase3h_production_readiness_gate.json
+          if-no-files-found: error

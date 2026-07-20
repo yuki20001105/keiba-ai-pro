@@ -1,0 +1,324 @@
+name: Phase3N Trusted Staging Evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_commit:
+        description: Exact develop commit deployed to every isolated Staging provider
+        required: true
+        type: string
+      trusted_producer_sha:
+        description: Immutable commit at security/phase3n-trusted-producer-v1 that owns this evidence producer
+        required: true
+        type: string
+      max_age_seconds:
+        description: Maximum accepted age of the sanitized Staging observation
+        required: true
+        default: '3600'
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  TRUSTED_REF: refs/heads/security/phase3n-trusted-producer-v1
+
+concurrency:
+  group: phase3n-staging-evidence
+  cancel-in-progress: false
+
+jobs:
+  context-gate:
+    name: Bind evidence run to exact develop commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the immutable trusted producer without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.trusted_producer_sha }}
+
+      - name: Fail closed unless producer and candidate are independently bound
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          TRUSTED_PRODUCER_SHA: ${{ inputs.trusted_producer_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "$TRUSTED_REF" ]]
+          [[ "$GITHUB_WORKFLOW_REF" == "$GITHUB_REPOSITORY/.github/workflows/staging-evidence.yml@$TRUSTED_REF" ]]
+          [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$TRUSTED_PRODUCER_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$GITHUB_SHA" == "$TRUSTED_PRODUCER_SHA" ]]
+          [[ "$(git rev-parse HEAD)" == "$TRUSTED_PRODUCER_SHA" ]]
+          git fetch --no-tags origin \
+            "+refs/heads/develop:refs/remotes/origin/develop" \
+            "+$TRUSTED_REF:refs/remotes/origin/security/phase3n-trusted-producer-v1"
+          [[ "$(git rev-parse origin/develop)" == "$EXPECTED_COMMIT" ]]
+          [[ "$(git rev-parse origin/security/phase3n-trusted-producer-v1)" == "$TRUSTED_PRODUCER_SHA" ]]
+          git diff --quiet "$TRUSTED_PRODUCER_SHA" "$EXPECTED_COMMIT" -- \
+            .github/workflows/ci.yml \
+            .github/workflows/release.yml \
+            .github/workflows/staging-evidence.yml \
+            scripts/verify_phase3h_production_readiness.py \
+            scripts/security/verify_phase3n_staging_evidence.py \
+            scripts/security/build_phase3n_staging_evidence.py \
+            python-api/tests/test_phase3h_production_readiness_gate.py \
+            python-api/tests/test_phase3n_staging_evidence_gate.py \
+            python-api/tests/test_phase3l_deployment_safety.py \
+            docs/phase3n_staging_evidence.md
+
+  staging-migration-approval:
+    name: Explicit Staging migration approval
+    needs: context-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    environment:
+      name: staging-migration
+    outputs:
+      approved_at: ${{ steps.boundary.outputs.approved_at }}
+    steps:
+      - name: Record environment-gated migration decision
+        id: boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "approved_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "Staging migration approval boundary entered for run ${GITHUB_RUN_ID}."
+
+  staging-observation:
+    name: Validate sanitized Staging observation
+    needs: staging-migration-approval
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    environment:
+      name: staging-execution-unlock
+    outputs:
+      artifact_id: ${{ steps.observation_artifact.outputs.artifact-id }}
+      artifact_name: ${{ steps.metadata.outputs.name }}
+      artifact_digest: ${{ steps.observation_artifact.outputs.artifact-digest }}
+      execution_approved_at: ${{ steps.boundary.outputs.approved_at }}
+    steps:
+      - name: Record environment-gated execution decision
+        id: boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "approved_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the immutable trusted producer without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ inputs.trusted_producer_sha }}
+
+      - name: Require the environment-protected sanitized observation
+        shell: bash
+        env:
+          PHASE3N_STAGING_OBSERVATION_B64: ${{ secrets.PHASE3N_STAGING_OBSERVATION_B64 }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+
+          encoded = os.environ.get("PHASE3N_STAGING_OBSERVATION_B64", "")
+          if not encoded:
+              raise SystemExit("Staging observation secret is unavailable")
+          try:
+              payload = base64.b64decode(encoded, validate=True)
+          except (ValueError, TypeError) as exc:
+              raise SystemExit("Staging observation encoding is invalid") from exc
+          if not 1 <= len(payload) <= 131072:
+              raise SystemExit("Staging observation size is invalid")
+          Path("reports").mkdir(exist_ok=True)
+          Path("reports/phase3n_staging_observation_input.json").write_bytes(payload)
+          PY
+
+      - name: Canonicalize and strictly validate observation before upload
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          MAX_AGE_SECONDS: ${{ inputs.max_age_seconds }}
+        run: |
+          set -euo pipefail
+          python scripts/security/build_phase3n_staging_evidence.py canonicalize-observation \
+            --input reports/phase3n_staging_observation_input.json \
+            --expected-commit "$EXPECTED_COMMIT" \
+            --max-age-seconds "$MAX_AGE_SECONDS" \
+            --output reports/phase3n_staging_observation.json
+          rm -f reports/phase3n_staging_observation_input.json
+
+      - name: Define immutable source artifact identity
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "name=phase3n-staging-observation-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload canonical observation as immutable run artifact
+        id: observation_artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.metadata.outputs.name }}
+          path: reports/phase3n_staging_observation.json
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
+
+  production-release-approval:
+    name: Explicit Production release approval
+    needs: staging-observation
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    environment:
+      name: production-release
+    outputs:
+      approved_at: ${{ steps.boundary.outputs.approved_at }}
+    steps:
+      - name: Record environment-gated release decision after observation
+        id: boundary
+        shell: bash
+        env:
+          SOURCE_ARTIFACT_ID: ${{ needs.staging-observation.outputs.artifact_id }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          echo "approved_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "Production release approval boundary entered after Staging artifact ${SOURCE_ARTIFACT_ID}."
+
+  verify-trusted-evidence:
+    name: Verify trusted commit-bound Staging evidence
+    needs:
+      - staging-migration-approval
+      - staging-observation
+      - production-release-approval
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out the immutable trusted producer without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ inputs.trusted_producer_sha }}
+
+      - name: Download only the canonical observation artifact from this run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.staging-observation.outputs.artifact_id }}
+          path: reports/source
+
+      - name: Retrieve authenticated GitHub Environment approval history
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api \
+            --method GET \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/approvals" \
+            > reports/github_environment_approvals.json
+
+      - name: Assemble final evidence from exact artifact and approval identities
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          MAX_AGE_SECONDS: ${{ inputs.max_age_seconds }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+          SOURCE_ARTIFACT_NAME: ${{ needs.staging-observation.outputs.artifact_name }}
+          SOURCE_ARTIFACT_ID: ${{ needs.staging-observation.outputs.artifact_id }}
+          SOURCE_ARTIFACT_SHA256: ${{ needs.staging-observation.outputs.artifact_digest }}
+          STAGING_MIGRATION_APPROVED_AT: ${{ needs.staging-migration-approval.outputs.approved_at }}
+          EXECUTION_UNLOCK_APPROVED_AT: ${{ needs.staging-observation.outputs.execution_approved_at }}
+          PRODUCTION_RELEASE_APPROVED_AT: ${{ needs.production-release-approval.outputs.approved_at }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          OBSERVATION="$(find reports/source -type f -name phase3n_staging_observation.json -print -quit)"
+          [[ -n "$OBSERVATION" ]]
+          python scripts/security/build_phase3n_staging_evidence.py assemble \
+            --observation "$OBSERVATION" \
+            --github-approvals reports/github_environment_approvals.json \
+            --expected-commit "$EXPECTED_COMMIT" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --repository "$GITHUB_REPOSITORY" \
+            --repository-id "$REPOSITORY_ID" \
+            --workflow-ref "$WORKFLOW_REF" \
+            --source-artifact-name "$SOURCE_ARTIFACT_NAME" \
+            --source-artifact-id "$SOURCE_ARTIFACT_ID" \
+            --source-artifact-sha256 "$SOURCE_ARTIFACT_SHA256" \
+            --staging-migration-approved-at "$STAGING_MIGRATION_APPROVED_AT" \
+            --execution-unlock-approved-at "$EXECUTION_UNLOCK_APPROVED_AT" \
+            --production-release-approved-at "$PRODUCTION_RELEASE_APPROVED_AT" \
+            --max-age-seconds "$MAX_AGE_SECONDS" \
+            --output reports/phase3n_staging_evidence.json
+          rm -f reports/github_environment_approvals.json
+
+      - name: Fail closed unless final evidence is trusted
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          MAX_AGE_SECONDS: ${{ inputs.max_age_seconds }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          python scripts/security/verify_phase3n_staging_evidence.py \
+            --evidence reports/phase3n_staging_evidence.json \
+            --expected-commit "$EXPECTED_COMMIT" \
+            --expected-run-id "$GITHUB_RUN_ID" \
+            --expected-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --expected-repository "$GITHUB_REPOSITORY" \
+            --expected-workflow-ref "$WORKFLOW_REF" \
+            --expected-environment staging \
+            --max-age-seconds "$MAX_AGE_SECONDS" \
+            --report reports/phase3n_staging_evidence_gate.json
+
+      - name: Write evidence file digests without exposing contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum \
+            reports/phase3n_staging_evidence.json \
+            reports/phase3n_staging_evidence_gate.json \
+            > reports/phase3n_staging_evidence_files.sha256
+
+      - name: Upload trusted evidence and gate report
+        id: trusted_artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phase3n-staging-evidence-json
+          path: |
+            reports/phase3n_staging_evidence.json
+            reports/phase3n_staging_evidence_gate.json
+            reports/phase3n_staging_evidence_files.sha256
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 9
+
+      - name: Create GitHub artifact provenance attestation
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: |
+            reports/phase3n_staging_evidence.json
+            reports/phase3n_staging_evidence_gate.json

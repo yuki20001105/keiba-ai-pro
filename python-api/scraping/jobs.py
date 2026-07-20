@@ -24,6 +24,7 @@ from scraping.fetch_pipeline import (
     write_fetch_summary,
 )
 from scraping.race import scrape_race_full
+from scraping.scrape_request_contract import MAX_SCRAPE_TARGETS, build_bounded_scrape_dates
 from scraping.storage import (
     _init_sqlite_db,
     _save_race_sqlite_only,
@@ -435,32 +436,16 @@ async def _run_scrape_job(
     """バックグラウンドでスクレイピングを実行しジョブストアを更新する"""
     try:
         import time as _time
-        from datetime import datetime as _dt, timedelta as _td
-
         job = _scrape_jobs[job_id]
         job["status"] = "running"
-        _persist_job_or_raise(job_id, job)
+        await asyncio.to_thread(_persist_job_or_raise, job_id, job)
 
         ULTIMATE_DB = Path(__file__).parent.parent.parent / "keiba" / "data" / "keiba_ultimate.db"
-        _init_sqlite_db(ULTIMATE_DB)
+        await asyncio.to_thread(_init_sqlite_db, ULTIMATE_DB)
 
         start_time = _time.time()
 
-        def _parse(s):
-            for fmt in ("%Y%m%d", "%Y/%m/%d", "%Y-%m-%d"):
-                try:
-                    return _dt.strptime(s, fmt)
-                except ValueError:
-                    pass
-            raise ValueError(f"日付フォーマット不正: {s}")
-
-        s_dt = _parse(start_date)
-        e_dt = _parse(end_date)
-        dates = []
-        cur = s_dt
-        while cur <= e_dt:
-            dates.append(cur.strftime("%Y%m%d"))
-            cur += _td(days=1)
+        dates = await asyncio.to_thread(build_bounded_scrape_dates, start_date, end_date)
 
         _MIN_RACES_PER_DAY = 6
 
@@ -513,7 +498,12 @@ async def _run_scrape_job(
                 dry_resume_keys.append(f"job:{job_id}:date:{d}:list")
                 dry_resume_keys.append(f"job:{job_id}:date:{d}:sub")
 
-            plan = estimate_fetch_plan(dry_urls, resume_keys=dry_resume_keys)
+            if len(dry_urls) > MAX_SCRAPE_TARGETS or len(dry_resume_keys) > MAX_SCRAPE_TARGETS:
+                raise ValueError("scrape dry-run target limit exceeded")
+
+            plan = await asyncio.to_thread(
+                estimate_fetch_plan, dry_urls, resume_keys=dry_resume_keys
+            )
             cache_hits = int(plan.get("cache_hits", 0))
             resume_hits = int(plan.get("resume_hits", 0))
             unique_urls = int(plan.get("unique_urls", 0))
@@ -542,7 +532,7 @@ async def _run_scrape_job(
                 "circuit_breaker_policy": _circuit_breaker_policy,
                 "plan": plan,
             }
-            report_path = write_fetch_summary(summary)
+            report_path = await asyncio.to_thread(write_fetch_summary, summary)
 
             with _JOBS_LOCK:
                 job["status"] = "completed"
@@ -553,7 +543,7 @@ async def _run_scrape_job(
                     "fetch_summary": summary,
                     "fetch_summary_path": str(report_path),
                 }
-            _persist_job_or_raise(job_id, job)
+            await asyncio.to_thread(_persist_job_or_raise, job_id, job)
             return
 
         # ── ② 前処理B: 取得済み日付を SQLite から読み込み（レジューム）──
@@ -738,7 +728,7 @@ async def _run_scrape_job(
                         await asyncio.gather(*[_fetch_and_save(r) for r in chunk])
                         if ci + 1 < len(race_ids):
                             await asyncio.sleep(_inter_race_sleep)  # レース間インターバル
-                        gc.collect()
+                        await asyncio.to_thread(gc.collect)
                     if errors:
                         logger.warning(f"エラー一覧: {errors[:5]}")
 
@@ -764,7 +754,7 @@ async def _run_scrape_job(
                 except Exception:
                     pass
                 # 進捗を SQLite に永続化（Render スピンダウン対策）
-                _persist_job_or_raise(job_id, job)
+                await asyncio.to_thread(_persist_job_or_raise, job_id, job)
                 # 日付間インターバル（最終日以外）
                 if i < total - 1:
                     await asyncio.sleep(_post_sleep)
@@ -797,7 +787,7 @@ async def _run_scrape_job(
                 "scope": "per-host",
             },
         }
-        report_path = write_fetch_summary(fetch_summary)
+        report_path = await asyncio.to_thread(write_fetch_summary, fetch_summary)
         with _JOBS_LOCK:
             job["status"] = "completed"
             job["result"] = {
@@ -809,7 +799,7 @@ async def _run_scrape_job(
                 "fetch_summary": fetch_summary,
                 "fetch_summary_path": str(report_path),
             }
-        _persist_job_or_raise(job_id, job)
+        await asyncio.to_thread(_persist_job_or_raise, job_id, job)
     except Exception as e:
         logger.error(f"スクレイピングジョブ失敗 {job_id}: {e}")
         with _JOBS_LOCK:
@@ -818,7 +808,7 @@ async def _run_scrape_job(
                 _scrape_jobs[job_id]["error"] = str(e)
                 _scrape_jobs[job_id]["result"] = None
         error_job = _scrape_jobs.get(job_id, {})
-        if _persist_job(job_id, error_job):
+        if await asyncio.to_thread(_persist_job, job_id, error_job):
             with _JOBS_LOCK:
                 current = _scrape_jobs.get(job_id)
                 if current is not None:

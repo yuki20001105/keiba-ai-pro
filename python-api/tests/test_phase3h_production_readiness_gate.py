@@ -80,6 +80,144 @@ def test_production_promotion_policy_rejects_current_not_ready_state() -> None:
     assert report["checks"]["production_promotion_policy"] is False
 
 
+def test_trusted_attestation_is_the_only_ready_transition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gate, "_trusted_attestation_valid", lambda *_args, **_kwargs: True)
+
+    report = _report(
+        evidence=None,
+        trusted_attestation={"sanitized": True},
+        expected_attestation_run_id=123456,
+        expected_attestation_run_attempt=2,
+        expected_repository="owner/repository",
+        expected_repository_id="987654",
+        require_ready=True,
+    )
+
+    assert report["success"] is True
+    assert report["verdict"] == "ready"
+    assert report["verdict_reason"] == "trusted-staging-attestation-valid"
+    assert report["production_ready"] is True
+    assert report["l3_eligible"] is True
+    assert report["readiness_required"] is True
+    assert report["blockers"] == []
+    assert report["failure_codes"] == []
+    assert all(report["checks"].values())
+    assert report["checks"]["trusted_staging_attestation"] is True
+    assert "phase3g_runtime_evidence" not in report["checks"]
+
+
+def test_invalid_trusted_attestation_fails_instead_of_falling_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gate, "_trusted_attestation_valid", lambda *_args, **_kwargs: False)
+
+    report = _report(
+        evidence=None,
+        trusted_attestation={"production_ready": True},
+        expected_attestation_run_id=123456,
+        expected_attestation_run_attempt=2,
+        expected_repository="owner/repository",
+        expected_repository_id="987654",
+    )
+
+    assert report["success"] is False
+    assert report["verdict"] == "fail"
+    assert report["verdict_reason"] == "trusted-attestation-invalid"
+    assert report["production_ready"] is False
+    assert report["l3_eligible"] is False
+    assert report["blockers"] == []
+    assert report["failure_codes"] == ["trusted-attestation-invalid"]
+
+
+def test_phase3n_validator_receives_strict_correlated_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeVerifier:
+        @staticmethod
+        def validate_gate_report(report: object, **kwargs: object) -> tuple[bool, tuple[str, ...]]:
+            captured["report"] = report
+            captured.update(kwargs)
+            return True, ()
+
+    monkeypatch.setattr(gate, "_load_phase3n_verifier", lambda: FakeVerifier)
+    attestation = {"report_schema": "phase3n-staging-evidence-gate-report"}
+
+    assert gate._trusted_attestation_valid(
+        attestation,
+        expected_commit=TESTED_COMMIT,
+        expected_run_id=123456,
+        expected_run_attempt=2,
+        expected_repository="owner/repository",
+        expected_repository_id="987654",
+        max_age_seconds=900,
+        now=FIXED_NOW,
+    ) is True
+    assert captured == {
+        "report": attestation,
+        "expected_commit": TESTED_COMMIT,
+        "expected_run_id": "123456",
+        "expected_run_attempt": 2,
+        "expected_repository": "owner/repository",
+        "expected_repository_id": "987654",
+        "max_age_seconds": 900,
+        "now": FIXED_NOW,
+    }
+
+
+@pytest.mark.parametrize(
+    ("run_id", "repository"),
+    [(None, "owner/repository"), (0, "owner/repository"), (1, None), (1, "invalid")],
+)
+def test_phase3n_context_validation_fails_before_loading_verifier(
+    monkeypatch: pytest.MonkeyPatch,
+    run_id: int | None,
+    repository: str | None,
+) -> None:
+    def unexpected() -> object:
+        raise AssertionError("verifier must not load for invalid context")
+
+    monkeypatch.setattr(gate, "_load_phase3n_verifier", unexpected)
+    assert gate._trusted_attestation_valid(
+        {},
+        expected_commit=TESTED_COMMIT,
+        expected_run_id=run_id,
+        expected_run_attempt=1,
+        expected_repository=repository,
+        expected_repository_id="987654",
+        max_age_seconds=900,
+        now=FIXED_NOW,
+    ) is False
+
+
+@pytest.mark.parametrize(
+    ("run_attempt", "repository_id"),
+    [(None, "987654"), (0, "987654"), (1, None), (1, "invalid")],
+)
+def test_phase3n_attempt_and_repository_id_fail_before_loading_verifier(
+    monkeypatch: pytest.MonkeyPatch,
+    run_attempt: int | None,
+    repository_id: str | None,
+) -> None:
+    def unexpected() -> object:
+        raise AssertionError("verifier must not load for invalid context")
+
+    monkeypatch.setattr(gate, "_load_phase3n_verifier", unexpected)
+    assert gate._trusted_attestation_valid(
+        {},
+        expected_commit=TESTED_COMMIT,
+        expected_run_id=123456,
+        expected_run_attempt=run_attempt,
+        expected_repository="owner/repository",
+        expected_repository_id=repository_id,
+        max_age_seconds=900,
+        now=FIXED_NOW,
+    ) is False
+
+
 @pytest.mark.parametrize("top_level_key", sorted(gate.MANIFEST_KEYS))
 def test_missing_manifest_field_fails_closed(top_level_key: str) -> None:
     payload = _manifest()

@@ -6,7 +6,9 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from scraping.scrape_request_contract import parse_scrape_date, validate_scrape_date_range
 
 
 class TrainRequest(BaseModel):
@@ -158,6 +160,29 @@ class ScrapeRequest(BaseModel):
     end_date: str
     force_rescrape: bool = False
     dry_run: bool = False
+    # Phase 3N operational execution binding. Deployed environments require
+    # the complete tuple; explicit local/test mode may generate the two IDs.
+    job_id: Optional[str] = None
+    operation_id: Optional[str] = None
+    authorization_id: Optional[str] = None
+    reservation_id: Optional[str] = None
+    review_id: Optional[str] = None
+    review_version: Optional[int] = Field(None, ge=1)
+    expected_authorization_version: Optional[int] = Field(None, ge=1)
+    consume_request_id: Optional[str] = None
+
+    @field_validator("start_date", "end_date", mode="before")
+    @classmethod
+    def _validate_scrape_date(cls, value: object) -> str:
+        parse_scrape_date(value)
+        if not isinstance(value, str):
+            raise ValueError("scrape date must be a string")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_scrape_date_range(self) -> "ScrapeRequest":
+        validate_scrape_date_range(self.start_date, self.end_date)
+        return self
 
 
 class ScrapeResponse(BaseModel):

@@ -155,15 +155,16 @@ test.describe('Phase3B Data Collection workflow', () => {
     if (!baseURL) throw new Error('Playwright baseURL is required')
 
     await setupAuthorizedPage(page, baseURL)
+    const febScenario: BatchScenario = {
+      jobId: 'job-feb',
+      polls: [
+        { status: 'running', progress: { done: 4, total: 10, message: 'running feb' } },
+      ],
+    }
+
     await mockBatchWorkflow(page, [
       { jobId: 'job-jan', polls: [{ status: 'completed', result: { races_collected: 2 } }] },
-      {
-        jobId: 'job-feb',
-        polls: [
-          { status: 'running', progress: { done: 4, total: 10, message: 'running feb' } },
-          { status: 'completed', result: { races_collected: 3 } },
-        ],
-      },
+      febScenario,
     ])
 
     page.on('dialog', dialog => dialog.accept())
@@ -183,6 +184,7 @@ test.describe('Phase3B Data Collection workflow', () => {
     await expect(statusPanel).not.toContainText('取得完了')
     await expect(page.getByTestId('quality-bridge-card')).toHaveCount(0)
 
+    febScenario.polls.push({ status: 'completed', result: { races_collected: 3 } })
     await expect(statusPanel).toContainText('取得完了')
     await expect(statusPanel).toContainText('5レース')
   })

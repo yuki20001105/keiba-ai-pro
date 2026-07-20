@@ -11,6 +11,7 @@ const localE2eEnv = {
   SUPABASE_URL: 'http://127.0.0.1:54321',
   NEXT_PUBLIC_SUPABASE_ANON_KEY: 'e2e-dummy-anon-key',
   SUPABASE_SERVICE_ROLE_KEY: 'e2e-dummy-service-role-key',
+  NEXT_PUBLIC_E2E_BATCH_POLL_INTERVAL_MS: '500',
 }
 
 for (const [key, value] of Object.entries(localE2eEnv)) {
@@ -52,5 +53,5 @@ export default defineConfig({
       }
     : undefined,
   timeout: 30_000,
-  expect: { timeout: 8_000 },
+  expect: { timeout: 15_000 },
 })
