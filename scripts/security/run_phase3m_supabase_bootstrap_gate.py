@@ -266,22 +266,56 @@ def _safe_relative_migration_path(value: Any) -> PurePosixPath:
 
 
 def _verified_git_bytes(path: Path, expected_commit: str) -> bytes:
+    root = ROOT.resolve()
     try:
-        resolved = path.resolve(strict=True)
-        relative = resolved.relative_to(ROOT.resolve()).as_posix()
-        if path.is_symlink() or not resolved.is_file():
+        candidate = Path(os.path.abspath(path))
+        relative_path = candidate.relative_to(root)
+        cursor = root
+        for part in relative_path.parts:
+            cursor /= part
+            if cursor.is_symlink():
+                raise GateFailure("git-input-invalid")
+        resolved = candidate.resolve(strict=True)
+        if resolved != candidate or not resolved.is_file():
             raise GateFailure("git-input-invalid")
-        working_bytes = resolved.read_bytes()
     except GateFailure:
         raise
     except (OSError, ValueError) as exc:
-        raise GateFailure("git-input-unavailable") from exc
-    result = _command_bytes(("git", "show", f"{expected_commit}:{relative}"), timeout=20)
-    if result.returncode != 0:
+        raise GateFailure("git-input-invalid") from exc
+
+    relative = relative_path.as_posix()
+    committed = _command_bytes(
+        ("git", "-C", str(root), "show", f"{expected_commit}:{relative}"),
+        timeout=20,
+    )
+    if committed.returncode != 0:
         raise GateFailure("git-input-untracked")
-    if result.stdout != working_bytes:
+
+    tracked = _command_bytes(
+        (
+            "git", "-C", str(root), "ls-files", "--error-unmatch", "--", relative,
+        ),
+        timeout=20,
+    )
+    if tracked.returncode != 0:
+        raise GateFailure("git-input-untracked")
+
+    # Compare the working tree through Git's normal clean-filter semantics.
+    # This accepts a clean core.autocrlf checkout while still rejecting any
+    # semantic file or mode drift.  Execution always uses the immutable blob
+    # read above, so a working-tree race cannot replace the trusted input.
+    drift = _command_bytes(
+        (
+            "git", "-C", str(root), "diff", "--quiet", "--no-ext-diff",
+            "--no-textconv", expected_commit, "--", relative,
+        ),
+        timeout=20,
+    )
+    if drift.returncode == 1:
         raise GateFailure("git-input-drift")
-    return working_bytes
+    if drift.returncode != 0:
+        raise GateFailure("git-input-unavailable")
+    return committed.stdout
 
 
 def load_manifest(path: Path, *, expected_commit: str | None = None) -> BootstrapManifest:

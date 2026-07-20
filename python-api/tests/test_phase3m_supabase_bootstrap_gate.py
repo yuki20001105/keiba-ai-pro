@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import re
+import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -317,31 +318,78 @@ def test_report_writer_rejects_credentials_dsn_and_absolute_paths(
             runner._write_report(report, unsafe)
 
 
-def test_git_bound_input_rejects_untracked_or_dirty_bytes(
+def _git(repo: Path, *args: str) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True,
+        check=False,
+        text=True,
+        encoding="utf-8",
+    )
+    assert completed.returncode == 0, completed.stderr
+    return completed.stdout.strip()
+
+
+def _autocrlf_repository(tmp_path: Path) -> tuple[Path, Path, str]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "--quiet")
+    _git(repo, "config", "user.name", "Phase3M Test")
+    _git(repo, "config", "user.email", "phase3m@example.invalid")
+    _git(repo, "config", "core.autocrlf", "true")
+    tracked = repo / "tracked.txt"
+    tracked.write_bytes(b"alpha\nbeta\n")
+    _git(repo, "add", "tracked.txt")
+    _git(repo, "commit", "--quiet", "-m", "fixture")
+    commit = _git(repo, "rev-parse", "HEAD")
+    tracked.unlink()
+    _git(repo, "checkout", "--quiet", "HEAD", "--", "tracked.txt")
+    assert tracked.read_bytes() == b"alpha\r\nbeta\r\n"
+    return repo, tracked, commit
+
+
+def test_git_bound_input_returns_commit_blob_for_clean_autocrlf_checkout(
     runner: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    actual = MANIFEST_PATH.read_bytes()
-    monkeypatch.setattr(
-        runner,
-        "_command_bytes",
-        lambda *_args, **_kwargs: runner.BinaryCommandResult(0, actual, b""),
-    )
-    assert runner._verified_git_bytes(MANIFEST_PATH, "a" * 40) == actual
-    monkeypatch.setattr(
-        runner,
-        "_command_bytes",
-        lambda *_args, **_kwargs: runner.BinaryCommandResult(0, actual + b"drift", b""),
-    )
+    repo, tracked, commit = _autocrlf_repository(tmp_path)
+    monkeypatch.setattr(runner, "ROOT", repo)
+
+    assert tracked.read_bytes() != b"alpha\nbeta\n"
+    assert runner._verified_git_bytes(tracked, commit) == b"alpha\nbeta\n"
+
+
+def test_git_bound_input_rejects_semantic_mutation_and_untracked_replacement(
+    runner: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    repo, tracked, commit = _autocrlf_repository(tmp_path)
+    monkeypatch.setattr(runner, "ROOT", repo)
+
+    tracked.write_bytes(b"alpha\r\ngamma\r\n")
     with pytest.raises(runner.GateFailure, match="git-input-drift"):
-        runner._verified_git_bytes(MANIFEST_PATH, "a" * 40)
-    monkeypatch.setattr(
-        runner,
-        "_command_bytes",
-        lambda *_args, **_kwargs: runner.BinaryCommandResult(128, b"", b"missing"),
-    )
+        runner._verified_git_bytes(tracked, commit)
+
+    _git(repo, "checkout", "--quiet", "HEAD", "--", "tracked.txt")
+    _git(repo, "rm", "--quiet", "--cached", "tracked.txt")
     with pytest.raises(runner.GateFailure, match="git-input-untracked"):
-        runner._verified_git_bytes(MANIFEST_PATH, "a" * 40)
+        runner._verified_git_bytes(tracked, commit)
+
+
+def test_git_bound_input_rejects_path_escape(
+    runner: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    repo, _tracked, commit = _autocrlf_repository(tmp_path)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside\n", encoding="utf-8")
+    monkeypatch.setattr(runner, "ROOT", repo)
+
+    with pytest.raises(runner.GateFailure, match="git-input-invalid"):
+        runner._verified_git_bytes(outside, commit)
 
 
 def test_fresh_database_preflight_rejects_existing_objects(
