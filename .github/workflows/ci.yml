@@ -565,12 +565,47 @@ jobs:
   container-build-check:
     name: Container build check
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
+    env:
+      PYTHONUTF8: '1'
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Phase3M test dependencies
+        run: pip install "pytest>=9,<10"
+
+      - name: Verify Phase3M bootstrap harness contracts
+        run: >-
+          python -m pytest
+          python-api/tests/test_phase3m_supabase_bootstrap_core.py
+          python-api/tests/test_phase3m_supabase_bootstrap_domain.py
+          python-api/tests/test_phase3m_supabase_bootstrap_gate.py
+          python-api/tests/test_phase3m_supabase_promotion_tool.py
+          python-api/tests/test_phase3m_supabase_writer_contract.py
+          python-api/tests/test_phase3m_admin_atomic_role.py
+          python-api/tests/test_phase3m_ocr_atomic_quota.py
+          -q
+
+      - name: Replay canonical Supabase bootstrap (release-blocking)
+        run: >-
+          python scripts/security/run_phase3m_supabase_bootstrap_gate.py
+          --manifest supabase/bootstrap/v1/manifest.json
+          --expected-commit "$GITHUB_SHA"
 
       - name: Build FastAPI image
         run: docker build -f Dockerfile -t keiba-ai-pro-fastapi:ci .
 
       - name: Build Next.js image
         run: docker build -f Dockerfile.nextjs -t keiba-ai-pro-nextjs:ci .
+
+      - name: Upload sanitized Phase3M bootstrap evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase3m-supabase-bootstrap-json
+          path: reports/phase3m_supabase_bootstrap_gate.json
+          if-no-files-found: error
