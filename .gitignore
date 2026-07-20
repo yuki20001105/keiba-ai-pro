@@ -27,6 +27,10 @@ yarn-error.log*
 .env.test
 .env
 
+# Supabase CLI local linkage and runtime state
+supabase/.temp/
+supabase/.branches/
+
 # vercel
 .vercel
 

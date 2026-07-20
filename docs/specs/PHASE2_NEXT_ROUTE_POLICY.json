@@ -33,6 +33,28 @@
     "detail_error_passthrough_reason": ""
   },
   {
+    "route": "/api/admin/profiles",
+    "method": "GET",
+    "policy": "Admin",
+    "auth_header_forward": false,
+    "status_propagation": false,
+    "detail_error_passthrough": false,
+    "auth_header_forward_reason": "/api/admin/profiles uses a server-side service-role client only after verified Admin auth and never forwards the browser bearer token",
+    "status_propagation_reason": "/api/admin/profiles returns a bounded Admin profile-list contract with normalized status codes",
+    "detail_error_passthrough_reason": "/api/admin/profiles maps database errors to bounded route-specific detail"
+  },
+  {
+    "route": "/api/admin/profiles/[userId]/role",
+    "method": "PATCH",
+    "policy": "Admin",
+    "auth_header_forward": false,
+    "status_propagation": false,
+    "detail_error_passthrough": false,
+    "auth_header_forward_reason": "/api/admin/profiles/[userId]/role uses a server-side service-role client only after verified Admin auth and never forwards the browser bearer token",
+    "status_propagation_reason": "/api/admin/profiles/[userId]/role returns a strict role-update contract with normalized status codes",
+    "detail_error_passthrough_reason": "/api/admin/profiles/[userId]/role maps database errors and missing targets to bounded route-specific detail"
+  },
+  {
     "route": "/api/backfill/coat-color",
     "method": "POST",
     "policy": "Admin",

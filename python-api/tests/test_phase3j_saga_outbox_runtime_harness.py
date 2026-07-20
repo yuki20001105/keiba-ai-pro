@@ -307,6 +307,66 @@ def test_report_write_is_atomic(tmp_path: Path) -> None:
     assert list(tmp_path.glob(".phase3j-runtime.json.*.tmp")) == []
 
 
+def test_known_gate_failure_emits_only_repository_owned_diagnostic(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def rejected_postgres(_container: str, _migration: Path):
+        raise runner.GateFailure("phase3j-migration-failed")
+
+    code, report = _report(tmp_path, postgres_runner=rejected_postgres)
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.out == ""
+    assert json.loads(captured.err) == {
+        "failure_code": "phase3j-migration-failed",
+        "success": False,
+    }
+    assert "failure_code" not in report
+
+
+def test_unexpected_exception_diagnostic_never_exposes_exception_text(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    secret_probe = "raw-exception-must-not-appear"
+
+    def rejected_postgres(_container: str, _migration: Path):
+        raise RuntimeError(secret_probe)
+
+    code, report = _report(tmp_path, postgres_runner=rejected_postgres)
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.out == ""
+    assert json.loads(captured.err) == {
+        "failure_code": "unexpected-gate-failure",
+        "success": False,
+    }
+    assert secret_probe not in captured.err
+    assert secret_probe not in json.dumps(report, sort_keys=True)
+    assert "failure_code" not in report
+
+
+def test_unrecognized_gate_failure_is_collapsed_to_owned_diagnostic(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    untrusted_code = "not-a-repository-owned-code"
+
+    def rejected_postgres(_container: str, _migration: Path):
+        raise runner.GateFailure(untrusted_code)
+
+    code, _ = _report(tmp_path, postgres_runner=rejected_postgres)
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.out == ""
+    assert json.loads(captured.err) == {
+        "failure_code": "unexpected-gate-failure",
+        "success": False,
+    }
+    assert untrusted_code not in captured.err
+
+
 def test_docker_invocation_is_digest_pinned_network_none_and_has_no_host_publish() -> None:
     source = RUNNER_PATH.read_text(encoding="utf-8")
     assert runner.IMAGE.startswith("postgres:17.6-bookworm@sha256:")

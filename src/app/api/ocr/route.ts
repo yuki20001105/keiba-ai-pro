@@ -9,6 +9,103 @@ const visionClient = new vision.ImageAnnotatorClient({
   keyFilename: process.env.GOOGLE_APPLICATION_CREDENTIALS,
 })
 
+const OCR_MAX_IMAGE_BYTES = 10 * 1024 * 1024
+const OCR_ALLOWED_IMAGE_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+])
+const OCR_ALLOWED_EXTENSIONS: Record<string, ReadonlySet<string>> = {
+  'image/jpeg': new Set(['jpg', 'jpeg']),
+  'image/png': new Set(['png']),
+  'image/webp': new Set(['webp']),
+}
+
+function hasExpectedImageSignature(buffer: Buffer, mimeType: string): boolean {
+  if (mimeType === 'image/jpeg') {
+    return buffer.length >= 3
+      && buffer[0] === 0xff
+      && buffer[1] === 0xd8
+      && buffer[2] === 0xff
+  }
+
+  if (mimeType === 'image/png') {
+    const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+    return buffer.length >= signature.length
+      && signature.every((byte, index) => buffer[index] === byte)
+  }
+
+  if (mimeType === 'image/webp') {
+    return buffer.length >= 12
+      && buffer.subarray(0, 4).toString('ascii') === 'RIFF'
+      && buffer.subarray(8, 12).toString('ascii') === 'WEBP'
+  }
+
+  return false
+}
+
+function hasSafeImageName(image: File): boolean {
+  const name = image.name.trim()
+  if (!name || name.length > 255 || /[\u0000-\u001f\u007f]/.test(name)) {
+    return false
+  }
+
+  const extension = name.includes('.') ? name.split('.').pop()?.toLowerCase() : null
+  return Boolean(extension && OCR_ALLOWED_EXTENSIONS[image.type]?.has(extension))
+}
+
+type OcrQuotaReservation = {
+  allowed: boolean
+  usedCount: number
+  monthlyLimit: number
+  resetAt: string
+}
+
+function parseOcrQuotaReservation(data: unknown): OcrQuotaReservation | null {
+  if (!Array.isArray(data) || data.length !== 1) return null
+
+  const row = data[0]
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return null
+
+  const value = row as Record<string, unknown>
+  const expectedKeys = ['allowed', 'monthly_limit', 'reset_at', 'used_count']
+  const actualKeys = Object.keys(value).sort()
+  if (
+    actualKeys.length !== expectedKeys.length
+    || actualKeys.some((key, index) => key !== expectedKeys[index])
+  ) {
+    return null
+  }
+
+  const allowed = value.allowed
+  const usedCount = value.used_count
+  const monthlyLimit = value.monthly_limit
+  const resetAt = value.reset_at
+
+  if (
+    typeof allowed !== 'boolean'
+    || typeof usedCount !== 'number'
+    || !Number.isSafeInteger(usedCount)
+    || usedCount < 0
+    || typeof monthlyLimit !== 'number'
+    || !Number.isSafeInteger(monthlyLimit)
+    || monthlyLimit < 0
+    || typeof resetAt !== 'string'
+    || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(resetAt)
+    || Number.isNaN(Date.parse(resetAt))
+  ) {
+    return null
+  }
+
+  if (allowed) {
+    if (usedCount < 1 || usedCount > monthlyLimit) return null
+  } else if (usedCount < monthlyLimit) {
+    return null
+  }
+
+  return { allowed, usedCount, monthlyLimit, resetAt }
+}
+
 export async function POST(request: NextRequest) {
   try {
     const authz = await verifyRequestAuth(request)
@@ -17,75 +114,127 @@ export async function POST(request: NextRequest) {
     }
 
     const verifiedUserId = authz.context.user.id
-    const supabase = createSupabaseServiceClient()
-    if (!supabase) {
+    let formData: FormData
+    try {
+      formData = await request.formData()
+    } catch {
       return NextResponse.json(
-        { error: 'Supabase設定が不足しています' },
-        { status: 503 }
+        { error: 'Invalid multipart form data' },
+        { status: 400 }
       )
     }
 
-    const formData = await request.formData()
-    const image = formData.get('image') as File
-    const userId = formData.get('userId') as string
+    const images = formData.getAll('image')
+    if (images.length !== 1 || !(images[0] instanceof File)) {
+      return NextResponse.json(
+        { error: 'Exactly one image file is required' },
+        { status: 400 }
+      )
+    }
+    const image = images[0]
 
-    if (typeof userId === 'string' && userId.trim() && userId !== verifiedUserId) {
+    const userIds = formData.getAll('userId')
+    if (
+      userIds.length > 1
+      || (userIds.length === 1 && (typeof userIds[0] !== 'string' || !userIds[0].trim()))
+    ) {
+      return NextResponse.json(
+        { error: 'Invalid userId field' },
+        { status: 400 }
+      )
+    }
+    const userId = userIds.length === 1 ? userIds[0] : null
+
+    if (typeof userId === 'string' && userId !== verifiedUserId) {
       return NextResponse.json(
         { error: 'userId mismatch is not allowed' },
         { status: 403 }
       )
     }
 
-    if (!image) {
+    if (
+      !OCR_ALLOWED_IMAGE_TYPES.has(image.type)
+      || !hasSafeImageName(image)
+      || !Number.isSafeInteger(image.size)
+      || image.size < 1
+      || image.size > OCR_MAX_IMAGE_BYTES
+    ) {
       return NextResponse.json(
-        { error: '画像ファイルが必要です' },
+        { error: 'Invalid image file' },
         { status: 400 }
       )
     }
 
-    // ユーザーのOCR利用制限をチェック
-    {
-      const { data: profile, error } = await supabase
-        .from('profiles')
-        .select('ocr_monthly_limit, ocr_used_this_month, ocr_reset_date')
-        .eq('id', verifiedUserId)
-        .single()
-
-      if (error) {
-        return NextResponse.json(
-          { error: 'ユーザー情報の取得に失敗しました' },
-          { status: 500 }
-        )
-      }
-
-      // 月次リセットチェック
-      const resetDate = new Date(profile.ocr_reset_date)
-      const now = new Date()
-      const monthDiff = (now.getFullYear() - resetDate.getFullYear()) * 12 + 
-                        (now.getMonth() - resetDate.getMonth())
-
-      if (monthDiff >= 1) {
-        // リセット
-        await supabase
-          .from('profiles')
-          .update({ 
-            ocr_used_this_month: 0, 
-            ocr_reset_date: now.toISOString() 
-          })
-          .eq('id', verifiedUserId)
-      } else if (profile.ocr_used_this_month >= profile.ocr_monthly_limit) {
-        return NextResponse.json(
-          { error: '月間OCR利用制限に達しました。プレミアムプランにアップグレードしてください。' },
-          { status: 429 }
-        )
-      }
+    // Complete all local file preparation before reserving quota. Invalid or
+    // unreadable uploads must never consume a unit or reach the external API.
+    let buffer: Buffer
+    try {
+      const bytes = await image.arrayBuffer()
+      buffer = Buffer.from(bytes)
+    } catch {
+      return NextResponse.json(
+        { error: 'Image file could not be read' },
+        { status: 400 }
+      )
+    }
+    if (
+      buffer.length !== image.size
+      || buffer.length > OCR_MAX_IMAGE_BYTES
+      || !hasExpectedImageSignature(buffer, image.type)
+    ) {
+      return NextResponse.json(
+        { error: 'Invalid image content' },
+        { status: 400 }
+      )
     }
 
-    // 画像をバッファに変換
-    const bytes = await image.arrayBuffer()
-    const buffer = Buffer.from(bytes)
+    const supabase = createSupabaseServiceClient()
+    if (!supabase) {
+      return NextResponse.json(
+        { error: 'OCR service is unavailable' },
+        { status: 503 }
+      )
+    }
 
-    // Google Vision APIでOCR実行
+    // Reserve quota atomically before invoking the external Vision service.
+    let quotaResult: Awaited<ReturnType<typeof supabase.rpc>>
+    try {
+      quotaResult = await supabase.rpc(
+        'consume_ocr_quota',
+        { p_user_id: verifiedUserId }
+      )
+    } catch {
+      return NextResponse.json(
+        { error: 'OCR quota service is unavailable' },
+        { status: 503 }
+      )
+    }
+    const { data: quotaData, error: quotaError } = quotaResult
+    if (quotaError) {
+      return NextResponse.json(
+        { error: 'OCR quota service is unavailable' },
+        { status: 503 }
+      )
+    }
+
+    const quota = parseOcrQuotaReservation(quotaData)
+    if (!quota) {
+      return NextResponse.json(
+        { error: 'OCR quota service returned an invalid response' },
+        { status: 503 }
+      )
+    }
+    if (!quota.allowed) {
+      return NextResponse.json(
+        { error: 'Monthly OCR usage limit reached' },
+        { status: 429 }
+      )
+    }
+
+    // Once Vision is invoked, the reservation is intentionally not refunded:
+    // the external provider may have accepted and billed the attempt even if
+    // it later fails or returns no text. Only pre-Vision local failures avoid
+    // quota consumption.
     const [result] = await visionClient.textDetection(buffer)
     const detections = result.textAnnotations
 
@@ -101,30 +250,19 @@ export async function POST(request: NextRequest) {
     // 馬券情報を抽出（簡易パーサー）
     const betInfo = parseBetTicket(extractedText)
 
-    // OCR使用回数を増加
-    {
-      // 現在の使用回数を取得
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('ocr_used_this_month')
-        .eq('id', verifiedUserId)
-        .single()
-
-      // 使用回数を増加
-      await supabase
-        .from('profiles')
-        .update({ 
-          ocr_used_this_month: (profile?.ocr_used_this_month || 0) + 1
-        })
-        .eq('id', verifiedUserId)
-
-      // OCR使用履歴を記録
-      await supabase.from('ocr_usage').insert({
-        user_id: verifiedUserId,
-        extracted_text: extractedText,
-        corrected_data: betInfo,
-        success: true,
-      })
+    // The quota is already consumed. Record the result without mutating the
+    // profile counter a second time.
+    const { error: usageError } = await supabase.from('ocr_usage').insert({
+      user_id: verifiedUserId,
+      extracted_text: extractedText,
+      corrected_data: betInfo,
+      success: true,
+    })
+    if (usageError) {
+      return NextResponse.json(
+        { error: 'OCR usage could not be recorded' },
+        { status: 503 }
+      )
     }
 
     return NextResponse.json({
@@ -132,10 +270,10 @@ export async function POST(request: NextRequest) {
       betInfo,
       needsCorrection: !betInfo.confidence || betInfo.confidence < 0.8,
     })
-  } catch (error: any) {
-    console.error('OCR error:', error)
+  } catch {
+    console.error('OCR_UNHANDLED_FAILURE')
     return NextResponse.json(
-      { error: 'OCR処理中にエラーが発生しました: ' + error.message },
+      { error: 'OCR processing failed' },
       { status: 500 }
     )
   }

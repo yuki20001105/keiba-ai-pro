@@ -378,4 +378,5 @@ def test_ci_keeps_phase3j_release_blocking_topology_and_artifact_budget() -> Non
         "phase3h-production-readiness-json",
         "phase3i-saga-failure-injection-json",
         "phase3j-saga-outbox-runtime-json",
+        "phase3m-supabase-bootstrap-json",
     ]

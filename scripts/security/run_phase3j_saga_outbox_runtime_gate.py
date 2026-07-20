@@ -38,6 +38,53 @@ DATABASE = "phase3j_runtime"
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 CONTAINER_ID_PATTERN = re.compile(r"^[0-9a-f]{12,64}$")
 LOCAL_DOCKER_ENDPOINTS = ("unix://", "npipe://")
+DIAGNOSTIC_FAILURE_CODES = frozenset(
+    {
+        "checkout-head-invalid",
+        "checkout-head-mismatch",
+        "checkout-head-unavailable",
+        "cleanup-failed",
+        "command-missing",
+        "command-timeout",
+        "container-exited-before-ready",
+        "container-id-invalid",
+        "container-start-failed",
+        "contract-invalid",
+        "disposable-database-effects-invalid",
+        "docker-context-unavailable",
+        "docker-daemon-unavailable",
+        "docker-image-unavailable",
+        "expected-commit-required",
+        "invariant-checks-incomplete",
+        "network-call-attempted",
+        "operational-effect-observed",
+        "operational-write-attempted",
+        "phase3g-bootstrap-failed",
+        "phase3g-migration-failed",
+        "phase3j-bootstrap-failed",
+        "phase3j-migration-failed",
+        "phase3j-migration-replay-failed",
+        "phase3j-runtime-contract-failed",
+        "phase3j_contract_verifier-module-unavailable",
+        "phase3j_schema_verifier-module-unavailable",
+        "postgres-effect-count-failed",
+        "postgres-effect-count-invalid",
+        "postgres-health-timeout",
+        "postgres-required-input-unavailable",
+        "postgres-runtime-markers-incomplete",
+        "process-dispatch-attempted",
+        "remote-docker-context-rejected",
+        "report-write-failed",
+        "required-input-unavailable",
+        "scenario-checks-incomplete",
+        "sqlite-initialize-failed",
+        "sqlite-runtime-api-mismatch",
+        "sqlite-schema-drift",
+        "sqlite-schema-unavailable",
+        "thread-start-attempted",
+        "unexpected-gate-failure",
+    }
+)
 
 
 class GateFailure(RuntimeError):
@@ -99,6 +146,20 @@ def _require_success(result: CommandResult, code: str) -> str:
     if result.returncode != 0:
         raise GateFailure(code)
     return result.stdout.strip()
+
+
+def _emit_failure_diagnostic(code: str) -> None:
+    """Emit one repository-owned code without command output or exception text."""
+
+    sanitized = code if code in DIAGNOSTIC_FAILURE_CODES else "unexpected-gate-failure"
+    print(
+        json.dumps(
+            {"failure_code": sanitized, "success": False},
+            ensure_ascii=True,
+            sort_keys=True,
+        ),
+        file=sys.stderr,
+    )
 
 
 def _docker(*args: str, timeout: int = 60) -> CommandResult:
@@ -878,7 +939,10 @@ def run_gate(
     try:
         _write_report(report_path, report)
     except Exception:
+        _emit_failure_diagnostic("report-write-failed")
         return 1
+    if failure_code is not None:
+        _emit_failure_diagnostic(failure_code)
     return 0 if success else 1
 
 
