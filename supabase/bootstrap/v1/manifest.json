@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "bootstrap_id": "phase3m-supabase-bootstrap-v1",
+  "postgres_image": "postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3",
+  "migrations": [
+    {
+      "version": "20260720141000",
+      "path": "supabase/bootstrap/v1/migrations/20260720141000_core_identity_finance.sql",
+      "source": "phase3m-bootstrap",
+      "description": "Core identity, profile, prediction, bet, bank, and OCR schema"
+    },
+    {
+      "version": "20260720141100",
+      "path": "supabase/bootstrap/v1/migrations/20260720141100_prediction_quota.sql",
+      "source": "phase3m-bootstrap",
+      "description": "Atomic prediction quota RPC contract"
+    },
+    {
+      "version": "20260720141200",
+      "path": "supabase/bootstrap/v1/migrations/20260720141200_purchase_history.sql",
+      "source": "phase3m-bootstrap",
+      "description": "Per-user purchase history"
+    },
+    {
+      "version": "20260720142000",
+      "path": "supabase/bootstrap/v1/migrations/20260720142000_race_domain.sql",
+      "source": "phase3m-bootstrap",
+      "description": "Race collection domain"
+    },
+    {
+      "version": "20260720142100",
+      "path": "supabase/bootstrap/v1/migrations/20260720142100_normalized_ultimate_domain.sql",
+      "source": "phase3m-bootstrap",
+      "description": "Normalized race analytics domain"
+    },
+    {
+      "version": "20260720142200",
+      "path": "supabase/bootstrap/v1/migrations/20260720142200_server_ml_storage.sql",
+      "source": "phase3m-bootstrap",
+      "description": "Server-only ML metadata and private model storage"
+    },
+    {
+      "version": "20260720143000",
+      "path": "supabase/migrations/20260718_scrape_uncertainty_review_ledger.sql",
+      "source": "reconciled-existing",
+      "description": "Authoritative scrape uncertainty review ledger"
+    },
+    {
+      "version": "20260720143100",
+      "path": "supabase/migrations/20260720_scrape_execution_reservation.sql",
+      "source": "reconciled-existing",
+      "description": "Scrape execution authorization and reservation fencing"
+    },
+    {
+      "version": "20260720143200",
+      "path": "supabase/bootstrap/v1/migrations/20260720143200_security_definer_search_path.sql",
+      "source": "phase3m-bootstrap",
+      "description": "Normalize SECURITY DEFINER search paths and browser execution revokes"
+    },
+    {
+      "version": "20260720143300",
+      "path": "supabase/bootstrap/v1/migrations/20260720143300_ocr_quota_reservation.sql",
+      "source": "phase3m-bootstrap",
+      "description": "Atomic service-only OCR monthly quota reservation"
+    },
+    {
+      "version": "20260720143400",
+      "path": "supabase/bootstrap/v1/migrations/20260720143400_admin_role_change.sql",
+      "source": "phase3m-bootstrap",
+      "description": "Atomic Admin revalidation, role transition, and immutable audit boundary"
+    }
+  ]
+}
