@@ -65,8 +65,10 @@ jobs:
             .github/workflows/release.yml \
             .github/workflows/staging-evidence.yml \
             scripts/verify_phase3h_production_readiness.py \
+            scripts/security/run_phase3m_supabase_bootstrap_gate.py \
             scripts/security/verify_phase3n_staging_evidence.py \
             scripts/security/build_phase3n_staging_evidence.py \
+            supabase/bootstrap/v1/manifest.json \
             python-api/tests/test_phase3h_production_readiness_gate.py \
             python-api/tests/test_phase3n_staging_evidence_gate.py \
             python-api/tests/test_phase3l_deployment_safety.py \
@@ -117,7 +119,7 @@ jobs:
       - name: Check out the immutable trusted producer without persisted credentials
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          fetch-depth: 1
+          fetch-depth: 0
           persist-credentials: false
           ref: ${{ inputs.trusted_producer_sha }}
 
@@ -216,7 +218,7 @@ jobs:
       - name: Check out the immutable trusted producer without persisted credentials
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          fetch-depth: 1
+          fetch-depth: 0
           persist-credentials: false
           ref: ${{ inputs.trusted_producer_sha }}
 

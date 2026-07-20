@@ -35,7 +35,7 @@ The workflow has no deployment step and does not receive provider credentials. P
 
 ## Observation schema
 
-The observation has exact schema name `phase3n-staging-observation`, version 1, and these exact top-level fields:
+The observation has exact schema name `phase3n-staging-observation`, version 2, and these exact top-level fields:
 
 - `schema_version`
 - `observation_schema`
@@ -54,12 +54,18 @@ Provider identities contain only stable IDs for the isolated Vercel, Render and 
 
 `phase3m_bootstrap` binds the hosted bootstrap history to:
 
-- the evaluated commit;
+- the immutable commit that actually applied the hosted bootstrap (`applied_commit_sha`);
+- the currently evaluated deployed commit (`candidate_commit_sha`);
 - the canonical Phase 3M chain digest;
 - the canonical manifest digest;
 - the hosted schema fingerprint;
 - exactly the canonical migration count and history count;
-- commit and replay fingerprint matches.
+- all hosted history rows matching the applied commit;
+- a verifier-recomputed Git ancestry proof from the applied commit to the candidate;
+- a verifier-recomputed manifest, chain and migration-content equivalence proof;
+- replay fingerprint matches.
+
+The applied and candidate commits may differ only when the applied commit is a Git ancestor of the candidate and both commits independently validate the same Phase 3M manifest, chain digest, migration count and migration bytes. The workflow checks out full history and recomputes this relationship; operator-supplied ancestry/equivalence booleans are not trusted. Rewriting `phase3m_internal.bootstrap_history.expected_commit_sha` to a newer deployment commit is forbidden.
 
 The Auth/RLS/IDOR section contains booleans only. It proves Free, Premium and Admin authentication, anonymous denial, per-user profile isolation, foreign-row denial, role-escalation denial, privileged browser-RPC denial and private-bucket write denial. User IDs, emails, tokens and rows are not evidence fields.
 
@@ -69,7 +75,7 @@ The nine saga checks exactly match the Phase 3H cross-store blocker set. The fiv
 
 ## Final evidence and report
 
-The final evidence schema is `phase3n-staging-evidence`, version 1. The builder adds:
+The final evidence schema is `phase3n-staging-evidence`, version 2. The builder adds:
 
 - exact commit/run/repository/workflow/environment provenance;
 - the source artifact ID and SHA-256 digest;
@@ -91,7 +97,7 @@ python scripts/security/verify_phase3n_staging_evidence.py \
   --report reports/phase3n_staging_evidence_gate.json
 ```
 
-The gate report schema is `phase3n-staging-evidence-gate-report`, version 1. Its sole trusted boundary is `success=true` and `trusted=true`; the values always agree. Only that boundary may set all of the following to true:
+The gate report schema is `phase3n-staging-evidence-gate-report`, version 2. Its sole trusted boundary is `success=true` and `trusted=true`; the values always agree. Only that boundary may set all of the following to true:
 
 - `saga_prerequisites_complete`
 - `staging_prerequisites_complete`
