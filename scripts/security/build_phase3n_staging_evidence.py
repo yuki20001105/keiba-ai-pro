@@ -65,7 +65,10 @@ def validate_observation(
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     if not gate._exact_dict(observation, OBSERVATION_KEYS):
         return False, ("observation-schema-invalid",)
-    if observation["schema_version"] != 1 or observation["observation_schema"] != OBSERVATION_SCHEMA:
+    if (
+        observation["schema_version"] != gate.SCHEMA_VERSION
+        or observation["observation_schema"] != OBSERVATION_SCHEMA
+    ):
         failures.append("observation-schema-version-invalid")
     observed = gate._parse_time(observation["observed_at"])
     expires = gate._parse_time(observation["expires_at"])

@@ -328,8 +328,10 @@ def test_staging_evidence_runs_only_from_immutable_trusted_producer() -> None:
         ".github/workflows/release.yml",
         ".github/workflows/staging-evidence.yml",
         "scripts/verify_phase3h_production_readiness.py",
+        "scripts/security/run_phase3m_supabase_bootstrap_gate.py",
         "scripts/security/verify_phase3n_staging_evidence.py",
         "scripts/security/build_phase3n_staging_evidence.py",
+        "supabase/bootstrap/v1/manifest.json",
     ):
         assert required in gate
 
@@ -338,6 +340,7 @@ def test_staging_evidence_runs_only_from_immutable_trusted_producer() -> None:
             step for step in jobs[job_name]["steps"] if str(step.get("uses", "")).startswith("actions/checkout@")
         ]
         assert len(job_checkouts) == 1
+        assert job_checkouts[0]["with"]["fetch-depth"] == 0
         assert job_checkouts[0]["with"]["ref"] == "${{ inputs.trusted_producer_sha }}"
         assert job_checkouts[0]["with"]["persist-credentials"] is False
 
@@ -490,6 +493,12 @@ def test_release_workflow_authorizes_only_exact_attested_main_merge() -> None:
     job = jobs["production-release-authorization"]
     assert job["environment"] == "production-release"
     steps = job["steps"]
+
+    checkout = next(
+        step for step in steps if str(step.get("uses", "")).startswith("actions/checkout@")
+    )
+    assert checkout["with"]["fetch-depth"] == 0
+    assert checkout["with"]["persist-credentials"] is False
 
     merge_gate = next(step for step in steps if step.get("name") == "Verify exact main merge and attested tree")
     assert "GITHUB_REF_NAME" in merge_gate["run"]

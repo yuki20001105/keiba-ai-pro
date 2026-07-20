@@ -7,7 +7,7 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -62,20 +62,19 @@ def _time(value: datetime) -> str:
     return value.isoformat().replace("+00:00", "Z")
 
 
-def _phase3m() -> dict[str, Any]:
-    expected = gate.expected_phase3m(COMMIT)
+def _phase3m(applied_commit: str = COMMIT) -> dict[str, Any]:
+    expected = gate.expected_phase3m_binding(applied_commit, COMMIT)
     return {
         **expected,
         "schema_fingerprint": "d" * 64,
         "history_count": expected["migration_count"],
-        "history_commit_match": True,
         "fingerprints_match": True,
     }
 
 
 def _observation() -> dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": gate.SCHEMA_VERSION,
         "observation_schema": builder.OBSERVATION_SCHEMA,
         "observed_at": _time(OBSERVED),
         "expires_at": _time(EXPIRES),
@@ -200,6 +199,124 @@ def test_valid_trusted_evidence_has_one_success_boundary() -> None:
     assert report["l3_eligible"] is report["production_ready"] is True
 
 
+def test_ancestor_bootstrap_with_identical_manifest_is_trusted(monkeypatch: pytest.MonkeyPatch) -> None:
+    applied_commit = "a" * 40
+    canonical = {
+        **gate.expected_phase3m(COMMIT),
+        "applied_commit_sha": applied_commit,
+        "history_commit_match": True,
+        "applied_commit_is_ancestor": True,
+        "candidate_manifest_equivalent": True,
+    }
+    value = {
+        **canonical,
+        "schema_fingerprint": "d" * 64,
+        "history_count": canonical["migration_count"],
+        "fingerprints_match": True,
+    }
+    monkeypatch.setattr(
+        gate,
+        "expected_phase3m_binding",
+        lambda applied, candidate: canonical,
+    )
+    failures: list[str] = []
+
+    assert gate._validate_phase3m(value, failures, expected_commit=COMMIT) is True
+    assert failures == []
+
+
+def test_v1_observation_and_evidence_fail_closed() -> None:
+    observation = _observation()
+    observation["schema_version"] = 1
+    valid, failures = builder.validate_observation(
+        observation,
+        expected_commit=COMMIT,
+        now=FIXED_NOW,
+    )
+    assert valid is False
+    assert "observation-schema-version-invalid" in failures
+
+    evidence = _evidence()
+    evidence["schema_version"] = 1
+    report = _report(evidence)
+    assert report["trusted"] is False
+    assert "evidence-schema-version-invalid" in report["failure_codes"]
+
+
+def test_phase3m_binding_compares_ordered_migration_identity_and_hash(monkeypatch: pytest.MonkeyPatch) -> None:
+    applied_commit = "a" * 40
+    candidate_commit = "b" * 40
+
+    def manifest(file_sha256: str) -> SimpleNamespace:
+        entry = SimpleNamespace(
+            version="20260701",
+            path="supabase/migrations/20260701_example.sql",
+            source="phase3m-bootstrap",
+            sha256=file_sha256,
+        )
+        return SimpleNamespace(
+            chain_digest="c" * 64,
+            sha256="d" * 64,
+            migrations=(entry,),
+        )
+
+    class FakeRunner:
+        @staticmethod
+        def load_manifest(_path: Path, *, expected_commit: str) -> SimpleNamespace:
+            return manifest("e" * 64 if expected_commit == applied_commit else "f" * 64)
+
+    monkeypatch.setattr(gate, "_load_phase3m_runner", lambda: FakeRunner())
+    monkeypatch.setattr(
+        gate,
+        "subprocess",
+        SimpleNamespace(run=lambda *args, **kwargs: SimpleNamespace(returncode=0)),
+    )
+    gate.expected_phase3m_binding.cache_clear()
+    try:
+        binding = gate.expected_phase3m_binding(applied_commit, candidate_commit)
+    finally:
+        gate.expected_phase3m_binding.cache_clear()
+
+    assert binding["applied_commit_is_ancestor"] is True
+    assert binding["candidate_manifest_equivalent"] is False
+
+
+def test_phase3m_binding_rejects_nonancestor_even_when_manifest_matches(monkeypatch: pytest.MonkeyPatch) -> None:
+    commit = "a" * 40
+    manifest = SimpleNamespace(
+        chain_digest="c" * 64,
+        sha256="d" * 64,
+        migrations=(
+            SimpleNamespace(
+                version="20260701",
+                path="supabase/migrations/20260701_example.sql",
+                source="phase3m-bootstrap",
+                sha256="e" * 64,
+            ),
+        ),
+    )
+
+    class FakeRunner:
+        @staticmethod
+        def load_manifest(_path: Path, *, expected_commit: str) -> SimpleNamespace:
+            return manifest
+
+    monkeypatch.setattr(gate, "_load_phase3m_runner", lambda: FakeRunner())
+    monkeypatch.setattr(
+        gate,
+        "subprocess",
+        SimpleNamespace(run=lambda *args, **kwargs: SimpleNamespace(returncode=1)),
+    )
+    gate.expected_phase3m_binding.cache_clear()
+    try:
+        binding = gate.expected_phase3m_binding(commit, "b" * 40)
+    finally:
+        gate.expected_phase3m_binding.cache_clear()
+
+    assert binding["applied_commit_is_ancestor"] is False
+    assert binding["candidate_manifest_equivalent"] is True
+
+
 @pytest.mark.parametrize("key", sorted(gate.EVIDENCE_KEYS))
 def test_missing_top_level_evidence_field_fails_closed(key: str) -> None:
     evidence = _evidence()
@@ -278,7 +395,12 @@ def test_provider_resources_and_github_environments_must_be_isolated() -> None:
         ("chain_digest", "0" * 64, "phase3m-chain-digest-mismatch"),
         ("manifest_sha256", "0" * 64, "phase3m-manifest-sha256-mismatch"),
         ("history_count", 10, "phase3m-history-count-invalid"),
-        ("history_commit_match", False, "phase3m-history-commit-match-invalid"),
+        ("history_commit_match", False, "phase3m-history-commit-match-mismatch"),
+        ("history_commit_match", 1, "phase3m-history-commit-match-mismatch"),
+        ("applied_commit_is_ancestor", False, "phase3m-applied-commit-is-ancestor-mismatch"),
+        ("applied_commit_is_ancestor", 1, "phase3m-applied-commit-is-ancestor-mismatch"),
+        ("candidate_manifest_equivalent", False, "phase3m-candidate-manifest-equivalent-mismatch"),
+        ("candidate_manifest_equivalent", 1, "phase3m-candidate-manifest-equivalent-mismatch"),
         ("fingerprints_match", False, "phase3m-fingerprints-match-invalid"),
     ],
 )
@@ -287,6 +409,15 @@ def test_phase3m_fingerprints_and_history_are_commit_bound(field: str, value: An
     evidence["phase3m_bootstrap"][field] = value
 
     assert failure in _report(evidence)["failure_codes"]
+
+
+def test_phase3m_unknown_applied_commit_fails_closed() -> None:
+    evidence = _evidence()
+    evidence["phase3m_bootstrap"]["applied_commit_sha"] = "f" * 40
+
+    report = _report(evidence)
+    assert "phase3m-bootstrap-equivalence-unavailable" in report["failure_codes"]
+    assert report["trusted"] is False
 
 
 @pytest.mark.parametrize("check", sorted(gate.AUTH_CHECK_KEYS))
@@ -561,6 +692,7 @@ def test_workflow_has_three_distinct_environment_gates_and_minimal_permissions()
     for environment in gate.APPROVAL_ENVIRONMENTS:
         assert f"name: {environment}" in workflow
     assert "persist-credentials: false" in workflow
+    assert workflow.count("fetch-depth: 0") >= 3
     assert "permissions:\n  contents: read" in workflow
     assert "attestations: write" in workflow and "id-token: write" in workflow
     assert "actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be" in workflow

@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -21,7 +22,7 @@ PHASE3M_MANIFEST = ROOT / "supabase" / "bootstrap" / "v1" / "manifest.json"
 
 EVIDENCE_SCHEMA = "phase3n-staging-evidence"
 REPORT_SCHEMA = "phase3n-staging-evidence-gate-report"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_MAX_AGE_SECONDS = 3600
 MAX_EVIDENCE_BYTES = 128 * 1024
 MAX_REPORT_BYTES = 128 * 1024
@@ -95,13 +96,16 @@ APPROVAL_ENTRY_KEYS = frozenset(
 )
 PHASE3M_KEYS = frozenset(
     {
-        "expected_commit_sha",
+        "applied_commit_sha",
+        "candidate_commit_sha",
         "chain_digest",
         "manifest_sha256",
         "schema_fingerprint",
         "migration_count",
         "history_count",
         "history_commit_match",
+        "applied_commit_is_ancestor",
+        "candidate_manifest_equivalent",
         "fingerprints_match",
     }
 )
@@ -362,10 +366,58 @@ def expected_phase3m(expected_commit: str) -> dict[str, Any]:
     runner = _load_phase3m_runner()
     manifest = runner.load_manifest(PHASE3M_MANIFEST, expected_commit=expected_commit)
     return {
-        "expected_commit_sha": expected_commit,
+        "candidate_commit_sha": expected_commit,
         "chain_digest": manifest.chain_digest,
         "manifest_sha256": manifest.sha256,
         "migration_count": len(manifest.migrations),
+    }
+
+
+@functools.lru_cache(maxsize=16)
+def expected_phase3m_binding(applied_commit: str, candidate_commit: str) -> dict[str, Any]:
+    if (
+        not isinstance(applied_commit, str)
+        or COMMIT_RE.fullmatch(applied_commit) is None
+        or not isinstance(candidate_commit, str)
+        or COMMIT_RE.fullmatch(candidate_commit) is None
+    ):
+        raise ValueError("phase3m-commit-invalid")
+
+    runner = _load_phase3m_runner()
+    applied = runner.load_manifest(PHASE3M_MANIFEST, expected_commit=applied_commit)
+    candidate = runner.load_manifest(PHASE3M_MANIFEST, expected_commit=candidate_commit)
+    ancestry = subprocess.run(
+        ["git", "-C", str(ROOT), "merge-base", "--is-ancestor", applied_commit, candidate_commit],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    if ancestry.returncode not in (0, 1):
+        raise RuntimeError("phase3m-ancestry-unavailable")
+
+    manifest_equivalent = (
+        applied.chain_digest == candidate.chain_digest
+        and applied.sha256 == candidate.sha256
+        and len(applied.migrations) == len(candidate.migrations)
+        and tuple(
+            (entry.version, entry.path, entry.source, entry.sha256)
+            for entry in applied.migrations
+        )
+        == tuple(
+            (entry.version, entry.path, entry.source, entry.sha256)
+            for entry in candidate.migrations
+        )
+    )
+    return {
+        "applied_commit_sha": applied_commit,
+        "candidate_commit_sha": candidate_commit,
+        "chain_digest": candidate.chain_digest,
+        "manifest_sha256": candidate.sha256,
+        "migration_count": len(candidate.migrations),
+        "history_commit_match": True,
+        "applied_commit_is_ancestor": ancestry.returncode == 0,
+        "candidate_manifest_equivalent": manifest_equivalent,
     }
 
 
@@ -504,14 +556,38 @@ def _validate_phase3m(value: Any, failures: list[str], *, expected_commit: str) 
     if not _exact_dict(value, PHASE3M_KEYS):
         _append(failures, "phase3m-bootstrap-schema-invalid")
         return False
+    applied_commit = value["applied_commit_sha"]
+    candidate_commit = value["candidate_commit_sha"]
+    if not isinstance(applied_commit, str) or COMMIT_RE.fullmatch(applied_commit) is None:
+        _append(failures, "phase3m-applied-commit-sha-invalid")
+        return False
+    if candidate_commit != expected_commit:
+        _append(failures, "phase3m-candidate-commit-sha-mismatch")
+        return False
     try:
-        canonical = expected_phase3m(expected_commit)
+        canonical = expected_phase3m_binding(applied_commit, expected_commit)
     except Exception:
-        _append(failures, "phase3m-canonical-manifest-unavailable")
+        _append(failures, "phase3m-bootstrap-equivalence-unavailable")
         return False
     valid = True
-    for key in ("expected_commit_sha", "chain_digest", "manifest_sha256", "migration_count"):
-        if value[key] != canonical[key]:
+    for key in (
+        "applied_commit_sha",
+        "candidate_commit_sha",
+        "chain_digest",
+        "manifest_sha256",
+        "migration_count",
+        "history_commit_match",
+        "applied_commit_is_ancestor",
+        "candidate_manifest_equivalent",
+    ):
+        if (
+            key in {
+                "history_commit_match",
+                "applied_commit_is_ancestor",
+                "candidate_manifest_equivalent",
+            }
+            and type(value[key]) is not bool
+        ) or value[key] != canonical[key]:
             _append(failures, f"phase3m-{key.replace('_', '-')}-mismatch")
             valid = False
     if not isinstance(value["schema_fingerprint"], str) or DIGEST_RE.fullmatch(value["schema_fingerprint"]) is None:
@@ -520,10 +596,15 @@ def _validate_phase3m(value: Any, failures: list[str], *, expected_commit: str) 
     if type(value["history_count"]) is not int or value["history_count"] != canonical["migration_count"]:
         _append(failures, "phase3m-history-count-invalid")
         valid = False
-    for key in ("history_commit_match", "fingerprints_match"):
-        if type(value[key]) is not bool or value[key] is not True:
-            _append(failures, f"phase3m-{key.replace('_', '-')}-invalid")
-            valid = False
+    if canonical["applied_commit_is_ancestor"] is not True:
+        _append(failures, "phase3m-applied-commit-not-ancestor")
+        valid = False
+    if canonical["candidate_manifest_equivalent"] is not True:
+        _append(failures, "phase3m-candidate-manifest-not-equivalent")
+        valid = False
+    if type(value["fingerprints_match"]) is not bool or value["fingerprints_match"] is not True:
+        _append(failures, "phase3m-fingerprints-match-invalid")
+        valid = False
     return valid
 
 
