@@ -189,6 +189,11 @@ function normalizeDryRunResult(resultPayload: any): ScrapeDryRunResult {
 
 export default function DataCollectionPage() {
   const { isAdmin } = useAuth()
+  const e2ePollIntervalRaw = process.env.NEXT_PUBLIC_E2E_BATCH_POLL_INTERVAL_MS
+  const e2ePollInterval = e2ePollIntervalRaw ? Number(e2ePollIntervalRaw) : undefined
+  const batchScrapeOptions = Number.isFinite(e2ePollInterval) && (e2ePollInterval as number) >= 0
+    ? { pollIntervalMs: e2ePollInterval as number }
+    : undefined
   // 期間指定用
   const now = new Date()
   const [startPeriod, setStartPeriod] = useState(`${now.getFullYear() - 1}-01`)
@@ -243,7 +248,7 @@ export default function DataCollectionPage() {
     result: batchResult,
     start: startBatchScrape,
     clearExecutionLockAfterReconciliation,
-  } = useBatchScrape()
+  } = useBatchScrape(batchScrapeOptions)
   const lastRequestSnapshotRef = useRef<BatchRequestSnapshot | null>(null)
   const serverReviewInitialFetchRef = useRef<string | null>(null)
   const serverReviewLocatorRef = useRef<ScrapeUncertaintyReviewLocator | null>(null)
