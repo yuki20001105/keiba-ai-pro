@@ -1,9 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { supabase } from '@/lib/supabase'
 import { authFetch } from '@/lib/auth-fetch'
-import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { AdminOnly } from '@/components/AdminOnly'
 
@@ -24,8 +22,37 @@ interface Stats {
   totalModels: number
 }
 
+function readSafeDetail(value: unknown, fallback: string): string {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return fallback
+  const detail = (value as Record<string, unknown>).detail
+  return typeof detail === 'string' && detail.length > 0 && detail.length <= 200 && !/[\u0000-\u001f\u007f]/.test(detail)
+    ? detail
+    : fallback
+}
+
+function isUser(value: unknown): value is User {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const record = value as Record<string, unknown>
+  return typeof record.id === 'string'
+    && typeof record.email === 'string'
+    && (record.role === 'admin' || record.role === 'user')
+    && (record.full_name === null || typeof record.full_name === 'string')
+    && (record.subscription_tier === 'free' || record.subscription_tier === 'premium')
+    && typeof record.created_at === 'string'
+}
+
+async function readJsonRecord(response: Response): Promise<Record<string, unknown> | null> {
+  try {
+    const value: unknown = await response.json()
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : null
+  } catch {
+    return null
+  }
+}
+
 export default function AdminDashboard() {
-  const router = useRouter()
   const [loading, setLoading] = useState(true)
   const [users, setUsers] = useState<User[]>([])
   const [stats, setStats] = useState<Stats>({
@@ -36,6 +63,8 @@ export default function AdminDashboard() {
     totalModels: 0
   })
   const [roleMessage, setRoleMessage] = useState('')
+  const [dataError, setDataError] = useState('')
+  const [updatingUserId, setUpdatingUserId] = useState<string | null>(null)
 
   useEffect(() => {
     loadData()
@@ -43,19 +72,26 @@ export default function AdminDashboard() {
 
   const loadData = async () => {
     try {
-      // ユーザー一覧取得
-      const { data: usersData, error: usersError } = await supabase
-        .from('profiles')
-        .select('*')
-        .order('created_at', { ascending: false })
-
-      if (usersError) throw usersError
-      setUsers(usersData || [])
+      setDataError('')
+      const usersResponse = await authFetch('/api/admin/profiles', {
+        method: 'GET',
+        cache: 'no-store',
+      })
+      const usersPayload = await readJsonRecord(usersResponse)
+      if (!usersResponse.ok) {
+        throw new Error(readSafeDetail(usersPayload, 'ユーザー一覧の取得に失敗しました'))
+      }
+      const profiles = usersPayload?.profiles
+      if (usersPayload?.version !== 1 || !Array.isArray(profiles) || !profiles.every(isUser)) {
+        throw new Error('ユーザー一覧の応答形式を確認できません')
+      }
+      const usersData = profiles
+      setUsers(usersData)
 
       // 統計情報
-      const totalUsers = usersData?.length || 0
-      const adminUsers = usersData?.filter((u: User) => u.role === 'admin').length || 0
-      const premiumUsers = usersData?.filter((u: User) => u.subscription_tier === 'premium').length || 0
+      const totalUsers = usersData.length
+      const adminUsers = usersData.filter((u: User) => u.role === 'admin').length
+      const premiumUsers = usersData.filter((u: User) => u.subscription_tier === 'premium').length
 
       // レース数を取得
       const racesResponse = await authFetch(`/api/data-stats`)
@@ -75,28 +111,47 @@ export default function AdminDashboard() {
         totalModels
       })
     } catch (error) {
-      console.error('データ取得エラー:', error)
+      setUsers([])
+      setDataError(error instanceof Error ? error.message : 'データ取得に失敗しました')
     } finally {
       setLoading(false)
     }
   }
 
-  const handleRoleChange = async (userId: string, newRole: 'admin' | 'user') => {
+  const handleRoleChange = async (userId: string, newRole: string) => {
+    if (newRole !== 'admin' && newRole !== 'user') {
+      setRoleMessage('許可されていないロールです')
+      return
+    }
+    setUpdatingUserId(userId)
     try {
-      const { error } = await supabase
-        .from('profiles')
-        .update({ role: newRole })
-        .eq('id', userId)
-
-      if (error) throw error
+      const response = await authFetch(`/api/admin/profiles/${encodeURIComponent(userId)}/role`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role: newRole }),
+      })
+      const payload = await readJsonRecord(response)
+      if (!response.ok) throw new Error(readSafeDetail(payload, 'ロール変更に失敗しました'))
+      const profile = payload?.profile
+      if (
+        payload?.version !== 1
+        || typeof profile !== 'object'
+        || profile === null
+        || Array.isArray(profile)
+        || (profile as Record<string, unknown>).id !== userId
+        || (profile as Record<string, unknown>).role !== newRole
+      ) {
+        throw new Error('ロール変更の応答形式を確認できません')
+      }
 
       setRoleMessage(`ユーザーのロールを ${newRole} に変更しました`)
       setTimeout(() => setRoleMessage(''), 3000)
-      loadData()
+      await loadData()
     } catch (error) {
-      console.error('ロール変更エラー:', error)
-      setRoleMessage('ロール変更に失敗しました')
+      setRoleMessage(error instanceof Error ? error.message : 'ロール変更に失敗しました')
       setTimeout(() => setRoleMessage(''), 3000)
+    } finally {
+      setUpdatingUserId(null)
     }
   }
 
@@ -112,7 +167,7 @@ export default function AdminDashboard() {
     <AdminOnly>
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900">
         {roleMessage && (
-          <div className="fixed top-4 right-4 z-50 bg-slate-800 border border-blue-500/50 text-white px-4 py-2 rounded-lg shadow-lg text-sm">
+          <div role="status" className="fixed top-4 right-4 z-50 bg-slate-800 border border-blue-500/50 text-white px-4 py-2 rounded-lg shadow-lg text-sm">
             {roleMessage}
           </div>
         )}
@@ -136,6 +191,11 @@ export default function AdminDashboard() {
         </header>
 
         <div className="container mx-auto px-6 py-8">
+          {dataError && (
+            <div role="alert" className="mb-6 rounded-lg border border-red-500/50 bg-red-950/40 px-4 py-3 text-red-200">
+              {dataError}
+            </div>
+          )}
           {/* 統計カード */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
             <StatCard
@@ -237,7 +297,9 @@ export default function AdminDashboard() {
                       <td className="py-3 px-4">
                         <select
                           value={user.role}
-                          onChange={(e) => handleRoleChange(user.id, e.target.value as 'admin' | 'user')}
+                          onChange={(e) => handleRoleChange(user.id, e.target.value)}
+                          disabled={updatingUserId === user.id}
+                          aria-label={`${user.email} のロール`}
                           className="bg-slate-700 text-white px-3 py-1 rounded border border-blue-500/30 text-sm"
                         >
                           <option value="user">ユーザー</option>

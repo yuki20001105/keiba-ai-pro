@@ -62,6 +62,14 @@ function makeOcrRequest(form: FormData, headers?: Record<string, string>) {
   }
 }
 
+function makePngFile(name = 'ticket.png') {
+  return new File(
+    [new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])],
+    name,
+    { type: 'image/png' }
+  )
+}
+
 describe('Phase2 API security regressions', () => {
   beforeEach(() => {
     vi.resetModules()
@@ -183,7 +191,7 @@ describe('Phase2 API security regressions', () => {
     const { POST } = await import('@/app/api/ocr/route')
 
     const form = new FormData()
-    form.set('image', new File(['x'], 'ticket.png', { type: 'image/png' }))
+    form.set('image', makePngFile())
     const res = await POST(makeOcrRequest(form) as any)
 
     expect(res.status).toBe(401)
@@ -196,27 +204,33 @@ describe('Phase2 API security regressions', () => {
       context: { user: { id: 'verified-user' }, token: 'tok', profile: { role: 'user', subscription_tier: 'free' } },
     })
 
-    const single = vi.fn()
-      .mockResolvedValueOnce({ data: { ocr_monthly_limit: 10, ocr_used_this_month: 10, ocr_reset_date: new Date().toISOString() }, error: null })
+    const rpc = vi.fn().mockResolvedValue({
+      data: [{
+        allowed: false,
+        used_count: 10,
+        monthly_limit: 10,
+        reset_at: new Date().toISOString(),
+      }],
+      error: null,
+    })
     mockCreateSupabaseServiceClient.mockReturnValue({
-      from: () => ({
-        select: () => ({ eq: () => ({ single }) }),
-      }),
+      rpc,
     })
 
     const { POST } = await import('@/app/api/ocr/route')
 
     const mismatchForm = new FormData()
-    mismatchForm.set('image', new File(['x'], 'ticket.png', { type: 'image/png' }))
+    mismatchForm.set('image', makePngFile())
     mismatchForm.set('userId', 'other-user')
     const mismatch = await POST(makeOcrRequest(mismatchForm, { Authorization: 'Bearer x' }) as any)
     expect(mismatch.status).toBe(403)
     expect(mockVisionTextDetection).not.toHaveBeenCalled()
 
     const quotaForm = new FormData()
-    quotaForm.set('image', new File(['x'], 'ticket.png', { type: 'image/png' }))
+    quotaForm.set('image', makePngFile())
     const quota = await POST(makeOcrRequest(quotaForm, { Authorization: 'Bearer x' }) as any)
     expect(quota.status).toBe(429)
+    expect(rpc).toHaveBeenCalledWith('consume_ocr_quota', { p_user_id: 'verified-user' })
     expect(mockVisionTextDetection).not.toHaveBeenCalled()
   })
 

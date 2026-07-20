@@ -634,8 +634,32 @@
     "duplicates": []
   },
   "next": {
-    "count": 71,
+    "count": 73,
     "routes": [
+      {
+        "route": "/api/admin/profiles",
+        "method": "GET",
+        "policy": "Admin",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/admin/profiles/route.ts"
+      },
+      {
+        "route": "/api/admin/profiles/[userId]/role",
+        "method": "PATCH",
+        "policy": "Admin",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/admin/profiles/[userId]/role/route.ts"
+      },
       {
         "route": "/api/ai-correct",
         "method": "POST",
@@ -1490,7 +1514,7 @@
       }
     ],
     "unclassified": [],
-    "canonical_entries": 71,
+    "canonical_entries": 73,
     "gate_failures": []
   },
   "gate": {
