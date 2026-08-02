@@ -425,8 +425,8 @@ export default function TrainPage() {
                         <div className="flex-1" />
                         <button
                           onClick={() => handleDeleteModel(m.model_id)}
-                          disabled={isDeleting || m.is_active}
-                          title={m.is_active ? '使用中のモデルは削除できません' : '削除'}
+                          disabled
+                          title="モデル削除には別の永続的な廃止承認が必要です"
                           className="text-xs text-[#555] hover:text-red-400 transition-colors disabled:opacity-30 px-2 py-1"
                         >
                           {isDeleting ? '...' : '削除'}

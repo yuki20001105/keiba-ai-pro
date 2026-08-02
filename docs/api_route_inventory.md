@@ -35,8 +35,7 @@ Operational notes:
 | /api/health | FastAPI /health | home |
 | /api/data-stats | FastAPI /api/data_stats | home, dashboard, data-collection, admin |
 | /api/models | FastAPI /api/models | train, predict-batch, race-analysis |
-| /api/models/[id] | FastAPI /api/models/{model_id} | train |
-| /api/models/[id]/activate | FastAPI /api/models/{model_id}/activate | train |
+| /api/models/[id] GET | FastAPI /api/models/{model_id} | train read-only model detail |
 | /api/ml/train/status/[job_id] | FastAPI /api/train/status/{job_id} | train |
 | /api/analyze-race | FastAPI /api/analyze_race | predict-batch, race-analysis |
 | /api/analyze-races-batch | FastAPI /api/analyze_races_batch | backend-facing route available |
@@ -100,6 +99,8 @@ Operational notes:
 |---|---|---|
 | /api/scrape (current implementation calls /api/scrape/start) | /api/scrape/start style naming in Next route layer (future) | name suggests legacy sync behavior, but actual behavior is async start |
 | /api/ml/train/start | approval-bound durable retrain job runner | direct `.joblib` writer is available only by exact local/test opt-in; deployed/unknown environments fail closed and the UI action is disabled |
+| /api/models/[id] DELETE | separate durable model-retirement approval | local/Supabase artifact deletion is available only by exact local/test opt-in; deployed/unknown environments fail closed and the UI action is disabled |
+| /api/models/[id]/activate | separate durable model-switch approval | pointer mutation is available only by exact local/test opt-in; deployed/unknown environments fail closed and the UI action is disabled |
 
 ### unused (current UI)
 
@@ -171,6 +172,7 @@ Operational notes:
 ### deprecated
 
 - /api/train and /api/train/start are local/test compatibility writers only; both fail closed unless `APP_ENV` is local/test and `MODEL_TRAINING_LOCAL_ENABLED=true`
+- DELETE /api/models/{model_id} is local/test compatibility only and fails closed unless `MODEL_DELETION_LOCAL_ENABLED=true`
 - /api/models/{model_id}/activate is local/test compatibility only and is not a promotion path
 - if deprecating /api/predict later, maintain compatibility period and migrate callers first
 
