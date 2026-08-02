@@ -37,7 +37,7 @@ This worktree is suitable for source inspection, frontend development, and focus
 |---|---|---|
 | Git source | Candidate branch `codex/fullstack-readiness` remains based on `origin/develop` commit `d9bbcbc`; all readiness work is local | Correct base; push and exact-SHA CI evidence still require authorization |
 | Node runtime | Node 24.12.0, npm 11.6.2; clean `npm ci` and the CI `--omit=optional` dependency-tree check pass | Verified |
-| Frontend tests | 25 test files and 281 tests passed | Verified |
+| Frontend tests | 26 test files and 295 tests passed | Verified |
 | Production build | Next.js 16.2.12 build completed and generated 69 routes | Verified; broad NFT trace and dependency-origin `url.parse()` warnings remain |
 | Python runtime | Worktree-local Python 3.11.9 venv exists with CI requirements, pytest, FastAPI, LightGBM, pandas and scikit-learn | Verified |
 | Python tests | Full `python-api/tests` suite passes 957 tests; the model builder/verifier slice passes 72 tests and the leakage-sensitive feature-consistency slice passes 73 tests | Locally verified on Python 3.11.9; exact-SHA CI remains pending |
@@ -259,7 +259,7 @@ The order below is dependency-driven. An agent must not skip ahead by replacing 
 |---|---|---|---|---|---:|
 | WP0 Canonicalize current evidence | Sysop | none | Clean candidate commit and regenerated local/CI reports | All reports bind to the same current full SHA; no placeholder/stale report is treated as current | +2% |
 | WP1 Define business acceptance contract | Jobs + Trainer + Ledger | none | **In progress:** versioned fail-closed contract, verifier, contract/abuse tests, CI and trusted Phase 3N/promotion wiring are implemented; non-AUC values remain deliberately unapproved | User approves thresholds; fresh current-commit out-of-time evidence passes the attested promotion gate | +5% |
-| WP2 Finish operator workflow gaps | Harvester + Trainer + Oracle | WP1 for model decisions | **In progress:** quality bridge, authenticated Admin profiling viewer, read-only feature provenance/INV-01 catalog, strict retrain payload hashing, Admin-only eligibility assessment, and a deployed-environment block on legacy direct model activation are implemented. Durable approval/job/switch execution, standalone generation execution, advanced evaluation, and repair execution policy remain | Accepted workflows meet G1; intentionally script-only items have runbooks | +6% |
+| WP2 Finish operator workflow gaps | Harvester + Trainer + Oracle | WP1 for model decisions | **In progress:** quality bridge, authenticated Admin profiling viewer, read-only feature provenance/INV-01 catalog, strict retrain payload hashing, Admin-only eligibility assessment, deployed-environment blocks on legacy model activation/repair, and an explicit repair execution runbook are implemented. Durable approval/job/switch execution, standalone generation execution, and advanced evaluation remain | Accepted workflows meet G1; intentionally script-only items have runbooks | +6% |
 | WP3 Provision isolated Staging governance | Sysop | WP0 | **Partial:** three protected approval Environments, protected producer branch, and a distinct Vercel Staging deployment record exist. Current provider topology/commit, producer parity, evidence inputs, successful run selector, and authenticated Render/Supabase metadata remain absent | Authenticated metadata proves isolation and required reviewers without exposing values | +4% |
 | WP4 Apply and verify hosted bootstrap | Sysop | WP3, explicit migration approval | Phase 3M migrations and hosted schema/history evidence | Bootstrap gate passes against Staging; rollback plan is recorded | +4% |
 | WP5 Run Staging security and model checks | Sysop + Trainer + Oracle | WP4 | Auth/RLS/IDOR evidence and current candidate model report | G2 security boundary and model thresholds pass on candidate data | +4% |
@@ -346,6 +346,7 @@ For each status review:
 | 2026-08-02 | `codex/fullstack-readiness` local candidate | 66% authoritative / 68% provisional | NOT_READY | WP1 now rebuilds acceptance evidence from strict out-of-time rows, checks temporal separation and canonical future fields, recomputes all metrics, and binds model/source digests. Python 949, feature consistency 73, model gate 72, Frontend 245, typecheck/build, and scanners pass locally; real observations, threshold approval, push/CI, and trusted Staging remain open. |
 | 2026-08-02 | `codex/fullstack-readiness` guarded-retrain candidate | 66% authoritative / 68% provisional | NOT_READY | WP2 now produces canonical actor/model/feature/data/code-bound retrain payloads and exposes an Admin-only, non-executing approval eligibility assessment. Frontend 274, typecheck, targeted lint, 69-route build, and scanners pass; durable approval, job/artifact runtime, evaluation, and activation remain disabled. |
 | 2026-08-02 | `codex/fullstack-readiness` activation-bypass guard | 66% authoritative / 68% provisional | NOT_READY | The legacy direct active-model pointer mutation is blocked in deployed/unknown environments at both Next and FastAPI layers and removed as an enabled UI action. Python 957 and Frontend 281 pass; only explicit local/test compatibility remains. |
+| 2026-08-02 | `codex/fullstack-readiness` repair-policy guard | 66% authoritative / 68% provisional | NOT_READY | Legacy repair and incomplete-race rescrape execution are now blocked before proxying in deployed or unknown environments and require explicit local/test opt-in at both Next and FastAPI boundaries. Frontend 295, the 115-test operational safety slice, typecheck, targeted lint, and scanners pass; durable approval-bound execution and trusted Staging evidence remain open. |
 
 ---
 
@@ -360,5 +361,6 @@ For each status review:
 - `docs/phase3l_staging_readiness_gate.md`: external Staging prerequisites.
 - `docs/phase3n_staging_evidence.md`: trusted evidence and approval contract.
 - `docs/model_acceptance_contract.md`: versioned business thresholds, evidence schema, and approval boundary.
+- `docs/repair_execution_policy.md`: fail-closed direct-repair boundary and prerequisites for future approval-bound execution.
 
 Historical documents may contain stale versions or assumptions. When they conflict, prefer `docs/specs/SYSTEM.md`, executable current-commit evidence, and this status document.

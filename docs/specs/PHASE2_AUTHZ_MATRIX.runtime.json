@@ -634,7 +634,7 @@
     "duplicates": []
   },
   "next": {
-    "count": 73,
+    "count": 74,
     "routes": [
       {
         "route": "/api/admin/profiles",
@@ -899,6 +899,18 @@
         "status_propagation": true,
         "detail_error_passthrough": true,
         "source": "src/app/api/ml/train/status/[job_id]/route.ts"
+      },
+      {
+        "route": "/api/model-redesign/approval/assess",
+        "method": "POST",
+        "policy": "Admin",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/model-redesign/approval/assess/route.ts"
       },
       {
         "route": "/api/model-redesign/summary",
@@ -1514,7 +1526,7 @@
       }
     ],
     "unclassified": [],
-    "canonical_entries": 73,
+    "canonical_entries": 74,
     "gate_failures": []
   },
   "gate": {

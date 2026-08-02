@@ -1,19 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { ML_API_URL } from '@/lib/backend-url'
-
-const LOCAL_ENVIRONMENTS = new Set(['local', 'development', 'dev', 'test', 'ci'])
-
-function legacyLocalActivationEnabled(): boolean {
-  const environment = (process.env.APP_ENV || '').trim().toLowerCase()
-  return LOCAL_ENVIRONMENTS.has(environment)
-    && (process.env.MODEL_ACTIVATION_LOCAL_ENABLED || '').trim().toLowerCase() === 'true'
-}
+import { explicitLocalOptInEnabled } from '@/lib/legacy-local-policy'
 
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  if (!legacyLocalActivationEnabled()) {
+  if (!explicitLocalOptInEnabled('MODEL_ACTIVATION_LOCAL_ENABLED')) {
     return NextResponse.json({
       success: false,
       state: 'fail',

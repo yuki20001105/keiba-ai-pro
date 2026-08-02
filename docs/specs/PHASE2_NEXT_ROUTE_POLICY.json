@@ -242,6 +242,17 @@
     "detail_error_passthrough_reason": ""
   },
   {
+    "route": "/api/model-redesign/approval/assess",
+    "method": "POST",
+    "policy": "Admin",
+    "auth_header_forward": false,
+    "status_propagation": false,
+    "detail_error_passthrough": false,
+    "auth_header_forward_reason": "/api/model-redesign/approval/assess authorizes Admin requests locally and does not proxy the browser bearer token",
+    "status_propagation_reason": "/api/model-redesign/approval/assess returns its own deterministic assessment status instead of proxying an upstream response",
+    "detail_error_passthrough_reason": "/api/model-redesign/approval/assess emits a bounded local validation contract and has no upstream detail to pass through"
+  },
+  {
     "route": "/api/model-redesign/summary",
     "method": "GET",
     "policy": "Authenticated",

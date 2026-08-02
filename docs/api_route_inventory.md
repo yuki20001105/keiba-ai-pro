@@ -89,8 +89,8 @@ Operational notes:
 | /api/debug/race-ids | FastAPI /api/debug/race-ids | diagnostic utility |
 | /api/backfill/nar-pedigree | FastAPI /api/backfill/nar-pedigree | maintenance utility |
 | /api/backfill/coat-color | FastAPI /api/backfill/coat-color | maintenance utility |
-| /api/scrape/repair/[race_id] | FastAPI /api/scrape/repair/{race_id} | admin repair utility |
-| /api/scrape/rescrape-incomplete | FastAPI /api/rescrape_incomplete | maintenance utility |
+| /api/scrape/repair/[race_id] | FastAPI /api/scrape/repair/{race_id} | explicit local/test compatibility only; deployed fail-closed |
+| /api/scrape/rescrape-incomplete | FastAPI /api/rescrape_incomplete | explicit local/test compatibility only; deployed fail-closed |
 
 ### deprecated
 

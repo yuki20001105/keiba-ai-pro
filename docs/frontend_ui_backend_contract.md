@@ -70,7 +70,8 @@ Architecture (current):
 | GET /api/prediction-history and /{race_id} | require_premium | no explicit pre-guard | user sees runtime failure instead of gated UX |
 | GET /api/debug/race/{race_id} and /features | require_premium | no explicit pre-guard | premium feature exposed by navigation but denied at runtime |
 | POST /api/train (synchronous route) | require_premium | no explicit pre-guard | unexpected 403 if called directly |
-| POST /api/scrape/start and POST /api/scrape/repair/{race_id} | require_admin | no explicit pre-guard | operational actions rely on backend-only reject |
+| POST /api/scrape/start | require_admin + operational saga binding | Admin workflow guard | deployed execute remains disabled until fenced destination exists |
+| POST /api/scrape/repair/{race_id} and /api/rescrape_incomplete | require_admin + local-only legacy opt-in | no executable UI | Next and FastAPI both reject deployed/unknown environments |
 | screens using authFetch generally | token optional at fetch layer | no centralized role gating matrix | inconsistent UX across pages |
 
 ## 4. Unused/Holding API Route Inventory (Current UI)
