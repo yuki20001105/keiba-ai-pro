@@ -35,7 +35,7 @@ This worktree is suitable for source inspection, frontend development, and focus
 
 | Area | Observed state on 2026-08-02 | Assessment |
 |---|---|---|
-| Git source | Candidate branch `codex/fullstack-readiness` remains based on `origin/develop` commit `d9bbcbc` and is 32 commits ahead; all readiness work is local | Correct base; push and exact-SHA CI evidence still require authorization |
+| Git source | Candidate branch `codex/fullstack-readiness` remains based on `origin/develop` commit `d9bbcbc` with local readiness commits ahead; all readiness work is local | Correct base; determine the live ahead count with Git; push and exact-SHA CI evidence still require authorization |
 | Node runtime | Node 24.12.0, npm 11.6.2; clean `npm ci` and the CI `--omit=optional` dependency-tree check passed. The current development tree contains 4 optional WASM packages reported as extraneous | Verified for reproducible install; current `node_modules` is not an exact clean-tree snapshot |
 | Frontend tests | 32 test files and 335 tests passed on exact commit `a8e2f18` | Verified; existing React `act(...)` warnings remain non-blocking |
 | Production build | Next.js 16.2.12 build completed and generated 71 routes | Verified; broad NFT trace and dependency-origin `url.parse()` warnings remain |
