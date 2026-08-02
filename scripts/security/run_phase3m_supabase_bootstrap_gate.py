@@ -638,6 +638,17 @@ def _command_bytes(args: Sequence[str], *, timeout: int = 60) -> BinaryCommandRe
 
 def _require_success(result: CommandResult, code: str) -> str:
     if result.returncode != 0:
+        # Preserve only reviewed, non-sensitive contract identifiers. Raw psql
+        # stderr is intentionally not emitted because this gate is also used by
+        # trusted workflows.
+        for marker, diagnostic_code in (
+            ("phase3n observation/HA tables missing", "phase3n-contract-tables-missing"),
+            ("phase3n observation/HA RLS boundary missing", "phase3n-contract-rls-invalid"),
+            ("phase3n observation/HA function grants invalid", "phase3n-contract-grants-invalid"),
+            ("phase3n direct mutation grant detected", "phase3n-contract-direct-grant"),
+        ):
+            if marker in result.stderr:
+                raise GateFailure(diagnostic_code)
         raise GateFailure(code)
     return result.stdout.strip()
 

@@ -267,6 +267,39 @@ def run_harness(output: Path) -> dict[str, Any]:
         timeline = output.with_name("phase3n_ha_timeline.jsonl")
         timeline.write_text("\n".join(timeline_parts), encoding="utf-8", newline="\n")
         return report
+    except (HarnessFailure, OSError, subprocess.SubprocessError) as exc:
+        diagnostic = str(exc).replace(str(ROOT), "<workspace>").replace(
+            str(temporary), "<temporary-evidence>"
+        )[-2000:]
+        output.parent.mkdir(parents=True, exist_ok=True)
+        failure_report = {
+            "schema": "phase3n-ha-contract-evidence",
+            "schema_version": 1,
+            "success": False,
+            "synthetic_contract_test": True,
+            "production_evidence": False,
+            "persistent_disk_used": False,
+            "external_credentials_used": False,
+            "production_connection_attempted": False,
+            "render_billing_changed": False,
+            "failure_code": "ha-contract-runtime-failed",
+            "diagnostic_tail": diagnostic,
+        }
+        output.write_text(
+            json.dumps(failure_report, ensure_ascii=True, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        output.with_name("phase3n_ha_timeline.jsonl").write_text(
+            json.dumps(
+                {"event": "harness-failed", "failure_code": "ha-contract-runtime-failed"},
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        raise HarnessFailure(diagnostic) from exc
     finally:
         _compose(project, env, "down", "-v", "--remove-orphans", check=False, timeout=120)
         resolved = temporary.resolve()
@@ -293,7 +326,7 @@ def main() -> int:
     try:
         report = run_harness(output)
     except (HarnessFailure, OSError, subprocess.SubprocessError) as exc:
-        print(json.dumps({"success": False, "failure_code": str(exc)[:500]}, sort_keys=True))
+        print(json.dumps({"success": False, "failure_code": str(exc)[-1000:]}, sort_keys=True))
         return 1
     print(
         json.dumps(
