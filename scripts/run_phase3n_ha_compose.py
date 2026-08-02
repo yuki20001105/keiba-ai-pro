@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -190,7 +191,24 @@ def run_harness(output: Path) -> dict[str, Any]:
     env = dict(os.environ)
     env["PHASE3N_HA_EVIDENCE_DIR"] = str(temporary)
     timeline_parts: list[str] = []
+    rendered = REPORTS / f".phase3n_ha_bootstrap_{project}.sql"
     try:
+        commit = _run(
+            ["git", "rev-parse", "HEAD"], env=env, timeout=20
+        ).stdout.strip()
+        _run(
+            [
+                sys.executable,
+                "scripts/security/render_phase3m_supabase_bootstrap_sql.py",
+                "--expected-commit",
+                commit,
+                "--output",
+                str(rendered),
+            ],
+            env=env,
+            timeout=60,
+        )
+        shutil.move(str(rendered), temporary / "phase3n-ha-bootstrap.sql")
         _compose(project, env, "up", "-d", "--build", "db", "rest", timeout=300)
         _run_controller(project, env, "wait-ready")
         _run_controller(project, env, "seed-cache-source")
@@ -314,6 +332,7 @@ def run_harness(output: Path) -> dict[str, Any]:
         raise HarnessFailure(diagnostic) from exc
     finally:
         _compose(project, env, "down", "-v", "--remove-orphans", check=False, timeout=120)
+        rendered.unlink(missing_ok=True)
         resolved = temporary.resolve()
         if resolved.parent == Path(tempfile.gettempdir()).resolve() and resolved.name.startswith(
             "phase3n-ha-evidence-"

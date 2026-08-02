@@ -22,36 +22,14 @@ services:
       PGDATABASE: postgres
     volumes:
       - ./supabase:/workspace/supabase:ro
+      - ${PHASE3N_HA_EVIDENCE_DIR:?set PHASE3N_HA_EVIDENCE_DIR}:/evidence:ro
     command:
       - /bin/sh
       - -euc
       - |
         psql -v ON_ERROR_STOP=1 -f /workspace/supabase/bootstrap/v1/tests/supabase_prelude.sql
-        for migration in \
-          bootstrap/v1/migrations/20260720141000_core_identity_finance.sql \
-          bootstrap/v1/migrations/20260720141100_prediction_quota.sql \
-          bootstrap/v1/migrations/20260720141200_purchase_history.sql \
-          bootstrap/v1/migrations/20260720142000_race_domain.sql \
-          bootstrap/v1/migrations/20260720142100_normalized_ultimate_domain.sql \
-          bootstrap/v1/migrations/20260720142200_server_ml_storage.sql \
-          migrations/20260718_scrape_uncertainty_review_ledger.sql \
-          migrations/20260720_scrape_execution_reservation.sql \
-          bootstrap/v1/migrations/20260720143200_security_definer_search_path.sql \
-          bootstrap/v1/migrations/20260720143300_ocr_quota_reservation.sql \
-          bootstrap/v1/migrations/20260720143400_admin_role_change.sql \
-          migrations/20260802_model_retrain_approval_ledger.sql \
-          migrations/20260802_model_retrain_job_ledger.sql \
-          migrations/20260802_model_retrain_worker_lease.sql \
-          migrations/20260802_model_retrain_artifact_registration.sql \
-          migrations/20260802_model_retrain_evaluation_registration.sql \
-          migrations/20260802_model_retrain_execution_bundle.sql \
-          migrations/20260802_model_retrain_orphan_reconciliation.sql \
-          migrations/20260802_model_retrain_dispatch_queue.sql \
-          migrations/20260720_scrape_operational_outbox.sql \
-          migrations/20260802_phase3n_observation_ha.sql
-        do
-          psql -v ON_ERROR_STOP=1 -f "/workspace/supabase/$migration"
-        done
+        psql -v ON_ERROR_STOP=1 -f /evidence/phase3n-ha-bootstrap.sql
+        psql -v ON_ERROR_STOP=1 -f /workspace/supabase/bootstrap/v1/tests/bootstrap_contract.sql
 
   rest:
     image: postgrest/postgrest:v14.12

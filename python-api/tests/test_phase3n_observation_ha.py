@@ -203,12 +203,13 @@ def test_migration_and_compose_contract_are_append_only_least_privilege_and_disk
         line for line in sql.splitlines() if "GRANT EXECUTE" in line
     )
     compose = (ROOT / "docker-compose.phase3n-ha.yml").read_text(encoding="utf-8")
-    for migration in manifest["migrations"]:
-        assert migration["path"].removeprefix("supabase/") in compose
+    assert "phase3n-ha-bootstrap.sql" in compose
+    assert "bootstrap_contract.sql" in compose
     assert "Persistent Disk" not in compose
     assert "ports:" not in compose
     assert "tmpfs:" in compose
     harness = (ROOT / "scripts/run_phase3n_ha_compose.py").read_text(encoding="utf-8")
+    assert "render_phase3m_supabase_bootstrap_sql.py" in harness
     for required in ('"KILL"', '"TERM"', '"disconnect"', '"connect"', "database_unchanged"):
         assert required in harness
 
