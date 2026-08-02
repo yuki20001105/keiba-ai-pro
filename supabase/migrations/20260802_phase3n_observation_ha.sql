@@ -176,7 +176,7 @@ CREATE INDEX IF NOT EXISTS phase3n_ha_events_timeline_idx
 CREATE OR REPLACE FUNCTION public._phase3n_reject_immutable_mutation()
 RETURNS TRIGGER
 LANGUAGE plpgsql
-SET search_path = ''
+SET search_path = pg_catalog, public
 AS $$
 BEGIN
     RAISE EXCEPTION 'phase3n-append-only-mutation-forbidden' USING ERRCODE = '55000';
@@ -209,7 +209,7 @@ CREATE OR REPLACE FUNCTION public.register_phase3n_model_manifest(p_manifest JSO
 RETURNS TABLE(mutation_code TEXT, returned_manifest_id UUID, registered_at TIMESTAMPTZ)
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = ''
+SET search_path = pg_catalog, public
 AS $$
 DECLARE
     v_now TIMESTAMPTZ := clock_timestamp();
@@ -285,7 +285,7 @@ CREATE OR REPLACE FUNCTION public.record_phase3n_prediction_observation(p_observ
 RETURNS TABLE(mutation_code TEXT, returned_observation_id UUID, prediction_at TIMESTAMPTZ)
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = ''
+SET search_path = pg_catalog, public
 AS $$
 DECLARE
     v_now TIMESTAMPTZ := clock_timestamp();
@@ -365,7 +365,7 @@ CREATE OR REPLACE FUNCTION public.record_phase3n_result_observation(p_result JSO
 RETURNS TABLE(mutation_code TEXT, returned_result_event_id UUID, recorded_at TIMESTAMPTZ)
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = ''
+SET search_path = pg_catalog, public
 AS $$
 DECLARE
     v_now TIMESTAMPTZ := clock_timestamp();
@@ -427,7 +427,7 @@ CREATE OR REPLACE FUNCTION public.enqueue_phase3n_ha_job(
 RETURNS TABLE(mutation_code TEXT, returned_job_id UUID, fencing_token BIGINT, lease_expires_at TIMESTAMPTZ)
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = ''
+SET search_path = pg_catalog, public
 AS $$
 DECLARE
     v_job public.phase3n_ha_jobs%ROWTYPE;
@@ -462,7 +462,7 @@ RETURNS TABLE(
 )
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = ''
+SET search_path = pg_catalog, public
 AS $$
 DECLARE
     v_now TIMESTAMPTZ := clock_timestamp();
@@ -508,7 +508,7 @@ CREATE OR REPLACE FUNCTION public.heartbeat_phase3n_ha_job(
 RETURNS TABLE(mutation_code TEXT, lease_expires_at TIMESTAMPTZ)
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = ''
+SET search_path = pg_catalog, public
 AS $$
 DECLARE
     v_now TIMESTAMPTZ := clock_timestamp();
@@ -538,7 +538,7 @@ CREATE OR REPLACE FUNCTION public.apply_phase3n_ha_effect(
 RETURNS TABLE(mutation_code TEXT, returned_effect_id UUID, accepted_fencing_token BIGINT)
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = ''
+SET search_path = pg_catalog, public
 AS $$
 DECLARE
     v_now TIMESTAMPTZ := clock_timestamp();
