@@ -195,6 +195,7 @@ Contract implementation:
 - `src/lib/model-retrain-job-ledger.ts`
 - `src/app/api/model-redesign/jobs/route.ts`
 - `src/app/api/model-redesign/jobs/[job_id]/route.ts`
+- `src/components/ModelRetrainApprovalPanel.tsx`
 - `supabase/migrations/20260802_model_retrain_job_ledger.sql`
 - `supabase/migrations/20260802_model_retrain_worker_lease.sql`
 - `supabase/migrations/20260802_model_retrain_artifact_registration.sql`
@@ -204,6 +205,7 @@ Coverage:
 - approval record contract
 - approved retrain job preconditions / submit request / result
 - active model switch approval record boundary
+- Admin workbench request/read/decision/queue/status controls without worker dispatch
 
 Runtime policy:
 - payload generation and eligibility assessment do not execute jobs.

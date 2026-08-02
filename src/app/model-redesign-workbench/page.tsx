@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { Logo } from '@/components/Logo'
 import { PremiumRequiredNotice } from '@/components/PremiumRequiredNotice'
+import { ModelRetrainApprovalPanel } from '@/components/ModelRetrainApprovalPanel'
 import { useAuth } from '@/contexts/AuthContext'
 import { authFetch } from '@/lib/auth-fetch'
 import type {
@@ -415,6 +416,13 @@ export default function ModelRedesignWorkbenchPage() {
                     この画面は評価のみです。承認レコード作成、再学習、artifact書込み、active model切替は実行しません。
                   </div>
                 </div>
+
+                <ModelRetrainApprovalPanel
+                  isAdmin={isAdmin}
+                  payload={dryRunPreview.dry_run_payload}
+                  approvedPayloadHash={dryRunPreview.approved_payload_hash}
+                  payloadReady={dryRunPreview.guard.approval_payload_ready}
+                />
               </div>
             )}
           </>
