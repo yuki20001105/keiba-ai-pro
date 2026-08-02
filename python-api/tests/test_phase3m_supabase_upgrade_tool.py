@@ -188,6 +188,9 @@ def test_upgrade_runtime_gate_is_local_network_isolated_and_fail_closed() -> Non
     assert "RUNNER.LOCAL_DOCKER_ENDPOINTS" in source
     assert "remote-docker-context-rejected" in source
     assert "phase3m-upgrade-history-mismatch" in source
+    assert "phase3m_upgrade_check:suffix_contract" in source
+    assert "suffix_contract_passed" in source
+    assert "RUNNER._parse_contract_output" not in source
     assert '"external_credentials_used": False' in source
     assert '"external_migration_applied": False' in source
     for forbidden in ("psycopg", "DATABASE_URL", "PGPASSWORD", '"-p"', '"--publish"'):

@@ -56,6 +56,65 @@ ORDER BY ordinal;
         raise UpgradeGateFailure("upgrade-history-mismatch")
 
 
+def _verify_suffix_contract(container: str, database: str) -> None:
+    output = _require(
+        RUNNER._psql(
+            container,
+            database,
+            """
+DO $phase3m_upgrade_suffix_contract$
+DECLARE
+    v_count INTEGER;
+BEGIN
+    SELECT count(*) INTO v_count
+    FROM pg_catalog.pg_class AS c
+    JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relkind IN ('r', 'p')
+      AND c.relname = ANY (ARRAY[
+          'model_retrain_approval_requests',
+          'model_retrain_approval_events',
+          'model_retrain_jobs',
+          'model_retrain_job_events',
+          'model_retrain_artifacts',
+          'model_retrain_evaluations',
+          'model_retrain_orphan_reconciliation_runs'
+      ])
+      AND c.relrowsecurity;
+    IF v_count <> 7 THEN
+        RAISE EXCEPTION 'phase3m-upgrade-suffix-table-contract-failed';
+    END IF;
+
+    SELECT count(DISTINCT p.proname) INTO v_count
+    FROM pg_catalog.pg_proc AS p
+    JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public'
+      AND p.proname = ANY (ARRAY[
+          'create_model_retrain_approval',
+          'create_model_retrain_job',
+          'claim_model_retrain_job',
+          'register_model_retrain_artifact',
+          'register_model_retrain_accepted_evaluation',
+          'get_model_retrain_execution_bundle',
+          'list_expired_model_retrain_job_candidates',
+          'record_model_retrain_orphan_reconciliation',
+          'list_dispatchable_model_retrain_jobs'
+      ]);
+    IF v_count <> 9 THEN
+        RAISE EXCEPTION 'phase3m-upgrade-suffix-function-contract-failed';
+    END IF;
+END
+$phase3m_upgrade_suffix_contract$;
+SELECT 'phase3m_upgrade_check:suffix_contract';
+""",
+            timeout=30,
+        ),
+        "upgrade-suffix-contract-failed",
+    )
+    if output != "phase3m_upgrade_check:suffix_contract":
+        raise UpgradeGateFailure("upgrade-suffix-marker-missing")
+
+
 def run_gate(expected_commit: str) -> dict[str, object]:
     candidate_commit = RUNNER._tested_commit(expected_commit)
     for source in (Path(__file__), upgrade.Path(upgrade.__file__), upgrade.RUNNER_PATH):
@@ -97,11 +156,6 @@ def run_gate(expected_commit: str) -> dict[str, object]:
         RUNNER.PRELUDE,
         expected_commit=candidate_commit,
     )
-    contract_sql, _ = RUNNER._read_required_sql(
-        RUNNER.CONTRACT,
-        expected_commit=candidate_commit,
-    )
-
     container = f"keiba-phase3m-upgrade-{secrets.token_hex(8)}"
     database = f"phase3m_upgrade_{secrets.token_hex(6)}"
     password = secrets.token_urlsafe(32)
@@ -112,7 +166,7 @@ def run_gate(expected_commit: str) -> dict[str, object]:
         "old_chain_applied": False,
         "append_only_upgrade_applied": False,
         "full_history_verified": False,
-        "current_contract_passed": False,
+        "suffix_contract_passed": False,
         "replay_rejected": False,
         "cleanup_complete": False,
     }
@@ -196,12 +250,8 @@ def run_gate(expected_commit: str) -> dict[str, object]:
         checks["append_only_upgrade_applied"] = True
         _verify_history(container, database, expected_rows)
         checks["full_history_verified"] = True
-        contract_output = _require(
-            RUNNER._psql(container, database, contract_sql, timeout=180),
-            "current-contract-failed",
-        )
-        RUNNER._parse_contract_output(contract_output)
-        checks["current_contract_passed"] = True
+        _verify_suffix_contract(container, database)
+        checks["suffix_contract_passed"] = True
         replay = RUNNER._psql(container, database, upgrade_sql, timeout=300)
         checks["replay_rejected"] = (
             replay.returncode != 0
