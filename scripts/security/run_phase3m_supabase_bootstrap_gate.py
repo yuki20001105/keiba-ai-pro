@@ -57,6 +57,7 @@ REQUIRED_MARKERS = frozenset(
         "model_retrain_artifact_registration",
         "model_retrain_evaluation_registration",
         "model_retrain_execution_bundle",
+        "model_retrain_orphan_reconciliation",
     }
 )
 
@@ -79,6 +80,8 @@ TARGET_PREFLIGHT_REQUIRED_FRAGMENTS = (
     "'model_retrain_evaluations'",
     "'register_model_retrain_accepted_evaluation'",
     "'get_model_retrain_execution_bundle'",
+    "'list_model_retrain_orphan_candidates'",
+    "'record_model_retrain_orphan_reconciliation'",
     "FROM storage.buckets AS b",
     "b.id = 'models' OR b.name = 'models'",
     "FROM storage.objects AS o",
@@ -113,7 +116,8 @@ BEGIN
                  'admin_role_change_audit', 'model_retrain_approval_requests',
                  'model_retrain_approval_events', 'model_retrain_jobs',
                  'model_retrain_job_events', 'model_retrain_job_fencing_seq',
-                 'model_retrain_artifacts', 'model_retrain_evaluations'
+                 'model_retrain_artifacts', 'model_retrain_evaluations',
+                 'model_retrain_orphan_reconciliation_runs'
              ])
        )
        OR EXISTS (
@@ -158,7 +162,11 @@ BEGIN
                  'register_model_retrain_artifact',
                  '_reject_model_retrain_evaluation_mutation',
                  'register_model_retrain_accepted_evaluation',
-                 'get_model_retrain_execution_bundle'
+                 'get_model_retrain_execution_bundle',
+                 '_reject_model_retrain_orphan_run_mutation',
+                 'list_expired_model_retrain_job_candidates',
+                 'list_model_retrain_orphan_candidates',
+                 'record_model_retrain_orphan_reconciliation'
              ])
        )
        OR EXISTS (

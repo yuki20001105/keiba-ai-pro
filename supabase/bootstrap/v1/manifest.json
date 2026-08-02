@@ -104,6 +104,12 @@
       "path": "supabase/migrations/20260802_model_retrain_execution_bundle.sql",
       "source": "reconciled-existing",
       "description": "Service-only lease-fenced approved retrain execution bundle projection"
+    },
+    {
+      "version": "20260802146000",
+      "path": "supabase/migrations/20260802_model_retrain_orphan_reconciliation.sql",
+      "source": "reconciled-existing",
+      "description": "Service-only expired-lease recovery projection and audited terminal orphan reconciliation"
     }
   ]
 }

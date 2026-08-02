@@ -809,6 +809,9 @@ DECLARE
     v_evaluation_report_sha256 TEXT;
     v_execution_bundle JSONB;
     v_denied BOOLEAN;
+    v_reconciliation_run_id UUID;
+    v_reconciliation_successful BOOLEAN;
+    v_count INTEGER;
 BEGIN
     UPDATE public.profiles SET role = 'admin'
     WHERE id IN (
@@ -1137,6 +1140,38 @@ BEGIN
            WHERE job_id = v_retrain_job_id) <> 6 THEN
         RAISE EXCEPTION 'phase3m model retrain evaluation registration contract failed';
     END IF;
+
+    SELECT count(*) INTO v_count
+    FROM public.list_expired_model_retrain_job_candidates(
+        'staging-reconciler-01', 10
+    );
+    IF v_count <> 0 THEN
+        RAISE EXCEPTION 'phase3m completed retrain job exposed as expired';
+    END IF;
+
+    SELECT count(*) INTO v_count
+    FROM public.list_model_retrain_orphan_candidates(
+        'staging-reconciler-01', 3600, 10
+    );
+    IF v_count <> 0 THEN
+        RAISE EXCEPTION 'phase3m registered retrain artifact exposed as orphan';
+    END IF;
+
+    SELECT r.run_id, r.successful
+    INTO v_reconciliation_run_id, v_reconciliation_successful
+    FROM public.record_model_retrain_orphan_reconciliation(
+        'staging-reconciler-01', 3600, 10, '[]'::JSONB
+    ) AS r;
+    IF v_reconciliation_run_id IS NULL
+       OR v_reconciliation_successful IS DISTINCT FROM TRUE
+       OR (SELECT count(*)
+           FROM public.model_retrain_orphan_reconciliation_runs
+           WHERE run_id = v_reconciliation_run_id
+             AND candidate_count = 0
+             AND deleted_count = 0
+             AND failed_count = 0) <> 1 THEN
+        RAISE EXCEPTION 'phase3m model retrain orphan reconciliation contract failed';
+    END IF;
 END;
 $phase3m_model_retrain_approval$;
 RESET ROLE;
@@ -1174,6 +1209,7 @@ FROM (VALUES
     ('phase3m_check:model_retrain_artifact_registration'),
     ('phase3m_check:model_retrain_evaluation_registration'),
     ('phase3m_check:model_retrain_execution_bundle'),
+    ('phase3m_check:model_retrain_orphan_reconciliation'),
     ('phase3m_check:security_invoker_ml_view'),
     ('phase3m_check:storage_role_boundaries'),
     ('phase3m_check:required_triggers_enabled')

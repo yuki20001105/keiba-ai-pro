@@ -32,7 +32,7 @@ DELETED_PATTERNS: List[Tuple[str, re.Pattern[str]]] = [
 ALLOWLIST_EXACT: Dict[str, str] = {
     # The canonical Phase 3M chain gained one guarded forward migration; the
     # replacement assertion remains exact and the manifest-order gate is unchanged.
-    "python-api/tests/test_phase3m_supabase_bootstrap_gate.py:assert len(manifest.migrations) == 11": "replaced by exact 17-migration assertion after adding guarded model approval, job, worker-lease, artifact, evaluation, and execution-bundle contracts",
+    "python-api/tests/test_phase3m_supabase_bootstrap_gate.py:assert len(manifest.migrations) == 11": "replaced by exact 18-migration assertion after adding guarded model approval, job, worker-lease, artifact, evaluation, execution-bundle, and orphan-reconciliation contracts",
     # The dependency gate moved from permissive ranges/no override to stricter
     # exact patched versions plus explicit resolution checks in the same test.
     "python-api/tests/test_phase3k_dependency_security_contract.py:assert package_json[\"dependencies\"][\"next\"] == \"^16.2.10\"": "replaced by exact Next.js 16.2.12 security pin assertion",
