@@ -90,7 +90,9 @@ def _compose(project: str, env: dict[str, str], *args: str, check: bool = True, 
 
 
 def _run_controller(project: str, env: dict[str, str], *args: str, timeout: int = 90) -> dict[str, Any]:
-    result = _compose(project, env, "run", "--rm", "controller", *args, timeout=timeout)
+    result = _compose(
+        project, env, "run", "--rm", "--no-deps", "controller", *args, timeout=timeout
+    )
     return _json_line(result.stdout)
 
 
@@ -107,6 +109,7 @@ def _start_hold(
         env,
         "run",
         "-d",
+        "--no-deps",
         "--name",
         container,
         service,
@@ -152,6 +155,7 @@ def _scenario(
         env,
         "run",
         "--rm",
+        "--no-deps",
         "instance-b",
         "claim-apply",
         "--instance-id",
@@ -170,6 +174,7 @@ def _scenario(
         env,
         "run",
         "--rm",
+        "--no-deps",
         "instance-a",
         "stale-apply",
         "--instance-id",
@@ -220,6 +225,7 @@ def run_harness(output: Path) -> dict[str, Any]:
             env,
             "run",
             "-d",
+            "--no-deps",
             "--name",
             cache_container,
             "controller",
@@ -248,7 +254,14 @@ def run_harness(output: Path) -> dict[str, Any]:
         )
         after = _run_controller(project, env, "digest")
         evidence_result = _compose(
-            project, env, "run", "--rm", "controller", "evidence", timeout=60
+            project,
+            env,
+            "run",
+            "--rm",
+            "--no-deps",
+            "controller",
+            "evidence",
+            timeout=60,
         )
         evidence = _json_line(evidence_result.stdout)
         timeline_parts.append(evidence_result.stdout)
