@@ -3,9 +3,9 @@
 > Status date: 2026-08-02
 > Evidence cutoff: repository artifacts through 2026-07-20 plus local validation on 2026-08-02
 > Current branch at assessment: `codex/fullstack-readiness`
-> Current readiness checkpoint: `6300e27287bf089e058ad4fc06d32d61b374f2c9`
+> Current implementation checkpoint: `3b9836bcb7fe284c379fe92ac47375a2c9a121d1`
 > Status: **overall 66% (reasonable range: 64-68%), Production NOT_READY**
-> Working-tree candidate: repository/local-runtime gates improved; score remains provisional until committed and rerun by CI
+> Candidate branch: four clean local commits ahead of `origin/develop`; exact-SHA remote CI is pending
 
 This is the canonical handoff document for answering three questions:
 
@@ -55,7 +55,24 @@ Practical readiness:
 
 The parent worktree assets were not copied. This worktree now has independently generated local-only configuration, a Python 3.11 venv, and an empty schema fixture. Secrets and production data remain absent by design.
 
-The authoritative overall score remains 65.65%/66% until the working tree is committed and CI produces exact-SHA evidence. If the repository-quality pillar is rescored from 80% to 88% after that confirmation, the provisional overall value becomes 67.65% (reported as 68%); this provisional value is not a release authorization.
+The authoritative overall score remains 65.65%/66% until CI produces exact-SHA evidence for the candidate branch. If the repository-quality pillar is rescored from 80% to 88% after that confirmation, the provisional overall value becomes 67.65% (reported as 68%); this provisional value is not a release authorization.
+
+### 0.2 External governance snapshot (read-only audit)
+
+GitHub metadata was inspected without changing repository or provider state on 2026-08-02:
+
+| Boundary | Observed state | Assessment |
+|---|---|---|
+| Protected approval Environments | `staging-migration`, `staging-execution-unlock`, and `production-release` exist with required reviewer rules and explicit branch policies | Governance skeleton exists |
+| Trusted producer | `security/phase3n-trusted-producer-v1` is protected at `5ce4ad7...`; `PHASE3N_TRUSTED_PRODUCER_SHA` points to that revision | Existing producer is stale relative to current gate-critical files and cannot attest this candidate until deliberately updated/re-reviewed |
+| Trusted evidence run | Run `29730598574` passed context and migration approval, then failed after waiting at the Staging execution boundary; no successful Phase 3N run exists | No trusted evidence artifact |
+| Promotion selector | `PHASE3N_STAGING_EVIDENCE_RUN_ID` is absent | Promotion cannot select an approved run |
+| Protected evidence inputs | No Environment secret names were present for the three Phase 3N Environments; the current workflow requires `PHASE3N_STAGING_OBSERVATION_B64` and `MODEL_ACCEPTANCE_EVIDENCE_B64` at execution unlock | Trusted workflow must fail closed |
+| Vercel deployment records | GitHub records contain separate `keiba-ai-pro-staging` Preview/Production deployment Environments; the latest recorded Staging production deployment is `d9bbcbc`, not the current candidate | A distinct Vercel target likely exists, but current-commit deployment and provider identity remain unproven |
+| Provider access from this workstation | Vercel and Railway CLIs are installed but unauthenticated; Supabase CLI is absent | Provider metadata and deployed commit cannot be independently verified here |
+| Parent local links | Parent worktree has one Vercel link named `keiba-ai-pro` and one generically named Supabase link; this worktree has neither | Link presence does not prove a distinct isolated Staging topology |
+
+This confirms that WP3 is partially scaffolded in GitHub but has not met its exit condition. No provider login, secret write, Environment mutation, branch update, workflow dispatch, deployment, or migration was performed during this audit.
 
 ---
 
@@ -242,7 +259,7 @@ The order below is dependency-driven. An agent must not skip ahead by replacing 
 | WP0 Canonicalize current evidence | Sysop | none | Clean candidate commit and regenerated local/CI reports | All reports bind to the same current full SHA; no placeholder/stale report is treated as current | +2% |
 | WP1 Define business acceptance contract | Jobs + Trainer + Ledger | none | **In progress:** versioned fail-closed contract, verifier, contract/abuse tests, CI and trusted Phase 3N/promotion wiring are implemented; non-AUC values remain deliberately unapproved | User approves thresholds; fresh current-commit out-of-time evidence passes the attested promotion gate | +5% |
 | WP2 Finish operator workflow gaps | Harvester + Trainer + Oracle | WP1 for model decisions | **In progress:** quality bridge, authenticated Admin profiling viewer, and read-only feature provenance/INV-01 catalog are implemented and tested. Guarded redesign/retrain, standalone generation execution, advanced evaluation, and repair execution policy remain | Accepted workflows meet G1; intentionally script-only items have runbooks | +6% |
-| WP3 Provision isolated Staging governance | Sysop | WP0 | Provider resources, variables, branch/ruleset controls, three protected GitHub Environments | Authenticated metadata proves isolation and required reviewers without exposing values | +4% |
+| WP3 Provision isolated Staging governance | Sysop | WP0 | **Partial:** three protected approval Environments, protected producer branch, and a distinct Vercel Staging deployment record exist. Current provider topology/commit, producer parity, evidence inputs, successful run selector, and authenticated Render/Supabase metadata remain absent | Authenticated metadata proves isolation and required reviewers without exposing values | +4% |
 | WP4 Apply and verify hosted bootstrap | Sysop | WP3, explicit migration approval | Phase 3M migrations and hosted schema/history evidence | Bootstrap gate passes against Staging; rollback plan is recorded | +4% |
 | WP5 Run Staging security and model checks | Sysop + Trainer + Oracle | WP4 | Auth/RLS/IDOR evidence and current candidate model report | G2 security boundary and model thresholds pass on candidate data | +4% |
 | WP6 Run bounded operational exercise | Harvester + Sysop | WP4 | Live validation, two-instance crash/recovery, fencing, integrity, and rollback observations | Every Phase 3N saga/staging boolean is supported by non-synthetic evidence | +5% |
@@ -324,6 +341,7 @@ For each status review:
 | 2026-08-02 | `6300e27` + WP1 working tree | 66% authoritative / 68% provisional | NOT_READY | The business gate is now versioned, fail-closed, tested, and wired into trusted Phase 3N/promotion. Threshold approval and real out-of-time evidence remain open, so no completion score is claimed. |
 | 2026-08-02 | `c9b7c02` + profiling-viewer working tree | 66% authoritative / 68% provisional | NOT_READY | Exact-SHA local gates pass (Python 920, Frontend 242 including WP2, typecheck/build, Critical/High 0). WP2 fixes the Bearer-less profiling link with an Admin-only authenticated sandbox viewer; external CI and Staging remain pending. |
 | 2026-08-02 | `c568e70` + feature-catalog working tree | 66% authoritative / 68% provisional | NOT_READY | WP2 exposes the existing feature catalog in `/feature-lab`, including the INV-01 future-field blocklist and engineered-feature provenance. It remains read-only and does not claim standalone generation completion. |
+| 2026-08-02 | `3b9836b` + external read-only audit | 66% authoritative / 68% provisional | NOT_READY | Approval Environments and a distinct but stale Vercel Staging deployment record exist. The trusted producer is stale, the successful run selector and protected inputs are absent, the prior trusted run failed at execution approval, and Render/Supabase isolation is unverified. No external state was changed. |
 
 ---
 
