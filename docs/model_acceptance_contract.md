@@ -66,6 +66,21 @@ python-api/.venv/Scripts/python.exe scripts/verify_model_acceptance.py `
 
 For a promotion gate, add `--require-accepted`. That mode exits nonzero unless the approved contract and all bound evidence pass.
 
+## Source-readiness preflight
+
+Before constructing row observations, audit a candidate SQLite source without exporting row data:
+
+```powershell
+python-api/.venv/Scripts/python.exe scripts/audit_model_acceptance_source.py `
+  --database C:/absolute/read-only/source.db `
+  --model-id <bounded-model-id> `
+  --training-cutoff YYYY-MM-DD
+```
+
+The command opens only an absolute, non-symlink SQLite file with `mode=ro`, `immutable=1`, and `query_only=ON`. Its sanitized JSON contains aggregate counts, capability booleans and blocker codes; it contains no database path, horse identity or source row. Exit `0` means the selected rows contain the minimum strict source fields, exit `2` is a valid but non-ready audit, and exit `1` is invalid configuration/schema/query failure. Passing this audit is only collection preflight: the trusted builder still validates every value, digest, temporal relationship, feature column and financial relationship.
+
+The 2026-08-02 read-only parent-worktree audit for active-model suffix `20260418_1928` and training cutoff `2026-03-22` found 1,024 prediction rows, 1,014 same-day post-cutoff rows, and 15 settled labels (one win and fourteen losses). It found no complete timezone-aware prediction timestamp, data-observed timestamp, settlement timestamp, candidate wager/return, baseline wager/return, or latency capability. This local aggregate is not trusted model evidence and supplies no threshold authority. It proves that the existing database must not be copied or repackaged as Phase 3N input; a controlled Staging evaluator must collect fresh strict rows under an approved staking and baseline policy.
+
 An accepted sanitized report may be persisted by the service-only
 `register_model_retrain_accepted_evaluation` RPC after the candidate artifact is
 immutably registered. The database rechecks the report schema, accepted verdict,
