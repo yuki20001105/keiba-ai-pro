@@ -3,7 +3,7 @@
 > Status date: 2026-08-02
 > Evidence cutoff: repository artifacts through 2026-07-20 plus local validation on 2026-08-02
 > Current branch at assessment: `codex/fullstack-readiness`
-> Current implementation checkpoint: `7b75805` (`codex/fullstack-readiness` local candidate)
+> Current implementation checkpoint: `059d9bb` (`codex/fullstack-readiness` local candidate)
 > Status: **overall 66% (reasonable range: 64-68%), Production NOT_READY**
 > Candidate branch: local readiness commits ahead of `origin/develop`; exact-SHA remote CI is pending
 
@@ -37,10 +37,10 @@ This worktree is suitable for source inspection, frontend development, and focus
 |---|---|---|
 | Git source | Candidate branch `codex/fullstack-readiness` remains based on `origin/develop` commit `d9bbcbc`; all readiness work is local | Correct base; push and exact-SHA CI evidence still require authorization |
 | Node runtime | Node 24.12.0, npm 11.6.2; clean `npm ci` and the CI `--omit=optional` dependency-tree check passed. The current development tree contains 4 optional WASM packages reported as extraneous | Verified for reproducible install; current `node_modules` is not an exact clean-tree snapshot |
-| Frontend tests | 32 test files and 334 tests passed on exact commit `7b75805` | Verified |
+| Frontend tests | 32 test files and 335 tests passed on exact commit `059d9bb` | Verified |
 | Production build | Next.js 16.2.12 build completed and generated 71 routes | Verified; broad NFT trace and dependency-origin `url.parse()` warnings remain |
 | Python runtime | Worktree-local Python 3.11.9 venv exists with CI requirements, pytest, FastAPI, LightGBM, pandas and scikit-learn | Verified |
-| Python tests | Full `python-api/tests` suite passes 994 tests on exact commit `7b75805`; the model builder/verifier slice passes 72 tests and feature consistency passes 73 | Locally verified on Python 3.11.9; remote exact-SHA CI remains pending |
+| Python tests | Full `python-api/tests` suite passes 999 tests on exact commit `059d9bb`; the model builder/verifier slice passes 72 tests and feature consistency passes 73 | Locally verified on Python 3.11.9; remote exact-SHA CI remains pending |
 | Local configuration | Ignored `.env` and `.env.local` contain local dummy endpoints and fail-closed write/scheduler/Saga switches; no secrets were copied | Ready for local health/fixture smoke, not authenticated hosted flows |
 | Local operational data | A new empty 36 KiB `keiba/data/keiba_ultimate.db` fixture was initialized through the repository storage code | Ready for schema/startup smoke; real scrape/train/predict data remains absent |
 | Services and E2E | FastAPI `/health` and Next.js `/api/health` returned 200; public fixture Playwright smoke passed 5/5; services were stopped afterward | Local integration slice verified |
@@ -355,6 +355,7 @@ For each status review:
 | 2026-08-02 | `505c65b` fenced-worker candidate | 66% authoritative / 68% provisional | NOT_READY | WP2 adds service-only CAS claim/heartbeat/start/failure/recovery, bounded leases, monotonic fencing tokens, approval rechecks, immutable bindings, append-only events, and deletion guards while artifact writes remain structurally impossible. The canonical bootstrap has 14 migrations; exact-commit Python 989, Frontend 330, FastAPI 63/Next 79 authz, 71-page build, SQL parse, lint/typecheck, scanners, and Critical/High 0 audit pass. A deployed dispatcher/trainer, isolated artifact registration/evaluation, remote CI, and hosted Staging proof remain pending. |
 | 2026-08-02 | `0693ab7` fenced-artifact candidate | 66% authoritative / 68% provisional | NOT_READY | WP2 now lets only the live fenced worker bind one strictly named, digest-bound, size-bounded existing object from the private `models` bucket into an immutable registration ledger and terminal `artifact-registered` state. It does not attest contents, evaluate, activate, or clean orphan uploads. The canonical bootstrap has 15 migrations; exact-commit Python 994, Frontend 331, FastAPI 63/Next 79 authz, 71-page build, SQL parse, lint/typecheck, scanners, and Critical/High 0 audit pass. Deployed training/upload, trusted evaluation, remote CI, and hosted Staging proof remain pending. |
 | 2026-08-02 | `7b75805` approval-workbench candidate | 66% authoritative / 68% provisional | NOT_READY | The Admin workbench now exposes exact-preview request creation, shared-ID loading, independent decision, requester-only approved job submission, and job-state refresh. It never dispatches a worker or writes an artifact; RPC guards retain two-person/CAS enforcement. Exact-commit Python 994, Frontend 334, 71-page build, lint/typecheck, and scanners pass. Hosted ledger application, deployed training/upload, evaluation, remote CI, and Staging proof remain pending. |
+| 2026-08-02 | `059d9bb` accepted-evaluation candidate | 66% authoritative / 68% provisional | NOT_READY | WP2 now validates and immutably records only a fresh sanitized accepted-report bound to the registered artifact, exact approved dry-run commit, approved contract projection, and all verifier checks. JSON null bypasses fail closed. `trusted_promotion_evidence` and `promotion_eligible` remain structurally false, so this cannot activate or promote a model. The canonical bootstrap has 16 migrations; exact-commit Python 999, Frontend 335, FastAPI 63/Next 79 authz, 71-page build, SQL parse, lint/typecheck, and scanners pass. Deployed execution, real observations/threshold approval, remote CI, and hosted Staging proof remain pending. |
 
 ---
 
