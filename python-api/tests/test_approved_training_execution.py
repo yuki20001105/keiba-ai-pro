@@ -210,29 +210,36 @@ def test_workspace_must_be_an_isolated_system_temp_child() -> None:
         )
 
 
-def test_snapshot_symlink_is_rejected(tmp_path: Path) -> None:
+def test_snapshot_symlink_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     workspace = tmp_path / "approved-job"
     workspace.mkdir()
-    real_snapshot = workspace / "real.db"
-    real_snapshot.write_bytes(b"snapshot")
-    linked_snapshot = workspace / "linked.db"
-    try:
-        linked_snapshot.symlink_to(real_snapshot)
-    except OSError:
-        pytest.skip("symlink creation is not permitted in this environment")
+    linked_snapshot = workspace / "snapshot.db"
+    linked_snapshot.write_bytes(b"snapshot")
+    original_is_symlink = Path.is_symlink
+    monkeypatch.setattr(
+        Path,
+        "is_symlink",
+        lambda path: path == linked_snapshot or original_is_symlink(path),
+    )
 
     with pytest.raises(approved.ApprovedExecutionError, match="symlink-forbidden"):
         _create_execution(tmp_path, snapshot_path=linked_snapshot)
 
 
-def test_artifact_directory_symlink_is_rejected(tmp_path: Path) -> None:
+def test_artifact_directory_symlink_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     execution = _create_execution(tmp_path)
-    outside_directory = tmp_path / "outside-artifacts"
-    outside_directory.mkdir()
-    try:
-        execution.artifact_directory.symlink_to(outside_directory, target_is_directory=True)
-    except OSError:
-        pytest.skip("symlink creation is not permitted in this environment")
+    original_is_symlink = Path.is_symlink
+    monkeypatch.setattr(
+        Path,
+        "is_symlink",
+        lambda path: path == execution.artifact_directory or original_is_symlink(path),
+    )
 
     with pytest.raises(approved.ApprovedExecutionError, match="symlink-forbidden"):
         execution.prepare_artifact_directory()
