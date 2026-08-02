@@ -31,6 +31,10 @@ from models import TrainRequest, TrainResponse  # type: ignore
 from keiba_ai.constants import FUTURE_FIELDS  # type: ignore
 from keiba_ai.feature_catalog import FeatureCatalog  # type: ignore
 from scraping.jobs import _purge_old_jobs, _MAX_JOBS  # type: ignore
+from training.approved_execution import (  # type: ignore
+    ApprovedExecutionError,
+    ApprovedTrainingExecution,
+)
 
 router = APIRouter()
 
@@ -128,9 +132,28 @@ def _get_date8_to(df: "pd.DataFrame") -> str:  # noqa: F821
 # レース後確定フィールド（keiba_ai.constants.FUTURE_FIELDS を参照）
 
 
-async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None) -> TrainResponse:
+async def _do_train(
+    request: TrainRequest,
+    current_user: dict,
+    progress_cb=None,
+    approved_execution: ApprovedTrainingExecution | None = None,
+) -> TrainResponse:
     """モデル学習内部実装（progress_cb は任意のコールバック = (msg: str, pct: int | None) -> None）"""
-    _require_legacy_model_training_allowed()
+    if approved_execution is None:
+        _require_legacy_model_training_allowed()
+    else:
+        try:
+            approved_execution.validate_request(
+                target=request.target,
+                model_type=request.model_type,
+                force_sync=request.force_sync,
+            )
+            approved_execution.verify_snapshot()
+        except ApprovedExecutionError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="approved training contract mismatch",
+            ) from exc
     if progress_cb is None:
         def progress_cb(msg: str, pct: int = None): pass  # noqa: F811
     try:
@@ -165,12 +188,16 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
         print("=" * 70 + "\n")
 
         # 常に ultimate DB を使用（87特徴量モード固定）
-        db_path = ULTIMATE_DB
+        db_path = (
+            ULTIMATE_DB
+            if approved_execution is None
+            else approved_execution.snapshot_path
+        )
 
         progress_cb("データベース接続中...", 3)
 
         # Supabase → SQLite 同期（ブロッキング呼び出しを to_thread で分離）
-        if SUPABASE_DATA_ENABLED and get_supabase_client():
+        if approved_execution is None and SUPABASE_DATA_ENABLED and get_supabase_client():
             from app_config import sync_supabase_to_sqlite  # type: ignore
             if request.force_sync:
                 logger.info("Supabase からデータを同期中...")
@@ -268,6 +295,21 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
                 obj_cols = X.select_dtypes(include=["object"]).columns.tolist()
                 if obj_cols:
                     X = X.drop(columns=obj_cols)
+                if approved_execution is not None:
+                    try:
+                        approved_columns = approved_execution.select_feature_columns(
+                            X.columns.tolist(),
+                            future_fields=FUTURE_FIELDS,
+                        )
+                    except ApprovedExecutionError as exc:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="approved training contract mismatch",
+                        ) from exc
+                    X = X.loc[:, list(approved_columns)]
+                    categorical_features = [
+                        feature for feature in categorical_features if feature in approved_columns
+                    ]
                 feature_count = len(X.columns)
                 _all_feature_columns = X.columns.tolist()
 
@@ -626,7 +668,12 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
         saved_at = datetime.now().strftime("%Y%m%d_%H%M")
         model_id = f"{date_from_8}_{date_to_8}_{saved_at}"
         model_filename = f"model_{request.target}_{request.model_type}_{model_id}.joblib"
-        model_path = MODELS_DIR / model_filename
+        if approved_execution is None:
+            model_directory = MODELS_DIR
+            model_directory.mkdir(parents=True, exist_ok=True)
+        else:
+            model_directory = approved_execution.prepare_artifact_directory()
+        model_path = model_directory / model_filename
 
         bundle = {
             "model": model,
@@ -662,6 +709,14 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
             "training_date_from": _get_actual_date_from(df, request.training_date_from),
             "training_date_to": _get_actual_date_to(df, request.training_date_to),
         }
+        if approved_execution is not None:
+            bundle["approved_execution"] = {
+                "job_id": approved_execution.job_id,
+                "approved_payload_hash": approved_execution.approved_payload_hash,
+                "data_snapshot_sha256": approved_execution.data_snapshot_sha256,
+                "feature_contract_sha256": approved_execution.feature_contract_sha256,
+                "candidate_commit_sha": approved_execution.candidate_commit_sha,
+            }
         # LambdaRank はランカー固有フラグを保存
         if request.target == "rank" and locals().get("_is_ranker_model"):
             bundle["_is_ranker"] = True
@@ -670,7 +725,7 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
         # カタログをモデルの特徴量で自動同期（新規特徴量を auto_synced ステージに追記）
         try:
             _catalog_path = Path(__file__).parent.parent.parent / "keiba" / "feature_catalog.yaml"
-            if _catalog_path.exists():
+            if approved_execution is None and _catalog_path.exists():
                 _cat = FeatureCatalog.load(_catalog_path)
                 _new = _cat.sync_with_model_features(bundle.get("feature_columns", []))
                 if _new:
@@ -680,7 +735,7 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
             logger.warning(f"feature_catalog 同期スキップ: {_e}")
 
         # Supabase へモデルアップロード（ブロッキング I/O を to_thread で分離）
-        if SUPABASE_DATA_ENABLED and get_supabase_client():
+        if approved_execution is None and SUPABASE_DATA_ENABLED and get_supabase_client():
             from app_config import upload_model_to_supabase  # type: ignore
             await asyncio.to_thread(
                 upload_model_to_supabase,
@@ -726,6 +781,11 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
 
     except HTTPException:
         raise
+    except ApprovedExecutionError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="approved training contract mismatch",
+        ) from exc
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"学習中にエラーが発生: {str(e)}")
