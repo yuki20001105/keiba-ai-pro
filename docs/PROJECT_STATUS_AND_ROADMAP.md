@@ -45,7 +45,7 @@ This worktree is suitable for source inspection, frontend development, and focus
 | Local operational data | A new empty 36 KiB `keiba/data/keiba_ultimate.db` fixture was initialized through the repository storage code | Ready for schema/startup smoke; real scrape/train/predict data remains absent |
 | Services and E2E | FastAPI `/health` and Next.js `/api/health` returned 200; FastAPI OpenAPI and Next home returned 200; both unauthenticated protected-API probes returned 401; public fixture Playwright smoke passed 5/5; services were stopped afterward | Local integration slice verified |
 | Dependency security | `@google-cloud/vision` 5.3.7 removes the vulnerable Google Vision/uuid path; `tsx` 4.23.1 and Vitest 4.1.10 move esbuild to 0.28.1. Full and production audits now contain 0 findings at every severity, and the mandatory dependency-tree install/check passes | Cleared locally and by exact-SHA remote CI |
-| Model acceptance path | Strict row observations are recomputed into digest-bound evidence; a read-only source audit distinguishes usable evidence fields from legacy records; a one-shot Staging/Sandbox evaluator accepts only a fresh approved-contract report and registers it through the existing CAS RPC | Parent DB lacks eight required source capabilities; repository contract remains draft; no real accepted evaluation or trusted Phase 3N run exists, and database evaluation remains structurally non-promoting |
+| Model acceptance path | Strict row observations are recomputed into digest-bound evidence; the authorized owner approved every canonical threshold in GitHub issue #25; a one-shot Staging/Sandbox evaluator accepts only a fresh approved-contract report and registers it through the existing CAS RPC | Parent DB lacks eight required source capabilities; no real accepted evaluation or trusted Phase 3N run exists, and database evaluation remains structurally non-promoting |
 
 Practical readiness:
 
@@ -107,17 +107,17 @@ The product is complete only when all of the following are true:
 - Promotion to Production requires trusted, commit-bound evidence and explicit approvals.
 - Monitoring, incident handling, and rollback are executable operating procedures.
 
-### 1.3 Required business decisions that are not yet defined
+### 1.3 Approved business decisions
 
-The repository defines an AUC target of at least 0.85, but it does not yet define authoritative acceptance thresholds for:
+The authorized owner approved the following initial Phase 3N contract in GitHub issue #25 on 2026-08-02:
 
-- out-of-time ROI and minimum bet count;
-- maximum drawdown and bankroll risk;
-- probability calibration, such as Brier score or expected calibration error;
-- prediction latency, availability, and scrape freshness SLOs;
-- the observation period required before a model is considered production-proven.
+- AUC >= 0.85, Brier score <= 0.20, and expected calibration error <= 0.05;
+- out-of-time ROI >= 3.0%, maximum drawdown <= 20.0%, and ROI delta to baseline >= 1.0 percentage point;
+- at least 100 qualifying bets and 1,000 evaluation samples over at least 90 days;
+- P95 prediction latency <= 500 ms and data freshness <= 30 minutes;
+- out-of-time holdout only, no future-field leakage, and documented candidate/baseline staking and cost treatment.
 
-Until these thresholds are approved and encoded, the project can be technically deployable but cannot be called business-goal complete.
+These values are encoded in `config/model_acceptance_contract.v1.json` with the durable approval comment as the reference. Business-goal completion still requires fresh current-commit observations to pass every approved threshold.
 
 ---
 
@@ -191,7 +191,7 @@ The overall score remains close to the 2026-07-12 baseline of 65-70%. Later phas
 - Operator quality/remediation flow remains fragmented.
 - Refresh and P0 repair execution remain intentionally disabled.
 - Operational saga code exists, but current non-synthetic multi-instance Staging proof is absent.
-- Historical model quality is encouraging, but business acceptance criteria and fresh evidence are incomplete.
+- Historical model quality is encouraging and the business acceptance criteria are approved, but fresh current-commit evidence is incomplete.
 
 ### 3.4 What blocks Production
 
@@ -201,10 +201,9 @@ The overall score remains close to the 2026-07-12 baseline of 65-70%. Later phas
 4. Database/cache integrity and rollback drill evidence are not proven.
 5. The three GitHub Environment approval boundaries are not proven configured and exercised for this candidate.
 6. A fresh trusted Phase 3N artifact for the exact candidate commit does not exist.
-7. Business success thresholds beyond AUC are not approved. A versioned fail-closed
-   contract and verifier now enforce that absence as `not-accepted`; approved values
-   and fresh current-commit row observations are still required. Aggregate metrics are
-   now recomputed by trusted code and bound to model/source digests.
+7. Business success thresholds are approved and encoded, but fresh current-commit row
+   observations have not yet passed them. Aggregate metrics are recomputed by trusted
+   code and bound to model/source digests; approval alone cannot produce acceptance.
 
 ---
 
@@ -257,7 +256,7 @@ The order below is dependency-driven. An agent must not skip ahead by replacing 
 | Work package | Owner | Depends on | Deliverable | Exit condition | Progress impact |
 |---|---|---|---|---|---:|
 | WP0 Canonicalize current evidence | Sysop | none | **Complete for the implementation candidate:** clean pushed commit `31c6b64`, local Python 1,169/Phase 3M 17-of-17 checks, and exact-SHA CI run `30741847311` with 12/12 jobs green | Current implementation and CI artifacts bind to the same full SHA; historical reports remain explicitly labeled non-current | +2% |
-| WP1 Define business acceptance contract | Jobs + Trainer + Ledger | none | **In progress:** versioned fail-closed contract, verifier, contract/abuse tests, CI and trusted Phase 3N/promotion wiring are implemented; a sanitized immutable/read-only SQLite source audit now proves whether legacy prediction data contains every strict row field. The current parent DB does not. Non-AUC values remain deliberately unapproved | User approves thresholds and collection/staking/baseline policy; fresh current-commit out-of-time evidence passes the attested promotion gate | +5% |
+| WP1 Define business acceptance contract | Jobs + Trainer + Ledger | none | **Contract approved:** the authorized owner approved every threshold and the out-of-time/no-leakage/staking policy in GitHub issue #25. The versioned fail-closed contract, verifier, abuse tests, CI/trusted Phase 3N wiring, and sanitized source audit are implemented. The parent DB cannot supply the required strict observations | Fresh current-commit out-of-time evidence passes the approved attested promotion gate | +5% |
 | WP2 Finish operator workflow gaps | Harvester + Trainer + Oracle | WP1 for model decisions | **In progress:** quality bridge, authenticated Admin profiling viewer, read-only feature provenance/INV-01 catalog, strict retrain payload hashing, an Admin-only eligibility assessment, deployed-environment blocks on legacy model training/activation/deletion/repair, an Admin request/independent-decision/job-status panel, private two-person approval/job ledgers, service-only CAS/lease/fencing transitions, immutable private-bucket artifact/evaluation registration, a service-only execution bundle, an isolated OOT trainer, and a fail-closed one-shot coordinator are implemented. A bounded one-shot dispatcher selects at most five exact candidates and delegates to the fenced coordinator; a one-shot evaluator rebuilds evidence from strict rows in memory, requires the canonical approved contract and accepted verifier report, and records it through CAS while keeping promotion false. A separate reconciler handles expired leases and old unregistered exact-name objects with an immutable outcome ledger. Deployment and recurring scheduling, hosted PostgreSQL/Storage runtime evidence, trusted Phase 3N attestation and candidate comparison, separate switch/retirement approvals, standalone generation execution, and advanced evaluation remain | Accepted workflows meet G1; intentionally script-only items have runbooks | +6% |
 | WP3 Provision isolated Staging governance | Sysop | WP0 | **Partial:** three protected approval Environments, protected producer branch, and a distinct Vercel Staging deployment record exist. Current provider topology/commit, producer parity, evidence inputs, successful run selector, and authenticated Render/Supabase metadata remain absent | Authenticated metadata proves isolation and required reviewers without exposing values | +4% |
 | WP4 Apply and verify hosted bootstrap | Sysop | WP3, explicit migration approval | Phase 3M migrations and hosted schema/history evidence | Bootstrap gate passes against Staging; rollback plan is recorded | +4% |
@@ -270,12 +269,11 @@ The percentages above are prioritization estimates, not additive score increment
 
 ### Immediate next sequence
 
-1. Obtain user approval for the missing business thresholds in WP1 and record a durable approval reference.
-2. Generate current-commit out-of-time model evidence that satisfies the approved contract.
-3. Execute WP3 and WP4 only with explicit external-environment and migration approval.
-4. Execute the non-synthetic Staging exercises and rollback drill.
-5. Run the trusted Phase 3N workflow; it now requires and attests the model acceptance report alongside operational evidence.
-6. Promote only when both trusted Staging and model gates derive READY; then complete the Production observation period.
+1. Generate current-commit out-of-time model evidence that satisfies the approved contract.
+2. Execute WP3 and WP4 under the granted external-environment and migration approval.
+3. Execute the non-synthetic Staging exercises and rollback drill.
+4. Run the trusted Phase 3N workflow; it requires and attests the model acceptance report alongside operational evidence.
+5. Promote only when both trusted Staging and model gates derive READY; then complete the Production observation period.
 
 ---
 
@@ -362,6 +360,7 @@ For each status review:
 | 2026-08-02 | `9665c8c` model-source audit candidate | 66% authoritative / 68% provisional | NOT_READY | A sanitized read-only/immutable SQLite audit now checks the selected model/cutoff, same-day post-cutoff predictions, settled label/class coverage, timezone-aware prediction timestamps, and complete freshness/settlement/candidate-wager/baseline-wager/latency fields without exporting paths or rows. Exact-commit Python 1,137 and both safety scanners pass. The parent DB has 1,014 same-day post-cutoff active-model rows but only 15 settled labels and lacks all eight strict source capabilities, so it cannot be promoted into trusted OOT evidence by copying or aggregate reconstruction. |
 | 2026-08-02 | `7764fa7` accepted-evaluator candidate | 66% authoritative / 68% provisional | NOT_READY | A fail-closed Staging/Sandbox one-shot evaluator now loads strict OOT rows only from an absolute non-symlink input, recomputes evidence in memory, requires the canonical contract to be approved and every verifier threshold/check to pass, independently revalidates the sanitized report, and registers it with exact job/CAS/evaluator/commit bindings. Exact-commit Python 1,168 and both scanners pass. The repository contract is still draft, no real row set or RPC execution exists, and the resulting DB state remains `promotion_eligible=false`; only trusted Phase 3N attestation can authorize promotion. |
 | 2026-08-02 | `31c6b64` exact-SHA CI candidate | 67.65% authoritative / 68% reported | NOT_READY | The PostgreSQL 17.6 approval-ledger parse failure is fixed and regression-guarded. Local Python 1,169 and the Phase 3M two-fresh-database 17-of-17 gate pass; remote CI run `30741847311` is green across all 12 jobs, including Playwright, dependency/security gates, Phase 3G-J, Phase 3M bootstrap replay, and both container builds. Isolated hosted Staging, approved business thresholds, real OOT observations, trusted Phase 3N evidence, and release approval remain open. |
+| 2026-08-02 | `codex/fullstack-readiness` approved-threshold candidate | 67.65% authoritative / 68% reported | NOT_READY | Repository owner `yuki20001105` approved the complete initial Phase 3N model acceptance contract in GitHub issue #25. The durable comment timestamp and URL, all eleven thresholds, and out-of-time/no-leakage policy are encoded in the canonical contract. The score remains unchanged until fresh current-commit OOT observations pass; isolated hosted Staging and trusted Phase 3N evidence remain open. |
 
 ---
 

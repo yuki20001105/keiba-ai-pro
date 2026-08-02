@@ -4,23 +4,23 @@
 
 `config/model_acceptance_contract.v1.json` is the versioned business acceptance contract for a model promotion candidate. It separates model quality observed by code from thresholds approved by the business owner.
 
-The repository currently has one authoritative threshold: AUC must be at least 0.85 (`docs/specs/SYSTEM.md`). The other values remain `null` and the contract remains `draft` until an authorized owner approves them. A draft contract can be validated, but it can never produce `accepted=true`.
+The authorized owner approved the complete Phase 3N threshold set in [GitHub issue #25](https://github.com/yuki20001105/keiba-ai-pro/issues/25#issuecomment-5157389848) on 2026-08-02. The canonical contract is now `approved`; it can produce `accepted=true` only when fresh current-commit out-of-time observations satisfy every threshold and verifier check.
 
-## Approval decisions still required
+## Approved thresholds
 
-| Metric | Direction | Current value | Required decision |
+| Metric | Direction | Approved value | Meaning |
 |---|---|---:|---|
-| AUC | at least | 0.85 | Already defined by SYSTEM.md |
-| Brier score | at most | unapproved | Maximum acceptable probability error |
-| Expected calibration error | at most | unapproved | Maximum calibration-bin error |
-| Out-of-time ROI | at least | unapproved | Net ROI after the agreed staking/cost policy |
-| Maximum drawdown | at most | unapproved | Maximum peak-to-trough bankroll loss |
-| Bet count | at least | unapproved | Minimum number of qualifying bets |
-| Evaluation sample count | at least | unapproved | Minimum holdout population |
-| P95 prediction latency | at most | unapproved | Service/model latency budget |
-| Data freshness | at most | unapproved | Maximum age of source data at prediction time |
-| Observation period | at least | unapproved | Minimum calendar coverage of the holdout |
-| ROI delta to baseline | at least | unapproved | Required advantage over the approved baseline |
+| AUC | at least | 0.85 | Existing authoritative SYSTEM.md requirement |
+| Brier score | at most | 0.20 | Maximum acceptable probability error |
+| Expected calibration error | at most | 0.05 | Maximum calibration-bin error |
+| Out-of-time ROI | at least | 3.0% | Net ROI after the agreed staking/cost policy |
+| Maximum drawdown | at most | 20.0% | Maximum peak-to-trough bankroll loss |
+| Bet count | at least | 100 | Minimum number of qualifying bets |
+| Evaluation sample count | at least | 1,000 | Minimum holdout population |
+| P95 prediction latency | at most | 500 ms | Service/model latency budget |
+| Data freshness | at most | 30 minutes | Maximum age of source data at prediction time |
+| Observation period | at least | 90 days | Minimum calendar coverage of the holdout |
+| ROI delta to baseline | at least | 1.0 percentage point | Required advantage over the approved baseline |
 
 Approval requires all threshold values plus `approved_at`, `approved_by`, and `approval_reference`. The reference must identify a durable review record; a chat statement or local edit is not sufficient evidence.
 
@@ -95,4 +95,4 @@ The fail-closed one-shot runtime at `python-api/retrain_evaluator_main.py` conne
 
 The trusted workflow receives gzip-compressed, base64-encoded row observations through the protected `MODEL_EVALUATION_OBSERVATIONS_GZIP_B64` Environment value. It bounds decompression, rebuilds the aggregate evidence, deletes both raw and aggregate inputs after verification, and retains only the sanitized gate report. This protects the gate from hand-edited aggregate metrics; the reviewed source observation set must still be retained in the approved external evidence system under the emitted digest.
 
-This contract does not make the current model Production-ready. The approval record and current-commit out-of-time observations do not yet exist. Until both are supplied by a trusted workflow, Production remains `NOT_READY` even if repository tests and isolated Staging operational checks pass.
+This contract does not make the current model Production-ready. The durable approval record now exists, but current-commit out-of-time observations do not. Until those observations pass the trusted workflow, Production remains `NOT_READY` even if repository tests and isolated Staging operational checks pass.

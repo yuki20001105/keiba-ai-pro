@@ -2,10 +2,10 @@
   "schema": "model-acceptance-contract",
   "schema_version": 1,
   "contract_id": "model-acceptance-v1",
-  "status": "draft",
-  "approved_at": null,
-  "approved_by": null,
-  "approval_reference": null,
+  "status": "approved",
+  "approved_at": "2026-08-02T11:05:19Z",
+  "approved_by": "yuki20001105",
+  "approval_reference": "https://github.com/yuki20001105/keiba-ai-pro/issues/25#issuecomment-5157389848",
   "evaluation_policy": {
     "holdout_kind": "out_of_time",
     "future_field_leakage_allowed": false
@@ -17,43 +17,43 @@
     },
     "brier_score": {
       "operator": "lte",
-      "value": null
+      "value": 0.2
     },
     "expected_calibration_error": {
       "operator": "lte",
-      "value": null
+      "value": 0.05
     },
     "roi_percent": {
       "operator": "gte",
-      "value": null
+      "value": 3.0
     },
     "max_drawdown_percent": {
       "operator": "lte",
-      "value": null
+      "value": 20.0
     },
     "bet_count": {
       "operator": "gte",
-      "value": null
+      "value": 100
     },
     "sample_count": {
       "operator": "gte",
-      "value": null
+      "value": 1000
     },
     "p95_latency_ms": {
       "operator": "lte",
-      "value": null
+      "value": 500.0
     },
     "data_freshness_minutes": {
       "operator": "lte",
-      "value": null
+      "value": 30.0
     },
     "observation_period_days": {
       "operator": "gte",
-      "value": null
+      "value": 90
     },
     "baseline_roi_delta_percent": {
       "operator": "gte",
-      "value": null
+      "value": 1.0
     }
   }
 }

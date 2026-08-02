@@ -23,32 +23,20 @@ gate = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gate)
 
 
-def _contract(*, approved: bool = False) -> dict:
+def _contract(*, approved: bool = True) -> dict:
     value = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
-    if approved:
+    if not approved:
         value.update(
             {
-                "status": "approved",
-                "approved_at": "2026-08-02T00:00:00+00:00",
-                "approved_by": "business-owner",
-                "approval_reference": "docs/approvals/model-v1",
+                "status": "draft",
+                "approved_at": None,
+                "approved_by": None,
+                "approval_reference": None,
             }
         )
-        thresholds = {
-            "auc": 0.85,
-            "brier_score": 0.20,
-            "expected_calibration_error": 0.05,
-            "roi_percent": 3.0,
-            "max_drawdown_percent": 20.0,
-            "bet_count": 100,
-            "sample_count": 1000,
-            "p95_latency_ms": 500.0,
-            "data_freshness_minutes": 30.0,
-            "observation_period_days": 90.0,
-            "baseline_roi_delta_percent": 1.0,
-        }
-        for metric, threshold in thresholds.items():
-            value["thresholds"][metric]["value"] = threshold
+        for metric in gate.THRESHOLD_KEYS:
+            if metric != "auc":
+                value["thresholds"][metric]["value"] = None
     return value
 
 
@@ -97,22 +85,27 @@ def _report(contract: dict, evidence: dict, **kwargs: object) -> dict:
     )
 
 
-def test_repository_contract_is_valid_but_deliberately_not_approved() -> None:
+def test_repository_contract_is_approved_with_durable_owner_reference() -> None:
     contract = _contract()
     report = _report(contract, _evidence(contract))
 
     assert report["success"] is True
-    assert report["verdict"] == "not-accepted"
-    assert report["accepted"] is False
+    assert report["verdict"] == "accepted"
+    assert report["accepted"] is True
     assert report["checks"]["contract_schema"] is True
-    assert report["checks"]["contract_approved"] is False
-    assert report["blockers"][0] == "threshold-brier-score-unapproved"
-    assert "contract-approval-required" in report["blockers"]
+    assert report["checks"]["contract_approved"] is True
+    assert contract["approved_at"] == "2026-08-02T11:05:19Z"
+    assert contract["approved_by"] == "yuki20001105"
+    assert contract["approval_reference"] == (
+        "https://github.com/yuki20001105/keiba-ai-pro/"
+        "issues/25#issuecomment-5157389848"
+    )
+    assert report["blockers"] == []
     assert report["failure_codes"] == []
 
 
 def test_promotion_mode_rejects_draft_contract() -> None:
-    contract = _contract()
+    contract = _contract(approved=False)
     report = _report(contract, _evidence(contract), require_accepted=True)
 
     assert report["success"] is False
@@ -273,9 +266,13 @@ def test_trusted_report_validator_rejects_self_assertion_mutations(
     assert failure in failures
 
 
-def test_cli_writes_sanitized_report_and_promotion_exit_code(tmp_path: Path) -> None:
+def test_cli_accepts_canonical_contract_and_writes_sanitized_report(tmp_path: Path) -> None:
     contract = _contract()
     evidence = _evidence(contract)
+    cli_now = datetime.now(timezone.utc)
+    evidence["observed_at"] = cli_now.isoformat()
+    evidence["evaluation"]["started_at"] = (cli_now - timedelta(days=100)).isoformat()
+    evidence["evaluation"]["ended_at"] = (cli_now - timedelta(minutes=1)).isoformat()
     contract_path = tmp_path / "contract.json"
     evidence_path = tmp_path / "evidence.json"
     contract_path.write_text(json.dumps(contract), encoding="utf-8")
@@ -299,9 +296,9 @@ def test_cli_writes_sanitized_report_and_promotion_exit_code(tmp_path: Path) -> 
         text=True,
     )
 
-    assert result.returncode == 1
+    assert result.returncode == 0
     report = json.loads((ROOT / "reports" / "model_acceptance_gate.json").read_text(encoding="utf-8"))
-    assert report["accepted"] is False
+    assert report["accepted"] is True
     assert "metrics" not in report["evidence"]
 
 
