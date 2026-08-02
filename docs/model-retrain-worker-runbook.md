@@ -12,7 +12,7 @@ It does not poll the queue, evaluate or promote a candidate, switch the active m
 ## Required evidence before execution
 
 - The candidate full commit SHA is deployed and matches the approved dry-run payload.
-- All 17 canonical Phase 3M migrations, including `20260802_model_retrain_execution_bundle.sql`, have passed the approved Staging bootstrap gate.
+- All 18 canonical Phase 3M migrations, including `20260802_model_retrain_execution_bundle.sql` and `20260802_model_retrain_orphan_reconciliation.sql`, have passed the approved Staging bootstrap gate.
 - The Staging Supabase project and private `models` bucket are isolated from Production; service-role credentials are stored only in the protected worker environment.
 - A two-person approval exists, is unexpired, and has produced one queued job with its current `job_id` and `version`.
 - `python-api/models/.active_model.json` and its referenced local `.joblib` are provisioned from the approved Staging active model; their model ID matches the approval binding.
@@ -80,9 +80,32 @@ Only after these checks may the separate trusted evaluator consume the registere
 - Lease loss or expiry: the coordinator cancels cooperatively and must not upload/register using a stale fence. Recover through the fenced job recovery RPC and a new worker attempt/version.
 - Training failure: preserve sanitized failure/audit evidence; do not reuse a partially produced local artifact.
 - Upload succeeds but registration fails: the coordinator attempts to remove the unregistered object before reporting failure.
-- `retrain-orphan-cleanup-required`, process crash, or host loss after upload: stop dispatching. Reconcile only objects that match `retrain/<job_id>/<sha256>.joblib` and have no immutable registration row; require operator review before deletion.
+- `retrain-orphan-cleanup-required`, process crash, or host loss after upload: stop dispatching and obtain operator review before running the bounded reconciler. Do not manually delete by path alone.
 - Any unexpected active-model, evaluation, promotion, or Production mutation: stop the exercise, preserve evidence, revoke the execution window, and follow the incident/rollback procedure.
+
+## Bounded orphan reconciliation
+
+Use the reconciler only in a separate protected Staging/Sandbox process after the 18th migration is applied. Set:
+
+| Variable | Required value |
+|---|---|
+| `APP_ENV` | `staging` or `sandbox` |
+| `MODEL_RETRAIN_ORPHAN_RECONCILIATION_ENABLED` | Exact string `true` |
+| `MODEL_RETRAIN_RECONCILER_ID` | Stable 3-80 character reconciler identity |
+| `MODEL_RETRAIN_ORPHAN_MIN_AGE_SECONDS` | 3600-604800; default 3600 |
+| `MODEL_RETRAIN_RECONCILIATION_LIMIT` | 1-50; default 20 |
+| `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` | Protected isolated-project service credentials |
+
+Run one bounded pass:
+
+```powershell
+& python-api/.venv/Scripts/python.exe python-api/retrain_reconciler_main.py
+```
+
+The pass first lists expired `claimed`/`running` jobs and invokes the existing CAS recovery RPC. Expired `claimed` work returns to `queued`; expired `running` work becomes terminal `failed`. It then deletes only objects older than the configured minimum age whose exact job is `failed`, has no artifact identity, and has no immutable registration. Registered, active, malformed, too-new, and unknown-job objects are excluded by the database projection and independently validated by Python.
+
+Success and candidate-zero passes produce a sanitized run ID and counts. A deletion error is recorded as `delete-failed` before the command exits non-zero. Preserve the immutable reconciliation row, job lease-expiry event, platform Storage audit, and command output as one evidence set.
 
 ## Remaining automation gap
 
-Before unattended Staging operation, implement and test a bounded scheduler plus orphan reconciler. The reconciler must never delete a registered object and must produce an auditable observation for both deletion and no-op decisions. Production execution remains prohibited until the full Phase 3N trusted evidence and separate release approval derive `production_ready=true` for the exact candidate.
+Before unattended Staging operation, implement and test a bounded scheduler around the one-shot worker/reconciler and exercise both against real isolated PostgreSQL and private Storage. Production execution remains prohibited until the full Phase 3N trusted evidence and separate release approval derive `production_ready=true` for the exact candidate.
