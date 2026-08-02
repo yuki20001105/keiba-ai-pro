@@ -495,10 +495,11 @@ Approved retrain preconditions (future execution gate):
 API implementation boundary:
 - active now:
 	- `POST /api/model-redesign/summary` (`action=retrain_dry_run`)
+	- `POST /api/model-redesign/approval` (Admin, durable pending record; execution disabled)
+	- `GET /api/model-redesign/approval/[approval_id]` (Admin, authoritative record)
+	- `POST /api/model-redesign/approval/[approval_id]/decision` (Admin, CAS/two-person decision)
 	- `POST /api/model-redesign/approval/assess` (Admin, assessment-only)
 - defined for next phase:
-	- `POST /api/model-redesign/approval` (`action=create_approval`)
-	- `GET /api/model-redesign/approval/:approval_id`
 	- `POST /api/model-redesign/job` (`action=submit_approved_retrain`)
 
 UI design freeze (future lanes, runtime-gated):
@@ -520,10 +521,13 @@ Safety guard continuity:
 - no service_role key usage
 - no secret/token/env value exposure in responses/logs
 
-Type-only scaffolding added:
+Contract and durable non-executing ledger implementation:
 - `src/lib/model-retrain-approval-types.ts`
-- shared with the retrain dry-run preview UI/API shapes
-- runtime behavior remains unchanged
+- `src/lib/model-retrain-approval-contract.ts`
+- `src/lib/model-retrain-approval-ledger.ts`
+- `supabase/migrations/20260802_model_retrain_approval_ledger.sql`
+- the repository migration has not been applied to a hosted environment;
+- approval transitions cannot create jobs, write artifacts, or switch the active model.
 - `race_id`: string
 - `can_scrape`: bool
 - `can_write`: false (fixed in this phase)

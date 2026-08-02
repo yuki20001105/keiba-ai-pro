@@ -8,7 +8,9 @@ Updated: 2026-08-02
 - A complete preview emits a canonical payload/hash bound to the authenticated actor, active model, feature contract, data snapshot, code version, and exact commit.
 - Admin users may call `POST /api/model-redesign/approval/assess` to evaluate an externally supplied approval record against current immutable state.
 - The assessment is non-mutating and always returns `execution_performed=false`.
-- Approval persistence, job start, model-artifact writing, candidate comparison, and promotion remain unimplemented.
+- Admin-only create/read/decision routes and a private Supabase migration implement an expiring, CAS-versioned, two-person approval ledger without enabling execution.
+- The migration remains unapplied pending isolated Staging migration approval and runtime evidence.
+- Job start, model-artifact writing, candidate comparison, and promotion remain unimplemented.
 
 ## 1. Scope
 
@@ -164,7 +166,7 @@ Minimum checks:
 ## 9. Rollout Plan
 
 Phase 1 (spec + API skeleton):
-- add routes with mocked execution and full guards.
+- repository implementation complete for durable, non-executing approval persistence; apply and runtime-verify only in isolated Staging after explicit migration approval.
 
 Phase 2 (job runtime integration):
 - connect to optimizer/retrain pipeline.

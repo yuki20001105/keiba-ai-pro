@@ -1,7 +1,7 @@
 # Model Retrain Approval Design
 
 Updated: 2026-08-02
-Status: strict payload producer and read-only eligibility assessment implemented; no runtime execution
+Status: strict payload producer, durable non-executing approval ledger, and read-only eligibility assessment implemented; no retrain job execution
 
 ## 1. Purpose and Non-goals
 
@@ -116,7 +116,7 @@ After approved retrain execution, update domains are separated:
 Critical separation rule:
 - `active_model_pointer` switch requires separate Admin approval, independent from retrain approval.
 
-## 6. API Design (Specification-only in this phase)
+## 6. API Design
 
 In-scope API contracts:
 - `POST /api/model-redesign/summary` with `action=retrain_dry_run`
@@ -126,9 +126,13 @@ In-scope API contracts:
 
 Current phase execution policy:
 - `retrain_dry_run` is runtime-active, emits a strict canonical preview payload when structurally possible, and marks it approval-ready only when every safety input passes;
+- `POST /api/model-redesign/approval` creates an Admin-authenticated, actor/hash-bound pending record through the private Supabase ledger RPC;
+- `GET /api/model-redesign/approval/[approval_id]` reads the authoritative record after server-side expiration materialization;
+- `POST /api/model-redesign/approval/[approval_id]/decision` performs CAS-versioned independent approval/rejection or requester revocation;
 - `POST /api/model-redesign/approval/assess` recomputes the payload hash and every submission precondition for Admin callers;
-- assessment always returns `execution_performed=false` and cannot write an artifact, start a job, or switch the active model.
-- approval/job endpoints are design placeholders for next phase.
+- approval persistence and assessment always return execution disabled and cannot write an artifact, start a job, or switch the active model;
+- the migration is repository-ready but remains unapplied until the isolated Staging migration gate is explicitly approved;
+- job submission remains a design placeholder for the next phase.
 
 Response envelope (all endpoints):
 - `success`: boolean
@@ -169,16 +173,21 @@ Before implementing actual retrain, the repository now enforces:
 - separate requester/approver identities, approval chronology, expiration, immutable-state comparisons, Admin role, and staging/sandbox artifact policy;
 - active model switch remains separately approved and unimplemented.
 
-Runtime still requires a durable approval ledger, atomic job state machine, isolated artifact store, real out-of-time evaluation, and separate promotion approval. `MODEL_RETRAIN_ARTIFACT_WRITE_POLICY` defaults to `disabled`; changing it only affects eligibility assessment and does not enable a writer.
+Runtime still requires an applied and runtime-verified Staging approval ledger, atomic job state machine, isolated artifact store, real out-of-time evaluation, and separate promotion approval. `MODEL_RETRAIN_ARTIFACT_WRITE_POLICY` defaults to `disabled`; changing it only affects eligibility assessment and does not enable a writer.
 
 The pre-existing direct `/api/models/{model_id}/activate` path cannot serve as a bypass. Both proxy and FastAPI now reject it in Staging, Production, and unknown environments. Compatibility is available only when `APP_ENV` is local/test and `MODEL_ACTIVATION_LOCAL_ENABLED=true`; the default is false and the workbench does not set it.
 
-## 10. Type-Only Scaffolding
+## 10. Implemented repository boundary
 
 Contract implementation:
 - `src/lib/model-retrain-approval-types.ts`
 - `src/lib/model-retrain-approval-contract.ts`
+- `src/lib/model-retrain-approval-ledger.ts`
+- `src/app/api/model-redesign/approval/route.ts`
+- `src/app/api/model-redesign/approval/[approval_id]/route.ts`
+- `src/app/api/model-redesign/approval/[approval_id]/decision/route.ts`
 - `src/app/api/model-redesign/approval/assess/route.ts`
+- `supabase/migrations/20260802_model_retrain_approval_ledger.sql`
 
 Coverage:
 - dry-run payload / preview contract
@@ -188,4 +197,6 @@ Coverage:
 
 Runtime policy:
 - payload generation and eligibility assessment do not execute jobs.
-- no approval-create runtime, no durable approval ledger, no job-submit runtime, and no switch runtime.
+- approval creation and transition are durable only after the migration is explicitly applied and verified in isolated Staging;
+- the ledger is private, append-audited, CAS-versioned, two-person, expiring, and structurally fixed to `execution_enabled=false` and `job_created=false`;
+- no job-submit runtime, artifact writer, or switch runtime exists.

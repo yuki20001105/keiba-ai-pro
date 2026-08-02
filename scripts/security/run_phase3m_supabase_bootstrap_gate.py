@@ -51,6 +51,7 @@ REQUIRED_MARKERS = frozenset(
         "security_invoker_ml_view",
         "storage_role_boundaries",
         "required_triggers_enabled",
+        "model_retrain_approval_ledger",
     }
 )
 
@@ -62,6 +63,8 @@ TARGET_PREFLIGHT_REQUIRED_FRAGMENTS = (
     FENCING_SEQUENCE_PREFLIGHT_FRAGMENT,
     "'consume_ocr_quota'",
     "'update_admin_profile_role'",
+    "'model_retrain_approval_requests'",
+    "'create_model_retrain_approval'",
     "FROM storage.buckets AS b",
     "b.id = 'models' OR b.name = 'models'",
     "FROM storage.objects AS o",
@@ -93,7 +96,8 @@ BEGIN
                  'ml_models', 'scrape_uncertainty_review_requests',
                  'scrape_uncertainty_review_events', 'scrape_execution_authorizations',
                  'scrape_execution_reservations', 'scrape_execution_reservation_events',
-                 'admin_role_change_audit'
+                 'admin_role_change_audit', 'model_retrain_approval_requests',
+                 'model_retrain_approval_events'
              ])
        )
        OR EXISTS (
@@ -118,7 +122,13 @@ BEGIN
                  '_materialize_scrape_execution_reservation_expiry',
                  'reserve_scrape_execution', 'consume_scrape_execution_reservation',
                  'release_scrape_execution_reservation',
-                 'expire_scrape_execution_reservation', 'update_admin_profile_role'
+                 'expire_scrape_execution_reservation', 'update_admin_profile_role',
+                 '_model_retrain_require_admin',
+                 '_reject_model_retrain_approval_event_mutation',
+                 '_guard_model_retrain_approval_update',
+                 '_expire_model_retrain_approval_if_needed',
+                 'create_model_retrain_approval', 'get_model_retrain_approval',
+                 'transition_model_retrain_approval'
              ])
        )
        OR EXISTS (

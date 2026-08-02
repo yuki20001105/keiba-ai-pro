@@ -44,7 +44,7 @@ def test_manifest_is_strict_ordered_and_content_addressed(runner: ModuleType) ->
     manifest = runner.load_manifest(MANIFEST_PATH)
     assert manifest.schema_version == 1
     assert manifest.postgres_image == EXPECTED_IMAGE == runner.IMAGE
-    assert len(manifest.migrations) == 11
+    assert len(manifest.migrations) == 12
     assert [entry.version for entry in manifest.migrations] == sorted(
         entry.version for entry in manifest.migrations
     )
@@ -175,6 +175,8 @@ def test_target_preflight_rejects_partial_hosted_bootstrap_signatures(
         "'consume_ocr_quota'",
         "'update_admin_profile_role'",
         "'admin_role_change_audit'",
+        "'model_retrain_approval_requests'",
+        "'create_model_retrain_approval'",
         "FROM storage.buckets AS b",
         "b.id = 'models' OR b.name = 'models'",
         "FROM storage.objects AS o",

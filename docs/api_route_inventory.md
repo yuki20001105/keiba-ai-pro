@@ -89,6 +89,9 @@ Operational notes:
 | /api/debug/race-ids | FastAPI /api/debug/race-ids | diagnostic utility |
 | /api/backfill/nar-pedigree | FastAPI /api/backfill/nar-pedigree | maintenance utility |
 | /api/backfill/coat-color | FastAPI /api/backfill/coat-color | maintenance utility |
+| /api/model-redesign/approval | private Supabase RPC | Admin-only durable pending approval; execution disabled |
+| /api/model-redesign/approval/[approval_id] | private Supabase RPC | Admin-only authoritative approval read |
+| /api/model-redesign/approval/[approval_id]/decision | private Supabase RPC | Admin-only CAS/two-person transition; no job creation |
 | /api/scrape/repair/[race_id] | FastAPI /api/scrape/repair/{race_id} | explicit local/test compatibility only; deployed fail-closed |
 | /api/scrape/rescrape-incomplete | FastAPI /api/rescrape_incomplete | explicit local/test compatibility only; deployed fail-closed |
 

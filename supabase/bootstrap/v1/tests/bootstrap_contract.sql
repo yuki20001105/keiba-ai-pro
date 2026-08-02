@@ -17,6 +17,8 @@ BEGIN
        OR to_regclass('public.scrape_uncertainty_review_requests') IS NULL
        OR to_regclass('public.scrape_execution_reservations') IS NULL
        OR to_regclass('public.admin_role_change_audit') IS NULL
+       OR to_regclass('public.model_retrain_approval_requests') IS NULL
+       OR to_regclass('public.model_retrain_approval_events') IS NULL
        OR to_regclass('phase3m_internal.bootstrap_history') IS NULL THEN
         RAISE EXCEPTION 'phase3m required relation missing';
     END IF;
@@ -122,7 +124,8 @@ BEGIN
           'horse_pedigree', 'ml_models', 'ml_training_data',
           'scrape_uncertainty_review_requests', 'scrape_uncertainty_review_events',
           'scrape_execution_authorizations', 'scrape_execution_reservations',
-          'scrape_execution_reservation_events', 'admin_role_change_audit'
+          'scrape_execution_reservation_events', 'admin_role_change_audit',
+          'model_retrain_approval_requests', 'model_retrain_approval_events'
       ])
       AND (
           has_table_privilege('authenticated', c.oid, 'SELECT')
@@ -200,7 +203,10 @@ BEGIN
        OR has_function_privilege('authenticated', 'public.update_admin_profile_role(uuid,uuid,text,uuid)', 'EXECUTE')
        OR has_function_privilege('authenticated', 'public.reserve_scrape_execution(uuid,uuid,uuid,uuid,uuid,integer,uuid,text,integer,integer)', 'EXECUTE')
        OR has_function_privilege('authenticated', 'public.consume_scrape_execution_reservation(uuid,integer,uuid,uuid,uuid,uuid,integer,uuid,text)', 'EXECUTE')
-       OR has_function_privilege('authenticated', 'public.release_scrape_execution_reservation(uuid,integer,uuid,uuid,uuid,text,text)', 'EXECUTE') THEN
+       OR has_function_privilege('authenticated', 'public.release_scrape_execution_reservation(uuid,integer,uuid,uuid,uuid,text,text)', 'EXECUTE')
+       OR has_function_privilege('authenticated', 'public.create_model_retrain_approval(uuid,uuid,text,jsonb,text,text[])', 'EXECUTE')
+       OR has_function_privilege('authenticated', 'public.get_model_retrain_approval(uuid,uuid)', 'EXECUTE')
+       OR has_function_privilege('authenticated', 'public.transition_model_retrain_approval(uuid,uuid,integer,text,text)', 'EXECUTE') THEN
         RAISE EXCEPTION 'phase3m server-only RPC exposed to browser role';
     END IF;
 
@@ -218,6 +224,9 @@ BEGIN
         AND has_function_privilege('service_role', 'public.consume_scrape_execution_reservation(uuid,integer,uuid,uuid,uuid,uuid,integer,uuid,text)', 'EXECUTE')
         AND has_function_privilege('service_role', 'public.release_scrape_execution_reservation(uuid,integer,uuid,uuid,uuid,text,text)', 'EXECUTE')
         AND has_function_privilege('service_role', 'public.expire_scrape_execution_reservation(uuid,integer)', 'EXECUTE')
+        AND has_function_privilege('service_role', 'public.create_model_retrain_approval(uuid,uuid,text,jsonb,text,text[])', 'EXECUTE')
+        AND has_function_privilege('service_role', 'public.get_model_retrain_approval(uuid,uuid)', 'EXECUTE')
+        AND has_function_privilege('service_role', 'public.transition_model_retrain_approval(uuid,uuid,integer,text,text)', 'EXECUTE')
     ) THEN
         RAISE EXCEPTION 'phase3m service role RPC grant missing';
     END IF;
@@ -299,8 +308,10 @@ BEGIN
           OR (n.nspname = 'public' AND c.relname = 'profiles' AND t.tgname = 'profiles_touch_updated_at')
           OR (n.nspname = 'public' AND c.relname = 'bank_records' AND t.tgname = 'bank_records_touch_updated_at')
           OR (n.nspname = 'public' AND c.relname = 'race_results_ultimate' AND t.tgname = 'phase3m_race_results_ultimate_horse_number')
+          OR (n.nspname = 'public' AND c.relname = 'model_retrain_approval_requests' AND t.tgname = 'trg_model_retrain_approval_update_guard')
+          OR (n.nspname = 'public' AND c.relname = 'model_retrain_approval_events' AND t.tgname = 'trg_model_retrain_approval_events_immutable')
       );
-    IF v_count <> 4 THEN
+    IF v_count <> 6 THEN
         RAISE EXCEPTION 'phase3m required trigger missing or disabled';
     END IF;
 
@@ -771,6 +782,116 @@ BEGIN
 END;
 $phase3m_admin_audit$;
 
+SET LOCAL ROLE service_role;
+DO $phase3m_model_retrain_approval$
+DECLARE
+    v_approval_id UUID;
+    v_status TEXT;
+    v_version INTEGER;
+    v_execution_enabled BOOLEAN;
+    v_job_created BOOLEAN;
+    v_denied BOOLEAN;
+BEGIN
+    UPDATE public.profiles SET role = 'admin'
+    WHERE id IN (
+        '30000000-0000-4000-8000-000000000001',
+        '30000000-0000-4000-8000-000000000002'
+    );
+
+    v_denied := FALSE;
+    BEGIN
+        INSERT INTO public.model_retrain_approval_requests (
+            dry_run_id, approved_payload_hash, requested_by, expires_at,
+            execution_policy, allowed_actions, dry_run_payload
+        ) VALUES (
+            '36000000-0000-4000-8000-000000000099', repeat('f', 64),
+            '30000000-0000-4000-8000-000000000001', clock_timestamp() + INTERVAL '30 minutes',
+            'read-only-preview', ARRAY['view_approval_status']::TEXT[],
+            jsonb_build_object(
+                'dry_run_id', '36000000-0000-4000-8000-000000000099',
+                'created_by', '30000000-0000-4000-8000-000000000001',
+                'state', 'preview-ready'
+            )
+        );
+    EXCEPTION WHEN insufficient_privilege THEN
+        v_denied := TRUE;
+    END;
+    IF NOT v_denied THEN
+        RAISE EXCEPTION 'phase3m service role directly inserted model approval';
+    END IF;
+
+    SELECT a.approval_id, a.approval_status, a.record_version,
+           a.execution_enabled, a.job_created
+    INTO v_approval_id, v_status, v_version, v_execution_enabled, v_job_created
+    FROM public.create_model_retrain_approval(
+        '30000000-0000-4000-8000-000000000001',
+        '36000000-0000-4000-8000-000000000001',
+        repeat('a', 64),
+        jsonb_build_object(
+            'dry_run_id', '36000000-0000-4000-8000-000000000001',
+            'created_by', '30000000-0000-4000-8000-000000000001',
+            'state', 'preview-ready',
+            'generated_at', to_char(
+                clock_timestamp() AT TIME ZONE 'UTC',
+                'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+            )
+        ),
+        'staging-train',
+        ARRAY['submit_approved_retrain', 'view_approval_status', 'view_job_status']::TEXT[]
+    ) AS a;
+    IF v_status <> 'pending' OR v_version <> 1
+       OR v_execution_enabled IS DISTINCT FROM FALSE
+       OR v_job_created IS DISTINCT FROM FALSE THEN
+        RAISE EXCEPTION 'phase3m model approval create contract failed';
+    END IF;
+
+    v_denied := FALSE;
+    BEGIN
+        PERFORM 1 FROM public.transition_model_retrain_approval(
+            '30000000-0000-4000-8000-000000000001', v_approval_id, 1,
+            'approve', 'Requester attempted to approve the same retrain request.'
+        );
+    EXCEPTION WHEN insufficient_privilege THEN
+        v_denied := TRUE;
+    END;
+    IF NOT v_denied THEN
+        RAISE EXCEPTION 'phase3m model retrain self approval was not denied';
+    END IF;
+
+    SELECT a.approval_status, a.record_version, a.execution_enabled, a.job_created
+    INTO v_status, v_version, v_execution_enabled, v_job_created
+    FROM public.transition_model_retrain_approval(
+        '30000000-0000-4000-8000-000000000002', v_approval_id, 1,
+        'approve', 'Independent Admin approved isolated Staging retrain eligibility.'
+    ) AS a;
+    IF v_status <> 'approved' OR v_version <> 2
+       OR v_execution_enabled IS DISTINCT FROM FALSE
+       OR v_job_created IS DISTINCT FROM FALSE
+       OR (SELECT count(*) FROM public.model_retrain_approval_events
+           WHERE approval_id = v_approval_id) <> 2 THEN
+        RAISE EXCEPTION 'phase3m model approval transition contract failed';
+    END IF;
+END;
+$phase3m_model_retrain_approval$;
+RESET ROLE;
+
+DO $phase3m_model_retrain_immutability$
+DECLARE
+    v_denied BOOLEAN := FALSE;
+BEGIN
+    BEGIN
+        UPDATE public.model_retrain_approval_requests
+        SET approved_payload_hash = repeat('b', 64)
+        WHERE dry_run_id = '36000000-0000-4000-8000-000000000001';
+    EXCEPTION WHEN object_not_in_prerequisite_state THEN
+        v_denied := TRUE;
+    END;
+    IF NOT v_denied THEN
+        RAISE EXCEPTION 'phase3m model approval immutable binding changed';
+    END IF;
+END;
+$phase3m_model_retrain_immutability$;
+
 SELECT marker
 FROM (VALUES
     ('phase3m_check:all_public_tables_rls'),
@@ -781,6 +902,7 @@ FROM (VALUES
     ('phase3m_check:service_rpc_grants'),
     ('phase3m_check:profile_bank_trigger'),
     ('phase3m_check:private_model_storage'),
+    ('phase3m_check:model_retrain_approval_ledger'),
     ('phase3m_check:security_invoker_ml_view'),
     ('phase3m_check:storage_role_boundaries'),
     ('phase3m_check:required_triggers_enabled')

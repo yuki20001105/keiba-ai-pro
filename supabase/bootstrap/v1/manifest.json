@@ -68,6 +68,12 @@
       "path": "supabase/bootstrap/v1/migrations/20260720143400_admin_role_change.sql",
       "source": "phase3m-bootstrap",
       "description": "Atomic Admin revalidation, role transition, and immutable audit boundary"
+    },
+    {
+      "version": "20260802140000",
+      "path": "supabase/migrations/20260802_model_retrain_approval_ledger.sql",
+      "source": "reconciled-existing",
+      "description": "Durable two-person model retrain approval ledger with execution disabled"
     }
   ]
 }
