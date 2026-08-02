@@ -268,9 +268,21 @@ def run_harness(output: Path) -> dict[str, Any]:
         timeline.write_text("\n".join(timeline_parts), encoding="utf-8", newline="\n")
         return report
     except (HarnessFailure, OSError, subprocess.SubprocessError) as exc:
-        diagnostic = str(exc).replace(str(ROOT), "<workspace>").replace(
+        compose_logs = _compose(
+            project,
+            env,
+            "logs",
+            "--no-color",
+            "db-init",
+            check=False,
+            timeout=30,
+        )
+        raw_diagnostic = "\n".join(
+            part for part in (str(exc), compose_logs.stdout, compose_logs.stderr) if part
+        )
+        diagnostic = raw_diagnostic.replace(str(ROOT), "<workspace>").replace(
             str(temporary), "<temporary-evidence>"
-        )[-2000:]
+        )[-4000:]
         output.parent.mkdir(parents=True, exist_ok=True)
         failure_report = {
             "schema": "phase3n-ha-contract-evidence",
