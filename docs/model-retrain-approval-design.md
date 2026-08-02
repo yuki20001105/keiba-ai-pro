@@ -1,18 +1,18 @@
 # Model Retrain Approval Design
 
 Updated: 2026-08-02
-Status: strict payload producer, durable non-executing approval ledger, and read-only eligibility assessment implemented; no retrain job execution
+Status: approval/job/artifact/evaluation contracts and a fail-closed one-shot retrain runner are implemented locally; hosted execution is not yet evidenced
 
 ## 1. Purpose and Non-goals
 
 Purpose:
-- Fix the approval target boundary before implementing actual retrain jobs.
+- Keep the approval target boundary immutable through job execution and artifact registration.
 - Define immutable contracts for dry-run payload and approval record.
 - Define what becomes executable only after approval.
 
 Non-goals in this phase:
-- No actual retrain execution.
-- No `.joblib` create/overwrite.
+- No autonomous queue poller or production retrain execution.
+- No overwrite of an existing `.joblib`, legacy model directory, or registered object.
 - No `.active_model.json` mutation.
 - No active model switch execution.
 - No production/base table write enablement.
@@ -132,7 +132,7 @@ Current phase execution policy:
 - `POST /api/model-redesign/approval/assess` recomputes the payload hash and every submission precondition for Admin callers;
 - approval persistence and assessment always return execution disabled and cannot write an artifact, start a job, or switch the active model;
 - the migration is repository-ready but remains unapplied until the isolated Staging migration gate is explicitly approved;
-- job submission remains a design placeholder for the next phase.
+- approved job submission is implemented as an idempotent durable ledger RPC; it queues work but does not dispatch a worker from the web request.
 
 Response envelope (all endpoints):
 - `success`: boolean
@@ -152,8 +152,9 @@ Workbench future flow stages:
 7. active model switch request
 
 Current phase constraints:
-- actual submit buttons remain `disabled/not-implemented`.
-- no action executes actual retrain or pointer switch.
+- the Admin workbench can create/read/decide an approval, queue one approved job, and refresh its status;
+- the web request never dispatches the worker or switches the active model;
+- result comparison, promotion, active-model switch, and retirement remain separate, unimplemented approval boundaries.
 
 ## 8. Security and Safety Constraints
 
@@ -200,6 +201,12 @@ Contract implementation:
 - `supabase/migrations/20260802_model_retrain_worker_lease.sql`
 - `supabase/migrations/20260802_model_retrain_artifact_registration.sql`
 - `supabase/migrations/20260802_model_retrain_evaluation_registration.sql`
+- `supabase/migrations/20260802_model_retrain_execution_bundle.sql`
+- `python-api/training/approved_execution.py`
+- `python-api/training/execution_bundle.py`
+- `python-api/training/retrain_worker.py`
+- `python-api/retrain_worker_main.py`
+- `docs/model-retrain-worker-runbook.md`
 
 Coverage:
 - dry-run payload / preview contract
@@ -219,5 +226,6 @@ Runtime policy:
 - artifact registration does not attest object contents, evaluate model quality, populate the active-model registry, or authorize activation/deletion;
 - a service-only evaluator may move `artifact-registered` to `evaluation-recorded` only with the exact sanitized accepted-report schema, approved contract projection, matching candidate commit/artifact digest, all verifier checks true, empty blockers/failures, and a seven-day freshness bound;
 - evaluation rows remain immutable with `trusted_promotion_evidence=false` and `promotion_eligible=false`; database registration cannot substitute for the signed Phase 3N artifact or activate a model;
-- an upload that succeeds before registration can remain as an unregistered private object if the worker loses its lease; a future dispatcher/uploader must implement bounded orphan cleanup without deleting registered objects;
-- the database worker, artifact, and evaluation registration contracts exist, but no deployed dispatcher/trainer/uploader/evaluator or switch runtime exists.
+- the one-shot coordinator maintains the lease during snapshot copy, training and upload, validates the execution bundle independently, rehashes the copied snapshot, uploads a digest-named artifact without upsert, registers under the current fence, and removes the object on handled pre-registration failure;
+- an abrupt worker process/host termination after upload can still leave an unregistered private object, so an evidence-producing orphan reconciler is required before unattended operation;
+- the database contracts and local coordinator/trainer/uploader code exist, but no hosted migration application, deployed scheduler/worker execution, trusted evaluator, or switch runtime has been evidenced.
