@@ -196,6 +196,7 @@ Contract implementation:
 - `src/app/api/model-redesign/jobs/route.ts`
 - `src/app/api/model-redesign/jobs/[job_id]/route.ts`
 - `supabase/migrations/20260802_model_retrain_job_ledger.sql`
+- `supabase/migrations/20260802_model_retrain_worker_lease.sql`
 
 Coverage:
 - dry-run payload / preview contract
@@ -207,5 +208,7 @@ Runtime policy:
 - payload generation and eligibility assessment do not execute jobs.
 - approval creation, transition, and queued-job submission are durable only after both migrations are explicitly applied and verified in isolated Staging;
 - the approval/job ledgers are private, append-audited, CAS-bound, two-person, expiring, and approval-idempotent; only an approved requester can atomically change `job_created` from false to true while `execution_enabled` remains false;
-- the queued job is structurally fixed to `execution_started=false`, `artifact_written=false`, and null artifact identity;
-- no worker lease/claim runtime, artifact writer, advanced evaluation, or switch runtime exists.
+- queued jobs can be atomically claimed with a 30-300 second lease, monotonic fencing token, CAS version, approval recheck, heartbeat, fenced start/failure reporting, and expired-lease recovery;
+- expired claimed work returns to `queued`, while an expired running attempt becomes terminal `failed` to prevent unsafe duplicate execution;
+- artifact fields remain structurally fixed to `artifact_written=false` and null identity in every worker state;
+- the database worker contract exists, but no deployed worker dispatcher/trainer, artifact writer, advanced evaluation, or switch runtime exists.

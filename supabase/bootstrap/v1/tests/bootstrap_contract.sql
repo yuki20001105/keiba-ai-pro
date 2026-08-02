@@ -795,6 +795,9 @@ DECLARE
     v_job_state TEXT;
     v_execution_started BOOLEAN;
     v_artifact_written BOOLEAN;
+    v_worker_version INTEGER;
+    v_fencing_token BIGINT;
+    v_worker_id TEXT;
     v_denied BOOLEAN;
 BEGIN
     UPDATE public.profiles SET role = 'admin'
@@ -926,6 +929,63 @@ BEGIN
            WHERE approval_id = v_approval_id) <> 3 THEN
         RAISE EXCEPTION 'phase3m model retrain job idempotency contract failed';
     END IF;
+
+    SELECT j.job_state, j.record_version, j.fencing_token, j.worker_id,
+           j.execution_started, j.artifact_written
+    INTO v_job_state, v_worker_version, v_fencing_token, v_worker_id,
+         v_execution_started, v_artifact_written
+    FROM public.claim_model_retrain_job(
+        'staging-worker-01', v_retrain_job_id, 1, 120
+    ) AS j;
+    IF v_job_state <> 'claimed' OR v_worker_version <> 2
+       OR v_fencing_token IS NULL OR v_worker_id <> 'staging-worker-01'
+       OR v_execution_started IS DISTINCT FROM FALSE
+       OR v_artifact_written IS DISTINCT FROM FALSE THEN
+        RAISE EXCEPTION 'phase3m model retrain worker claim contract failed';
+    END IF;
+
+    v_denied := FALSE;
+    BEGIN
+        PERFORM 1 FROM public.start_model_retrain_job(
+            'staging-worker-01', v_retrain_job_id, 2, v_fencing_token + 1
+        );
+    EXCEPTION WHEN insufficient_privilege THEN
+        v_denied := TRUE;
+    END;
+    IF NOT v_denied THEN
+        RAISE EXCEPTION 'phase3m stale model retrain fencing token was accepted';
+    END IF;
+
+    SELECT j.record_version INTO v_worker_version
+    FROM public.heartbeat_model_retrain_job(
+        'staging-worker-01', v_retrain_job_id, 2, v_fencing_token, 120
+    ) AS j;
+    IF v_worker_version <> 3 THEN
+        RAISE EXCEPTION 'phase3m model retrain heartbeat contract failed';
+    END IF;
+
+    SELECT j.job_state, j.record_version, j.execution_started, j.artifact_written
+    INTO v_job_state, v_worker_version, v_execution_started, v_artifact_written
+    FROM public.start_model_retrain_job(
+        'staging-worker-01', v_retrain_job_id, 3, v_fencing_token
+    ) AS j;
+    IF v_job_state <> 'running' OR v_worker_version <> 4
+       OR v_execution_started IS DISTINCT FROM TRUE
+       OR v_artifact_written IS DISTINCT FROM FALSE THEN
+        RAISE EXCEPTION 'phase3m model retrain worker start contract failed';
+    END IF;
+
+    SELECT j.job_state, j.record_version, j.artifact_written
+    INTO v_job_state, v_worker_version, v_artifact_written
+    FROM public.fail_model_retrain_job(
+        'staging-worker-01', v_retrain_job_id, 4, v_fencing_token, 'training-failed'
+    ) AS j;
+    IF v_job_state <> 'failed' OR v_worker_version <> 5
+       OR v_artifact_written IS DISTINCT FROM FALSE
+       OR (SELECT count(*) FROM public.model_retrain_job_events
+           WHERE job_id = v_retrain_job_id) <> 5 THEN
+        RAISE EXCEPTION 'phase3m model retrain worker failure contract failed';
+    END IF;
 END;
 $phase3m_model_retrain_approval$;
 RESET ROLE;
@@ -959,6 +1019,7 @@ FROM (VALUES
     ('phase3m_check:private_model_storage'),
     ('phase3m_check:model_retrain_approval_ledger'),
     ('phase3m_check:model_retrain_job_ledger'),
+    ('phase3m_check:model_retrain_worker_lease'),
     ('phase3m_check:security_invoker_ml_view'),
     ('phase3m_check:storage_role_boundaries'),
     ('phase3m_check:required_triggers_enabled')

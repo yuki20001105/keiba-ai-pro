@@ -41,6 +41,13 @@ function queuedRecord(overrides: Record<string, unknown> = {}) {
     artifact_written: false,
     artifact_uri: null,
     artifact_sha256: null,
+    worker_id: null,
+    fencing_token: null,
+    lease_expires_at: null,
+    claimed_at: null,
+    started_at: null,
+    finished_at: null,
+    failure_code: null,
     ...overrides,
   }
 }
@@ -102,6 +109,25 @@ describe('approval-bound model retrain job ledger', () => {
       rpcMock.mockResolvedValueOnce({ data: [record], error: null })
       const result = await getModelRetrainJobViaRpc({ rpc: rpcMock } as never, ACTOR, JOB)
       expect(result).toEqual(expect.objectContaining({ ok: false, status: 502 }))
+    }
+  })
+
+  it('projects a fenced claimed job without treating it as artifact execution', async () => {
+    const now = new Date().toISOString()
+    rpcMock.mockResolvedValue({ data: [queuedRecord({
+      job_state: 'claimed',
+      record_version: 2,
+      worker_id: 'staging-worker-01',
+      fencing_token: 7,
+      lease_expires_at: now,
+      claimed_at: now,
+    })], error: null })
+    const result = await getModelRetrainJobViaRpc({ rpc: rpcMock } as never, ACTOR, JOB)
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.value.job_state).toBe('claimed')
+      expect(result.value.fencing_token).toBe(7)
+      expect(result.value.artifact_written).toBe(false)
     }
   })
 

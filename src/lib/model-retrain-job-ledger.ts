@@ -13,7 +13,9 @@ export type CreateModelRetrainJobInput = {
   approved_payload_hash: string
 }
 
-export type ModelRetrainQueuedJobRecord = {
+export type ModelRetrainJobState = 'queued' | 'claimed' | 'running' | 'failed'
+
+export type ModelRetrainJobRecord = {
   job_id: string
   approval_id: string
   dry_run_id: string
@@ -22,14 +24,21 @@ export type ModelRetrainQueuedJobRecord = {
   requested_by: string
   approved_by: string
   execution_policy: 'staging-train' | 'sandbox-train'
-  job_state: 'queued'
+  job_state: ModelRetrainJobState
   submitted_at: string
-  record_version: 1
+  record_version: number
   authoritative_record: true
-  execution_started: false
+  execution_started: boolean
   artifact_written: false
   artifact_uri: null
   artifact_sha256: null
+  worker_id: string | null
+  fencing_token: number | null
+  lease_expires_at: string | null
+  claimed_at: string | null
+  started_at: string | null
+  finished_at: string | null
+  failure_code: string | null
 }
 
 export type JobLedgerResult<T> =
@@ -94,8 +103,35 @@ export function validateModelRetrainJobId(value: string): JobValidationResult<st
     : { ok: false, detail: 'job id is invalid' }
 }
 
-function projectQueuedJob(value: JsonObject): JobValidationResult<ModelRetrainQueuedJobRecord> {
+function projectJob(value: JsonObject): JobValidationResult<ModelRetrainJobRecord> {
   const submittedAt = normalizeTimestamp(value.submitted_at)
+  const leaseExpiresAt = value.lease_expires_at === null ? null : normalizeTimestamp(value.lease_expires_at)
+  const claimedAt = value.claimed_at === null ? null : normalizeTimestamp(value.claimed_at)
+  const startedAt = value.started_at === null ? null : normalizeTimestamp(value.started_at)
+  const finishedAt = value.finished_at === null ? null : normalizeTimestamp(value.finished_at)
+  const recordVersion = Number(value.record_version)
+  const fencingToken = value.fencing_token === null ? null : Number(value.fencing_token)
+  const state = value.job_state
+  const workerId = value.worker_id
+  const failureCode = value.failure_code
+  const stateValid = (
+    state === 'queued'
+      ? workerId === null && fencingToken === null && leaseExpiresAt === null
+        && claimedAt === null && startedAt === null && finishedAt === null
+        && failureCode === null && value.execution_started === false
+      : state === 'claimed'
+        ? typeof workerId === 'string' && fencingToken !== null && leaseExpiresAt !== null
+          && claimedAt !== null && startedAt === null && finishedAt === null
+          && failureCode === null && value.execution_started === false
+        : state === 'running'
+          ? typeof workerId === 'string' && fencingToken !== null && leaseExpiresAt !== null
+            && claimedAt !== null && startedAt !== null && finishedAt === null
+            && failureCode === null && value.execution_started === true
+          : state === 'failed'
+            ? typeof workerId === 'string' && fencingToken !== null && leaseExpiresAt !== null
+              && claimedAt !== null && finishedAt !== null && typeof failureCode === 'string'
+            : false
+  )
   if (
     !UUID_RE.test(String(value.job_id || ''))
     || !UUID_RE.test(String(value.approval_id || ''))
@@ -106,18 +142,19 @@ function projectQueuedJob(value: JsonObject): JobValidationResult<ModelRetrainQu
     || typeof value.approved_payload_hash !== 'string'
     || !SHA256_RE.test(value.approved_payload_hash)
     || (value.execution_policy !== 'staging-train' && value.execution_policy !== 'sandbox-train')
-    || value.job_state !== 'queued'
     || !submittedAt
-    || value.record_version !== 1
+    || !Number.isInteger(recordVersion) || recordVersion < 1
     || value.authoritative_record !== true
-    || value.execution_started !== false
     || value.artifact_written !== false
     || value.artifact_uri !== null
     || value.artifact_sha256 !== null
     || value.submitted_by !== value.requested_by
     || value.approved_by === value.requested_by
+    || (workerId !== null && (typeof workerId !== 'string' || !/^[a-z0-9][a-z0-9._:-]{2,79}$/.test(workerId)))
+    || (fencingToken !== null && (!Number.isSafeInteger(fencingToken) || fencingToken < 1))
+    || !stateValid
   ) {
-    return { ok: false, detail: 'job backend returned an invalid queued record' }
+    return { ok: false, detail: 'job backend returned an invalid record' }
   }
   return {
     ok: true,
@@ -130,14 +167,21 @@ function projectQueuedJob(value: JsonObject): JobValidationResult<ModelRetrainQu
       requested_by: String(value.requested_by).toLowerCase(),
       approved_by: String(value.approved_by).toLowerCase(),
       execution_policy: value.execution_policy,
-      job_state: 'queued',
+      job_state: state as ModelRetrainJobState,
       submitted_at: submittedAt,
-      record_version: 1,
+      record_version: recordVersion,
       authoritative_record: true,
-      execution_started: false,
+      execution_started: value.execution_started as boolean,
       artifact_written: false,
       artifact_uri: null,
       artifact_sha256: null,
+      worker_id: workerId as string | null,
+      fencing_token: fencingToken,
+      lease_expires_at: leaseExpiresAt,
+      claimed_at: claimedAt,
+      started_at: startedAt,
+      finished_at: finishedAt,
+      failure_code: failureCode as string | null,
     },
   }
 }
@@ -161,7 +205,7 @@ async function invoke(
   name: string,
   args: Record<string, unknown>,
   operation: string,
-): Promise<JobLedgerResult<ModelRetrainQueuedJobRecord>> {
+): Promise<JobLedgerResult<ModelRetrainJobRecord>> {
   let result: { data: unknown; error: unknown }
   try {
     result = await client.rpc(name, args)
@@ -172,7 +216,7 @@ async function invoke(
   const raw = unwrapSingleRecord(result.data)
   if (raw === null) return { ok: false, status: 404, detail: 'model retrain job not found' }
   if (raw === 'invalid') return { ok: false, status: 502, detail: 'job backend returned an invalid record' }
-  const projected = projectQueuedJob(raw)
+  const projected = projectJob(raw)
   return projected.ok ? projected : { ok: false, status: 502, detail: projected.detail }
 }
 
@@ -180,7 +224,7 @@ export async function createModelRetrainJobViaRpc(
   client: RpcClient,
   actorUserId: string,
   input: CreateModelRetrainJobInput,
-): Promise<JobLedgerResult<ModelRetrainQueuedJobRecord>> {
+): Promise<JobLedgerResult<ModelRetrainJobRecord>> {
   const result = await invoke(client, 'create_model_retrain_job', {
     p_actor_user_id: actorUserId,
     p_approval_id: input.approval_id,
@@ -192,6 +236,9 @@ export async function createModelRetrainJobViaRpc(
     result.value.approval_id !== input.approval_id
     || result.value.approved_payload_hash !== input.approved_payload_hash
     || result.value.submitted_by !== actorUserId
+    || result.value.job_state !== 'queued'
+    || result.value.record_version !== 1
+    || result.value.execution_started !== false
   ) {
     return { ok: false, status: 502, detail: 'job backend returned an uncorrelated create record' }
   }
@@ -202,7 +249,7 @@ export async function getModelRetrainJobViaRpc(
   client: RpcClient,
   actorUserId: string,
   jobId: string,
-): Promise<JobLedgerResult<ModelRetrainQueuedJobRecord>> {
+): Promise<JobLedgerResult<ModelRetrainJobRecord>> {
   return invoke(client, 'get_model_retrain_job', {
     p_actor_user_id: actorUserId,
     p_job_id: jobId,

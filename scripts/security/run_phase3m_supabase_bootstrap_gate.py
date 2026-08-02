@@ -53,6 +53,7 @@ REQUIRED_MARKERS = frozenset(
         "required_triggers_enabled",
         "model_retrain_approval_ledger",
         "model_retrain_job_ledger",
+        "model_retrain_worker_lease",
     }
 )
 
@@ -68,6 +69,8 @@ TARGET_PREFLIGHT_REQUIRED_FRAGMENTS = (
     "'create_model_retrain_approval'",
     "'model_retrain_jobs'",
     "'create_model_retrain_job'",
+    "'model_retrain_job_fencing_seq'",
+    "'claim_model_retrain_job'",
     "FROM storage.buckets AS b",
     "b.id = 'models' OR b.name = 'models'",
     "FROM storage.objects AS o",
@@ -101,7 +104,7 @@ BEGIN
                  'scrape_execution_reservations', 'scrape_execution_reservation_events',
                  'admin_role_change_audit', 'model_retrain_approval_requests',
                  'model_retrain_approval_events', 'model_retrain_jobs',
-                 'model_retrain_job_events'
+                 'model_retrain_job_events', 'model_retrain_job_fencing_seq'
              ])
        )
        OR EXISTS (
@@ -134,7 +137,14 @@ BEGIN
                  'create_model_retrain_approval', 'get_model_retrain_approval',
                  'transition_model_retrain_approval',
                  '_reject_model_retrain_job_mutation',
-                 'create_model_retrain_job', 'get_model_retrain_job'
+                 'create_model_retrain_job', 'get_model_retrain_job',
+                 '_guard_model_retrain_job_update',
+                 '_reject_model_retrain_job_delete',
+                 '_reject_model_retrain_job_event_mutation',
+                 '_model_retrain_validate_worker',
+                 'claim_model_retrain_job', 'heartbeat_model_retrain_job',
+                 'start_model_retrain_job', 'fail_model_retrain_job',
+                 'recover_expired_model_retrain_job'
              ])
        )
        OR EXISTS (
@@ -144,6 +154,14 @@ BEGIN
            WHERE n.nspname = 'public'
              AND c.relkind = 'S'
              AND c.relname = 'scrape_execution_reservation_fencing_seq'
+       )
+       OR EXISTS (
+           SELECT 1
+           FROM pg_catalog.pg_class AS c
+           JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+           WHERE n.nspname = 'public'
+             AND c.relkind = 'S'
+             AND c.relname = 'model_retrain_job_fencing_seq'
        )
        OR EXISTS (
            SELECT 1
