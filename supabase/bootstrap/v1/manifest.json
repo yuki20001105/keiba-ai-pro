@@ -98,6 +98,12 @@
       "path": "supabase/migrations/20260802_model_retrain_evaluation_registration.sql",
       "source": "reconciled-existing",
       "description": "Accepted evaluation registration with trusted promotion evidence structurally disabled"
+    },
+    {
+      "version": "20260802145000",
+      "path": "supabase/migrations/20260802_model_retrain_execution_bundle.sql",
+      "source": "reconciled-existing",
+      "description": "Service-only lease-fenced approved retrain execution bundle projection"
     }
   ]
 }

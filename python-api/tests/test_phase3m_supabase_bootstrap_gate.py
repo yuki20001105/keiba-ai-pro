@@ -44,7 +44,7 @@ def test_manifest_is_strict_ordered_and_content_addressed(runner: ModuleType) ->
     manifest = runner.load_manifest(MANIFEST_PATH)
     assert manifest.schema_version == 1
     assert manifest.postgres_image == EXPECTED_IMAGE == runner.IMAGE
-    assert len(manifest.migrations) == 16
+    assert len(manifest.migrations) == 17
     assert [entry.version for entry in manifest.migrations] == sorted(
         entry.version for entry in manifest.migrations
     )

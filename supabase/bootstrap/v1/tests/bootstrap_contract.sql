@@ -807,6 +807,7 @@ DECLARE
     v_promotion_eligible BOOLEAN;
     v_evaluation_report JSONB;
     v_evaluation_report_sha256 TEXT;
+    v_execution_bundle JSONB;
     v_denied BOOLEAN;
 BEGIN
     UPDATE public.profiles SET role = 'admin'
@@ -848,6 +849,25 @@ BEGIN
             'dry_run_id', '36000000-0000-4000-8000-000000000001',
             'created_by', '30000000-0000-4000-8000-000000000001',
             'state', 'preview-ready',
+            'target', 'win',
+            'model_type', 'lightgbm',
+            'train_period', jsonb_build_object('start', '20240101', 'end', '20241231'),
+            'validation_period', jsonb_build_object('start', '20250101', 'end', '20250331'),
+            'feature_count', 1,
+            'selected_features', jsonb_build_array('feature_a', 'feature_b'),
+            'removed_features', jsonb_build_array('feature_b'),
+            'active_model_id', 'baseline-model',
+            'feature_contract_hash', 'be44f2ffb24fe977ac663941248165d7771cfe943cb669d1001fa47a481ae758',
+            'data_snapshot_id', repeat('b', 64),
+            'safety_checks', jsonb_build_array(
+                jsonb_build_object('key', 'future_field_exclusion', 'status', 'pass'),
+                jsonb_build_object('key', 'out_of_time_split', 'status', 'pass'),
+                jsonb_build_object('key', 'active_model_immutable', 'status', 'pass'),
+                jsonb_build_object('key', 'production_write_blocked', 'status', 'pass'),
+                jsonb_build_object('key', 'path_input_rejected', 'status', 'pass'),
+                jsonb_build_object('key', 'data_snapshot_bound', 'status', 'pass'),
+                jsonb_build_object('key', 'candidate_commit_bound', 'status', 'pass')
+            ),
             'git_commit', repeat('d', 40),
             'generated_at', to_char(
                 clock_timestamp() AT TIME ZONE 'UTC',
@@ -952,6 +972,35 @@ BEGIN
        OR v_execution_started IS DISTINCT FROM FALSE
        OR v_artifact_written IS DISTINCT FROM FALSE THEN
         RAISE EXCEPTION 'phase3m model retrain worker claim contract failed';
+    END IF;
+
+    v_denied := FALSE;
+    BEGIN
+        PERFORM public.get_model_retrain_execution_bundle(
+            'staging-worker-01', v_retrain_job_id, 2, v_fencing_token,
+            repeat('e', 40), 'baseline-model'
+        );
+    EXCEPTION WHEN object_not_in_prerequisite_state THEN
+        v_denied := TRUE;
+    END;
+    IF NOT v_denied THEN
+        RAISE EXCEPTION 'phase3m stale model retrain execution bundle was accepted';
+    END IF;
+
+    v_execution_bundle := public.get_model_retrain_execution_bundle(
+        'staging-worker-01', v_retrain_job_id, 2, v_fencing_token,
+        repeat('d', 40), 'baseline-model'
+    );
+    IF v_execution_bundle->>'job_id' IS DISTINCT FROM v_retrain_job_id::TEXT
+       OR v_execution_bundle->>'record_version' IS DISTINCT FROM '2'
+       OR v_execution_bundle->>'data_snapshot_sha256' IS DISTINCT FROM repeat('b', 64)
+       OR v_execution_bundle->>'feature_contract_sha256'
+            IS DISTINCT FROM 'be44f2ffb24fe977ac663941248165d7771cfe943cb669d1001fa47a481ae758'
+       OR v_execution_bundle#>>'{train_period,end}' IS DISTINCT FROM '20241231'
+       OR v_execution_bundle#>>'{validation_period,start}' IS DISTINCT FROM '20250101'
+       OR v_execution_bundle#>>'{training_parameters,force_sync}' IS DISTINCT FROM 'false'
+       OR v_execution_bundle#>>'{training_parameters,use_optuna}' IS DISTINCT FROM 'false' THEN
+        RAISE EXCEPTION 'phase3m model retrain execution bundle contract failed';
     END IF;
 
     v_denied := FALSE;
@@ -1124,6 +1173,7 @@ FROM (VALUES
     ('phase3m_check:model_retrain_worker_lease'),
     ('phase3m_check:model_retrain_artifact_registration'),
     ('phase3m_check:model_retrain_evaluation_registration'),
+    ('phase3m_check:model_retrain_execution_bundle'),
     ('phase3m_check:security_invoker_ml_view'),
     ('phase3m_check:storage_role_boundaries'),
     ('phase3m_check:required_triggers_enabled')

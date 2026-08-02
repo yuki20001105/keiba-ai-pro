@@ -56,6 +56,7 @@ REQUIRED_MARKERS = frozenset(
         "model_retrain_worker_lease",
         "model_retrain_artifact_registration",
         "model_retrain_evaluation_registration",
+        "model_retrain_execution_bundle",
     }
 )
 
@@ -77,6 +78,7 @@ TARGET_PREFLIGHT_REQUIRED_FRAGMENTS = (
     "'register_model_retrain_artifact'",
     "'model_retrain_evaluations'",
     "'register_model_retrain_accepted_evaluation'",
+    "'get_model_retrain_execution_bundle'",
     "FROM storage.buckets AS b",
     "b.id = 'models' OR b.name = 'models'",
     "FROM storage.objects AS o",
@@ -155,7 +157,8 @@ BEGIN
                  '_reject_model_retrain_artifact_mutation',
                  'register_model_retrain_artifact',
                  '_reject_model_retrain_evaluation_mutation',
-                 'register_model_retrain_accepted_evaluation'
+                 'register_model_retrain_accepted_evaluation',
+                 'get_model_retrain_execution_bundle'
              ])
        )
        OR EXISTS (
