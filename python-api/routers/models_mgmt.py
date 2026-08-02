@@ -9,6 +9,7 @@ GET    /api/models/active
 from __future__ import annotations
 
 import joblib
+import os
 from fastapi import APIRouter, Depends, HTTPException
 
 from deps.auth import require_admin  # type: ignore
@@ -185,6 +186,19 @@ async def get_active_model():
 @router.put("/api/models/{model_id}/activate")
 async def activate_model(model_id: str, _: dict = Depends(require_admin)):
     """指定したモデルをアクティブにする（予測に使用するモデルを切り替える）"""
+    environment = (os.environ.get("APP_ENV") or "").strip().lower()
+    local_environments = {"local", "development", "dev", "test", "ci"}
+    legacy_opt_in = (
+        os.environ.get("MODEL_ACTIVATION_LOCAL_ENABLED") or ""
+    ).strip().lower() == "true"
+    if environment not in local_environments or not legacy_opt_in:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "active model switch requires a separate durable approval; "
+                "legacy activation is available only by explicit local/test opt-in"
+            ),
+        )
     model_path = MODELS_DIR / f"{model_id}.joblib"
     if not model_path.exists():
         # 部分一致でも探す

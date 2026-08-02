@@ -171,6 +171,8 @@ Before implementing actual retrain, the repository now enforces:
 
 Runtime still requires a durable approval ledger, atomic job state machine, isolated artifact store, real out-of-time evaluation, and separate promotion approval. `MODEL_RETRAIN_ARTIFACT_WRITE_POLICY` defaults to `disabled`; changing it only affects eligibility assessment and does not enable a writer.
 
+The pre-existing direct `/api/models/{model_id}/activate` path cannot serve as a bypass. Both proxy and FastAPI now reject it in Staging, Production, and unknown environments. Compatibility is available only when `APP_ENV` is local/test and `MODEL_ACTIVATION_LOCAL_ENABLED=true`; the default is false and the workbench does not set it.
+
 ## 10. Type-Only Scaffolding
 
 Contract implementation:

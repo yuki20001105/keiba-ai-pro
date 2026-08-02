@@ -28,7 +28,7 @@ export default function TrainPage() {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [showAdvanced, setShowAdvanced] = useState(false)
 
-  const { status: jobStatus, progress: jobProgress, pct: jobPct } = useJobPoller({
+  const { progress: jobProgress, pct: jobPct } = useJobPoller({
     jobId,
     getStatusUrl: id => `/api/ml/train/status/${id}`,
     onCompleted: statusData => {
@@ -414,7 +414,8 @@ export default function TrainPage() {
                         {!m.is_active && (
                           <button
                             onClick={() => handleActivateModel(m.model_id)}
-                            disabled={isActivating}
+                            disabled
+                            title="active model切替には再学習承認とは別の永続的なAdmin承認が必要です"
                             className="text-xs px-3 py-1 rounded border border-[#333] text-[#aaa] hover:border-[#555] hover:text-white transition-colors disabled:opacity-40"
                           >
                             {isActivating ? '切替中...' : '使用する'}

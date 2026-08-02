@@ -36,7 +36,7 @@ Architecture (current):
 | train | /api/ml/train/status/[job_id] | GET /api/train/status/{job_id} | login required (token expected) | production | add UI pre-check for unauthorized |
 | train | /api/models | GET /api/models | login required | production | none critical |
 | train | /api/models/[id] | GET/DELETE /api/models/{model_id} | login required | production | none critical |
-| train | /api/models/[id]/activate | PUT /api/models/{model_id}/activate | login required/admin-intent | production | role policy should be explicit in UI and backend |
+| train | /api/models/[id]/activate | PUT /api/models/{model_id}/activate | Admin + explicit local/test opt-in only | local compatibility | deployed and unknown environments fail closed; UI direct activation is disabled |
 | predict-batch | /api/analyze-race | POST /api/analyze_race | login required | production | none critical |
 | predict-batch | /api/races/by-date | GET /api/races/by_date | login required | production | naming mixed (by-date vs by_date) |
 | predict-batch | /api/realtime-odds/[race_id] | GET /api/realtime-odds/{race_id} | login required | production | none critical |

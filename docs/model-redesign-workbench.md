@@ -54,6 +54,8 @@ The following remain hard-blocked:
 
 The assessment route rechecks payload, approval, expiry, requester/approver separation, active model, feature contract, code version, commit, role, and artifact scope. It always returns `execution_performed=false`; an eligible assessment is not execution authority.
 
+The legacy model activation proxy/backend is fail-closed in every deployed or unknown environment and is not a promotion mechanism. It exists only for explicit local/test compatibility; the normal `/train` UI no longer offers direct pointer mutation.
+
 ## 5. Future API and UI Surface
 
 Defined for next phase only (not runtime-active now):

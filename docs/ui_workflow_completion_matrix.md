@@ -9,6 +9,7 @@ Scope: UI (src/app) + Next API (src/app/api) + FastAPI router/script mapping inv
 - `POST /api/model-redesign/approval/assess` is Admin-only and rechecks schema, payload hash, approval chronology/expiry, distinct requester and approver, active model, feature contract, code revision, Production-write block, and isolated artifact policy.
 - The UI displays payload readiness, hashes, commit/model bindings, and blockers. Missing snapshot/commit or a canonical future field produces `preview-fail`.
 - Assessment is read-only and always reports `execution_performed=false`. Durable approval storage, retrain job submission, artifact writing, evaluation comparison, and active-model switching remain unimplemented, so workflows #6 and #9 remain partial.
+- The legacy `/api/models/[id]/activate` pointer mutation is now denied in every deployed/unknown environment and requires exact local/test opt-in at both Next and FastAPI layers. The `/train` activation control is disabled until the separate durable switch-approval flow exists.
 
 ## 2026-08-02 WP2 delta: authenticated profiling viewer
 
