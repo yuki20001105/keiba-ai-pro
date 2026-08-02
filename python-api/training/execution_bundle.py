@@ -264,6 +264,7 @@ class ApprovedExecutionBundle:
             candidate_commit_sha=self.candidate_commit_sha,
             target=self.target,
             model_type=self.model_type,
+            active_model_id=self.active_model_id,
             train_period_start=self.train_period_start,
             train_period_end=self.train_period_end,
             validation_period_start=self.validation_period_start,

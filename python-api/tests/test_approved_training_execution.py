@@ -47,6 +47,7 @@ def _create_execution(
         candidate_commit_sha="c" * 40,
         target="win",
         model_type="lightgbm",
+        active_model_id="baseline-model",
         train_period_start=train_period_start,
         train_period_end=train_period_end,
         validation_period_start=validation_period_start,
@@ -199,6 +200,7 @@ def test_workspace_must_be_an_isolated_system_temp_child() -> None:
             candidate_commit_sha="c" * 40,
             target="win",
             model_type="lightgbm",
+            active_model_id="baseline-model",
             train_period_start="20250101",
             train_period_end="20251231",
             validation_period_start="20260101",
@@ -290,3 +292,4 @@ def test_router_source_gates_legacy_side_effects_for_approved_execution() -> Non
     assert "X.iloc[:approved_train_count]" in source
     assert 'approved_execution is None\n            and request.target not in ("speed_deviation", "rank")' in source
     assert 'bundle["approved_execution"]' in source
+    assert '"active_model_id": approved_execution.active_model_id' in source

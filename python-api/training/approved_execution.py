@@ -50,6 +50,7 @@ class ApprovedTrainingExecution:
     candidate_commit_sha: str
     target: str
     model_type: str
+    active_model_id: str
     train_period_start: str
     train_period_end: str
     validation_period_start: str
@@ -70,6 +71,7 @@ class ApprovedTrainingExecution:
         candidate_commit_sha: str,
         target: str,
         model_type: str,
+        active_model_id: str,
         train_period_start: str,
         train_period_end: str,
         validation_period_start: str,
@@ -93,6 +95,8 @@ class ApprovedTrainingExecution:
             raise ApprovedExecutionError("candidate-commit-invalid")
         if target != "win" or model_type != "lightgbm":
             raise ApprovedExecutionError("training-shape-not-approved")
+        if not isinstance(active_model_id, str) or IDENTIFIER_RE.fullmatch(active_model_id) is None:
+            raise ApprovedExecutionError("active-model-id-invalid")
         period_values = (
             train_period_start,
             train_period_end,
@@ -160,6 +164,7 @@ class ApprovedTrainingExecution:
             candidate_commit_sha=candidate_commit_sha,
             target=target,
             model_type=model_type,
+            active_model_id=active_model_id,
             train_period_start=train_period_start,
             train_period_end=train_period_end,
             validation_period_start=validation_period_start,

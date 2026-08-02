@@ -813,6 +813,7 @@ async def _do_train(
                 "data_snapshot_sha256": approved_execution.data_snapshot_sha256,
                 "feature_contract_sha256": approved_execution.feature_contract_sha256,
                 "candidate_commit_sha": approved_execution.candidate_commit_sha,
+                "active_model_id": approved_execution.active_model_id,
                 "train_period": {
                     "start": approved_execution.train_period_start,
                     "end": approved_execution.train_period_end,
