@@ -324,7 +324,12 @@ def _safe_relative_migration_path(value: Any) -> PurePosixPath:
     return path
 
 
-def _verified_git_bytes(path: Path, expected_commit: str) -> bytes:
+def _verified_git_bytes(
+    path: Path,
+    expected_commit: str,
+    *,
+    require_worktree_match: bool = True,
+) -> bytes:
     root = ROOT.resolve()
     try:
         candidate = Path(os.path.abspath(path))
@@ -359,30 +364,44 @@ def _verified_git_bytes(path: Path, expected_commit: str) -> bytes:
     if tracked.returncode != 0:
         raise GateFailure("git-input-untracked")
 
-    # Compare the working tree through Git's normal clean-filter semantics.
-    # This accepts a clean core.autocrlf checkout while still rejecting any
-    # semantic file or mode drift.  Execution always uses the immutable blob
-    # read above, so a working-tree race cannot replace the trusted input.
-    drift = _command_bytes(
-        (
-            "git", "-C", str(root), "diff", "--quiet", "--no-ext-diff",
-            "--no-textconv", expected_commit, "--", relative,
-        ),
-        timeout=20,
-    )
-    if drift.returncode == 1:
-        raise GateFailure("git-input-drift")
-    if drift.returncode != 0:
-        raise GateFailure("git-input-unavailable")
+    if require_worktree_match:
+        # Compare the working tree through Git's normal clean-filter semantics.
+        # This accepts a clean core.autocrlf checkout while still rejecting any
+        # semantic file or mode drift.  Execution always uses the immutable blob
+        # read above, so a working-tree race cannot replace the trusted input.
+        drift = _command_bytes(
+            (
+                "git", "-C", str(root), "diff", "--quiet", "--no-ext-diff",
+                "--no-textconv", expected_commit, "--", relative,
+            ),
+            timeout=20,
+        )
+        if drift.returncode == 1:
+            raise GateFailure("git-input-drift")
+        if drift.returncode != 0:
+            raise GateFailure("git-input-unavailable")
     return committed.stdout
 
 
-def load_manifest(path: Path, *, expected_commit: str | None = None) -> BootstrapManifest:
+def _load_manifest(
+    path: Path,
+    *,
+    expected_commit: str | None,
+    require_worktree_match: bool,
+) -> BootstrapManifest:
     try:
         stat = path.stat()
         if not path.is_file() or path.is_symlink() or stat.st_size <= 0 or stat.st_size > MAX_MANIFEST_BYTES:
             raise GateFailure("manifest-file-invalid")
-        raw = _verified_git_bytes(path, expected_commit) if expected_commit else path.read_bytes()
+        raw = (
+            _verified_git_bytes(
+                path,
+                expected_commit,
+                require_worktree_match=require_worktree_match,
+            )
+            if expected_commit
+            else path.read_bytes()
+        )
         value = json.loads(
             raw.decode("utf-8", errors="strict"),
             object_pairs_hook=_without_duplicate_keys,
@@ -451,7 +470,11 @@ def load_manifest(path: Path, *, expected_commit: str | None = None) -> Bootstra
         versions.append(version)
         paths.add(relative_text)
         content = (
-            _verified_git_bytes(absolute, expected_commit)
+            _verified_git_bytes(
+                absolute,
+                expected_commit,
+                require_worktree_match=require_worktree_match,
+            )
             if expected_commit
             else absolute.read_bytes()
         )
@@ -490,6 +513,42 @@ def load_manifest(path: Path, *, expected_commit: str | None = None) -> Bootstra
         sha256=hashlib.sha256(raw.replace(b"\r\n", b"\n")).hexdigest(),
         chain_digest=_canonical_json_sha256(chain_projection),
         migrations=tuple(migrations),
+    )
+
+
+def load_manifest(path: Path, *, expected_commit: str | None = None) -> BootstrapManifest:
+    return _load_manifest(
+        path,
+        expected_commit=expected_commit,
+        require_worktree_match=True,
+    )
+
+
+def load_ancestor_manifest(
+    path: Path,
+    *,
+    ancestor_commit: str,
+    expected_head_commit: str,
+) -> BootstrapManifest:
+    head = _tested_commit(expected_head_commit)
+    if (
+        not isinstance(ancestor_commit, str)
+        or COMMIT_PATTERN.fullmatch(ancestor_commit.lower()) is None
+    ):
+        raise GateFailure("ancestor-commit-invalid")
+    ancestor = ancestor_commit.lower()
+    ancestry = _command(
+        ("git", "-C", str(ROOT), "merge-base", "--is-ancestor", ancestor, head),
+        timeout=20,
+    )
+    if ancestry.returncode == 1:
+        raise GateFailure("ancestor-commit-not-ancestor")
+    if ancestry.returncode != 0:
+        raise GateFailure("ancestor-commit-unavailable")
+    return _load_manifest(
+        path,
+        expected_commit=ancestor,
+        require_worktree_match=False,
     )
 
 

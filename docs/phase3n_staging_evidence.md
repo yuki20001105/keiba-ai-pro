@@ -8,7 +8,7 @@ Repository assertions, pull-request artifacts, local files, synthetic databases,
 
 ## Workflow
 
-The manual workflow is `.github/workflows/staging-evidence.yml`. The workflow file and its verifier run only from the immutable, externally protected branch `security/phase3n-trusted-producer-v2`; the exact branch head is supplied as `trusted_producer_sha`. The separately supplied `expected_commit` must equal the current deployed `origin/develop` commit. Gate-critical workflow, verifier, test and contract files must be byte-for-byte identical between the trusted producer and the candidate or the run stops before any approval. It uses these sequential GitHub Environments:
+The manual workflow is `.github/workflows/staging-evidence.yml`. The workflow file and its verifier run only from the immutable, externally protected branch `security/phase3n-trusted-producer-v3`; the exact branch head is supplied as `trusted_producer_sha`. The separately supplied `expected_commit` must equal the current deployed `origin/develop` commit. Gate-critical workflow, verifier, test and contract files must be byte-for-byte identical between the trusted producer and the candidate or the run stops before any approval. It uses these sequential GitHub Environments:
 
 1. `staging-migration`
 2. `staging-execution-unlock`
@@ -70,6 +70,8 @@ Provider identities contain only stable IDs for the isolated Vercel, Render and 
 - replay fingerprint matches.
 
 The applied and candidate commits may differ only when the applied commit is a Git ancestor of the candidate and both commits independently validate the same Phase 3M manifest, chain digest, migration count and migration bytes. The workflow checks out full history and recomputes this relationship; operator-supplied ancestry/equivalence booleans are not trusted. Rewriting `phase3m_internal.bootstrap_history.expected_commit_sha` to a newer deployment commit is forbidden.
+
+An older operational Staging database may be advanced with the separately documented append-only renderer in `docs/phase3m_append_only_upgrade.md`. That path preserves immutable per-segment introduction commits and is intentionally **not** accepted as the fresh single-manifest Phase 3N bootstrap proof. The current trusted evidence run therefore uses a disposable isolated Preview Branch and the fresh renderer; operational continuity and release attestation remain separate claims.
 
 The Auth/RLS/IDOR section contains booleans only. It proves Free, Premium and Admin authentication, anonymous denial, per-user profile isolation, foreign-row denial, role-escalation denial, privileged browser-RPC denial and private-bucket write denial. User IDs, emails, tokens and rows are not evidence fields.
 
