@@ -338,8 +338,8 @@ def test_ci_keeps_phase3j_release_blocking_topology_and_artifact_budget() -> Non
         for name, job in all_jobs.items()
         if name != "dependency-security-release-blocking"
     }
-    assert len(jobs) == 11
-    assert len(all_jobs) == 12
+    assert len(jobs) == 12
+    assert len(all_jobs) == 13
     assert all_jobs["dependency-security-release-blocking"]["name"] == (
         "Dependency security (release-blocking)"
     )
@@ -375,6 +375,7 @@ def test_ci_keeps_phase3j_release_blocking_topology_and_artifact_budget() -> Non
         "playwright-public-fixture-smoke",
         "security-scanner-reports",
         "phase3g-review-ledger-runtime-json",
+        "phase3n-observation-ha-contract",
         "phase3h-production-readiness-json",
         "phase3i-saga-failure-injection-json",
         "phase3j-saga-outbox-runtime-json",

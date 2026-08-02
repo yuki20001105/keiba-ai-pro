@@ -33,6 +33,13 @@ ALLOWLIST_EXACT: Dict[str, str] = {
     # The canonical Phase 3M chain gained one guarded forward migration; the
     # replacement assertion remains exact and the manifest-order gate is unchanged.
     "python-api/tests/test_phase3m_supabase_bootstrap_gate.py:assert len(manifest.migrations) == 11": "replaced by exact 19-migration assertion after adding guarded model approval, job, worker-lease, artifact, evaluation, execution-bundle, orphan-reconciliation, and dispatch-queue contracts",
+    "python-api/tests/test_phase3m_supabase_bootstrap_gate.py:assert len(manifest.migrations) == 19": "replaced by exact 21-migration assertion after append-only shared outbox and immutable observation/HA contracts",
+    "python-api/tests/test_phase3m_supabase_upgrade_tool.py:assert len(candidate.migrations) == 19": "replaced by exact 21-migration assertion for the same append-only extension",
+    "python-api/tests/test_phase3m_supabase_upgrade_tool.py:assert sql.count(\"-- phase3m append migration \") == 8": "replaced by an exact 10-appended-migration assertion after adding ordinals 20 and 21",
+    "python-api/tests/test_phase3m_supabase_upgrade_tool.py:assert len(rows) == 19": "replaced by exact 21-row history assertion after append-only extension",
+    "python-api/tests/test_phase3m_supabase_upgrade_tool.py:assert {row[-1] for row in rows[11:]} == {current_commit}": "replaced by exact old/current/candidate history segment assertions for all 21 ordinals",
+    "python-api/tests/test_phase3j_saga_outbox_runtime_gate.py:assert len(jobs) == 11": "replaced by exact 12-job assertion after adding the release-blocking Phase3N HA contract job",
+    "python-api/tests/test_phase3j_saga_outbox_runtime_gate.py:assert len(all_jobs) == 12": "replaced by exact 13-job assertion after adding the release-blocking Phase3N HA contract job",
     # The dependency gate moved from permissive ranges/no override to stricter
     # exact patched versions plus explicit resolution checks in the same test.
     "python-api/tests/test_phase3k_dependency_security_contract.py:assert package_json[\"dependencies\"][\"next\"] == \"^16.2.10\"": "replaced by exact Next.js 16.2.12 security pin assertion",
