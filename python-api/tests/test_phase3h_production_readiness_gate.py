@@ -84,10 +84,12 @@ def test_trusted_attestation_is_the_only_ready_transition(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(gate, "_trusted_attestation_valid", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(gate, "_trusted_model_acceptance_valid", lambda *_args, **_kwargs: True)
 
     report = _report(
         evidence=None,
         trusted_attestation={"sanitized": True},
+        model_acceptance_report={"accepted": True},
         expected_attestation_run_id=123456,
         expected_attestation_run_attempt=2,
         expected_repository="owner/repository",
@@ -105,6 +107,7 @@ def test_trusted_attestation_is_the_only_ready_transition(
     assert report["failure_codes"] == []
     assert all(report["checks"].values())
     assert report["checks"]["trusted_staging_attestation"] is True
+    assert report["checks"]["trusted_model_acceptance"] is True
     assert "phase3g_runtime_evidence" not in report["checks"]
 
 
@@ -112,10 +115,12 @@ def test_invalid_trusted_attestation_fails_instead_of_falling_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(gate, "_trusted_attestation_valid", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(gate, "_trusted_model_acceptance_valid", lambda *_args, **_kwargs: True)
 
     report = _report(
         evidence=None,
         trusted_attestation={"production_ready": True},
+        model_acceptance_report={"accepted": True},
         expected_attestation_run_id=123456,
         expected_attestation_run_attempt=2,
         expected_repository="owner/repository",
@@ -129,6 +134,29 @@ def test_invalid_trusted_attestation_fails_instead_of_falling_back(
     assert report["l3_eligible"] is False
     assert report["blockers"] == []
     assert report["failure_codes"] == ["trusted-attestation-invalid"]
+
+
+def test_trusted_staging_cannot_bypass_model_acceptance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gate, "_trusted_attestation_valid", lambda *_args, **_kwargs: True)
+
+    report = _report(
+        evidence=None,
+        trusted_attestation={"sanitized": True},
+        expected_attestation_run_id=123456,
+        expected_attestation_run_attempt=2,
+        expected_repository="owner/repository",
+        expected_repository_id="987654",
+        require_ready=True,
+    )
+
+    assert report["success"] is False
+    assert report["production_ready"] is False
+    assert report["l3_eligible"] is False
+    assert report["checks"]["trusted_staging_attestation"] is True
+    assert report["checks"]["trusted_model_acceptance"] is False
+    assert "model-acceptance-report-required" in report["failure_codes"]
 
 
 def test_phase3n_validator_receives_strict_correlated_context(

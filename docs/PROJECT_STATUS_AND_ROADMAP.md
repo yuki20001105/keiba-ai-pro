@@ -3,7 +3,7 @@
 > Status date: 2026-08-02
 > Evidence cutoff: repository artifacts through 2026-07-20 plus local validation on 2026-08-02
 > Current branch at assessment: `codex/fullstack-readiness`
-> Current committed base at assessment: `d9bbcbcae752f0c162beebd2c074a555ad094c88` (`origin/develop`)
+> Current readiness checkpoint: `6300e27287bf089e058ad4fc06d32d61b374f2c9`
 > Status: **overall 66% (reasonable range: 64-68%), Production NOT_READY**
 > Working-tree candidate: repository/local-runtime gates improved; score remains provisional until committed and rerun by CI
 
@@ -185,7 +185,9 @@ The overall score remains close to the 2026-07-12 baseline of 65-70%. Later phas
 5. Database/cache integrity and rollback drill evidence are not proven.
 6. The three GitHub Environment approval boundaries are not proven configured and exercised.
 7. A fresh trusted Phase 3N artifact for the exact candidate commit does not exist locally.
-8. Business success thresholds beyond AUC are not approved or enforced.
+8. Business success thresholds beyond AUC are not approved. A versioned fail-closed
+   contract and verifier now enforce that absence as `not-accepted`; approved values
+   and fresh current-commit evidence are still required.
 
 ---
 
@@ -238,7 +240,7 @@ The order below is dependency-driven. An agent must not skip ahead by replacing 
 | Work package | Owner | Depends on | Deliverable | Exit condition | Progress impact |
 |---|---|---|---|---|---:|
 | WP0 Canonicalize current evidence | Sysop | none | Clean candidate commit and regenerated local/CI reports | All reports bind to the same current full SHA; no placeholder/stale report is treated as current | +2% |
-| WP1 Define business acceptance contract | Jobs + Trainer + Ledger | none | Versioned thresholds for AUC, calibration, ROI, drawdown, sample size, latency, freshness, and observation period | User approves thresholds; tests/report schema enforce them | +5% |
+| WP1 Define business acceptance contract | Jobs + Trainer + Ledger | none | **In progress:** versioned fail-closed contract, verifier, contract/abuse tests, CI and trusted Phase 3N/promotion wiring are implemented; non-AUC values remain deliberately unapproved | User approves thresholds; fresh current-commit out-of-time evidence passes the attested promotion gate | +5% |
 | WP2 Finish operator workflow gaps | Harvester + Trainer + Oracle | WP1 for model decisions | Unified quality bridge, profiling viewer, guarded redesign/retrain flow, explicit repair execution policy | Accepted workflows meet G1; intentionally script-only items have runbooks | +6% |
 | WP3 Provision isolated Staging governance | Sysop | WP0 | Provider resources, variables, branch/ruleset controls, three protected GitHub Environments | Authenticated metadata proves isolation and required reviewers without exposing values | +4% |
 | WP4 Apply and verify hosted bootstrap | Sysop | WP3, explicit migration approval | Phase 3M migrations and hosted schema/history evidence | Bootstrap gate passes against Staging; rollback plan is recorded | +4% |
@@ -251,13 +253,13 @@ The percentages above are prioritization estimates, not additive score increment
 
 ### Immediate next sequence
 
-1. Commit the current `codex/fullstack-readiness` candidate, which is based on exact `origin/develop` merge commit `d9bbcbc`.
-2. Regenerate Phase 3H through Phase 3N-compatible local/CI evidence for the resulting exact SHA; archive or clearly label stale reports.
-3. Obtain user approval for the missing business thresholds in WP1.
+1. Push the committed readiness candidate and regenerate exact-SHA CI evidence; archive or clearly label stale reports.
+2. Obtain user approval for the missing business thresholds in WP1 and record a durable approval reference.
+3. Generate current-commit out-of-time model evidence that satisfies the approved contract.
 4. Execute WP3 and WP4 only with explicit external-environment and migration approval.
 5. Execute the non-synthetic Staging exercises and rollback drill.
-6. Run the trusted Phase 3N workflow and consume its attested artifact in promotion checks.
-7. Promote only when the release gate derives READY; then complete the Production observation period.
+6. Run the trusted Phase 3N workflow; it now requires and attests the model acceptance report alongside operational evidence.
+7. Promote only when both trusted Staging and model gates derive READY; then complete the Production observation period.
 
 ---
 
@@ -319,6 +321,7 @@ For each status review:
 | 2026-07-12 | `80556e8` | 65-70% | NOT_READY | Phase 3 baseline established |
 | 2026-08-02 | `10267de` | 66% | NOT_READY | Phase 3M/N contracts and frontend checks pass; local full-stack assets, trusted Staging evidence, business acceptance contract, and current dependency remediation remain incomplete |
 | 2026-08-02 | `d9bbcbc` + readiness working tree | 66% authoritative / 68% provisional | NOT_READY | Python 3.11 venv, fail-closed local config, empty DB fixture, two-service health smoke, 5-case Playwright smoke, full Python suite, and zero Critical/High dependency audits pass; commit-bound CI and external Staging evidence remain pending |
+| 2026-08-02 | `6300e27` + WP1 working tree | 66% authoritative / 68% provisional | NOT_READY | The business gate is now versioned, fail-closed, tested, and wired into trusted Phase 3N/promotion. Threshold approval and real out-of-time evidence remain open, so no completion score is claimed. |
 
 ---
 
@@ -332,5 +335,6 @@ For each status review:
 - `docs/phase3j_durable_saga_outbox_disposable_gate.md`: disposable saga evidence boundary.
 - `docs/phase3l_staging_readiness_gate.md`: external Staging prerequisites.
 - `docs/phase3n_staging_evidence.md`: trusted evidence and approval contract.
+- `docs/model_acceptance_contract.md`: versioned business thresholds, evidence schema, and approval boundary.
 
 Historical documents may contain stale versions or assumptions. When they conflict, prefer `docs/specs/SYSTEM.md`, executable current-commit evidence, and this status document.

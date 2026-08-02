@@ -30,6 +30,11 @@ DELETED_PATTERNS: List[Tuple[str, re.Pattern[str]]] = [
 ]
 
 ALLOWLIST_EXACT: Dict[str, str] = {
+    # The dependency gate moved from permissive ranges/no override to stricter
+    # exact patched versions plus explicit resolution checks in the same test.
+    "python-api/tests/test_phase3k_dependency_security_contract.py:assert package_json[\"dependencies\"][\"next\"] == \"^16.2.10\"": "replaced by exact Next.js 16.2.12 security pin assertion",
+    "python-api/tests/test_phase3k_dependency_security_contract.py:assert package_json[\"devDependencies\"][\"postcss\"] == \"^8.5.10\"": "replaced by exact PostCSS 8.5.25 security pin assertion",
+    "python-api/tests/test_phase3k_dependency_security_contract.py:assert \"overrides\" not in package_json": "replaced by exact safe PostCSS and sharp override assertion",
     # Phase 3N replaces the in-memory thread start contract with a durable,
     # fenced Saga/outbox contract. Equivalent and stronger assertions live in
     # test_phase3n_operational_saga_runtime.py and the rewritten Phase 3E suite.

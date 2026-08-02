@@ -345,10 +345,13 @@ def test_staging_evidence_runs_only_from_immutable_trusted_producer() -> None:
         ".github/workflows/release.yml",
         ".github/workflows/staging-evidence.yml",
         "scripts/verify_phase3h_production_readiness.py",
+        "scripts/verify_model_acceptance.py",
         "scripts/security/run_phase3m_supabase_bootstrap_gate.py",
         "scripts/security/verify_phase3n_staging_evidence.py",
         "scripts/security/build_phase3n_staging_evidence.py",
         "supabase/bootstrap/v1/manifest.json",
+        "config/model_acceptance_contract.v1.json",
+        "python-api/tests/test_model_acceptance_gate.py",
     ):
         assert required in gate
 
@@ -360,6 +363,23 @@ def test_staging_evidence_runs_only_from_immutable_trusted_producer() -> None:
         assert job_checkouts[0]["with"]["fetch-depth"] == 0
         assert job_checkouts[0]["with"]["ref"] == "${{ inputs.trusted_producer_sha }}"
         assert job_checkouts[0]["with"]["persist-credentials"] is False
+
+    observation_steps = jobs["staging-observation"]["steps"]
+    protected_input = next(
+        step
+        for step in observation_steps
+        if step.get("name") == "Require the environment-protected sanitized observation"
+    )
+    assert protected_input["env"]["MODEL_ACCEPTANCE_EVIDENCE_B64"] == (
+        "${{ secrets.MODEL_ACCEPTANCE_EVIDENCE_B64 }}"
+    )
+    model_gate = next(
+        step
+        for step in observation_steps
+        if step.get("name") == "Require approved current-commit model acceptance evidence"
+    )["run"]
+    assert "config/model_acceptance_contract.v1.json" in model_gate
+    assert "--require-accepted" in model_gate
 
 
 def test_ci_requires_fixed_trusted_attestation_for_main_promotion() -> None:
@@ -382,6 +402,10 @@ def test_ci_requires_fixed_trusted_attestation_for_main_promotion() -> None:
     )
     assert any(
         "test_phase3n_staging_evidence_gate.py" in step.get("run", "")
+        for step in python_steps
+    )
+    assert any(
+        "test_model_acceptance_gate.py" in step.get("run", "")
         for step in python_steps
     )
 
@@ -440,6 +464,7 @@ def test_ci_requires_fixed_trusted_attestation_for_main_promotion() -> None:
     )
     assert "gh attestation verify" in provenance["run"]
     assert "phase3n_staging_evidence_gate.json" in provenance["run"]
+    assert "model_acceptance_gate.json" in provenance["run"]
     assert "--signer-workflow" in provenance["run"]
     assert "--source-ref" in provenance["run"]
     assert "--source-digest" in provenance["run"]
@@ -454,6 +479,7 @@ def test_ci_requires_fixed_trusted_attestation_for_main_promotion() -> None:
     assert len(promotion_steps) == 1
     promotion = promotion_steps[0]["run"]
     assert "--trusted-attestation" in promotion
+    assert "--model-acceptance-report" in promotion
     assert "--expected-attestation-run-id" in promotion
     assert "--expected-attestation-run-attempt" in promotion
     assert "--expected-repository" in promotion

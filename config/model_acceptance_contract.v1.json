@@ -1,0 +1,59 @@
+{
+  "schema": "model-acceptance-contract",
+  "schema_version": 1,
+  "contract_id": "model-acceptance-v1",
+  "status": "draft",
+  "approved_at": null,
+  "approved_by": null,
+  "approval_reference": null,
+  "evaluation_policy": {
+    "holdout_kind": "out_of_time",
+    "future_field_leakage_allowed": false
+  },
+  "thresholds": {
+    "auc": {
+      "operator": "gte",
+      "value": 0.85
+    },
+    "brier_score": {
+      "operator": "lte",
+      "value": null
+    },
+    "expected_calibration_error": {
+      "operator": "lte",
+      "value": null
+    },
+    "roi_percent": {
+      "operator": "gte",
+      "value": null
+    },
+    "max_drawdown_percent": {
+      "operator": "lte",
+      "value": null
+    },
+    "bet_count": {
+      "operator": "gte",
+      "value": null
+    },
+    "sample_count": {
+      "operator": "gte",
+      "value": null
+    },
+    "p95_latency_ms": {
+      "operator": "lte",
+      "value": null
+    },
+    "data_freshness_minutes": {
+      "operator": "lte",
+      "value": null
+    },
+    "observation_period_days": {
+      "operator": "gte",
+      "value": null
+    },
+    "baseline_roi_delta_percent": {
+      "operator": "gte",
+      "value": null
+    }
+  }
+}

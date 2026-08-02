@@ -18,6 +18,8 @@ Each Environment must have required reviewers and a deployment branch policy tha
 
 The `staging-execution-unlock` Environment supplies one protected value named `PHASE3N_STAGING_OBSERVATION_B64`. It is the base64 encoding of sanitized observation JSON, not a credential envelope. It must contain no token, cookie, credential, connection string, raw database row, arbitrary command output, or operator filesystem path. The observation is operator-attested evidence: provider identities, integrity digests and non-synthetic exercises must be collected from the live isolated Staging resources and reviewed before approval. The workflow validates and correlates those claims but deliberately receives no provider credential.
 
+The same Environment also supplies `MODEL_ACCEPTANCE_EVIDENCE_B64`. Its JSON is checked against `config/model_acceptance_contract.v1.json`, the exact candidate SHA, evidence freshness, the out-of-time/leakage policy, and every approved business threshold. The raw metric input is deleted after validation and only the sanitized accepted gate report is retained. A draft contract, a missing threshold, or any failed metric stops the trusted workflow before Production release approval.
+
 The workflow:
 
 - validates and canonicalizes the observation before uploading it;
@@ -28,6 +30,7 @@ The workflow:
 - verifies the final evidence against the commit-bound Phase 3M manifest;
 - uploads `phase3n-staging-evidence-json`;
 - creates GitHub artifact provenance attestations for the evidence and report.
+- attests `model_acceptance_gate.json` for the same exact candidate.
 
 Promotion consumers select the approved run through repository variables `PHASE3N_STAGING_EVIDENCE_RUN_ID` and `PHASE3N_TRUSTED_PRODUCER_SHA`. They re-query the run, require the immutable producer branch and SHA, compare run attempt and repository ID, and verify the GitHub attestation with exact source ref, source digest and signer digest before accepting the JSON report.
 
