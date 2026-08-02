@@ -11,7 +11,7 @@ Updated: 2026-08-02
 - Admin-only create/read/decision routes and a private Supabase migration implement an expiring, CAS-versioned, two-person approval ledger without enabling execution.
 - The Admin workbench exposes the durable request/read/independent-decision/job-queue/status sequence; database guards enforce requester/approver separation and requester-only submission.
 - The migration remains unapplied pending isolated Staging migration approval and runtime evidence.
-- The canonical bootstrap defines service-only fenced job start, immutable registration of an already-uploaded private-bucket artifact, and accepted sanitized evaluation registration with promotion structurally disabled. No deployed trainer/uploader/evaluator exists, so actual model production, candidate comparison, trusted attestation, and promotion remain unimplemented.
+- The canonical bootstrap defines service-only fenced job start, immutable registration of an already-uploaded private-bucket artifact, and accepted sanitized evaluation registration with promotion structurally disabled. Local fail-closed one-shot worker, dispatcher, reconciler, source audit, and accepted evaluator runtimes now exist; none has been deployed or exercised against hosted PostgreSQL/Storage. The accepted evaluator recomputes the contract metrics and baseline ROI delta from strict rows, but no real candidate comparison, trusted Phase 3N attestation, or promotion has occurred.
 
 ## 1. Scope
 
@@ -170,7 +170,7 @@ Phase 1 (spec + API/UI skeleton):
 - repository implementation complete for durable, non-executing approval persistence and Admin operator controls; apply and runtime-verify only in isolated Staging after explicit migration approval.
 
 Phase 2 (job runtime integration):
-- connect to optimizer/retrain pipeline.
+- repository implementation now connects the durable job to a fenced isolated trainer/uploader and accepted evaluator; deploy and exercise it only in approved isolated Staging.
 
 Phase 3 (promotion integration):
-- guarded active-model activation and smoke coverage.
+- consume only a GitHub-attested READY Phase 3N run selected for the exact release candidate, then perform separately approved guarded active-model activation and smoke coverage. A database/browser caller-supplied trusted boolean is never sufficient.
