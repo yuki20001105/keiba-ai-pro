@@ -51,6 +51,14 @@ REQUIRED_MARKERS = frozenset(
         "security_invoker_ml_view",
         "storage_role_boundaries",
         "required_triggers_enabled",
+        "model_retrain_approval_ledger",
+        "model_retrain_job_ledger",
+        "model_retrain_worker_lease",
+        "model_retrain_artifact_registration",
+        "model_retrain_evaluation_registration",
+        "model_retrain_execution_bundle",
+        "model_retrain_orphan_reconciliation",
+        "model_retrain_dispatch_queue",
     }
 )
 
@@ -62,6 +70,20 @@ TARGET_PREFLIGHT_REQUIRED_FRAGMENTS = (
     FENCING_SEQUENCE_PREFLIGHT_FRAGMENT,
     "'consume_ocr_quota'",
     "'update_admin_profile_role'",
+    "'model_retrain_approval_requests'",
+    "'create_model_retrain_approval'",
+    "'model_retrain_jobs'",
+    "'create_model_retrain_job'",
+    "'model_retrain_job_fencing_seq'",
+    "'claim_model_retrain_job'",
+    "'model_retrain_artifacts'",
+    "'register_model_retrain_artifact'",
+    "'model_retrain_evaluations'",
+    "'register_model_retrain_accepted_evaluation'",
+    "'get_model_retrain_execution_bundle'",
+    "'list_model_retrain_orphan_candidates'",
+    "'record_model_retrain_orphan_reconciliation'",
+    "'list_dispatchable_model_retrain_jobs'",
     "FROM storage.buckets AS b",
     "b.id = 'models' OR b.name = 'models'",
     "FROM storage.objects AS o",
@@ -93,7 +115,11 @@ BEGIN
                  'ml_models', 'scrape_uncertainty_review_requests',
                  'scrape_uncertainty_review_events', 'scrape_execution_authorizations',
                  'scrape_execution_reservations', 'scrape_execution_reservation_events',
-                 'admin_role_change_audit'
+                 'admin_role_change_audit', 'model_retrain_approval_requests',
+                 'model_retrain_approval_events', 'model_retrain_jobs',
+                 'model_retrain_job_events', 'model_retrain_job_fencing_seq',
+                 'model_retrain_artifacts', 'model_retrain_evaluations',
+                 'model_retrain_orphan_reconciliation_runs'
              ])
        )
        OR EXISTS (
@@ -118,7 +144,32 @@ BEGIN
                  '_materialize_scrape_execution_reservation_expiry',
                  'reserve_scrape_execution', 'consume_scrape_execution_reservation',
                  'release_scrape_execution_reservation',
-                 'expire_scrape_execution_reservation', 'update_admin_profile_role'
+                 'expire_scrape_execution_reservation', 'update_admin_profile_role',
+                 '_model_retrain_require_admin',
+                 '_reject_model_retrain_approval_event_mutation',
+                 '_guard_model_retrain_approval_update',
+                 '_expire_model_retrain_approval_if_needed',
+                 'create_model_retrain_approval', 'get_model_retrain_approval',
+                 'transition_model_retrain_approval',
+                 '_reject_model_retrain_job_mutation',
+                 'create_model_retrain_job', 'get_model_retrain_job',
+                 '_guard_model_retrain_job_update',
+                 '_reject_model_retrain_job_delete',
+                 '_reject_model_retrain_job_event_mutation',
+                 '_model_retrain_validate_worker',
+                 'claim_model_retrain_job', 'heartbeat_model_retrain_job',
+                 'start_model_retrain_job', 'fail_model_retrain_job',
+                 'recover_expired_model_retrain_job',
+                 '_reject_model_retrain_artifact_mutation',
+                 'register_model_retrain_artifact',
+                 '_reject_model_retrain_evaluation_mutation',
+                 'register_model_retrain_accepted_evaluation',
+                 'get_model_retrain_execution_bundle',
+                 '_reject_model_retrain_orphan_run_mutation',
+                 'list_expired_model_retrain_job_candidates',
+                 'list_model_retrain_orphan_candidates',
+                 'record_model_retrain_orphan_reconciliation',
+                 'list_dispatchable_model_retrain_jobs'
              ])
        )
        OR EXISTS (
@@ -128,6 +179,14 @@ BEGIN
            WHERE n.nspname = 'public'
              AND c.relkind = 'S'
              AND c.relname = 'scrape_execution_reservation_fencing_seq'
+       )
+       OR EXISTS (
+           SELECT 1
+           FROM pg_catalog.pg_class AS c
+           JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+           WHERE n.nspname = 'public'
+             AND c.relkind = 'S'
+             AND c.relname = 'model_retrain_job_fencing_seq'
        )
        OR EXISTS (
            SELECT 1

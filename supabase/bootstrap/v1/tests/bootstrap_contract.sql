@@ -17,6 +17,8 @@ BEGIN
        OR to_regclass('public.scrape_uncertainty_review_requests') IS NULL
        OR to_regclass('public.scrape_execution_reservations') IS NULL
        OR to_regclass('public.admin_role_change_audit') IS NULL
+       OR to_regclass('public.model_retrain_approval_requests') IS NULL
+       OR to_regclass('public.model_retrain_approval_events') IS NULL
        OR to_regclass('phase3m_internal.bootstrap_history') IS NULL THEN
         RAISE EXCEPTION 'phase3m required relation missing';
     END IF;
@@ -122,7 +124,8 @@ BEGIN
           'horse_pedigree', 'ml_models', 'ml_training_data',
           'scrape_uncertainty_review_requests', 'scrape_uncertainty_review_events',
           'scrape_execution_authorizations', 'scrape_execution_reservations',
-          'scrape_execution_reservation_events', 'admin_role_change_audit'
+          'scrape_execution_reservation_events', 'admin_role_change_audit',
+          'model_retrain_approval_requests', 'model_retrain_approval_events'
       ])
       AND (
           has_table_privilege('authenticated', c.oid, 'SELECT')
@@ -200,7 +203,10 @@ BEGIN
        OR has_function_privilege('authenticated', 'public.update_admin_profile_role(uuid,uuid,text,uuid)', 'EXECUTE')
        OR has_function_privilege('authenticated', 'public.reserve_scrape_execution(uuid,uuid,uuid,uuid,uuid,integer,uuid,text,integer,integer)', 'EXECUTE')
        OR has_function_privilege('authenticated', 'public.consume_scrape_execution_reservation(uuid,integer,uuid,uuid,uuid,uuid,integer,uuid,text)', 'EXECUTE')
-       OR has_function_privilege('authenticated', 'public.release_scrape_execution_reservation(uuid,integer,uuid,uuid,uuid,text,text)', 'EXECUTE') THEN
+       OR has_function_privilege('authenticated', 'public.release_scrape_execution_reservation(uuid,integer,uuid,uuid,uuid,text,text)', 'EXECUTE')
+       OR has_function_privilege('authenticated', 'public.create_model_retrain_approval(uuid,uuid,text,jsonb,text,text[])', 'EXECUTE')
+       OR has_function_privilege('authenticated', 'public.get_model_retrain_approval(uuid,uuid)', 'EXECUTE')
+       OR has_function_privilege('authenticated', 'public.transition_model_retrain_approval(uuid,uuid,integer,text,text)', 'EXECUTE') THEN
         RAISE EXCEPTION 'phase3m server-only RPC exposed to browser role';
     END IF;
 
@@ -218,6 +224,9 @@ BEGIN
         AND has_function_privilege('service_role', 'public.consume_scrape_execution_reservation(uuid,integer,uuid,uuid,uuid,uuid,integer,uuid,text)', 'EXECUTE')
         AND has_function_privilege('service_role', 'public.release_scrape_execution_reservation(uuid,integer,uuid,uuid,uuid,text,text)', 'EXECUTE')
         AND has_function_privilege('service_role', 'public.expire_scrape_execution_reservation(uuid,integer)', 'EXECUTE')
+        AND has_function_privilege('service_role', 'public.create_model_retrain_approval(uuid,uuid,text,jsonb,text,text[])', 'EXECUTE')
+        AND has_function_privilege('service_role', 'public.get_model_retrain_approval(uuid,uuid)', 'EXECUTE')
+        AND has_function_privilege('service_role', 'public.transition_model_retrain_approval(uuid,uuid,integer,text,text)', 'EXECUTE')
     ) THEN
         RAISE EXCEPTION 'phase3m service role RPC grant missing';
     END IF;
@@ -299,8 +308,10 @@ BEGIN
           OR (n.nspname = 'public' AND c.relname = 'profiles' AND t.tgname = 'profiles_touch_updated_at')
           OR (n.nspname = 'public' AND c.relname = 'bank_records' AND t.tgname = 'bank_records_touch_updated_at')
           OR (n.nspname = 'public' AND c.relname = 'race_results_ultimate' AND t.tgname = 'phase3m_race_results_ultimate_horse_number')
+          OR (n.nspname = 'public' AND c.relname = 'model_retrain_approval_requests' AND t.tgname = 'trg_model_retrain_approval_update_guard')
+          OR (n.nspname = 'public' AND c.relname = 'model_retrain_approval_events' AND t.tgname = 'trg_model_retrain_approval_events_immutable')
       );
-    IF v_count <> 4 THEN
+    IF v_count <> 6 THEN
         RAISE EXCEPTION 'phase3m required trigger missing or disabled';
     END IF;
 
@@ -771,6 +782,426 @@ BEGIN
 END;
 $phase3m_admin_audit$;
 
+SET LOCAL ROLE service_role;
+DO $phase3m_model_retrain_approval$
+DECLARE
+    v_approval_id UUID;
+    v_status TEXT;
+    v_version INTEGER;
+    v_execution_enabled BOOLEAN;
+    v_job_created BOOLEAN;
+    v_retrain_job_id UUID;
+    v_retrain_job_id_retry UUID;
+    v_job_state TEXT;
+    v_execution_started BOOLEAN;
+    v_artifact_written BOOLEAN;
+    v_worker_version INTEGER;
+    v_fencing_token BIGINT;
+    v_worker_id TEXT;
+    v_artifact_uri TEXT;
+    v_artifact_sha256 TEXT;
+    v_artifact_size BIGINT;
+    v_artifact_object_name TEXT;
+    v_evaluation_recorded BOOLEAN;
+    v_acceptance_passed BOOLEAN;
+    v_promotion_eligible BOOLEAN;
+    v_evaluation_report JSONB;
+    v_evaluation_report_sha256 TEXT;
+    v_execution_bundle JSONB;
+    v_denied BOOLEAN;
+    v_reconciliation_run_id UUID;
+    v_reconciliation_successful BOOLEAN;
+    v_count INTEGER;
+BEGIN
+    UPDATE public.profiles SET role = 'admin'
+    WHERE id IN (
+        '30000000-0000-4000-8000-000000000001',
+        '30000000-0000-4000-8000-000000000002'
+    );
+
+    v_denied := FALSE;
+    BEGIN
+        INSERT INTO public.model_retrain_approval_requests (
+            dry_run_id, approved_payload_hash, requested_by, expires_at,
+            execution_policy, allowed_actions, dry_run_payload
+        ) VALUES (
+            '36000000-0000-4000-8000-000000000099', repeat('f', 64),
+            '30000000-0000-4000-8000-000000000001', clock_timestamp() + INTERVAL '30 minutes',
+            'read-only-preview', ARRAY['view_approval_status']::TEXT[],
+            jsonb_build_object(
+                'dry_run_id', '36000000-0000-4000-8000-000000000099',
+                'created_by', '30000000-0000-4000-8000-000000000001',
+                'state', 'preview-ready'
+            )
+        );
+    EXCEPTION WHEN insufficient_privilege THEN
+        v_denied := TRUE;
+    END;
+    IF NOT v_denied THEN
+        RAISE EXCEPTION 'phase3m service role directly inserted model approval';
+    END IF;
+
+    SELECT a.approval_id, a.approval_status, a.record_version,
+           a.execution_enabled, a.job_created
+    INTO v_approval_id, v_status, v_version, v_execution_enabled, v_job_created
+    FROM public.create_model_retrain_approval(
+        '30000000-0000-4000-8000-000000000001',
+        '36000000-0000-4000-8000-000000000001',
+        repeat('a', 64),
+        jsonb_build_object(
+            'dry_run_id', '36000000-0000-4000-8000-000000000001',
+            'created_by', '30000000-0000-4000-8000-000000000001',
+            'state', 'preview-ready',
+            'target', 'win',
+            'model_type', 'lightgbm',
+            'train_period', jsonb_build_object('start', '20240101', 'end', '20241231'),
+            'validation_period', jsonb_build_object('start', '20250101', 'end', '20250331'),
+            'feature_count', 1,
+            'selected_features', jsonb_build_array('feature_a', 'feature_b'),
+            'removed_features', jsonb_build_array('feature_b'),
+            'active_model_id', 'baseline-model',
+            'feature_contract_hash', 'be44f2ffb24fe977ac663941248165d7771cfe943cb669d1001fa47a481ae758',
+            'data_snapshot_id', repeat('b', 64),
+            'safety_checks', jsonb_build_array(
+                jsonb_build_object('key', 'future_field_exclusion', 'status', 'pass'),
+                jsonb_build_object('key', 'out_of_time_split', 'status', 'pass'),
+                jsonb_build_object('key', 'active_model_immutable', 'status', 'pass'),
+                jsonb_build_object('key', 'production_write_blocked', 'status', 'pass'),
+                jsonb_build_object('key', 'path_input_rejected', 'status', 'pass'),
+                jsonb_build_object('key', 'data_snapshot_bound', 'status', 'pass'),
+                jsonb_build_object('key', 'candidate_commit_bound', 'status', 'pass')
+            ),
+            'git_commit', repeat('d', 40),
+            'generated_at', to_char(
+                clock_timestamp() AT TIME ZONE 'UTC',
+                'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+            )
+        ),
+        'staging-train',
+        ARRAY['submit_approved_retrain', 'view_approval_status', 'view_job_status']::TEXT[]
+    ) AS a;
+    IF v_status <> 'pending' OR v_version <> 1
+       OR v_execution_enabled IS DISTINCT FROM FALSE
+       OR v_job_created IS DISTINCT FROM FALSE THEN
+        RAISE EXCEPTION 'phase3m model approval create contract failed';
+    END IF;
+
+    v_denied := FALSE;
+    BEGIN
+        PERFORM 1 FROM public.transition_model_retrain_approval(
+            '30000000-0000-4000-8000-000000000001', v_approval_id, 1,
+            'approve', 'Requester attempted to approve the same retrain request.'
+        );
+    EXCEPTION WHEN insufficient_privilege THEN
+        v_denied := TRUE;
+    END;
+    IF NOT v_denied THEN
+        RAISE EXCEPTION 'phase3m model retrain self approval was not denied';
+    END IF;
+
+    SELECT a.approval_status, a.record_version, a.execution_enabled, a.job_created
+    INTO v_status, v_version, v_execution_enabled, v_job_created
+    FROM public.transition_model_retrain_approval(
+        '30000000-0000-4000-8000-000000000002', v_approval_id, 1,
+        'approve', 'Independent Admin approved isolated Staging retrain eligibility.'
+    ) AS a;
+    IF v_status <> 'approved' OR v_version <> 2
+       OR v_execution_enabled IS DISTINCT FROM FALSE
+       OR v_job_created IS DISTINCT FROM FALSE
+       OR (SELECT count(*) FROM public.model_retrain_approval_events
+           WHERE approval_id = v_approval_id) <> 2 THEN
+        RAISE EXCEPTION 'phase3m model approval transition contract failed';
+    END IF;
+
+    v_denied := FALSE;
+    BEGIN
+        INSERT INTO public.model_retrain_jobs (
+            approval_id, dry_run_id, approved_payload_hash,
+            submitted_by, requested_by, approved_by, execution_policy
+        ) VALUES (
+            v_approval_id, '36000000-0000-4000-8000-000000000001', repeat('a', 64),
+            '30000000-0000-4000-8000-000000000001',
+            '30000000-0000-4000-8000-000000000001',
+            '30000000-0000-4000-8000-000000000002', 'staging-train'
+        );
+    EXCEPTION WHEN insufficient_privilege THEN
+        v_denied := TRUE;
+    END;
+    IF NOT v_denied THEN
+        RAISE EXCEPTION 'phase3m service role directly inserted model retrain job';
+    END IF;
+
+    SELECT j.job_id, j.job_state, j.execution_started, j.artifact_written
+    INTO v_retrain_job_id, v_job_state, v_execution_started, v_artifact_written
+    FROM public.create_model_retrain_job(
+        '30000000-0000-4000-8000-000000000001', v_approval_id, 2, repeat('a', 64)
+    ) AS j;
+    IF v_job_state <> 'queued'
+       OR v_execution_started IS DISTINCT FROM FALSE
+       OR v_artifact_written IS DISTINCT FROM FALSE
+       OR (SELECT count(*) FROM public.model_retrain_job_events
+           WHERE job_id = v_retrain_job_id AND event_type = 'queued') <> 1 THEN
+        RAISE EXCEPTION 'phase3m model retrain queued job contract failed';
+    END IF;
+
+    SELECT j.job_id INTO v_retrain_job_id_retry
+    FROM public.create_model_retrain_job(
+        '30000000-0000-4000-8000-000000000001', v_approval_id, 2, repeat('a', 64)
+    ) AS j;
+    SELECT a.record_version, a.job_created, a.execution_enabled
+    INTO v_version, v_job_created, v_execution_enabled
+    FROM public.model_retrain_approval_requests AS a
+    WHERE a.approval_id = v_approval_id;
+    IF v_retrain_job_id_retry IS DISTINCT FROM v_retrain_job_id
+       OR v_version <> 3
+       OR v_job_created IS DISTINCT FROM TRUE
+       OR v_execution_enabled IS DISTINCT FROM FALSE
+       OR (SELECT count(*) FROM public.model_retrain_jobs
+           WHERE approval_id = v_approval_id) <> 1
+       OR (SELECT count(*) FROM public.model_retrain_approval_events
+           WHERE approval_id = v_approval_id) <> 3 THEN
+        RAISE EXCEPTION 'phase3m model retrain job idempotency contract failed';
+    END IF;
+
+    SELECT j.job_state, j.record_version, j.fencing_token, j.worker_id,
+           j.execution_started, j.artifact_written
+    INTO v_job_state, v_worker_version, v_fencing_token, v_worker_id,
+         v_execution_started, v_artifact_written
+    FROM public.claim_model_retrain_job(
+        'staging-worker-01', v_retrain_job_id, 1, 120
+    ) AS j;
+    IF v_job_state <> 'claimed' OR v_worker_version <> 2
+       OR v_fencing_token IS NULL OR v_worker_id <> 'staging-worker-01'
+       OR v_execution_started IS DISTINCT FROM FALSE
+       OR v_artifact_written IS DISTINCT FROM FALSE THEN
+        RAISE EXCEPTION 'phase3m model retrain worker claim contract failed';
+    END IF;
+
+    v_denied := FALSE;
+    BEGIN
+        PERFORM public.get_model_retrain_execution_bundle(
+            'staging-worker-01', v_retrain_job_id, 2, v_fencing_token,
+            repeat('e', 40), 'baseline-model'
+        );
+    EXCEPTION WHEN object_not_in_prerequisite_state THEN
+        v_denied := TRUE;
+    END;
+    IF NOT v_denied THEN
+        RAISE EXCEPTION 'phase3m stale model retrain execution bundle was accepted';
+    END IF;
+
+    v_execution_bundle := public.get_model_retrain_execution_bundle(
+        'staging-worker-01', v_retrain_job_id, 2, v_fencing_token,
+        repeat('d', 40), 'baseline-model'
+    );
+    IF v_execution_bundle->>'job_id' IS DISTINCT FROM v_retrain_job_id::TEXT
+       OR v_execution_bundle->>'record_version' IS DISTINCT FROM '2'
+       OR v_execution_bundle->>'data_snapshot_sha256' IS DISTINCT FROM repeat('b', 64)
+       OR v_execution_bundle->>'feature_contract_sha256'
+            IS DISTINCT FROM 'be44f2ffb24fe977ac663941248165d7771cfe943cb669d1001fa47a481ae758'
+       OR v_execution_bundle#>>'{train_period,end}' IS DISTINCT FROM '20241231'
+       OR v_execution_bundle#>>'{validation_period,start}' IS DISTINCT FROM '20250101'
+       OR v_execution_bundle#>>'{training_parameters,force_sync}' IS DISTINCT FROM 'false'
+       OR v_execution_bundle#>>'{training_parameters,use_optuna}' IS DISTINCT FROM 'false' THEN
+        RAISE EXCEPTION 'phase3m model retrain execution bundle contract failed';
+    END IF;
+
+    v_denied := FALSE;
+    BEGIN
+        PERFORM 1 FROM public.start_model_retrain_job(
+            'staging-worker-01', v_retrain_job_id, 2, v_fencing_token + 1
+        );
+    EXCEPTION WHEN insufficient_privilege THEN
+        v_denied := TRUE;
+    END;
+    IF NOT v_denied THEN
+        RAISE EXCEPTION 'phase3m stale model retrain fencing token was accepted';
+    END IF;
+
+    SELECT j.record_version INTO v_worker_version
+    FROM public.heartbeat_model_retrain_job(
+        'staging-worker-01', v_retrain_job_id, 2, v_fencing_token, 120
+    ) AS j;
+    IF v_worker_version <> 3 THEN
+        RAISE EXCEPTION 'phase3m model retrain heartbeat contract failed';
+    END IF;
+
+    SELECT j.job_state, j.record_version, j.execution_started, j.artifact_written
+    INTO v_job_state, v_worker_version, v_execution_started, v_artifact_written
+    FROM public.start_model_retrain_job(
+        'staging-worker-01', v_retrain_job_id, 3, v_fencing_token
+    ) AS j;
+    IF v_job_state <> 'running' OR v_worker_version <> 4
+       OR v_execution_started IS DISTINCT FROM TRUE
+       OR v_artifact_written IS DISTINCT FROM FALSE THEN
+        RAISE EXCEPTION 'phase3m model retrain worker start contract failed';
+    END IF;
+
+    v_artifact_sha256 := repeat('c', 64);
+    v_artifact_object_name :=
+        'retrain/' || v_retrain_job_id::TEXT || '/' || v_artifact_sha256 || '.joblib';
+    INSERT INTO storage.objects (id, bucket_id, name)
+    VALUES (
+        '36000000-0000-4000-8000-000000000010',
+        'models',
+        v_artifact_object_name
+    );
+
+    SELECT j.job_state, j.record_version, j.artifact_written,
+           j.artifact_uri, j.artifact_sha256, j.artifact_size_bytes
+    INTO v_job_state, v_worker_version, v_artifact_written,
+         v_artifact_uri, v_artifact_sha256, v_artifact_size
+    FROM public.register_model_retrain_artifact(
+        'staging-worker-01', v_retrain_job_id, 4, v_fencing_token,
+        v_artifact_object_name, v_artifact_sha256, 4096,
+        'application/x-python-serialized-object'
+    ) AS j;
+    IF v_job_state <> 'artifact-registered' OR v_worker_version <> 5
+       OR v_artifact_written IS DISTINCT FROM TRUE
+       OR v_artifact_uri <> 'models://' || v_artifact_object_name
+       OR v_artifact_sha256 <> repeat('c', 64)
+       OR v_artifact_size <> 4096
+       OR (SELECT count(*) FROM public.model_retrain_artifacts
+           WHERE job_id = v_retrain_job_id
+             AND approval_id = v_approval_id
+             AND artifact_uri = v_artifact_uri) <> 1
+       OR (SELECT count(*) FROM public.model_retrain_job_events
+           WHERE job_id = v_retrain_job_id) <> 5 THEN
+        RAISE EXCEPTION 'phase3m model retrain artifact registration contract failed';
+    END IF;
+
+    v_evaluation_report := jsonb_build_object(
+        'report_schema', 'model-acceptance-gate-report',
+        'schema_version', 1,
+        'success', TRUE,
+        'verdict', 'accepted',
+        'verdict_reason', 'all-approved-thresholds-pass',
+        'accepted', TRUE,
+        'acceptance_required', TRUE,
+        'evaluated_commit_sha', repeat('d', 40),
+        'contract', jsonb_build_object(
+            'contract_id', 'model-acceptance-v1',
+            'sha256', repeat('e', 64),
+            'status', 'approved'
+        ),
+        'evidence', jsonb_build_object(
+            'model_id', 'lightgbm-staging-candidate',
+            'model_artifact_sha256', repeat('c', 64),
+            'model_feature_columns_sha256', repeat('f', 64),
+            'observations_sha256', repeat('0', 64),
+            'observed_at', to_char(
+                clock_timestamp() AT TIME ZONE 'UTC',
+                'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+            )
+        ),
+        'blockers', '[]'::JSONB,
+        'checks', jsonb_build_object(
+            'contract_schema', TRUE,
+            'contract_approved', TRUE,
+            'evidence_schema_and_binding', TRUE,
+            'metrics_against_thresholds', TRUE,
+            'promotion_policy', TRUE
+        ),
+        'failure_codes', '[]'::JSONB
+    );
+    v_denied := FALSE;
+    BEGIN
+        PERFORM 1 FROM public.register_model_retrain_accepted_evaluation(
+            'staging-evaluator-01', v_retrain_job_id, 5,
+            jsonb_set(v_evaluation_report, '{accepted}', 'null'::JSONB)
+        );
+    EXCEPTION WHEN object_not_in_prerequisite_state THEN
+        v_denied := TRUE;
+    END;
+    IF NOT v_denied THEN
+        RAISE EXCEPTION 'phase3m model evaluation JSON null bypass was accepted';
+    END IF;
+
+    SELECT j.job_state, j.record_version, j.evaluation_recorded,
+           j.acceptance_passed, j.evaluation_report_sha256,
+           j.promotion_eligible
+    INTO v_job_state, v_worker_version, v_evaluation_recorded,
+         v_acceptance_passed, v_evaluation_report_sha256,
+         v_promotion_eligible
+    FROM public.register_model_retrain_accepted_evaluation(
+        'staging-evaluator-01', v_retrain_job_id, 5, v_evaluation_report
+    ) AS j;
+    IF v_job_state <> 'evaluation-recorded' OR v_worker_version <> 6
+       OR v_evaluation_recorded IS DISTINCT FROM TRUE
+       OR v_acceptance_passed IS DISTINCT FROM TRUE
+       OR v_evaluation_report_sha256 !~ '^[0-9a-f]{64}$'
+       OR v_promotion_eligible IS DISTINCT FROM FALSE
+       OR (SELECT count(*) FROM public.model_retrain_evaluations
+           WHERE job_id = v_retrain_job_id
+             AND acceptance_passed = TRUE
+             AND trusted_promotion_evidence = FALSE
+             AND promotion_eligible = FALSE) <> 1
+       OR (SELECT count(*) FROM public.model_retrain_job_events
+           WHERE job_id = v_retrain_job_id) <> 6 THEN
+        RAISE EXCEPTION 'phase3m model retrain evaluation registration contract failed';
+    END IF;
+
+    SELECT count(*) INTO v_count
+    FROM public.list_expired_model_retrain_job_candidates(
+        'staging-reconciler-01', 10
+    );
+    IF v_count <> 0 THEN
+        RAISE EXCEPTION 'phase3m completed retrain job exposed as expired';
+    END IF;
+
+    SELECT count(*) INTO v_count
+    FROM public.list_model_retrain_orphan_candidates(
+        'staging-reconciler-01', 3600, 10
+    );
+    IF v_count <> 0 THEN
+        RAISE EXCEPTION 'phase3m registered retrain artifact exposed as orphan';
+    END IF;
+
+    SELECT r.run_id, r.successful
+    INTO v_reconciliation_run_id, v_reconciliation_successful
+    FROM public.record_model_retrain_orphan_reconciliation(
+        'staging-reconciler-01', 3600, 10, '[]'::JSONB
+    ) AS r;
+    IF v_reconciliation_run_id IS NULL
+       OR v_reconciliation_successful IS DISTINCT FROM TRUE
+       OR (SELECT count(*)
+           FROM public.model_retrain_orphan_reconciliation_runs
+           WHERE run_id = v_reconciliation_run_id
+             AND candidate_count = 0
+             AND deleted_count = 0
+             AND failed_count = 0) <> 1 THEN
+        RAISE EXCEPTION 'phase3m model retrain orphan reconciliation contract failed';
+    END IF;
+
+    SELECT count(*) INTO v_count
+    FROM public.list_dispatchable_model_retrain_jobs(
+        'staging-dispatcher-01', 'staging-train',
+        repeat('d', 40), 'baseline-model', 5
+    );
+    IF v_count <> 0 THEN
+        RAISE EXCEPTION 'phase3m model retrain dispatch queue contract failed';
+    END IF;
+END;
+$phase3m_model_retrain_approval$;
+RESET ROLE;
+
+DO $phase3m_model_retrain_immutability$
+DECLARE
+    v_denied BOOLEAN := FALSE;
+BEGIN
+    BEGIN
+        UPDATE public.model_retrain_approval_requests
+        SET approved_payload_hash = repeat('b', 64)
+        WHERE dry_run_id = '36000000-0000-4000-8000-000000000001';
+    EXCEPTION WHEN object_not_in_prerequisite_state THEN
+        v_denied := TRUE;
+    END;
+    IF NOT v_denied THEN
+        RAISE EXCEPTION 'phase3m model approval immutable binding changed';
+    END IF;
+END;
+$phase3m_model_retrain_immutability$;
+
 SELECT marker
 FROM (VALUES
     ('phase3m_check:all_public_tables_rls'),
@@ -781,6 +1212,14 @@ FROM (VALUES
     ('phase3m_check:service_rpc_grants'),
     ('phase3m_check:profile_bank_trigger'),
     ('phase3m_check:private_model_storage'),
+    ('phase3m_check:model_retrain_approval_ledger'),
+    ('phase3m_check:model_retrain_job_ledger'),
+    ('phase3m_check:model_retrain_worker_lease'),
+    ('phase3m_check:model_retrain_artifact_registration'),
+    ('phase3m_check:model_retrain_evaluation_registration'),
+    ('phase3m_check:model_retrain_execution_bundle'),
+    ('phase3m_check:model_retrain_orphan_reconciliation'),
+    ('phase3m_check:model_retrain_dispatch_queue'),
     ('phase3m_check:security_invoker_ml_view'),
     ('phase3m_check:storage_role_boundaries'),
     ('phase3m_check:required_triggers_enabled')

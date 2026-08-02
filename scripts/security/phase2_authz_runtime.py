@@ -253,6 +253,10 @@ def _extract_auth_helper_policies(ts: str) -> dict[str, str]:
             "requirePremiumOrAdmin: true" in body
             or "Premium or admin role required" in body
             or re.search(r"tier\s*!==\s*['\"]premium['\"]", body)
+            or (
+                re.search(r"\bisPremium\s*=\s*(?:isAdmin\s*\|\|\s*)?tier\s*===\s*['\"]premium['\"]", body)
+                and re.search(r"if\s*\(\s*!isPremium\s*\)", body)
+            )
         ):
             policy = "PremiumOrAdmin"
         elif ".auth.getUser()" in body or "Authentication required" in body or "認証が必要" in body:

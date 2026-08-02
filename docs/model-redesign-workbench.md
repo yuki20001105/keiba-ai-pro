@@ -1,6 +1,6 @@
 # Model Redesign Workbench Design Notes
 
-Updated: 2026-07-06
+Updated: 2026-08-02
 Scope: design extension for approval boundary freeze
 
 ## 1. Relationship to Existing Spec
@@ -18,9 +18,12 @@ This document adds phase-gated design notes for:
 Implemented now:
 - read-only workbench summary
 - `action=retrain_dry_run` preview
+- strict approval payload and canonical SHA-256 generation
+- Admin-only `/api/model-redesign/approval/assess` precondition assessment
 - smoke/E2E coverage for preview safety
 
 Not implemented now:
+- durable approval creation/storage
 - actual retrain
 - approved job submit runtime
 - active model pointer switch runtime
@@ -48,6 +51,10 @@ The following remain hard-blocked:
 - `.active_model.json` mutation
 - active model pointer switch
 - production/base table write
+
+The assessment route rechecks payload, approval, expiry, requester/approver separation, active model, feature contract, code version, commit, role, and artifact scope. It always returns `execution_performed=false`; an eligible assessment is not execution authority.
+
+The legacy model activation proxy/backend is fail-closed in every deployed or unknown environment and is not a promotion mechanism. It exists only for explicit local/test compatibility; the normal `/train` UI no longer offers direct pointer mutation.
 
 ## 5. Future API and UI Surface
 

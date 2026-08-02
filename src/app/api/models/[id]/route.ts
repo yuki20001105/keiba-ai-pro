@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { ML_API_URL } from '@/lib/backend-url'
+import { explicitLocalOptInEnabled } from '@/lib/legacy-local-policy'
 
 export async function GET(
   request: NextRequest,
@@ -24,6 +25,17 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  if (!explicitLocalOptInEnabled('MODEL_DELETION_LOCAL_ENABLED')) {
+    return NextResponse.json({
+      success: false,
+      state: 'fail',
+      code: 'separate-model-retirement-approval-required',
+      error: 'Model deletion is disabled until a separate durable retirement approval is implemented.',
+    }, {
+      status: 409,
+      headers: { 'Cache-Control': 'no-store' },
+    })
+  }
   try {
     const { id } = await params
     const authHeader = request.headers.get('Authorization') || ''

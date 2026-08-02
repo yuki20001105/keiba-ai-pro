@@ -68,6 +68,54 @@
       "path": "supabase/bootstrap/v1/migrations/20260720143400_admin_role_change.sql",
       "source": "phase3m-bootstrap",
       "description": "Atomic Admin revalidation, role transition, and immutable audit boundary"
+    },
+    {
+      "version": "20260802140000",
+      "path": "supabase/migrations/20260802_model_retrain_approval_ledger.sql",
+      "source": "reconciled-existing",
+      "description": "Durable two-person model retrain approval ledger with execution disabled"
+    },
+    {
+      "version": "20260802141000",
+      "path": "supabase/migrations/20260802_model_retrain_job_ledger.sql",
+      "source": "reconciled-existing",
+      "description": "Approval-bound durable retrain job submission ledger with execution still disabled"
+    },
+    {
+      "version": "20260802142000",
+      "path": "supabase/migrations/20260802_model_retrain_worker_lease.sql",
+      "source": "reconciled-existing",
+      "description": "Fenced worker claim, heartbeat, start, failure, and expired-lease recovery without artifact writes"
+    },
+    {
+      "version": "20260802143000",
+      "path": "supabase/migrations/20260802_model_retrain_artifact_registration.sql",
+      "source": "reconciled-existing",
+      "description": "Fenced private-storage artifact registration without evaluation or activation"
+    },
+    {
+      "version": "20260802144000",
+      "path": "supabase/migrations/20260802_model_retrain_evaluation_registration.sql",
+      "source": "reconciled-existing",
+      "description": "Accepted evaluation registration with trusted promotion evidence structurally disabled"
+    },
+    {
+      "version": "20260802145000",
+      "path": "supabase/migrations/20260802_model_retrain_execution_bundle.sql",
+      "source": "reconciled-existing",
+      "description": "Service-only lease-fenced approved retrain execution bundle projection"
+    },
+    {
+      "version": "20260802146000",
+      "path": "supabase/migrations/20260802_model_retrain_orphan_reconciliation.sql",
+      "source": "reconciled-existing",
+      "description": "Service-only expired-lease recovery projection and audited terminal orphan reconciliation"
+    },
+    {
+      "version": "20260802147000",
+      "path": "supabase/migrations/20260802_model_retrain_dispatch_queue.sql",
+      "source": "reconciled-existing",
+      "description": "Service-only bounded approved retrain dispatch queue projection"
     }
   ]
 }

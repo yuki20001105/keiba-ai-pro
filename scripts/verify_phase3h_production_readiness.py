@@ -14,6 +14,7 @@ from typing import Any, Iterable
 ROOT = Path(__file__).resolve().parents[1]
 PHASE3G_VERIFIER_PATH = ROOT / "scripts" / "verify_phase3g_runtime_evidence.py"
 PHASE3N_VERIFIER_PATH = ROOT / "scripts" / "security" / "verify_phase3n_staging_evidence.py"
+MODEL_ACCEPTANCE_VERIFIER_PATH = ROOT / "scripts" / "verify_model_acceptance.py"
 REPORT_PATH = ROOT / "reports" / "phase3h_production_readiness_gate.json"
 
 REPORT_SCHEMA = "phase3h-production-readiness-gate-report"
@@ -133,6 +134,14 @@ def load_trusted_attestation(path: Path) -> tuple[Any | None, list[str]]:
     )
 
 
+def load_model_acceptance_report(path: Path) -> tuple[Any | None, list[str]]:
+    return _load_json(
+        path,
+        max_bytes=MAX_TRUSTED_ATTESTATION_BYTES,
+        prefix="model-acceptance-report",
+    )
+
+
 def _load_phase3g_verifier() -> ModuleType:
     spec = importlib.util.spec_from_file_location("phase3h_phase3g_verifier", PHASE3G_VERIFIER_PATH)
     if spec is None or spec.loader is None:
@@ -149,6 +158,37 @@ def _load_phase3n_verifier() -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _load_model_acceptance_verifier() -> ModuleType:
+    spec = importlib.util.spec_from_file_location(
+        "phase3h_model_acceptance_verifier", MODEL_ACCEPTANCE_VERIFIER_PATH
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("model acceptance verifier is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _trusted_model_acceptance_valid(
+    report: Any,
+    *,
+    expected_commit: str | None,
+    max_age_seconds: int,
+    now: datetime | None,
+) -> bool:
+    try:
+        verifier = _load_model_acceptance_verifier()
+        valid, failures = verifier.validate_gate_report(
+            report,
+            expected_commit=expected_commit,
+            max_age_seconds=max_age_seconds,
+            now=now,
+        )
+    except Exception:
+        return False
+    return valid is True and failures == ()
 
 
 def _trusted_attestation_valid(
@@ -268,6 +308,7 @@ def build_report(
     initial_failures: Iterable[str] = (),
     require_ready: bool = False,
     trusted_attestation: Any | None = None,
+    model_acceptance_report: Any | None = None,
     expected_attestation_run_id: int | None = None,
     expected_attestation_run_attempt: int | None = None,
     expected_repository: str | None = None,
@@ -282,6 +323,7 @@ def build_report(
 
     trusted_requested = trusted_attestation is not None
     trusted_valid = False
+    model_acceptance_valid = False
     phase3g_valid = False
     if trusted_requested:
         trusted_valid = _trusted_attestation_valid(
@@ -296,6 +338,17 @@ def build_report(
         )
         if not trusted_valid:
             _append_failure(failures, "trusted-attestation-invalid")
+        if model_acceptance_report is None:
+            _append_failure(failures, "model-acceptance-report-required")
+        else:
+            model_acceptance_valid = _trusted_model_acceptance_valid(
+                model_acceptance_report,
+                expected_commit=expected_commit,
+                max_age_seconds=max_age_seconds,
+                now=now,
+            )
+            if not model_acceptance_valid:
+                _append_failure(failures, "model-acceptance-report-invalid")
     else:
         phase3g_report: dict[str, Any] | None = None
         try:
@@ -325,7 +378,7 @@ def build_report(
             phase3g_valid = False
 
     assessment_valid = not failures
-    ready = assessment_valid and trusted_valid
+    ready = assessment_valid and trusted_valid and model_acceptance_valid
     blockers = [] if ready or not assessment_valid else list(ALL_BLOCKERS)
     if require_ready and assessment_valid and not ready:
         _append_failure(failures, "production-readiness-required")
@@ -347,6 +400,7 @@ def build_report(
     }
     if trusted_requested:
         checks["trusted_staging_attestation"] = trusted_valid
+        checks["trusted_model_acceptance"] = model_acceptance_valid
     else:
         checks["phase3g_runtime_evidence"] = phase3g_valid
     return {
@@ -385,6 +439,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--phase3g-evidence", type=Path)
     parser.add_argument("--trusted-attestation", type=Path)
+    parser.add_argument("--model-acceptance-report", type=Path)
     parser.add_argument("--expected-attestation-run-id", type=_positive_run_id)
     parser.add_argument("--expected-attestation-run-attempt", type=_positive_run_id)
     parser.add_argument("--expected-repository")
@@ -417,6 +472,7 @@ def main(argv: list[str] | None = None) -> int:
     initial_failures = list(manifest_failures)
     phase3g_evidence: Any = None
     trusted_attestation: Any = None
+    model_acceptance_report: Any = None
     if args.trusted_attestation is not None:
         trusted_attestation, trusted_failures = load_trusted_attestation(args.trusted_attestation)
         if trusted_failures:
@@ -430,7 +486,16 @@ def main(argv: list[str] | None = None) -> int:
             or args.expected_repository_id is None
         ):
             initial_failures.append("trusted-attestation-context-required")
+        if args.model_acceptance_report is None:
+            initial_failures.append("model-acceptance-report-required")
+        else:
+            model_acceptance_report, model_failures = load_model_acceptance_report(
+                args.model_acceptance_report
+            )
+            initial_failures.extend(model_failures)
     else:
+        if args.model_acceptance_report is not None:
+            initial_failures.append("model-acceptance-without-trusted-attestation")
         if args.phase3g_evidence is None:
             initial_failures.append("phase3g-evidence-required")
         else:
@@ -451,6 +516,7 @@ def main(argv: list[str] | None = None) -> int:
         initial_failures=initial_failures,
         require_ready=args.require_ready,
         trusted_attestation=trusted_attestation,
+        model_acceptance_report=model_acceptance_report,
         expected_attestation_run_id=args.expected_attestation_run_id,
         expected_attestation_run_attempt=args.expected_attestation_run_attempt,
         expected_repository=args.expected_repository,

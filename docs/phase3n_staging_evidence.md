@@ -8,7 +8,7 @@ Repository assertions, pull-request artifacts, local files, synthetic databases,
 
 ## Workflow
 
-The manual workflow is `.github/workflows/staging-evidence.yml`. The workflow file and its verifier run only from the immutable, externally protected branch `security/phase3n-trusted-producer-v1`; the exact branch head is supplied as `trusted_producer_sha`. The separately supplied `expected_commit` must equal the current deployed `origin/develop` commit. Gate-critical workflow, verifier, test and contract files must be byte-for-byte identical between the trusted producer and the candidate or the run stops before any approval. It uses these sequential GitHub Environments:
+The manual workflow is `.github/workflows/staging-evidence.yml`. The workflow file and its verifier run only from the immutable, externally protected branch `security/phase3n-trusted-producer-v2`; the exact branch head is supplied as `trusted_producer_sha`. The separately supplied `expected_commit` must equal the current deployed `origin/develop` commit. Gate-critical workflow, verifier, test and contract files must be byte-for-byte identical between the trusted producer and the candidate or the run stops before any approval. It uses these sequential GitHub Environments:
 
 1. `staging-migration`
 2. `staging-execution-unlock`
@@ -18,9 +18,12 @@ Each Environment must have required reviewers and a deployment branch policy tha
 
 The `staging-execution-unlock` Environment supplies one protected value named `PHASE3N_STAGING_OBSERVATION_B64`. It is the base64 encoding of sanitized observation JSON, not a credential envelope. It must contain no token, cookie, credential, connection string, raw database row, arbitrary command output, or operator filesystem path. The observation is operator-attested evidence: provider identities, integrity digests and non-synthetic exercises must be collected from the live isolated Staging resources and reviewed before approval. The workflow validates and correlates those claims but deliberately receives no provider credential.
 
+The same Environment also supplies `MODEL_EVALUATION_OBSERVATIONS_GZIP_B64`. It is a bounded gzip/base64 encoding of strict row-level out-of-time model observations, not caller-computed aggregate metrics. Trusted-producer code validates temporal separation, the canonical future-field blocklist, the model artifact and feature-column digests, then recomputes AUC, calibration, ROI, drawdown, sample, latency, freshness, coverage, and baseline-delta metrics. The derived evidence is checked against `config/model_acceptance_contract.v1.json`, the exact candidate SHA, freshness, and every approved business threshold. Raw observations and derived metric input are deleted after validation; only the sanitized accepted gate report is retained. The reviewed source set must remain available in the approved external evidence system under the digest carried by that report. A draft contract, a missing threshold, or any failed metric stops the trusted workflow before Production release approval.
+
 The workflow:
 
 - validates and canonicalizes the observation before uploading it;
+- rebuilds model acceptance evidence from protected row observations instead of trusting aggregates;
 - uploads the canonical observation as a run-scoped immutable artifact;
 - retrieves authenticated GitHub workflow approval history with the built-in token;
 - projects only stable approval, actor and Environment IDs;
@@ -28,6 +31,7 @@ The workflow:
 - verifies the final evidence against the commit-bound Phase 3M manifest;
 - uploads `phase3n-staging-evidence-json`;
 - creates GitHub artifact provenance attestations for the evidence and report.
+- attests `model_acceptance_gate.json` for the same exact candidate.
 
 Promotion consumers select the approved run through repository variables `PHASE3N_STAGING_EVIDENCE_RUN_ID` and `PHASE3N_TRUSTED_PRODUCER_SHA`. They re-query the run, require the immutable producer branch and SHA, compare run attempt and repository ID, and verify the GitHub attestation with exact source ref, source digest and signer digest before accepting the JSON report.
 

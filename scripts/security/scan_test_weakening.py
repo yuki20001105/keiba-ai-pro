@@ -30,6 +30,14 @@ DELETED_PATTERNS: List[Tuple[str, re.Pattern[str]]] = [
 ]
 
 ALLOWLIST_EXACT: Dict[str, str] = {
+    # The canonical Phase 3M chain gained one guarded forward migration; the
+    # replacement assertion remains exact and the manifest-order gate is unchanged.
+    "python-api/tests/test_phase3m_supabase_bootstrap_gate.py:assert len(manifest.migrations) == 11": "replaced by exact 19-migration assertion after adding guarded model approval, job, worker-lease, artifact, evaluation, execution-bundle, orphan-reconciliation, and dispatch-queue contracts",
+    # The dependency gate moved from permissive ranges/no override to stricter
+    # exact patched versions plus explicit resolution checks in the same test.
+    "python-api/tests/test_phase3k_dependency_security_contract.py:assert package_json[\"dependencies\"][\"next\"] == \"^16.2.10\"": "replaced by exact Next.js 16.2.12 security pin assertion",
+    "python-api/tests/test_phase3k_dependency_security_contract.py:assert package_json[\"devDependencies\"][\"postcss\"] == \"^8.5.10\"": "replaced by exact PostCSS 8.5.25 security pin assertion",
+    "python-api/tests/test_phase3k_dependency_security_contract.py:assert \"overrides\" not in package_json": "replaced by exact safe PostCSS and sharp override assertion",
     # Phase 3N replaces the in-memory thread start contract with a durable,
     # fenced Saga/outbox contract. Equivalent and stronger assertions live in
     # test_phase3n_operational_saga_runtime.py and the rewritten Phase 3E suite.
@@ -56,6 +64,11 @@ ALLOWLIST_EXACT: Dict[str, str] = {
     "python-api/tests/test_phase3l_deployment_safety.py:assert set(jobs) == {\"production-release-blocked\"}": "tombstone replaced by single environment-gated authorization job",
     "python-api/tests/test_phase3l_deployment_safety.py:assert len(steps) == 1": "replacement authorization workflow has multiple independently asserted gates",
     "python-api/tests/test_phase3l_deployment_safety.py:assert \"exit 1\" in steps[0][\"run\"]": "unconditional tombstone replaced by multiple fail-closed exact-context gates",
+    # The immutable v1 producer cannot be updated. Its exact assertions are
+    # replaced by the same fail-closed assertions for the separately protected
+    # v2 producer; no producer-ref check is removed or relaxed.
+    "python-api/tests/test_phase3l_deployment_safety.py:assert '.head_branch == \"security/phase3n-trusted-producer-v1\"' in resolver[\"run\"]": "rotated to the exact immutable v2 producer assertion",
+    "python-api/tests/test_phase3n_staging_evidence_gate.py:assert \"refs/heads/security/phase3n-trusted-producer-v1\" in workflow": "rotated to the exact immutable v2 producer assertion",
 }
 
 

@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       trusted_producer_sha:
-        description: Immutable commit at security/phase3n-trusted-producer-v1 that owns this evidence producer
+        description: Immutable commit at security/phase3n-trusted-producer-v2 that owns this evidence producer
         required: true
         type: string
       max_age_seconds:
@@ -21,7 +21,7 @@ permissions:
   contents: read
 
 env:
-  TRUSTED_REF: refs/heads/security/phase3n-trusted-producer-v1
+  TRUSTED_REF: refs/heads/security/phase3n-trusted-producer-v2
 
 concurrency:
   group: phase3n-staging-evidence
@@ -57,18 +57,29 @@ jobs:
           [[ "$(git rev-parse HEAD)" == "$TRUSTED_PRODUCER_SHA" ]]
           git fetch --no-tags origin \
             "+refs/heads/develop:refs/remotes/origin/develop" \
-            "+$TRUSTED_REF:refs/remotes/origin/security/phase3n-trusted-producer-v1"
+            "+$TRUSTED_REF:refs/remotes/origin/security/phase3n-trusted-producer-v2"
           [[ "$(git rev-parse origin/develop)" == "$EXPECTED_COMMIT" ]]
-          [[ "$(git rev-parse origin/security/phase3n-trusted-producer-v1)" == "$TRUSTED_PRODUCER_SHA" ]]
+          [[ "$(git rev-parse origin/security/phase3n-trusted-producer-v2)" == "$TRUSTED_PRODUCER_SHA" ]]
           git diff --quiet "$TRUSTED_PRODUCER_SHA" "$EXPECTED_COMMIT" -- \
             .github/workflows/ci.yml \
             .github/workflows/release.yml \
             .github/workflows/staging-evidence.yml \
             scripts/verify_phase3h_production_readiness.py \
+            scripts/build_model_acceptance_evidence.py \
+            scripts/verify_model_acceptance.py \
             scripts/security/run_phase3m_supabase_bootstrap_gate.py \
             scripts/security/verify_phase3n_staging_evidence.py \
             scripts/security/build_phase3n_staging_evidence.py \
+            keiba/keiba_ai/constants.py \
+            keiba/keiba_ai/feature_engineering.py \
+            keiba/keiba_ai/lightgbm_feature_optimizer.py \
+            keiba/keiba_ai/train.py \
+            keiba/keiba_ai/tests/test_feature_engineering.py \
+            keiba/keiba_ai/tests/test_train_inference_consistency.py \
             supabase/bootstrap/v1/manifest.json \
+            config/model_acceptance_contract.v1.json \
+            python-api/tests/test_model_acceptance_evidence_builder.py \
+            python-api/tests/test_model_acceptance_gate.py \
             python-api/tests/test_phase3h_production_readiness_gate.py \
             python-api/tests/test_phase3n_staging_evidence_gate.py \
             python-api/tests/test_phase3l_deployment_safety.py \
@@ -127,24 +138,47 @@ jobs:
         shell: bash
         env:
           PHASE3N_STAGING_OBSERVATION_B64: ${{ secrets.PHASE3N_STAGING_OBSERVATION_B64 }}
+          MODEL_EVALUATION_OBSERVATIONS_GZIP_B64: ${{ secrets.MODEL_EVALUATION_OBSERVATIONS_GZIP_B64 }}
         run: |
           set -euo pipefail
           python - <<'PY'
           import base64
+          import gzip
+          import io
           import os
           from pathlib import Path
 
-          encoded = os.environ.get("PHASE3N_STAGING_OBSERVATION_B64", "")
-          if not encoded:
-              raise SystemExit("Staging observation secret is unavailable")
-          try:
-              payload = base64.b64decode(encoded, validate=True)
-          except (ValueError, TypeError) as exc:
-              raise SystemExit("Staging observation encoding is invalid") from exc
-          if not 1 <= len(payload) <= 131072:
-              raise SystemExit("Staging observation size is invalid")
           Path("reports").mkdir(exist_ok=True)
-          Path("reports/phase3n_staging_observation_input.json").write_bytes(payload)
+
+          def decode_required(name: str, output: str) -> None:
+              encoded = os.environ.get(name, "")
+              if not encoded:
+                  raise SystemExit(f"{name} is unavailable")
+              try:
+                  payload = base64.b64decode(encoded, validate=True)
+              except (ValueError, TypeError) as exc:
+                  raise SystemExit(f"{name} encoding is invalid") from exc
+              if not 1 <= len(payload) <= 131072:
+                  raise SystemExit(f"{name} size is invalid")
+              Path(output).write_bytes(payload)
+
+          decode_required(
+              "PHASE3N_STAGING_OBSERVATION_B64",
+              "reports/phase3n_staging_observation_input.json",
+          )
+
+          encoded = os.environ.get("MODEL_EVALUATION_OBSERVATIONS_GZIP_B64", "")
+          if not encoded or len(encoded) > 65536:
+              raise SystemExit("MODEL_EVALUATION_OBSERVATIONS_GZIP_B64 size is invalid")
+          try:
+              compressed = base64.b64decode(encoded, validate=True)
+              with gzip.GzipFile(fileobj=io.BytesIO(compressed), mode="rb") as archive:
+                  payload = archive.read(16 * 1024 * 1024 + 1)
+          except (ValueError, TypeError, OSError, EOFError) as exc:
+              raise SystemExit("MODEL_EVALUATION_OBSERVATIONS_GZIP_B64 encoding is invalid") from exc
+          if not 1 <= len(payload) <= 16 * 1024 * 1024:
+              raise SystemExit("MODEL_EVALUATION_OBSERVATIONS_GZIP_B64 payload size is invalid")
+          Path("reports/model_evaluation_observations_input.json").write_bytes(payload)
           PY
 
       - name: Canonicalize and strictly validate observation before upload
@@ -161,6 +195,26 @@ jobs:
             --output reports/phase3n_staging_observation.json
           rm -f reports/phase3n_staging_observation_input.json
 
+      - name: Recompute and require approved current-commit model acceptance evidence
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          MAX_AGE_SECONDS: ${{ inputs.max_age_seconds }}
+        run: |
+          set -euo pipefail
+          trap 'rm -f reports/model_evaluation_observations_input.json reports/model_acceptance_evidence_input.json' EXIT
+          python scripts/build_model_acceptance_evidence.py \
+            --input reports/model_evaluation_observations_input.json \
+            --contract config/model_acceptance_contract.v1.json \
+            --expected-commit "$EXPECTED_COMMIT" \
+            --output reports/model_acceptance_evidence_input.json
+          python scripts/verify_model_acceptance.py \
+            --contract config/model_acceptance_contract.v1.json \
+            --evidence reports/model_acceptance_evidence_input.json \
+            --expected-commit "$EXPECTED_COMMIT" \
+            --max-age-seconds "$MAX_AGE_SECONDS" \
+            --require-accepted
+
       - name: Define immutable source artifact identity
         id: metadata
         shell: bash
@@ -173,7 +227,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ steps.metadata.outputs.name }}
-          path: reports/phase3n_staging_observation.json
+          path: |
+            reports/phase3n_staging_observation.json
+            reports/model_acceptance_gate.json
           if-no-files-found: error
           retention-days: 7
           compression-level: 9
@@ -285,6 +341,13 @@ jobs:
           WORKFLOW_REF: ${{ github.workflow_ref }}
         run: |
           set -euo pipefail
+          MODEL_REPORT="$(find reports/source -type f -name model_acceptance_gate.json -print -quit)"
+          [[ -n "$MODEL_REPORT" ]]
+          cp "$MODEL_REPORT" reports/model_acceptance_gate.json
+          python scripts/verify_model_acceptance.py \
+            --trusted-report reports/model_acceptance_gate.json \
+            --expected-commit "$EXPECTED_COMMIT" \
+            --max-age-seconds "$MAX_AGE_SECONDS"
           python scripts/security/verify_phase3n_staging_evidence.py \
             --evidence reports/phase3n_staging_evidence.json \
             --expected-commit "$EXPECTED_COMMIT" \
@@ -303,6 +366,7 @@ jobs:
           sha256sum \
             reports/phase3n_staging_evidence.json \
             reports/phase3n_staging_evidence_gate.json \
+            reports/model_acceptance_gate.json \
             > reports/phase3n_staging_evidence_files.sha256
 
       - name: Upload trusted evidence and gate report
@@ -313,6 +377,7 @@ jobs:
           path: |
             reports/phase3n_staging_evidence.json
             reports/phase3n_staging_evidence_gate.json
+            reports/model_acceptance_gate.json
             reports/phase3n_staging_evidence_files.sha256
           if-no-files-found: error
           retention-days: 30
@@ -324,3 +389,4 @@ jobs:
           subject-path: |
             reports/phase3n_staging_evidence.json
             reports/phase3n_staging_evidence_gate.json
+            reports/model_acceptance_gate.json

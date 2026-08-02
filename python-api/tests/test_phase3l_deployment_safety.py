@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -287,6 +288,22 @@ def test_render_blueprint_has_explicit_fail_closed_production_defaults() -> None
     }
 
 
+def test_local_startup_commands_use_the_worktree_venv_and_canonical_ports() -> None:
+    package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+    scripts = package["scripts"]
+    assert scripts["dev:api"] == (
+        "python-api/.venv/Scripts/python.exe python-api/main.py"
+    )
+    assert scripts["setup:api"].endswith("./scripts/setup-python.ps1")
+    assert "scraping_service_ultimate_fast.py" not in scripts["dev:api"]
+
+    start_dev = (ROOT / "scripts" / "start-dev.ps1").read_text(encoding="utf-8")
+    assert "Split-Path -Parent $PSScriptRoot" in start_dev
+    assert "localhost:8000" in start_dev
+    assert "localhost:8001" not in start_dev
+    assert '$env:PYTHONUTF8 = "1"' in start_dev
+
+
 def _workflow_triggers(workflow: dict[object, object]) -> dict[str, object]:
     # PyYAML 1.1 may decode the key ``on`` as boolean True.
     triggers = workflow.get("on", workflow.get(True))
@@ -303,7 +320,7 @@ def test_staging_evidence_runs_only_from_immutable_trusted_producer() -> None:
     inputs = _workflow_triggers(workflow)["workflow_dispatch"]["inputs"]
     assert set(inputs) == {"expected_commit", "trusted_producer_sha", "max_age_seconds"}
     assert inputs["trusted_producer_sha"]["required"] is True
-    trusted_ref = "refs/heads/security/phase3n-trusted-producer-v1"
+    trusted_ref = "refs/heads/security/phase3n-trusted-producer-v2"
     assert workflow["env"]["TRUSTED_REF"] == trusted_ref
 
     jobs = workflow["jobs"]
@@ -328,10 +345,21 @@ def test_staging_evidence_runs_only_from_immutable_trusted_producer() -> None:
         ".github/workflows/release.yml",
         ".github/workflows/staging-evidence.yml",
         "scripts/verify_phase3h_production_readiness.py",
+        "scripts/build_model_acceptance_evidence.py",
+        "scripts/verify_model_acceptance.py",
         "scripts/security/run_phase3m_supabase_bootstrap_gate.py",
         "scripts/security/verify_phase3n_staging_evidence.py",
         "scripts/security/build_phase3n_staging_evidence.py",
+        "keiba/keiba_ai/constants.py",
+        "keiba/keiba_ai/feature_engineering.py",
+        "keiba/keiba_ai/lightgbm_feature_optimizer.py",
+        "keiba/keiba_ai/train.py",
+        "keiba/keiba_ai/tests/test_feature_engineering.py",
+        "keiba/keiba_ai/tests/test_train_inference_consistency.py",
         "supabase/bootstrap/v1/manifest.json",
+        "config/model_acceptance_contract.v1.json",
+        "python-api/tests/test_model_acceptance_evidence_builder.py",
+        "python-api/tests/test_model_acceptance_gate.py",
     ):
         assert required in gate
 
@@ -343,6 +371,34 @@ def test_staging_evidence_runs_only_from_immutable_trusted_producer() -> None:
         assert job_checkouts[0]["with"]["fetch-depth"] == 0
         assert job_checkouts[0]["with"]["ref"] == "${{ inputs.trusted_producer_sha }}"
         assert job_checkouts[0]["with"]["persist-credentials"] is False
+
+    observation_steps = jobs["staging-observation"]["steps"]
+    protected_input = next(
+        step
+        for step in observation_steps
+        if step.get("name") == "Require the environment-protected sanitized observation"
+    )
+    assert protected_input["env"]["MODEL_EVALUATION_OBSERVATIONS_GZIP_B64"] == (
+        "${{ secrets.MODEL_EVALUATION_OBSERVATIONS_GZIP_B64 }}"
+    )
+    model_gate = next(
+        step
+        for step in observation_steps
+        if step.get("name")
+        == "Recompute and require approved current-commit model acceptance evidence"
+    )["run"]
+    assert "scripts/build_model_acceptance_evidence.py" in model_gate
+    assert "model_evaluation_observations_input.json" in model_gate
+    assert "trap 'rm -f reports/model_evaluation_observations_input.json" in model_gate
+    assert "config/model_acceptance_contract.v1.json" in model_gate
+    assert "--require-accepted" in model_gate
+    artifact = next(
+        step
+        for step in observation_steps
+        if step.get("name") == "Upload canonical observation as immutable run artifact"
+    )
+    assert "model_evaluation_observations_input.json" not in artifact["with"]["path"]
+    assert "model_acceptance_evidence_input.json" not in artifact["with"]["path"]
 
 
 def test_ci_requires_fixed_trusted_attestation_for_main_promotion() -> None:
@@ -367,6 +423,14 @@ def test_ci_requires_fixed_trusted_attestation_for_main_promotion() -> None:
         "test_phase3n_staging_evidence_gate.py" in step.get("run", "")
         for step in python_steps
     )
+    assert any(
+        "test_model_acceptance_evidence_builder.py" in step.get("run", "")
+        for step in python_steps
+    )
+    assert any(
+        "test_model_acceptance_gate.py" in step.get("run", "")
+        for step in python_steps
+    )
 
     readiness_steps = jobs["phase3h-production-readiness"]["steps"]
     readiness_checkout = next(
@@ -387,7 +451,7 @@ def test_ci_requires_fixed_trusted_attestation_for_main_promotion() -> None:
     assert "actions/runs/$STAGING_EVIDENCE_RUN_ID" in resolver["run"]
     assert "develop -> main" in resolver["run"]
     assert '.path == ".github/workflows/staging-evidence.yml"' in resolver["run"]
-    assert '.head_branch == "security/phase3n-trusted-producer-v1"' in resolver["run"]
+    assert '.head_branch == "security/phase3n-trusted-producer-v2"' in resolver["run"]
     assert ".head_sha == $producer" in resolver["run"]
     assert ".run_attempt >= 1" in resolver["run"]
     assert "^{tree}" in resolver["run"]
@@ -423,6 +487,7 @@ def test_ci_requires_fixed_trusted_attestation_for_main_promotion() -> None:
     )
     assert "gh attestation verify" in provenance["run"]
     assert "phase3n_staging_evidence_gate.json" in provenance["run"]
+    assert "model_acceptance_gate.json" in provenance["run"]
     assert "--signer-workflow" in provenance["run"]
     assert "--source-ref" in provenance["run"]
     assert "--source-digest" in provenance["run"]
@@ -437,6 +502,7 @@ def test_ci_requires_fixed_trusted_attestation_for_main_promotion() -> None:
     assert len(promotion_steps) == 1
     promotion = promotion_steps[0]["run"]
     assert "--trusted-attestation" in promotion
+    assert "--model-acceptance-report" in promotion
     assert "--expected-attestation-run-id" in promotion
     assert "--expected-attestation-run-attempt" in promotion
     assert "--expected-repository" in promotion
@@ -517,7 +583,7 @@ def test_release_workflow_authorizes_only_exact_attested_main_merge() -> None:
         "actions/runs/$STAGING_EVIDENCE_RUN_ID",
         '.path == ".github/workflows/staging-evidence.yml"',
         ".head_sha == $producer",
-        '.head_branch == "security/phase3n-trusted-producer-v1"',
+        '.head_branch == "security/phase3n-trusted-producer-v2"',
         '.event == "workflow_dispatch"',
         '.conclusion == "success"',
         ".run_attempt >= 1",

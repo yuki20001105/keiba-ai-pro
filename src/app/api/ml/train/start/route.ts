@@ -1,7 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { ML_API_URL } from '@/lib/backend-url'
+import { explicitLocalOptInEnabled } from '@/lib/legacy-local-policy'
 
 export async function POST(request: NextRequest) {
+  if (!explicitLocalOptInEnabled('MODEL_TRAINING_LOCAL_ENABLED')) {
+    return NextResponse.json({
+      success: false,
+      state: 'fail',
+      code: 'approval-bound-model-training-required',
+      error: 'Direct model training is disabled until an approval-bound durable job runner is implemented.',
+    }, {
+      status: 409,
+      headers: { 'Cache-Control': 'no-store' },
+    })
+  }
   try {
     const body = await request.json()
     const authHeader = request.headers.get('Authorization') || ''

@@ -44,7 +44,7 @@ def test_manifest_is_strict_ordered_and_content_addressed(runner: ModuleType) ->
     manifest = runner.load_manifest(MANIFEST_PATH)
     assert manifest.schema_version == 1
     assert manifest.postgres_image == EXPECTED_IMAGE == runner.IMAGE
-    assert len(manifest.migrations) == 11
+    assert len(manifest.migrations) == 19
     assert [entry.version for entry in manifest.migrations] == sorted(
         entry.version for entry in manifest.migrations
     )
@@ -175,6 +175,19 @@ def test_target_preflight_rejects_partial_hosted_bootstrap_signatures(
         "'consume_ocr_quota'",
         "'update_admin_profile_role'",
         "'admin_role_change_audit'",
+        "'model_retrain_approval_requests'",
+        "'create_model_retrain_approval'",
+        "'model_retrain_jobs'",
+        "'create_model_retrain_job'",
+        "'model_retrain_job_fencing_seq'",
+        "'claim_model_retrain_job'",
+        "'model_retrain_artifacts'",
+        "'register_model_retrain_artifact'",
+        "'model_retrain_evaluations'",
+        "'register_model_retrain_accepted_evaluation'",
+        "'list_model_retrain_orphan_candidates'",
+        "'record_model_retrain_orphan_reconciliation'",
+        "'list_dispatchable_model_retrain_jobs'",
         "FROM storage.buckets AS b",
         "b.id = 'models' OR b.name = 'models'",
         "FROM storage.objects AS o",
@@ -270,6 +283,11 @@ def test_contract_asserts_security_and_domain_invariants() -> None:
         "service_rpc_grants",
         "profile_bank_trigger",
         "private_model_storage",
+        "model_retrain_approval_ledger",
+        "model_retrain_job_ledger",
+        "model_retrain_worker_lease",
+        "model_retrain_artifact_registration",
+        "model_retrain_evaluation_registration",
         "security_invoker_ml_view",
         "storage_role_boundaries",
         "required_triggers_enabled",

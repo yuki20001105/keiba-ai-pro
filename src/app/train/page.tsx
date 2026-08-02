@@ -28,7 +28,7 @@ export default function TrainPage() {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [showAdvanced, setShowAdvanced] = useState(false)
 
-  const { status: jobStatus, progress: jobProgress, pct: jobPct } = useJobPoller({
+  const { progress: jobProgress, pct: jobPct } = useJobPoller({
     jobId,
     getStatusUrl: id => `/api/ml/train/status/${id}`,
     onCompleted: statusData => {
@@ -291,10 +291,11 @@ export default function TrainPage() {
 
           <button
             onClick={handleTrain}
-            disabled={loading}
+            disabled
+            title="モデル学習には永続的な承認と承認済みジョブ実行基盤が必要です"
             className="w-full py-3 bg-white text-black font-medium rounded-lg hover:bg-[#eee] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            {loading ? (jobProgress || '学習中...') : '学習開始'}
+            {loading ? (jobProgress || '学習中...') : '承認済みジョブ実行基盤を準備中'}
           </button>
 
           {loading && jobId && (
@@ -414,7 +415,8 @@ export default function TrainPage() {
                         {!m.is_active && (
                           <button
                             onClick={() => handleActivateModel(m.model_id)}
-                            disabled={isActivating}
+                            disabled
+                            title="active model切替には再学習承認とは別の永続的なAdmin承認が必要です"
                             className="text-xs px-3 py-1 rounded border border-[#333] text-[#aaa] hover:border-[#555] hover:text-white transition-colors disabled:opacity-40"
                           >
                             {isActivating ? '切替中...' : '使用する'}
@@ -423,8 +425,8 @@ export default function TrainPage() {
                         <div className="flex-1" />
                         <button
                           onClick={() => handleDeleteModel(m.model_id)}
-                          disabled={isDeleting || m.is_active}
-                          title={m.is_active ? '使用中のモデルは削除できません' : '削除'}
+                          disabled
+                          title="モデル削除には別の永続的な廃止承認が必要です"
                           className="text-xs text-[#555] hover:text-red-400 transition-colors disabled:opacity-30 px-2 py-1"
                         >
                           {isDeleting ? '...' : '削除'}

@@ -3,6 +3,33 @@
 Updated: 2026-07-05
 Scope: UI (src/app) + Next API (src/app/api) + FastAPI router/script mapping inventory
 
+## 2026-08-02 WP2 delta: retrain approval eligibility
+
+- The workbench can now produce a strict dry-run approval payload bound to the actor, active model, normalized feature contract, immutable data-snapshot digest, code version, and exact deployed commit.
+- `POST /api/model-redesign/approval/assess` is Admin-only and rechecks schema, payload hash, approval chronology/expiry, distinct requester and approver, active model, feature contract, code revision, Production-write block, and isolated artifact policy.
+- The UI displays payload readiness, hashes, commit/model bindings, and blockers. Missing snapshot/commit or a canonical future field produces `preview-fail`.
+- Assessment is read-only and always reports `execution_performed=false`. The Admin workbench can create a pending request from the exact preview, load a shared approval ID, record an independent decision, let the original requester submit the approved job, and refresh job state through `evaluation-recorded`. Durable approval/job storage, service-only lease/fencing, immutable private-bucket artifact registration, and non-promoting accepted-report registration exist in the canonical bootstrap. Deployed worker dispatch/training/upload/evaluation, trusted attestation, candidate comparison, and active-model switching remain unimplemented, so workflows #6 and #9 remain partial.
+- The legacy `/api/models/[id]/activate` pointer mutation is now denied in every deployed/unknown environment and requires exact local/test opt-in at both Next and FastAPI layers. The `/train` activation control is disabled until the separate durable switch-approval flow exists.
+- The legacy `/api/ml/train/start` proxy and FastAPI `/api/train` writers are also denied in every deployed/unknown environment. FastAPI checks before job allocation and at the artifact-capable training boundary; the `/train` start control is disabled until an approval-bound durable job runner exists.
+- Direct model deletion is denied before local/Supabase mutation in every deployed/unknown environment and requires exact local/test opt-in at both layers. The `/train` delete control is disabled until a separate durable retirement approval exists.
+
+## 2026-08-02 WP2 delta: authenticated profiling viewer
+
+- `src/app/data-collection/profiling/[job_id]/page.tsx` now provides an Admin-only report viewer.
+- The viewer retrieves report HTML through `authFetch`, so the Bearer token reaches both the Next API and FastAPI Admin boundaries.
+- The former direct anchor to `/api/profiling/html/[job_id]` was removed because normal browser navigation cannot attach the required Authorization header.
+- Report HTML is isolated in a sandboxed iframe without `allow-same-origin`; an injected CSP denies connections, frames, forms, base URL changes, and all non-inline resources except local data/blob images and fonts.
+- Malformed Job IDs, 401/403 responses, non-HTML responses, empty/oversized reports, backend restart loss, loading, retry, and download states now have explicit UI behavior.
+- This closes the profiling report-viewer sub-gap. It does not make feature generation (#3) or advanced model evaluation (#6) complete.
+
+## 2026-08-02 WP2 delta: feature provenance visibility
+
+- `/feature-lab` now consumes the existing Premium/Admin `/api/features/catalog` contract.
+- Operators can inspect future-field exclusions, scraped-field count, engineered feature name/stage/type/enabled state, descriptions, excluded-column count, catalog version, and hash.
+- The view makes the INV-01 boundary explicit and remains read-only; it does not trigger feature generation, training, catalog mutation, scraping, or model activation.
+- Malformed catalog responses fail closed in the UI instead of being rendered as trusted feature provenance.
+- This advances workflow #3 from backend-only generation visibility to an operator-visible catalog. A dedicated standalone feature-generation job is still not implemented, so #3 remains `partial_ui`.
+
 ## 0. 前提と判定ルール
 
 - 連携基盤 (UI -> Next API -> FastAPI) は完成前提。
@@ -56,9 +83,9 @@ Scope: UI (src/app) + Next API (src/app/api) + FastAPI router/script mapping inv
 | 取得済み一覧/詳細 | /data-collection | GET /api/races/recent, GET /api/races/[race_id]/horses | GET /api/races/recent, GET /api/races/{race_id}/horses | 結果表示あり |
 | Profiling起動 | /data-collection | POST /api/profiling | POST /api/profiling/start | レポート閲覧UIは限定 |
 | Profiling進捗 | /data-collection | GET /api/profiling/status/[job_id] | GET /api/profiling/status/{job_id} | job statusのみ |
-| 学習開始 | /train | POST /api/ml/train/start | POST /api/train/start | async job |
+| 学習開始 | /train | POST /api/ml/train/start | POST /api/train/start | local/test compatibility only; normal UI disabled pending approval-bound durable job |
 | 学習進捗 | /train | GET /api/ml/train/status/[job_id] | GET /api/train/status/{job_id} | progress表示あり |
-| モデル一覧/切替/削除 | /train | /api/models, /api/models/[id], /api/models/[id]/activate | /api/models, /api/models/{id}, /api/models/{id}/activate | UI完結 |
+| モデル一覧/切替/削除 | /train | /api/models, /api/models/[id], /api/models/[id]/activate | /api/models, /api/models/{id}, /api/models/{id}/activate | read-only list/detail only; switch and delete disabled pending separate durable approvals |
 | 一括予測 | /predict-batch | POST /api/analyze-race | POST /api/analyze_race | CONCURRENCY=1 |
 | 単レース予測 | /race-analysis | POST /api/analyze-race | POST /api/analyze_race | cache + fallback表示 |
 | 予測結果照合 | /race-analysis | GET /api/prediction-history/[race_id] | GET /api/prediction-history/{race_id} | Premium |

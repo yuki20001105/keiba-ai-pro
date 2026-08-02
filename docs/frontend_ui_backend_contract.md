@@ -32,11 +32,14 @@ Architecture (current):
 
 | UI Screen | Next API Route | FastAPI Endpoint | Permission (effective) | State | Gap |
 |---|---|---|---|---|---|
-| train | /api/ml/train/start | POST /api/train/start | premium required on backend for /api/train, unclear for /api/train/start parity | production | permission consistency should be explicit |
+| train | /api/ml/train/start | POST /api/train/start | Premium/Admin + exact local/test opt-in | local compatibility | deployed/unknown environments fail closed at Next and FastAPI; normal UI is disabled pending an approval-bound durable job runner |
 | train | /api/ml/train/status/[job_id] | GET /api/train/status/{job_id} | login required (token expected) | production | add UI pre-check for unauthorized |
 | train | /api/models | GET /api/models | login required | production | none critical |
-| train | /api/models/[id] | GET/DELETE /api/models/{model_id} | login required | production | none critical |
-| train | /api/models/[id]/activate | PUT /api/models/{model_id}/activate | login required/admin-intent | production | role policy should be explicit in UI and backend |
+| train | /api/models/[id] | GET /api/models/{model_id} | authenticated read | production | none critical |
+| train | /api/models/[id] | DELETE /api/models/{model_id} | Admin + exact local/test opt-in | local compatibility | deployed/unknown environments fail closed; UI deletion is disabled pending separate durable retirement approval |
+| train | /api/models/[id]/activate | PUT /api/models/{model_id}/activate | Admin + explicit local/test opt-in only | local compatibility | deployed and unknown environments fail closed; UI direct activation is disabled |
+| model-redesign-workbench | /api/model-redesign/jobs | private Supabase RPC | Admin + approved requester + exact approval CAS/hash | internal API | durable queued submission exists; UI wiring and worker execution remain absent |
+| model-redesign-workbench | /api/model-redesign/jobs/[job_id] | private Supabase RPC | Admin | internal API | authoritative queued status only; no execution claim exists |
 | predict-batch | /api/analyze-race | POST /api/analyze_race | login required | production | none critical |
 | predict-batch | /api/races/by-date | GET /api/races/by_date | login required | production | naming mixed (by-date vs by_date) |
 | predict-batch | /api/realtime-odds/[race_id] | GET /api/realtime-odds/{race_id} | login required | production | none critical |
@@ -70,7 +73,8 @@ Architecture (current):
 | GET /api/prediction-history and /{race_id} | require_premium | no explicit pre-guard | user sees runtime failure instead of gated UX |
 | GET /api/debug/race/{race_id} and /features | require_premium | no explicit pre-guard | premium feature exposed by navigation but denied at runtime |
 | POST /api/train (synchronous route) | require_premium | no explicit pre-guard | unexpected 403 if called directly |
-| POST /api/scrape/start and POST /api/scrape/repair/{race_id} | require_admin | no explicit pre-guard | operational actions rely on backend-only reject |
+| POST /api/scrape/start | require_admin + operational saga binding | Admin workflow guard | deployed execute remains disabled until fenced destination exists |
+| POST /api/scrape/repair/{race_id} and /api/rescrape_incomplete | require_admin + local-only legacy opt-in | no executable UI | Next and FastAPI both reject deployed/unknown environments |
 | screens using authFetch generally | token optional at fetch layer | no centralized role gating matrix | inconsistent UX across pages |
 
 ## 4. Unused/Holding API Route Inventory (Current UI)
@@ -359,6 +363,7 @@ Updated: 2026-07-06
 Implemented:
 - New UI page: `src/app/model-redesign-workbench/page.tsx`
 - New Next API route: `src/app/api/model-redesign/summary/route.ts`
+- New Admin-only assessment route: `src/app/api/model-redesign/approval/assess/route.ts`
 
 Purpose:
 - Provide a read-only / preview-first Model Redesign Workbench MVP.
@@ -388,6 +393,8 @@ API contract (`/api/model-redesign/summary`):
 - `POST` action execution is disabled for MVP:
 	- retrain / active-model-switch actions return `not-implemented`
 	- other POST actions return `disabled`
+- A complete dry-run can emit a canonical approval payload and SHA-256 bound to the actor, active model, feature contract, data snapshot, code version, and exact commit.
+- `/api/model-redesign/approval/assess` strictly evaluates an externally approved record but never submits a job (`execution_performed=false`).
 
 Safety constraints:
 - No retrain execution.
@@ -488,12 +495,14 @@ Approved retrain preconditions (future execution gate):
 - model artifact write only with explicit staging/sandbox policy
 - active model switch requires separate Admin approval
 
-API design freeze (spec only in this phase):
+API implementation boundary:
 - active now:
 	- `POST /api/model-redesign/summary` (`action=retrain_dry_run`)
+	- `POST /api/model-redesign/approval` (Admin, durable pending record; execution disabled)
+	- `GET /api/model-redesign/approval/[approval_id]` (Admin, authoritative record)
+	- `POST /api/model-redesign/approval/[approval_id]/decision` (Admin, CAS/two-person decision)
+	- `POST /api/model-redesign/approval/assess` (Admin, assessment-only)
 - defined for next phase:
-	- `POST /api/model-redesign/approval` (`action=create_approval`)
-	- `GET /api/model-redesign/approval/:approval_id`
 	- `POST /api/model-redesign/job` (`action=submit_approved_retrain`)
 
 UI design freeze (future lanes, runtime-gated):
@@ -515,10 +524,13 @@ Safety guard continuity:
 - no service_role key usage
 - no secret/token/env value exposure in responses/logs
 
-Type-only scaffolding added:
+Contract and durable non-executing ledger implementation:
 - `src/lib/model-retrain-approval-types.ts`
-- shared with the retrain dry-run preview UI/API shapes
-- runtime behavior remains unchanged
+- `src/lib/model-retrain-approval-contract.ts`
+- `src/lib/model-retrain-approval-ledger.ts`
+- `supabase/migrations/20260802_model_retrain_approval_ledger.sql`
+- the repository migration has not been applied to a hosted environment;
+- approval transitions cannot create jobs, write artifacts, or switch the active model.
 - `race_id`: string
 - `can_scrape`: bool
 - `can_write`: false (fixed in this phase)

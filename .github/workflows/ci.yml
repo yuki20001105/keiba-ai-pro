@@ -195,6 +195,9 @@ jobs:
       - name: Phase3H production readiness decision contract (release-blocking)
         run: python -m pytest python-api/tests/test_phase3h_production_readiness_gate.py -q
 
+      - name: Model acceptance contract (release-blocking)
+        run: python -m pytest python-api/tests/test_model_acceptance_evidence_builder.py python-api/tests/test_model_acceptance_gate.py -q
+
       - name: Phase3I synthetic saga failure-injection contracts (release-blocking)
         run: >-
           python -m pytest
@@ -473,7 +476,7 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           STAGING_EVIDENCE_RUN_ID: ${{ vars.PHASE3N_STAGING_EVIDENCE_RUN_ID }}
           TRUSTED_PRODUCER_SHA: ${{ vars.PHASE3N_TRUSTED_PRODUCER_SHA }}
-          TRUSTED_REF: refs/heads/security/phase3n-trusted-producer-v1
+          TRUSTED_REF: refs/heads/security/phase3n-trusted-producer-v2
         shell: bash
         run: |
           set -euo pipefail
@@ -550,7 +553,7 @@ jobs:
             --argjson run_id "$STAGING_EVIDENCE_RUN_ID" \
             '.id == $run_id
               and .path == ".github/workflows/staging-evidence.yml"
-              and .head_branch == "security/phase3n-trusted-producer-v1"
+              and .head_branch == "security/phase3n-trusted-producer-v2"
               and .head_sha == $producer
               and .event == "workflow_dispatch"
               and .status == "completed"
@@ -584,15 +587,21 @@ jobs:
           (github.event_name == 'workflow_dispatch' && (github.ref_name == 'main' || github.ref_name == 'release'))
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh attestation verify
-          reports/phase3n-input/phase3n_staging_evidence_gate.json
-          --repo "$GITHUB_REPOSITORY"
-          --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/staging-evidence.yml"
-          --source-ref "refs/heads/security/phase3n-trusted-producer-v1"
-          --source-digest "${{ steps.trusted-attestation.outputs.producer_sha }}"
-          --signer-digest "${{ steps.trusted-attestation.outputs.producer_sha }}"
-          --deny-self-hosted-runners
+        shell: bash
+        run: |
+          set -euo pipefail
+          for subject in \
+            reports/phase3n-input/phase3n_staging_evidence_gate.json \
+            reports/phase3n-input/model_acceptance_gate.json
+          do
+            gh attestation verify "$subject" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/staging-evidence.yml" \
+              --source-ref "refs/heads/security/phase3n-trusted-producer-v2" \
+              --source-digest "${{ steps.trusted-attestation.outputs.producer_sha }}" \
+              --signer-digest "${{ steps.trusted-attestation.outputs.producer_sha }}" \
+              --deny-self-hosted-runners
+          done
 
       - name: Require trusted READY evidence for promotion
         if: >-
@@ -603,6 +612,7 @@ jobs:
           python scripts/verify_phase3h_production_readiness.py
           --manifest python-api/tests/fixtures/phase3h_production_readiness_current_not_ready.json
           --trusted-attestation reports/phase3n-input/phase3n_staging_evidence_gate.json
+          --model-acceptance-report reports/phase3n-input/model_acceptance_gate.json
           --expected-attestation-run-id "${{ steps.trusted-attestation.outputs.run_id }}"
           --expected-attestation-run-attempt "${{ steps.trusted-attestation.outputs.run_attempt }}"
           --expected-repository "$GITHUB_REPOSITORY"

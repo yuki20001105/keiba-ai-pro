@@ -1025,6 +1025,10 @@ export default function DataCollectionPage() {
   }
 
   const handleStartProfiling = async () => {
+    if (!isAdmin) {
+      showToast('特徴量プロファイリングはAdmin専用です。', 'error')
+      return
+    }
     setProfilingJobId(null)
     try {
       const res = await authFetch('/api/profiling', {
@@ -1664,16 +1668,21 @@ export default function DataCollectionPage() {
                 <input type="checkbox" checked={useOptimized} onChange={e => setUseOptimized(e.target.checked)} className="w-3.5 h-3.5 accent-white" />
                 LightGBM最適化済み（リーク除去・変換適用）
               </label>
+              {!isAdmin && (
+                <div className="rounded border border-[#3f2b0b] bg-[#171107] px-3 py-2 text-xs text-[#d6a85f]">
+                  特徴量プロファイリングの生成・閲覧はAdmin専用です。
+                </div>
+              )}
               <div className="flex items-center gap-3">
                 <button
                   onClick={handleStartProfiling}
-                  disabled={profilingStatus === 'running'}
-                  className={`px-4 py-2 rounded text-xs font-medium transition-colors ${profilingStatus === 'running' ? 'bg-[#1a1a1a] text-[#555] cursor-not-allowed' : 'bg-white text-black hover:bg-[#eee]'}`}
+                  disabled={!isAdmin || profilingStatus === 'running'}
+                  className={`px-4 py-2 rounded text-xs font-medium transition-colors ${!isAdmin || profilingStatus === 'running' ? 'bg-[#1a1a1a] text-[#555] cursor-not-allowed' : 'bg-white text-black hover:bg-[#eee]'}`}
                 >
                   {profilingStatus === 'running' ? '生成中...' : 'レポート生成'}
                 </button>
                 {profilingStatus === 'completed' && profilingJobId && (
-                  <a href={`/api/profiling/html/${profilingJobId}`} target="_blank" rel="noopener noreferrer" className="text-xs text-[#4ade80] hover:underline">レポートを開く →</a>
+                  <Link href={`/data-collection/profiling/${profilingJobId}`} className="text-xs text-[#4ade80] hover:underline">認証付きビューアで開く →</Link>
                 )}
               </div>
               {profilingStatus === 'running' && (

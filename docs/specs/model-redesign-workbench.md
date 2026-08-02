@@ -1,6 +1,17 @@
 # Model Redesign Workbench Specification
 
-Updated: 2026-07-06
+Updated: 2026-08-02
+
+## Current implementation boundary
+
+- Premium/Admin users may view the read-only summary and generate a dry-run preview.
+- A complete preview emits a canonical payload/hash bound to the authenticated actor, active model, feature contract, data snapshot, code version, and exact commit.
+- Admin users may call `POST /api/model-redesign/approval/assess` to evaluate an externally supplied approval record against current immutable state.
+- The assessment is non-mutating and always returns `execution_performed=false`.
+- Admin-only create/read/decision routes and a private Supabase migration implement an expiring, CAS-versioned, two-person approval ledger without enabling execution.
+- The Admin workbench exposes the durable request/read/independent-decision/job-queue/status sequence; database guards enforce requester/approver separation and requester-only submission.
+- The migration remains unapplied pending isolated Staging migration approval and runtime evidence.
+- The canonical bootstrap defines service-only fenced job start, immutable registration of an already-uploaded private-bucket artifact, and accepted sanitized evaluation registration with promotion structurally disabled. Local fail-closed one-shot worker, dispatcher, reconciler, source audit, and accepted evaluator runtimes now exist; none has been deployed or exercised against hosted PostgreSQL/Storage. The accepted evaluator recomputes the contract metrics and baseline ROI delta from strict rows, but no real candidate comparison, trusted Phase 3N attestation, or promotion has occurred.
 
 ## 1. Scope
 
@@ -155,11 +166,11 @@ Minimum checks:
 
 ## 9. Rollout Plan
 
-Phase 1 (spec + API skeleton):
-- add routes with mocked execution and full guards.
+Phase 1 (spec + API/UI skeleton):
+- repository implementation complete for durable, non-executing approval persistence and Admin operator controls; apply and runtime-verify only in isolated Staging after explicit migration approval.
 
 Phase 2 (job runtime integration):
-- connect to optimizer/retrain pipeline.
+- repository implementation now connects the durable job to a fenced isolated trainer/uploader and accepted evaluator; deploy and exercise it only in approved isolated Staging.
 
 Phase 3 (promotion integration):
-- guarded active-model activation and smoke coverage.
+- consume only a GitHub-attested READY Phase 3N run selected for the exact release candidate, then perform separately approved guarded active-model activation and smoke coverage. A database/browser caller-supplied trusted boolean is never sufficient.

@@ -242,9 +242,75 @@
     "detail_error_passthrough_reason": ""
   },
   {
+    "route": "/api/model-redesign/approval",
+    "method": "POST",
+    "policy": "Admin",
+    "auth_header_forward": false,
+    "status_propagation": false,
+    "detail_error_passthrough": false,
+    "auth_header_forward_reason": "/api/model-redesign/approval authorizes Admin requests locally and calls a service-role RPC without forwarding the browser bearer token",
+    "status_propagation_reason": "/api/model-redesign/approval maps ledger outcomes into its bounded approval response contract",
+    "detail_error_passthrough_reason": "/api/model-redesign/approval returns sanitized ledger error classes and never passes raw backend detail"
+  },
+  {
+    "route": "/api/model-redesign/approval/[approval_id]",
+    "method": "GET",
+    "policy": "Admin",
+    "auth_header_forward": false,
+    "status_propagation": false,
+    "detail_error_passthrough": false,
+    "auth_header_forward_reason": "/api/model-redesign/approval/[approval_id] authorizes Admin requests locally and calls a service-role RPC without forwarding the browser bearer token",
+    "status_propagation_reason": "/api/model-redesign/approval/[approval_id] maps ledger outcomes into its bounded approval response contract",
+    "detail_error_passthrough_reason": "/api/model-redesign/approval/[approval_id] returns sanitized ledger error classes and never passes raw backend detail"
+  },
+  {
+    "route": "/api/model-redesign/approval/[approval_id]/decision",
+    "method": "POST",
+    "policy": "Admin",
+    "auth_header_forward": false,
+    "status_propagation": false,
+    "detail_error_passthrough": false,
+    "auth_header_forward_reason": "/api/model-redesign/approval/[approval_id]/decision authorizes Admin requests locally and calls a service-role RPC without forwarding the browser bearer token",
+    "status_propagation_reason": "/api/model-redesign/approval/[approval_id]/decision maps ledger outcomes into its bounded transition response contract",
+    "detail_error_passthrough_reason": "/api/model-redesign/approval/[approval_id]/decision returns sanitized ledger error classes and never passes raw backend detail"
+  },
+  {
+    "route": "/api/model-redesign/approval/assess",
+    "method": "POST",
+    "policy": "Admin",
+    "auth_header_forward": false,
+    "status_propagation": false,
+    "detail_error_passthrough": false,
+    "auth_header_forward_reason": "/api/model-redesign/approval/assess authorizes Admin requests locally and does not proxy the browser bearer token",
+    "status_propagation_reason": "/api/model-redesign/approval/assess returns its own deterministic assessment status instead of proxying an upstream response",
+    "detail_error_passthrough_reason": "/api/model-redesign/approval/assess emits a bounded local validation contract and has no upstream detail to pass through"
+  },
+  {
+    "route": "/api/model-redesign/jobs",
+    "method": "POST",
+    "policy": "Admin",
+    "auth_header_forward": false,
+    "status_propagation": false,
+    "detail_error_passthrough": false,
+    "auth_header_forward_reason": "/api/model-redesign/jobs authorizes Admin requests locally and calls a service-role RPC without forwarding the browser bearer token",
+    "status_propagation_reason": "/api/model-redesign/jobs maps ledger outcomes into its bounded queued-job response contract",
+    "detail_error_passthrough_reason": "/api/model-redesign/jobs returns sanitized ledger error classes and never passes raw backend detail"
+  },
+  {
+    "route": "/api/model-redesign/jobs/[job_id]",
+    "method": "GET",
+    "policy": "Admin",
+    "auth_header_forward": false,
+    "status_propagation": false,
+    "detail_error_passthrough": false,
+    "auth_header_forward_reason": "/api/model-redesign/jobs/[job_id] authorizes Admin requests locally and calls a service-role RPC without forwarding the browser bearer token",
+    "status_propagation_reason": "/api/model-redesign/jobs/[job_id] maps ledger outcomes into its bounded queued-job response contract",
+    "detail_error_passthrough_reason": "/api/model-redesign/jobs/[job_id] returns sanitized ledger error classes and never passes raw backend detail"
+  },
+  {
     "route": "/api/model-redesign/summary",
     "method": "GET",
-    "policy": "Authenticated",
+    "policy": "PremiumOrAdmin",
     "auth_header_forward": false,
     "status_propagation": false,
     "detail_error_passthrough": false,
@@ -255,7 +321,7 @@
   {
     "route": "/api/model-redesign/summary",
     "method": "POST",
-    "policy": "Authenticated",
+    "policy": "PremiumOrAdmin",
     "auth_header_forward": false,
     "status_propagation": false,
     "detail_error_passthrough": false,
@@ -354,7 +420,7 @@
   {
     "route": "/api/notion-report",
     "method": "GET",
-    "policy": "Authenticated",
+    "policy": "PremiumOrAdmin",
     "auth_header_forward": false,
     "status_propagation": false,
     "detail_error_passthrough": false,
@@ -365,7 +431,7 @@
   {
     "route": "/api/notion-report",
     "method": "POST",
-    "policy": "Authenticated",
+    "policy": "PremiumOrAdmin",
     "auth_header_forward": false,
     "status_propagation": false,
     "detail_error_passthrough": false,
