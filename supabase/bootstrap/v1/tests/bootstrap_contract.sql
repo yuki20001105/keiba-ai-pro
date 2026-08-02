@@ -1172,6 +1172,15 @@ BEGIN
              AND failed_count = 0) <> 1 THEN
         RAISE EXCEPTION 'phase3m model retrain orphan reconciliation contract failed';
     END IF;
+
+    SELECT count(*) INTO v_count
+    FROM public.list_dispatchable_model_retrain_jobs(
+        'staging-dispatcher-01', 'staging-train',
+        repeat('d', 40), 'baseline-model', 5
+    );
+    IF v_count <> 0 THEN
+        RAISE EXCEPTION 'phase3m model retrain dispatch queue contract failed';
+    END IF;
 END;
 $phase3m_model_retrain_approval$;
 RESET ROLE;
@@ -1210,6 +1219,7 @@ FROM (VALUES
     ('phase3m_check:model_retrain_evaluation_registration'),
     ('phase3m_check:model_retrain_execution_bundle'),
     ('phase3m_check:model_retrain_orphan_reconciliation'),
+    ('phase3m_check:model_retrain_dispatch_queue'),
     ('phase3m_check:security_invoker_ml_view'),
     ('phase3m_check:storage_role_boundaries'),
     ('phase3m_check:required_triggers_enabled')

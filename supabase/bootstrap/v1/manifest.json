@@ -110,6 +110,12 @@
       "path": "supabase/migrations/20260802_model_retrain_orphan_reconciliation.sql",
       "source": "reconciled-existing",
       "description": "Service-only expired-lease recovery projection and audited terminal orphan reconciliation"
+    },
+    {
+      "version": "20260802147000",
+      "path": "supabase/migrations/20260802_model_retrain_dispatch_queue.sql",
+      "source": "reconciled-existing",
+      "description": "Service-only bounded approved retrain dispatch queue projection"
     }
   ]
 }

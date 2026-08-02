@@ -44,7 +44,7 @@ def test_manifest_is_strict_ordered_and_content_addressed(runner: ModuleType) ->
     manifest = runner.load_manifest(MANIFEST_PATH)
     assert manifest.schema_version == 1
     assert manifest.postgres_image == EXPECTED_IMAGE == runner.IMAGE
-    assert len(manifest.migrations) == 18
+    assert len(manifest.migrations) == 19
     assert [entry.version for entry in manifest.migrations] == sorted(
         entry.version for entry in manifest.migrations
     )
@@ -187,6 +187,7 @@ def test_target_preflight_rejects_partial_hosted_bootstrap_signatures(
         "'register_model_retrain_accepted_evaluation'",
         "'list_model_retrain_orphan_candidates'",
         "'record_model_retrain_orphan_reconciliation'",
+        "'list_dispatchable_model_retrain_jobs'",
         "FROM storage.buckets AS b",
         "b.id = 'models' OR b.name = 'models'",
         "FROM storage.objects AS o",

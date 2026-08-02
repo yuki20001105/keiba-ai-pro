@@ -58,6 +58,7 @@ REQUIRED_MARKERS = frozenset(
         "model_retrain_evaluation_registration",
         "model_retrain_execution_bundle",
         "model_retrain_orphan_reconciliation",
+        "model_retrain_dispatch_queue",
     }
 )
 
@@ -82,6 +83,7 @@ TARGET_PREFLIGHT_REQUIRED_FRAGMENTS = (
     "'get_model_retrain_execution_bundle'",
     "'list_model_retrain_orphan_candidates'",
     "'record_model_retrain_orphan_reconciliation'",
+    "'list_dispatchable_model_retrain_jobs'",
     "FROM storage.buckets AS b",
     "b.id = 'models' OR b.name = 'models'",
     "FROM storage.objects AS o",
@@ -166,7 +168,8 @@ BEGIN
                  '_reject_model_retrain_orphan_run_mutation',
                  'list_expired_model_retrain_job_candidates',
                  'list_model_retrain_orphan_candidates',
-                 'record_model_retrain_orphan_reconciliation'
+                 'record_model_retrain_orphan_reconciliation',
+                 'list_dispatchable_model_retrain_jobs'
              ])
        )
        OR EXISTS (
