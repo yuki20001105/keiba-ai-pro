@@ -3,9 +3,9 @@
 > Status date: 2026-08-02
 > Evidence cutoff: repository artifacts through 2026-07-20 plus local validation on 2026-08-02
 > Current branch at assessment: `codex/fullstack-readiness`
-> Current implementation checkpoint: `7764fa7` (`codex/fullstack-readiness` local candidate)
-> Status: **overall 66% (reasonable range: 64-68%), Production NOT_READY**
-> Candidate branch: local readiness commits ahead of `origin/develop`; exact-SHA remote CI is pending
+> Current implementation checkpoint: `31c6b64` (`codex/fullstack-readiness` pushed candidate)
+> Status: **overall 67.65%, reported as 68% (reasonable range: 66-70%), Production NOT_READY**
+> Candidate branch: pushed to `origin/codex/fullstack-readiness`; exact-SHA CI run `30741847311` passed 12/12 jobs
 
 This is the canonical handoff document for answering three questions:
 
@@ -35,16 +35,16 @@ This worktree is suitable for source inspection, frontend development, and focus
 
 | Area | Observed state on 2026-08-02 | Assessment |
 |---|---|---|
-| Git source | Candidate branch `codex/fullstack-readiness` remains based on `origin/develop` commit `d9bbcbc` and is 41 local commits ahead at checkpoint `7764fa7`; all readiness work is local | Correct base; push and exact-SHA CI evidence still require authorization |
+| Git source | Candidate branch `codex/fullstack-readiness` remains based on `origin/develop` commit `d9bbcbc` and is 44 commits ahead at checkpoint `31c6b64`; the branch is pushed to origin | Correct base and remotely available; no PR or merge is implied |
 | Node runtime | Node 24.12.0, npm 11.6.2; clean `npm ci` and the CI `--omit=optional` dependency-tree check passed. The current development tree contains 4 optional WASM packages reported as extraneous | Verified for reproducible install; current `node_modules` is not an exact clean-tree snapshot |
 | Frontend tests | 32 test files and 335 tests passed on exact commit `a8e2f18` | Verified; existing React `act(...)` warnings remain non-blocking |
 | Production build | Next.js 16.2.12 build completed and generated 71 routes | Verified; broad NFT trace and dependency-origin `url.parse()` warnings remain |
 | Python runtime | Worktree-local Python 3.11.9 venv exists with CI requirements, pytest, FastAPI, LightGBM, pandas and scikit-learn | Verified |
-| Python tests | Full `python-api/tests` suite passes 1,168 tests on exact commit `7764fa7`; accepted-evaluator runtime/configuration passes 31 tests, the source-readiness audit passes 8, and feature consistency passes 73 | Locally verified on worktree Python 3.11.9; remote exact-SHA CI remains pending |
+| Python tests | Full `python-api/tests` suite passes 1,169 tests on exact commit `31c6b64`; accepted-evaluator runtime/configuration passes 31 tests, the source-readiness audit passes 8, and feature consistency passes 73 | Locally verified on worktree Python 3.11.9 and confirmed by exact-SHA remote CI |
 | Local configuration | Ignored `.env` and `.env.local` contain local dummy endpoints and fail-closed write/scheduler/Saga switches; no secrets were copied | Ready for local health/fixture smoke, not authenticated hosted flows |
 | Local operational data | A new empty 36 KiB `keiba/data/keiba_ultimate.db` fixture was initialized through the repository storage code | Ready for schema/startup smoke; real scrape/train/predict data remains absent |
 | Services and E2E | FastAPI `/health` and Next.js `/api/health` returned 200; FastAPI OpenAPI and Next home returned 200; both unauthenticated protected-API probes returned 401; public fixture Playwright smoke passed 5/5; services were stopped afterward | Local integration slice verified |
-| Dependency security | `@google-cloud/vision` 5.3.7 removes the vulnerable Google Vision/uuid path; `tsx` 4.23.1 and Vitest 4.1.10 move esbuild to 0.28.1. Full and production audits now contain 0 findings at every severity, and the CI-equivalent mandatory dependency-tree install/check passes | Locally cleared; exact-SHA remote CI confirmation remains required |
+| Dependency security | `@google-cloud/vision` 5.3.7 removes the vulnerable Google Vision/uuid path; `tsx` 4.23.1 and Vitest 4.1.10 move esbuild to 0.28.1. Full and production audits now contain 0 findings at every severity, and the mandatory dependency-tree install/check passes | Cleared locally and by exact-SHA remote CI |
 | Model acceptance path | Strict row observations are recomputed into digest-bound evidence; a read-only source audit distinguishes usable evidence fields from legacy records; a one-shot Staging/Sandbox evaluator accepts only a fresh approved-contract report and registers it through the existing CAS RPC | Parent DB lacks eight required source capabilities; repository contract remains draft; no real accepted evaluation or trusted Phase 3N run exists, and database evaluation remains structurally non-promoting |
 
 Practical readiness:
@@ -55,7 +55,7 @@ Practical readiness:
 
 The parent worktree assets were not copied. This worktree now has independently generated local-only configuration, a Python 3.11 venv, and an empty schema fixture. Secrets and production data remain absent by design.
 
-The authoritative overall score remains 65.65%/66% until CI produces exact-SHA evidence for the candidate branch. If the repository-quality pillar is rescored from 80% to 88% after that confirmation, the provisional overall value becomes 67.65% (reported as 68%); this provisional value is not a release authorization.
+Exact-SHA CI run `30741847311` passed all 12 jobs for commit `31c6b6478dffda6e810af448e141b4089866e23f`, including dependency security, Python, Frontend, Playwright, scanners, Phase 3G-J runtime gates, the two-database Phase 3M bootstrap replay, and both container builds. The repository-quality pillar is therefore rescored from 80% to 88%, making the authoritative overall value 67.65% (reported as 68%). This is not a release authorization.
 
 ### 0.2 External governance snapshot (read-only audit)
 
@@ -158,18 +158,18 @@ The overall percentage is a planning indicator, not a release authorization. It 
 |---|---:|---:|---:|---|
 | Product workflow completeness | 30% | 78% | 23.4% | 6 of 13 workflows are complete UI flows; 7 are partial; none are wholly missing |
 | ML and business-value proof | 25% | 65% | 16.3% | Historical AUC 0.8865 exceeds the 0.85 target, but current-commit out-of-time, calibration, ROI, and drawdown proof is incomplete |
-| Repository safety and quality gates | 25% | 80% authoritative; 88% provisional | 20.0% authoritative; 22.0% provisional | Auth/fail-closed gates exist; the working tree clears current Critical/High audits and local gates, but exact-SHA CI evidence is pending |
+| Repository safety and quality gates | 25% | 88% | 22.0% | Auth/fail-closed gates, zero Critical/High dependency enforcement, Python/Frontend/Playwright, Phase 3M replay, container builds, and security scanners pass on exact-SHA CI run `30741847311` |
 | Staging and Production operational proof | 20% | 30% | 6.0% | Trusted evidence machinery exists, but isolated provider topology, hosted bootstrap, non-synthetic exercises, rollback evidence, and current Phase 3N artifact are unproven |
-| **Overall** | **100%** |  | **65.65% authoritative; 67.65% provisional** | Report 66% until candidate commit and CI confirmation; then rescore to 68% if no regression appears |
+| **Overall** | **100%** |  | **67.65% authoritative** | Report as 68%; Production remains NOT_READY until the external Staging, trusted Phase 3N, and business gates pass |
 
 Workflow scoring assigns 1.0 point to `complete`, 0.6 to `partial`, and 0 to `missing`. Thus $(6 + 7 \times 0.6) / 13 = 78.5\%$, conservatively reported as 78%. Other pillar scores are evidence-based assessments and must be revisited when their exit conditions change.
 
 ### 3.1 Interpretation
 
 - **Product implementation:** approximately 78%.
-- **Repository-level safety and quality:** approximately 80%.
+- **Repository-level safety and quality:** approximately 88%.
 - **Real-environment readiness:** approximately 30%.
-- **Overall goal:** **66%**, with a reasonable uncertainty range of **64-68%**.
+- **Overall goal:** **67.65%, reported as 68%**, with a reasonable uncertainty range of **66-70%**.
 
 The overall score remains close to the 2026-07-12 baseline of 65-70%. Later phases substantially improved safety contracts, but they did not yet close the external Staging evidence and business-validation gaps.
 
@@ -195,14 +195,13 @@ The overall score remains close to the 2026-07-12 baseline of 65-70%. Later phas
 
 ### 3.4 What blocks Production
 
-1. Current-commit local and CI evidence has not been regenerated into a coherent evidence set.
-2. The Phase 3M bootstrap is not proven applied to an isolated Staging Supabase project.
-3. Auth/RLS/IDOR checks are not proven against the real isolated Staging project.
-4. Non-synthetic multi-instance crash/recovery and stale-fence rejection are not proven.
-5. Database/cache integrity and rollback drill evidence are not proven.
-6. The three GitHub Environment approval boundaries are not proven configured and exercised.
-7. A fresh trusted Phase 3N artifact for the exact candidate commit does not exist locally.
-8. Business success thresholds beyond AUC are not approved. A versioned fail-closed
+1. The Phase 3M bootstrap is not proven applied to an isolated Staging Supabase project.
+2. Auth/RLS/IDOR checks are not proven against the real isolated Staging project.
+3. Non-synthetic multi-instance crash/recovery and stale-fence rejection are not proven.
+4. Database/cache integrity and rollback drill evidence are not proven.
+5. The three GitHub Environment approval boundaries are not proven configured and exercised for this candidate.
+6. A fresh trusted Phase 3N artifact for the exact candidate commit does not exist.
+7. Business success thresholds beyond AUC are not approved. A versioned fail-closed
    contract and verifier now enforce that absence as `not-accepted`; approved values
    and fresh current-commit row observations are still required. Aggregate metrics are
    now recomputed by trusted code and bound to model/source digests.
@@ -257,7 +256,7 @@ The order below is dependency-driven. An agent must not skip ahead by replacing 
 
 | Work package | Owner | Depends on | Deliverable | Exit condition | Progress impact |
 |---|---|---|---|---|---:|
-| WP0 Canonicalize current evidence | Sysop | none | Clean candidate commit and regenerated local/CI reports | All reports bind to the same current full SHA; no placeholder/stale report is treated as current | +2% |
+| WP0 Canonicalize current evidence | Sysop | none | **Complete for the implementation candidate:** clean pushed commit `31c6b64`, local Python 1,169/Phase 3M 17-of-17 checks, and exact-SHA CI run `30741847311` with 12/12 jobs green | Current implementation and CI artifacts bind to the same full SHA; historical reports remain explicitly labeled non-current | +2% |
 | WP1 Define business acceptance contract | Jobs + Trainer + Ledger | none | **In progress:** versioned fail-closed contract, verifier, contract/abuse tests, CI and trusted Phase 3N/promotion wiring are implemented; a sanitized immutable/read-only SQLite source audit now proves whether legacy prediction data contains every strict row field. The current parent DB does not. Non-AUC values remain deliberately unapproved | User approves thresholds and collection/staking/baseline policy; fresh current-commit out-of-time evidence passes the attested promotion gate | +5% |
 | WP2 Finish operator workflow gaps | Harvester + Trainer + Oracle | WP1 for model decisions | **In progress:** quality bridge, authenticated Admin profiling viewer, read-only feature provenance/INV-01 catalog, strict retrain payload hashing, an Admin-only eligibility assessment, deployed-environment blocks on legacy model training/activation/deletion/repair, an Admin request/independent-decision/job-status panel, private two-person approval/job ledgers, service-only CAS/lease/fencing transitions, immutable private-bucket artifact/evaluation registration, a service-only execution bundle, an isolated OOT trainer, and a fail-closed one-shot coordinator are implemented. A bounded one-shot dispatcher selects at most five exact candidates and delegates to the fenced coordinator; a one-shot evaluator rebuilds evidence from strict rows in memory, requires the canonical approved contract and accepted verifier report, and records it through CAS while keeping promotion false. A separate reconciler handles expired leases and old unregistered exact-name objects with an immutable outcome ledger. Deployment and recurring scheduling, hosted PostgreSQL/Storage runtime evidence, trusted Phase 3N attestation and candidate comparison, separate switch/retirement approvals, standalone generation execution, and advanced evaluation remain | Accepted workflows meet G1; intentionally script-only items have runbooks | +6% |
 | WP3 Provision isolated Staging governance | Sysop | WP0 | **Partial:** three protected approval Environments, protected producer branch, and a distinct Vercel Staging deployment record exist. Current provider topology/commit, producer parity, evidence inputs, successful run selector, and authenticated Render/Supabase metadata remain absent | Authenticated metadata proves isolation and required reviewers without exposing values | +4% |
@@ -271,13 +270,12 @@ The percentages above are prioritization estimates, not additive score increment
 
 ### Immediate next sequence
 
-1. Push the committed readiness candidate and regenerate exact-SHA CI evidence; archive or clearly label stale reports.
-2. Obtain user approval for the missing business thresholds in WP1 and record a durable approval reference.
-3. Generate current-commit out-of-time model evidence that satisfies the approved contract.
-4. Execute WP3 and WP4 only with explicit external-environment and migration approval.
-5. Execute the non-synthetic Staging exercises and rollback drill.
-6. Run the trusted Phase 3N workflow; it now requires and attests the model acceptance report alongside operational evidence.
-7. Promote only when both trusted Staging and model gates derive READY; then complete the Production observation period.
+1. Obtain user approval for the missing business thresholds in WP1 and record a durable approval reference.
+2. Generate current-commit out-of-time model evidence that satisfies the approved contract.
+3. Execute WP3 and WP4 only with explicit external-environment and migration approval.
+4. Execute the non-synthetic Staging exercises and rollback drill.
+5. Run the trusted Phase 3N workflow; it now requires and attests the model acceptance report alongside operational evidence.
+6. Promote only when both trusted Staging and model gates derive READY; then complete the Production observation period.
 
 ---
 
@@ -363,6 +361,7 @@ For each status review:
 | 2026-08-02 | `bbe9df3` bounded-dispatcher candidate | 66% authoritative / 68% provisional | NOT_READY | The 19th canonical migration adds a read-only service-only queue projection, and a fail-closed Staging/Sandbox one-shot dispatcher selects at most five exact policy/commit/active-model candidates, validates snapshot digests and all returned bindings again in Python, and invokes the existing fenced coordinator sequentially. Exact-commit Python 1,129 and both safety scanners pass. No migration, queue scan, claim, snapshot read, training, upload, or registration was performed against real PostgreSQL/Storage; deployment, recurring scheduling, remote CI, real OOT evidence, threshold approval, trusted evaluation, and Phase 3N evidence remain pending. |
 | 2026-08-02 | `9665c8c` model-source audit candidate | 66% authoritative / 68% provisional | NOT_READY | A sanitized read-only/immutable SQLite audit now checks the selected model/cutoff, same-day post-cutoff predictions, settled label/class coverage, timezone-aware prediction timestamps, and complete freshness/settlement/candidate-wager/baseline-wager/latency fields without exporting paths or rows. Exact-commit Python 1,137 and both safety scanners pass. The parent DB has 1,014 same-day post-cutoff active-model rows but only 15 settled labels and lacks all eight strict source capabilities, so it cannot be promoted into trusted OOT evidence by copying or aggregate reconstruction. |
 | 2026-08-02 | `7764fa7` accepted-evaluator candidate | 66% authoritative / 68% provisional | NOT_READY | A fail-closed Staging/Sandbox one-shot evaluator now loads strict OOT rows only from an absolute non-symlink input, recomputes evidence in memory, requires the canonical contract to be approved and every verifier threshold/check to pass, independently revalidates the sanitized report, and registers it with exact job/CAS/evaluator/commit bindings. Exact-commit Python 1,168 and both scanners pass. The repository contract is still draft, no real row set or RPC execution exists, and the resulting DB state remains `promotion_eligible=false`; only trusted Phase 3N attestation can authorize promotion. |
+| 2026-08-02 | `31c6b64` exact-SHA CI candidate | 67.65% authoritative / 68% reported | NOT_READY | The PostgreSQL 17.6 approval-ledger parse failure is fixed and regression-guarded. Local Python 1,169 and the Phase 3M two-fresh-database 17-of-17 gate pass; remote CI run `30741847311` is green across all 12 jobs, including Playwright, dependency/security gates, Phase 3G-J, Phase 3M bootstrap replay, and both container builds. Isolated hosted Staging, approved business thresholds, real OOT observations, trusted Phase 3N evidence, and release approval remain open. |
 
 ---
 
