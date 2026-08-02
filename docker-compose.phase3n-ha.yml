@@ -1,0 +1,83 @@
+services:
+  db:
+    image: postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+    tmpfs:
+      - /var/lib/postgresql/data
+
+  db-init:
+    image: postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGHOST: db
+      PGUSER: postgres
+      PGDATABASE: postgres
+    volumes:
+      - ./supabase:/workspace/supabase:ro
+    command:
+      - /bin/sh
+      - -euc
+      - |
+        psql -v ON_ERROR_STOP=1 -f /workspace/supabase/bootstrap/v1/tests/supabase_prelude.sql
+        for migration in \
+          bootstrap/v1/migrations/20260720141000_core_identity_finance.sql \
+          bootstrap/v1/migrations/20260720141100_prediction_quota.sql \
+          bootstrap/v1/migrations/20260720141200_purchase_history.sql \
+          bootstrap/v1/migrations/20260720142000_race_domain.sql \
+          bootstrap/v1/migrations/20260720142100_normalized_ultimate_domain.sql \
+          bootstrap/v1/migrations/20260720142200_server_ml_storage.sql \
+          migrations/20260718_scrape_uncertainty_review_ledger.sql \
+          migrations/20260720_scrape_execution_reservation.sql \
+          bootstrap/v1/migrations/20260720143200_security_definer_search_path.sql \
+          bootstrap/v1/migrations/20260720143300_ocr_quota_reservation.sql \
+          bootstrap/v1/migrations/20260720143400_admin_role_change.sql \
+          migrations/20260802_model_retrain_approval_ledger.sql \
+          migrations/20260802_model_retrain_job_ledger.sql \
+          migrations/20260802_model_retrain_worker_lease.sql \
+          migrations/20260802_model_retrain_artifact_registration.sql \
+          migrations/20260802_model_retrain_evaluation_registration.sql \
+          migrations/20260802_model_retrain_execution_bundle.sql \
+          migrations/20260802_model_retrain_orphan_reconciliation.sql \
+          migrations/20260802_model_retrain_dispatch_queue.sql \
+          migrations/20260720_scrape_operational_outbox.sql \
+          migrations/20260802_phase3n_observation_ha.sql
+        do
+          psql -v ON_ERROR_STOP=1 -f "/workspace/supabase/$migration"
+        done
+
+  rest:
+    image: postgrest/postgrest:v14.12
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+    environment:
+      PGRST_DB_URI: postgres://postgres@db:5432/postgres
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_ANON_ROLE: service_role
+      PGRST_SERVER_PORT: "3000"
+
+  controller:
+    build:
+      context: .
+      dockerfile: Dockerfile.phase3n-ha
+    depends_on:
+      rest:
+        condition: service_started
+    environment:
+      PHASE3N_HA_REST_URL: http://rest:3000
+    volumes:
+      - ${PHASE3N_HA_EVIDENCE_DIR:?set PHASE3N_HA_EVIDENCE_DIR}:/evidence
+
+  instance-a:
+    extends: controller
+
+  instance-b:
+    extends: controller

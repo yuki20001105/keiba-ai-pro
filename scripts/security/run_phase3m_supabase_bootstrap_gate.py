@@ -33,7 +33,9 @@ COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 VERSION_PATTERN = re.compile(r"^[0-9]{14}$")
 TOKEN_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{2,79}$")
 CONTAINER_ID_PATTERN = re.compile(r"^[0-9a-f]{12,64}$")
-SAFE_SOURCE_VALUES = frozenset({"phase3m-bootstrap", "reconciled-existing"})
+SAFE_SOURCE_VALUES = frozenset(
+    {"phase3m-bootstrap", "reconciled-existing", "phase3n-ha-extension"}
+)
 SAFE_PATH_PREFIXES = (
     PurePosixPath("supabase/bootstrap/v1/migrations"),
     PurePosixPath("supabase/migrations"),
@@ -59,6 +61,7 @@ REQUIRED_MARKERS = frozenset(
         "model_retrain_execution_bundle",
         "model_retrain_orphan_reconciliation",
         "model_retrain_dispatch_queue",
+        "phase3n_observation_ha",
     }
 )
 
@@ -84,6 +87,10 @@ TARGET_PREFLIGHT_REQUIRED_FRAGMENTS = (
     "'list_model_retrain_orphan_candidates'",
     "'record_model_retrain_orphan_reconciliation'",
     "'list_dispatchable_model_retrain_jobs'",
+    "'phase3n_prediction_observations'",
+    "'record_phase3n_prediction_observation'",
+    "'phase3n_ha_fencing_seq'",
+    "'apply_phase3n_ha_effect'",
     "FROM storage.buckets AS b",
     "b.id = 'models' OR b.name = 'models'",
     "FROM storage.objects AS o",
@@ -119,7 +126,12 @@ BEGIN
                  'model_retrain_approval_events', 'model_retrain_jobs',
                  'model_retrain_job_events', 'model_retrain_job_fencing_seq',
                  'model_retrain_artifacts', 'model_retrain_evaluations',
-                 'model_retrain_orphan_reconciliation_runs'
+                  'model_retrain_orphan_reconciliation_runs',
+                  'scrape_operational_jobs', 'scrape_operational_outbox',
+                  'phase3n_model_manifests', 'phase3n_prediction_observations',
+                  'phase3n_result_observation_events',
+                  'phase3n_observation_ingest_attempts', 'phase3n_ha_jobs',
+                  'phase3n_ha_effects', 'phase3n_ha_events'
              ])
        )
        OR EXISTS (
@@ -169,7 +181,16 @@ BEGIN
                  'list_expired_model_retrain_job_candidates',
                  'list_model_retrain_orphan_candidates',
                  'record_model_retrain_orphan_reconciliation',
-                 'list_dispatchable_model_retrain_jobs'
+                  'list_dispatchable_model_retrain_jobs',
+                  'phase3n_operational_runtime_health',
+                  'enqueue_scrape_operational_job', 'claim_scrape_operational_outbox',
+                  'heartbeat_scrape_operational_outbox', 'settle_scrape_operational_outbox',
+                  '_phase3n_reject_immutable_mutation',
+                  'register_phase3n_model_manifest',
+                  'record_phase3n_prediction_observation',
+                  'record_phase3n_result_observation', 'enqueue_phase3n_ha_job',
+                  'claim_phase3n_ha_job', 'heartbeat_phase3n_ha_job',
+                  'apply_phase3n_ha_effect'
              ])
        )
        OR EXISTS (
@@ -179,6 +200,17 @@ BEGIN
            WHERE n.nspname = 'public'
              AND c.relkind = 'S'
              AND c.relname = 'scrape_execution_reservation_fencing_seq'
+       )
+       OR EXISTS (
+           SELECT 1
+           FROM pg_catalog.pg_class AS c
+           JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+           WHERE n.nspname = 'public'
+             AND c.relkind = 'S'
+             AND c.relname = ANY (ARRAY[
+                 'scrape_operational_worker_fencing_seq',
+                 'phase3n_ha_fencing_seq'
+             ])
        )
        OR EXISTS (
            SELECT 1

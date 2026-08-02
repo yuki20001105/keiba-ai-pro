@@ -458,6 +458,55 @@ END;
 $phase3m_user_a$;
 
 RESET ROLE;
+
+DO $phase3n_observation_ha_contract$
+DECLARE
+    v_missing TEXT[];
+BEGIN
+    SELECT array_agg(required_name ORDER BY required_name) INTO v_missing
+    FROM unnest(ARRAY[
+        'phase3n_model_manifests',
+        'phase3n_prediction_observations',
+        'phase3n_result_observation_events',
+        'phase3n_observation_ingest_attempts',
+        'phase3n_ha_jobs',
+        'phase3n_ha_effects',
+        'phase3n_ha_events',
+        'scrape_operational_jobs',
+        'scrape_operational_outbox'
+    ]) AS expected(required_name)
+    WHERE to_regclass('public.' || required_name) IS NULL;
+    IF v_missing IS NOT NULL THEN
+        RAISE EXCEPTION 'phase3n observation/HA tables missing: %', v_missing;
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_catalog.pg_class AS c
+        JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+          AND c.relname = ANY (ARRAY[
+              'phase3n_model_manifests', 'phase3n_prediction_observations',
+              'phase3n_result_observation_events', 'phase3n_observation_ingest_attempts',
+              'phase3n_ha_jobs', 'phase3n_ha_effects', 'phase3n_ha_events'
+          ])
+          AND (NOT c.relrowsecurity OR NOT c.relforcerowsecurity)
+    ) THEN
+        RAISE EXCEPTION 'phase3n observation/HA RLS boundary missing';
+    END IF;
+    IF has_function_privilege('anon', 'public.record_phase3n_prediction_observation(jsonb)', 'EXECUTE')
+       OR has_function_privilege('authenticated', 'public.record_phase3n_prediction_observation(jsonb)', 'EXECUTE')
+       OR has_function_privilege('anon', 'public.apply_phase3n_ha_effect(uuid,text,bigint,text,text)', 'EXECUTE')
+       OR has_function_privilege('authenticated', 'public.apply_phase3n_ha_effect(uuid,text,bigint,text,text)', 'EXECUTE')
+       OR NOT has_function_privilege('service_role', 'public.record_phase3n_prediction_observation(jsonb)', 'EXECUTE')
+       OR NOT has_function_privilege('service_role', 'public.apply_phase3n_ha_effect(uuid,text,bigint,text,text)', 'EXECUTE') THEN
+        RAISE EXCEPTION 'phase3n observation/HA function grants invalid';
+    END IF;
+    IF has_table_privilege('service_role', 'public.phase3n_prediction_observations', 'INSERT')
+       OR has_table_privilege('service_role', 'public.phase3n_result_observation_events', 'UPDATE')
+       OR has_table_privilege('service_role', 'public.phase3n_ha_effects', 'DELETE') THEN
+        RAISE EXCEPTION 'phase3n direct mutation grant detected';
+    END IF;
+END;
+$phase3n_observation_ha_contract$;
 SET LOCAL ROLE authenticated;
 SELECT set_config('request.jwt.claim.sub', '30000000-0000-4000-8000-000000000002', TRUE);
 SELECT set_config('request.jwt.claim.role', 'authenticated', TRUE);
@@ -1220,6 +1269,7 @@ FROM (VALUES
     ('phase3m_check:model_retrain_execution_bundle'),
     ('phase3m_check:model_retrain_orphan_reconciliation'),
     ('phase3m_check:model_retrain_dispatch_queue'),
+    ('phase3m_check:phase3n_observation_ha'),
     ('phase3m_check:security_invoker_ml_view'),
     ('phase3m_check:storage_role_boundaries'),
     ('phase3m_check:required_triggers_enabled')

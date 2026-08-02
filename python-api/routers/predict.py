@@ -6,6 +6,7 @@ POST /api/analyze_race
 from __future__ import annotations
 
 import json
+import os
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -453,6 +454,7 @@ async def predict(request: PredictRequest, http_req: Request):
 
 async def _analyze_race_impl(request: AnalyzeRaceRequest):
     """レース分析と購入推奨エンドポイント"""
+    _observation_started_at = _time.perf_counter()
     # ── キャッシュチェック（TTL=5分、bankroll/risk_mode が同一の場合のみ）
     _cache_key = f"{request.race_id}:{request.model_id}:{request.bankroll}:{request.risk_mode}"
     _now = _time.time()
@@ -911,6 +913,47 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
             race_level=result["race_level"],
             recommendation=result["recommendation"],
         )
+        # Phase 3N strict observation capture is an explicit Staging-only opt-in.
+        # When enabled it is awaited before responding and fails closed: a
+        # prediction is never claimed as observed unless PostgreSQL accepted the
+        # append-only rows. Missing authoritative source timestamps are rejected.
+        try:
+            from observation.capture import capture_analyze_predictions  # type: ignore
+
+            _observation_result = await asyncio.to_thread(
+                capture_analyze_predictions,
+                bundle=bundle,
+                model_path=model_path,
+                feature_frame=X_pred,
+                source_records=_horse_records,
+                race_id=request.race_id,
+                race_info=result["race_info"],
+                predictions=result["predictions"],
+                latency_ms=(_time.perf_counter() - _observation_started_at) * 1000.0,
+            )
+            if _observation_result.get("enabled"):
+                logger.info(
+                    "[phase3n-observation] accepted predictions: inserted=%s duplicate=%s",
+                    _observation_result["inserted"],
+                    _observation_result["duplicates"],
+                )
+        except Exception as _observation_error:
+            # Invalid/partial opt-in is also fail-closed. Only explicit false
+            # values may bypass capture; this avoids a malformed switch turning
+            # an intended Staging observation run into an unobserved response.
+            _observation_switch = os.environ.get(
+                "PHASE3N_OBSERVATION_ENABLED", ""
+            ).strip().lower()
+            if _observation_switch not in {"", "false", "0", "no", "off"}:
+                logger.error(
+                    "[phase3n-observation] fail closed: %s",
+                    type(_observation_error).__name__,
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail="strict Staging observation capture failed closed",
+                ) from _observation_error
+            logger.debug("[phase3n-observation] disabled")
         # 予測ログをDBに非同期保存（レスポンスをブロックしない）
         try:
             _model_id_log = bundle.get("model_id", bundle.get("created_at", "unknown"))
