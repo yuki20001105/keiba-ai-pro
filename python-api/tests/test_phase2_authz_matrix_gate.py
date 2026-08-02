@@ -11,6 +11,7 @@ if str(SECURITY_DIR) not in sys.path:
 from phase2_authz_runtime import (  # type: ignore
     _detect_auth_header_read,
     _detect_direct_policy,
+    _extract_auth_helper_policies,
     _extract_proxy_targets,
     classify_fastapi_route,
     classify_fastapi_route_with_runtime,
@@ -151,6 +152,28 @@ export async function GET(request: NextRequest) {
 }
 """
     assert _detect_direct_policy(ts, "/api/example") == "Authenticated"
+
+
+def test_custom_premium_or_admin_helper_is_detected() -> None:
+    ts = """
+async function authorizePremiumOrAdmin(request: Request) {
+  const role = String(profile.role || '').toLowerCase()
+  const tier = String(profile.subscription_tier || '').toLowerCase()
+  const isAdmin = role === 'admin'
+  const isPremium = isAdmin || tier === 'premium'
+  if (!isPremium) return { ok: false, status: 403 }
+  return { ok: true, status: 200 }
+}
+
+export async function GET(request: Request) {
+  const authz = await authorizePremiumOrAdmin(request)
+  if (!authz.ok) return NextResponse.json({ detail: authz.detail }, { status: authz.status })
+  return NextResponse.json({ ok: true })
+}
+"""
+    policies = _extract_auth_helper_policies(ts)
+    assert policies["authorizePremiumOrAdmin"] == "PremiumOrAdmin"
+    assert _detect_direct_policy(ts, "/api/model-redesign/summary", policies) == "PremiumOrAdmin"
 
 
 def test_backend_route_unknown_is_gate_failure() -> None:

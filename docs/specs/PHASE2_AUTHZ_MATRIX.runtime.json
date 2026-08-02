@@ -915,7 +915,7 @@
       {
         "route": "/api/model-redesign/summary",
         "method": "GET",
-        "policy": "Authenticated",
+        "policy": "PremiumOrAdmin",
         "backend_endpoint": "",
         "backend_method": "",
         "backend_policy": "Unclassified",
@@ -927,7 +927,7 @@
       {
         "route": "/api/model-redesign/summary",
         "method": "POST",
-        "policy": "Authenticated",
+        "policy": "PremiumOrAdmin",
         "backend_endpoint": "",
         "backend_method": "",
         "backend_policy": "Unclassified",
@@ -1035,7 +1035,7 @@
       {
         "route": "/api/notion-report",
         "method": "GET",
-        "policy": "Authenticated",
+        "policy": "PremiumOrAdmin",
         "backend_endpoint": "",
         "backend_method": "",
         "backend_policy": "Unclassified",
@@ -1047,7 +1047,7 @@
       {
         "route": "/api/notion-report",
         "method": "POST",
-        "policy": "Authenticated",
+        "policy": "PremiumOrAdmin",
         "backend_endpoint": "",
         "backend_method": "",
         "backend_policy": "Unclassified",

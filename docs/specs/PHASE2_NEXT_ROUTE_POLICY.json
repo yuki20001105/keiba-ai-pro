@@ -255,7 +255,7 @@
   {
     "route": "/api/model-redesign/summary",
     "method": "GET",
-    "policy": "Authenticated",
+    "policy": "PremiumOrAdmin",
     "auth_header_forward": false,
     "status_propagation": false,
     "detail_error_passthrough": false,
@@ -266,7 +266,7 @@
   {
     "route": "/api/model-redesign/summary",
     "method": "POST",
-    "policy": "Authenticated",
+    "policy": "PremiumOrAdmin",
     "auth_header_forward": false,
     "status_propagation": false,
     "detail_error_passthrough": false,
@@ -365,7 +365,7 @@
   {
     "route": "/api/notion-report",
     "method": "GET",
-    "policy": "Authenticated",
+    "policy": "PremiumOrAdmin",
     "auth_header_forward": false,
     "status_propagation": false,
     "detail_error_passthrough": false,
@@ -376,7 +376,7 @@
   {
     "route": "/api/notion-report",
     "method": "POST",
-    "policy": "Authenticated",
+    "policy": "PremiumOrAdmin",
     "auth_header_forward": false,
     "status_propagation": false,
     "detail_error_passthrough": false,
