@@ -320,7 +320,7 @@ def test_staging_evidence_runs_only_from_immutable_trusted_producer() -> None:
     inputs = _workflow_triggers(workflow)["workflow_dispatch"]["inputs"]
     assert set(inputs) == {"expected_commit", "trusted_producer_sha", "max_age_seconds"}
     assert inputs["trusted_producer_sha"]["required"] is True
-    trusted_ref = "refs/heads/security/phase3n-trusted-producer-v1"
+    trusted_ref = "refs/heads/security/phase3n-trusted-producer-v2"
     assert workflow["env"]["TRUSTED_REF"] == trusted_ref
 
     jobs = workflow["jobs"]
@@ -451,7 +451,7 @@ def test_ci_requires_fixed_trusted_attestation_for_main_promotion() -> None:
     assert "actions/runs/$STAGING_EVIDENCE_RUN_ID" in resolver["run"]
     assert "develop -> main" in resolver["run"]
     assert '.path == ".github/workflows/staging-evidence.yml"' in resolver["run"]
-    assert '.head_branch == "security/phase3n-trusted-producer-v1"' in resolver["run"]
+    assert '.head_branch == "security/phase3n-trusted-producer-v2"' in resolver["run"]
     assert ".head_sha == $producer" in resolver["run"]
     assert ".run_attempt >= 1" in resolver["run"]
     assert "^{tree}" in resolver["run"]
@@ -583,7 +583,7 @@ def test_release_workflow_authorizes_only_exact_attested_main_merge() -> None:
         "actions/runs/$STAGING_EVIDENCE_RUN_ID",
         '.path == ".github/workflows/staging-evidence.yml"',
         ".head_sha == $producer",
-        '.head_branch == "security/phase3n-trusted-producer-v1"',
+        '.head_branch == "security/phase3n-trusted-producer-v2"',
         '.event == "workflow_dispatch"',
         '.conclusion == "success"',
         ".run_attempt >= 1",

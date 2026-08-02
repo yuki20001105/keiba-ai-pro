@@ -54,7 +54,7 @@ REPOSITORY = "yuki20001105/keiba-ai-pro"
 REPOSITORY_ID = "123456789"
 WORKFLOW_REF = (
     f"{REPOSITORY}/.github/workflows/staging-evidence.yml@"
-    "refs/heads/security/phase3n-trusted-producer-v1"
+    "refs/heads/security/phase3n-trusted-producer-v2"
 )
 
 
@@ -686,7 +686,7 @@ def test_workflow_has_three_distinct_environment_gates_and_minimal_permissions()
     assert "workflow_dispatch:" in workflow
     assert "pull_request:" not in workflow and "push:" not in workflow
     assert "trusted_producer_sha:" in workflow
-    assert "refs/heads/security/phase3n-trusted-producer-v1" in workflow
+    assert "refs/heads/security/phase3n-trusted-producer-v2" in workflow
     assert '[[ "$GITHUB_SHA" == "$TRUSTED_PRODUCER_SHA" ]]' in workflow
     assert 'git diff --quiet "$TRUSTED_PRODUCER_SHA" "$EXPECTED_COMMIT"' in workflow
     for environment in gate.APPROVAL_ENVIRONMENTS:

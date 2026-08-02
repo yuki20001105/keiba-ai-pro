@@ -40,7 +40,7 @@ jobs:
       STAGING_EVIDENCE_RUN_ID: ${{ inputs.staging_evidence_run_id }}
       EXPECTED_STAGING_EVIDENCE_RUN_ID: ${{ vars.PHASE3N_STAGING_EVIDENCE_RUN_ID }}
       TRUSTED_PRODUCER_SHA: ${{ vars.PHASE3N_TRUSTED_PRODUCER_SHA }}
-      TRUSTED_REF: refs/heads/security/phase3n-trusted-producer-v1
+      TRUSTED_REF: refs/heads/security/phase3n-trusted-producer-v2
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -118,7 +118,7 @@ jobs:
             '.id == $run_id
               and .path == ".github/workflows/staging-evidence.yml"
               and .head_sha == $producer
-              and .head_branch == "security/phase3n-trusted-producer-v1"
+              and .head_branch == "security/phase3n-trusted-producer-v2"
               and .event == "workflow_dispatch"
               and .status == "completed"
               and .conclusion == "success"

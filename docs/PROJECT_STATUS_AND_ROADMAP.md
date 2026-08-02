@@ -64,7 +64,7 @@ GitHub metadata was inspected without changing repository or provider state on 2
 | Boundary | Observed state | Assessment |
 |---|---|---|
 | Protected approval Environments | `staging-migration`, `staging-execution-unlock`, and `production-release` exist with required reviewer rules and explicit branch policies | Governance skeleton exists |
-| Trusted producer | `security/phase3n-trusted-producer-v1` is protected at `5ce4ad7...`; `PHASE3N_TRUSTED_PRODUCER_SHA` points to that revision | Existing producer is stale relative to current gate-critical files and cannot attest this candidate until deliberately updated/re-reviewed |
+| Trusted producer | Immutable v1 remains protected at `5ce4ad7...`; the candidate changes consumers to a separately reviewed `security/phase3n-trusted-producer-v2` | v2 must be created from the final merged develop SHA, protected before use, and recorded in `PHASE3N_TRUSTED_PRODUCER_SHA` |
 | Trusted evidence run | Run `29730598574` passed context and migration approval, then failed after waiting at the Staging execution boundary; no successful Phase 3N run exists | No trusted evidence artifact |
 | Promotion selector | `PHASE3N_STAGING_EVIDENCE_RUN_ID` is absent | Promotion cannot select an approved run |
 | Protected evidence inputs | No Environment secret names were present for the three Phase 3N Environments; the current workflow requires `PHASE3N_STAGING_OBSERVATION_B64` and `MODEL_EVALUATION_OBSERVATIONS_GZIP_B64` at execution unlock | Trusted workflow must fail closed |
