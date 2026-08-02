@@ -66,6 +66,14 @@ python-api/.venv/Scripts/python.exe scripts/verify_model_acceptance.py `
 
 For a promotion gate, add `--require-accepted`. That mode exits nonzero unless the approved contract and all bound evidence pass.
 
+An accepted sanitized report may be persisted by the service-only
+`register_model_retrain_accepted_evaluation` RPC after the candidate artifact is
+immutably registered. The database rechecks the report schema, accepted verdict,
+approved contract projection, exact candidate commit and artifact digest, all five
+boolean checks, empty blockers/failures, and freshness. This record is an evaluation
+handoff only: `trusted_promotion_evidence` and `promotion_eligible` are structurally
+false. Only the separately attested Phase 3N workflow may authorize promotion.
+
 ## Promotion boundary
 
 The trusted workflow receives gzip-compressed, base64-encoded row observations through the protected `MODEL_EVALUATION_OBSERVATIONS_GZIP_B64` Environment value. It bounds decompression, rebuilds the aggregate evidence, deletes both raw and aggregate inputs after verification, and retains only the sanitized gate report. This protects the gate from hand-edited aggregate metrics; the reviewed source observation set must still be retained in the approved external evidence system under the emitted digest.

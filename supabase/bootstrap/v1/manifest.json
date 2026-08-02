@@ -92,6 +92,12 @@
       "path": "supabase/migrations/20260802_model_retrain_artifact_registration.sql",
       "source": "reconciled-existing",
       "description": "Fenced private-storage artifact registration without evaluation or activation"
+    },
+    {
+      "version": "20260802144000",
+      "path": "supabase/migrations/20260802_model_retrain_evaluation_registration.sql",
+      "source": "reconciled-existing",
+      "description": "Accepted evaluation registration with trusted promotion evidence structurally disabled"
     }
   ]
 }

@@ -44,6 +44,12 @@ function queuedRecord(overrides: Record<string, unknown> = {}) {
     artifact_size_bytes: null,
     artifact_media_type: null,
     artifact_registered_at: null,
+    evaluation_recorded: false,
+    acceptance_passed: null,
+    evaluation_report_sha256: null,
+    evaluator_id: null,
+    evaluated_at: null,
+    promotion_eligible: false,
     worker_id: null,
     fencing_token: null,
     lease_expires_at: null,
@@ -160,6 +166,42 @@ describe('approval-bound model retrain job ledger', () => {
       expect(result.value.job_state).toBe('artifact-registered')
       expect(result.value.artifact_written).toBe(true)
       expect(result.value.artifact_sha256).toBe(artifactSha256)
+    }
+  })
+
+  it('projects accepted evaluation while preserving the promotion block', async () => {
+    const now = new Date().toISOString()
+    const artifactSha256 = 'c'.repeat(64)
+    const reportSha256 = 'e'.repeat(64)
+    rpcMock.mockResolvedValue({ data: [queuedRecord({
+      job_state: 'evaluation-recorded',
+      record_version: 6,
+      execution_started: true,
+      worker_id: 'staging-worker-01',
+      fencing_token: 7,
+      lease_expires_at: now,
+      claimed_at: now,
+      started_at: now,
+      finished_at: now,
+      artifact_written: true,
+      artifact_uri: `models://retrain/${JOB}/${artifactSha256}.joblib`,
+      artifact_sha256: artifactSha256,
+      artifact_size_bytes: 4096,
+      artifact_media_type: 'application/x-python-serialized-object',
+      artifact_registered_at: now,
+      evaluation_recorded: true,
+      acceptance_passed: true,
+      evaluation_report_sha256: reportSha256,
+      evaluator_id: 'staging-evaluator-01',
+      evaluated_at: now,
+      promotion_eligible: false,
+    })], error: null })
+    const result = await getModelRetrainJobViaRpc({ rpc: rpcMock } as never, ACTOR, JOB)
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.value.job_state).toBe('evaluation-recorded')
+      expect(result.value.acceptance_passed).toBe(true)
+      expect(result.value.promotion_eligible).toBe(false)
     }
   })
 

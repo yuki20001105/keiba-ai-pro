@@ -96,9 +96,8 @@ def test_bootstrap_and_projection_include_worker_lease_contract() -> None:
     ):
         assert fragment in contract
     ledger = JOB_LEDGER.read_text(encoding="utf-8")
-    assert (
-        "ModelRetrainJobState = 'queued' | 'claimed' | 'running' "
-        "| 'artifact-registered' | 'failed'"
-    ) in ledger
+    assert "export type ModelRetrainJobState" in ledger
+    for state in ("queued", "claimed", "running", "artifact-registered", "evaluation-recorded", "failed"):
+        assert f"| '{state}'" in ledger
     assert "fencing_token: number | null" in ledger
     assert "lease_expires_at: string | null" in ledger

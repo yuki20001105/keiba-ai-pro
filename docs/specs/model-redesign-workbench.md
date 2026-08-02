@@ -11,7 +11,7 @@ Updated: 2026-08-02
 - Admin-only create/read/decision routes and a private Supabase migration implement an expiring, CAS-versioned, two-person approval ledger without enabling execution.
 - The Admin workbench exposes the durable request/read/independent-decision/job-queue/status sequence; database guards enforce requester/approver separation and requester-only submission.
 - The migration remains unapplied pending isolated Staging migration approval and runtime evidence.
-- The canonical bootstrap defines service-only fenced job start and immutable registration of an already-uploaded private-bucket artifact. No deployed trainer/uploader exists, so actual model-artifact production, candidate comparison, and promotion remain unimplemented.
+- The canonical bootstrap defines service-only fenced job start, immutable registration of an already-uploaded private-bucket artifact, and accepted sanitized evaluation registration with promotion structurally disabled. No deployed trainer/uploader/evaluator exists, so actual model production, candidate comparison, trusted attestation, and promotion remain unimplemented.
 
 ## 1. Scope
 

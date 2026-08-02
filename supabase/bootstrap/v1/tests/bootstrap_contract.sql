@@ -802,6 +802,11 @@ DECLARE
     v_artifact_sha256 TEXT;
     v_artifact_size BIGINT;
     v_artifact_object_name TEXT;
+    v_evaluation_recorded BOOLEAN;
+    v_acceptance_passed BOOLEAN;
+    v_promotion_eligible BOOLEAN;
+    v_evaluation_report JSONB;
+    v_evaluation_report_sha256 TEXT;
     v_denied BOOLEAN;
 BEGIN
     UPDATE public.profiles SET role = 'admin'
@@ -843,6 +848,7 @@ BEGIN
             'dry_run_id', '36000000-0000-4000-8000-000000000001',
             'created_by', '30000000-0000-4000-8000-000000000001',
             'state', 'preview-ready',
+            'git_commit', repeat('d', 40),
             'generated_at', to_char(
                 clock_timestamp() AT TIME ZONE 'UTC',
                 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
@@ -1011,6 +1017,77 @@ BEGIN
            WHERE job_id = v_retrain_job_id) <> 5 THEN
         RAISE EXCEPTION 'phase3m model retrain artifact registration contract failed';
     END IF;
+
+    v_evaluation_report := jsonb_build_object(
+        'report_schema', 'model-acceptance-gate-report',
+        'schema_version', 1,
+        'success', TRUE,
+        'verdict', 'accepted',
+        'verdict_reason', 'all-approved-thresholds-pass',
+        'accepted', TRUE,
+        'acceptance_required', TRUE,
+        'evaluated_commit_sha', repeat('d', 40),
+        'contract', jsonb_build_object(
+            'contract_id', 'model-acceptance-v1',
+            'sha256', repeat('e', 64),
+            'status', 'approved'
+        ),
+        'evidence', jsonb_build_object(
+            'model_id', 'lightgbm-staging-candidate',
+            'model_artifact_sha256', repeat('c', 64),
+            'model_feature_columns_sha256', repeat('f', 64),
+            'observations_sha256', repeat('0', 64),
+            'observed_at', to_char(
+                clock_timestamp() AT TIME ZONE 'UTC',
+                'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+            )
+        ),
+        'blockers', '[]'::JSONB,
+        'checks', jsonb_build_object(
+            'contract_schema', TRUE,
+            'contract_approved', TRUE,
+            'evidence_schema_and_binding', TRUE,
+            'metrics_against_thresholds', TRUE,
+            'promotion_policy', TRUE
+        ),
+        'failure_codes', '[]'::JSONB
+    );
+    v_denied := FALSE;
+    BEGIN
+        PERFORM 1 FROM public.register_model_retrain_accepted_evaluation(
+            'staging-evaluator-01', v_retrain_job_id, 5,
+            jsonb_set(v_evaluation_report, '{accepted}', 'null'::JSONB)
+        );
+    EXCEPTION WHEN object_not_in_prerequisite_state THEN
+        v_denied := TRUE;
+    END;
+    IF NOT v_denied THEN
+        RAISE EXCEPTION 'phase3m model evaluation JSON null bypass was accepted';
+    END IF;
+
+    SELECT j.job_state, j.record_version, j.evaluation_recorded,
+           j.acceptance_passed, j.evaluation_report_sha256,
+           j.promotion_eligible
+    INTO v_job_state, v_worker_version, v_evaluation_recorded,
+         v_acceptance_passed, v_evaluation_report_sha256,
+         v_promotion_eligible
+    FROM public.register_model_retrain_accepted_evaluation(
+        'staging-evaluator-01', v_retrain_job_id, 5, v_evaluation_report
+    ) AS j;
+    IF v_job_state <> 'evaluation-recorded' OR v_worker_version <> 6
+       OR v_evaluation_recorded IS DISTINCT FROM TRUE
+       OR v_acceptance_passed IS DISTINCT FROM TRUE
+       OR v_evaluation_report_sha256 !~ '^[0-9a-f]{64}$'
+       OR v_promotion_eligible IS DISTINCT FROM FALSE
+       OR (SELECT count(*) FROM public.model_retrain_evaluations
+           WHERE job_id = v_retrain_job_id
+             AND acceptance_passed = TRUE
+             AND trusted_promotion_evidence = FALSE
+             AND promotion_eligible = FALSE) <> 1
+       OR (SELECT count(*) FROM public.model_retrain_job_events
+           WHERE job_id = v_retrain_job_id) <> 6 THEN
+        RAISE EXCEPTION 'phase3m model retrain evaluation registration contract failed';
+    END IF;
 END;
 $phase3m_model_retrain_approval$;
 RESET ROLE;
@@ -1046,6 +1123,7 @@ FROM (VALUES
     ('phase3m_check:model_retrain_job_ledger'),
     ('phase3m_check:model_retrain_worker_lease'),
     ('phase3m_check:model_retrain_artifact_registration'),
+    ('phase3m_check:model_retrain_evaluation_registration'),
     ('phase3m_check:security_invoker_ml_view'),
     ('phase3m_check:storage_role_boundaries'),
     ('phase3m_check:required_triggers_enabled')

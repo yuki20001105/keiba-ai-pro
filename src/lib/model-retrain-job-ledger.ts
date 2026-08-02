@@ -13,7 +13,13 @@ export type CreateModelRetrainJobInput = {
   approved_payload_hash: string
 }
 
-export type ModelRetrainJobState = 'queued' | 'claimed' | 'running' | 'artifact-registered' | 'failed'
+export type ModelRetrainJobState =
+  | 'queued'
+  | 'claimed'
+  | 'running'
+  | 'artifact-registered'
+  | 'evaluation-recorded'
+  | 'failed'
 
 export type ModelRetrainJobRecord = {
   job_id: string
@@ -35,6 +41,12 @@ export type ModelRetrainJobRecord = {
   artifact_size_bytes: number | null
   artifact_media_type: 'application/octet-stream' | 'application/x-python-serialized-object' | null
   artifact_registered_at: string | null
+  evaluation_recorded: boolean
+  acceptance_passed: true | null
+  evaluation_report_sha256: string | null
+  evaluator_id: string | null
+  evaluated_at: string | null
+  promotion_eligible: false
   worker_id: string | null
   fencing_token: number | null
   lease_expires_at: string | null
@@ -115,6 +127,7 @@ function projectJob(value: JsonObject): JobValidationResult<ModelRetrainJobRecor
   const artifactRegisteredAt = value.artifact_registered_at === null
     ? null
     : normalizeTimestamp(value.artifact_registered_at)
+  const evaluatedAt = value.evaluated_at === null ? null : normalizeTimestamp(value.evaluated_at)
   const recordVersion = Number(value.record_version)
   const fencingToken = value.fencing_token === null ? null : Number(value.fencing_token)
   const artifactSize = value.artifact_size_bytes === null ? null : Number(value.artifact_size_bytes)
@@ -124,7 +137,9 @@ function projectJob(value: JsonObject): JobValidationResult<ModelRetrainJobRecor
   const artifactUri = value.artifact_uri
   const artifactSha256 = value.artifact_sha256
   const artifactMediaType = value.artifact_media_type
-  const artifactValid = state === 'artifact-registered'
+  const evaluatorId = value.evaluator_id
+  const evaluationReportSha256 = value.evaluation_report_sha256
+  const artifactValid = state === 'artifact-registered' || state === 'evaluation-recorded'
     ? value.artifact_written === true
       && typeof artifactUri === 'string'
       && typeof artifactSha256 === 'string' && SHA256_RE.test(artifactSha256)
@@ -138,6 +153,14 @@ function projectJob(value: JsonObject): JobValidationResult<ModelRetrainJobRecor
     : value.artifact_written === false
       && artifactUri === null && artifactSha256 === null && artifactSize === null
       && artifactMediaType === null && artifactRegisteredAt === null
+  const evaluationValid = state === 'evaluation-recorded'
+    ? value.evaluation_recorded === true && value.acceptance_passed === true
+      && typeof evaluationReportSha256 === 'string' && SHA256_RE.test(evaluationReportSha256)
+      && typeof evaluatorId === 'string' && /^[a-z0-9][a-z0-9._:-]{2,79}$/.test(evaluatorId)
+      && evaluatedAt !== null && value.promotion_eligible === false
+    : value.evaluation_recorded === false && value.acceptance_passed === null
+      && evaluationReportSha256 === null && evaluatorId === null
+      && evaluatedAt === null && value.promotion_eligible === false
   const stateValid = (
     state === 'queued'
       ? workerId === null && fencingToken === null && leaseExpiresAt === null
@@ -155,11 +178,15 @@ function projectJob(value: JsonObject): JobValidationResult<ModelRetrainJobRecor
             ? typeof workerId === 'string' && fencingToken !== null && leaseExpiresAt !== null
               && claimedAt !== null && startedAt !== null && finishedAt !== null
               && failureCode === null && value.execution_started === true
-            : state === 'failed'
+            : state === 'evaluation-recorded'
               ? typeof workerId === 'string' && fencingToken !== null && leaseExpiresAt !== null
-                && claimedAt !== null && finishedAt !== null && typeof failureCode === 'string'
-                && typeof value.execution_started === 'boolean'
-              : false
+                && claimedAt !== null && startedAt !== null && finishedAt !== null
+                && failureCode === null && value.execution_started === true
+              : state === 'failed'
+                ? typeof workerId === 'string' && fencingToken !== null && leaseExpiresAt !== null
+                  && claimedAt !== null && finishedAt !== null && typeof failureCode === 'string'
+                  && typeof value.execution_started === 'boolean'
+                : false
   )
   if (
     !UUID_RE.test(String(value.job_id || ''))
@@ -180,6 +207,7 @@ function projectJob(value: JsonObject): JobValidationResult<ModelRetrainJobRecor
     || (workerId !== null && (typeof workerId !== 'string' || !/^[a-z0-9][a-z0-9._:-]{2,79}$/.test(workerId)))
     || (fencingToken !== null && (!Number.isSafeInteger(fencingToken) || fencingToken < 1))
     || !artifactValid
+    || !evaluationValid
     || !stateValid
   ) {
     return { ok: false, detail: 'job backend returned an invalid record' }
@@ -206,6 +234,12 @@ function projectJob(value: JsonObject): JobValidationResult<ModelRetrainJobRecor
       artifact_size_bytes: artifactSize,
       artifact_media_type: artifactMediaType as ModelRetrainJobRecord['artifact_media_type'],
       artifact_registered_at: artifactRegisteredAt,
+      evaluation_recorded: value.evaluation_recorded as boolean,
+      acceptance_passed: value.acceptance_passed as true | null,
+      evaluation_report_sha256: evaluationReportSha256 as string | null,
+      evaluator_id: evaluatorId as string | null,
+      evaluated_at: evaluatedAt,
+      promotion_eligible: false,
       worker_id: workerId as string | null,
       fencing_token: fencingToken,
       lease_expires_at: leaseExpiresAt,
