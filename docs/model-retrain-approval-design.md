@@ -203,12 +203,15 @@ Contract implementation:
 - `supabase/migrations/20260802_model_retrain_evaluation_registration.sql`
 - `supabase/migrations/20260802_model_retrain_execution_bundle.sql`
 - `supabase/migrations/20260802_model_retrain_orphan_reconciliation.sql`
+- `supabase/migrations/20260802_model_retrain_dispatch_queue.sql`
 - `python-api/training/approved_execution.py`
 - `python-api/training/execution_bundle.py`
 - `python-api/training/retrain_worker.py`
 - `python-api/retrain_worker_main.py`
 - `python-api/training/retrain_reconciler.py`
 - `python-api/retrain_reconciler_main.py`
+- `python-api/training/retrain_dispatcher.py`
+- `python-api/retrain_dispatcher_main.py`
 - `docs/model-retrain-worker-runbook.md`
 
 Coverage:
@@ -232,4 +235,5 @@ Runtime policy:
 - the one-shot coordinator maintains the lease during snapshot copy, training and upload, validates the execution bundle independently, rehashes the copied snapshot, uploads a digest-named artifact without upsert, registers under the current fence, and removes the object on handled pre-registration failure;
 - the separate one-shot reconciler first recovers expired claimed/running leases through the existing CAS RPC, then considers only hour-old exact-name objects whose jobs are terminal `failed` with no artifact identity or immutable registration; registered, queued, claimed, running, malformed, and too-new objects are never candidates;
 - each bounded reconciliation records deleted, not-found, delete-failed, or candidate-zero observations in an immutable service-only ledger and fails closed after auditing any incomplete deletion;
-- the database contracts and local coordinator/trainer/uploader code exist, but no hosted migration application, deployed scheduler/worker execution, trusted evaluator, or switch runtime has been evidenced.
+- the service-only dispatch projection is read-only and bounded to five exact policy/commit/active-model candidates; the one-shot Python dispatcher independently validates every returned binding and snapshot digest before delegating to the existing fenced coordinator;
+- the database contracts and local dispatcher/coordinator/trainer/uploader code exist, but no hosted migration application, deployed recurring scheduler/worker execution, trusted evaluator, or switch runtime has been evidenced.
