@@ -476,7 +476,7 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           STAGING_EVIDENCE_RUN_ID: ${{ vars.PHASE3N_STAGING_EVIDENCE_RUN_ID }}
           TRUSTED_PRODUCER_SHA: ${{ vars.PHASE3N_TRUSTED_PRODUCER_SHA }}
-          TRUSTED_REF: refs/heads/security/phase3n-trusted-producer-v2
+          TRUSTED_REF: refs/heads/security/phase3n-trusted-producer-v3
         shell: bash
         run: |
           set -euo pipefail
@@ -553,7 +553,7 @@ jobs:
             --argjson run_id "$STAGING_EVIDENCE_RUN_ID" \
             '.id == $run_id
               and .path == ".github/workflows/staging-evidence.yml"
-              and .head_branch == "security/phase3n-trusted-producer-v2"
+              and .head_branch == "security/phase3n-trusted-producer-v3"
               and .head_sha == $producer
               and .event == "workflow_dispatch"
               and .status == "completed"
@@ -597,7 +597,7 @@ jobs:
             gh attestation verify "$subject" \
               --repo "$GITHUB_REPOSITORY" \
               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/staging-evidence.yml" \
-              --source-ref "refs/heads/security/phase3n-trusted-producer-v2" \
+              --source-ref "refs/heads/security/phase3n-trusted-producer-v3" \
               --source-digest "${{ steps.trusted-attestation.outputs.producer_sha }}" \
               --signer-digest "${{ steps.trusted-attestation.outputs.producer_sha }}" \
               --deny-self-hosted-runners
@@ -754,6 +754,8 @@ jobs:
       PYTHONUTF8: '1'
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -769,6 +771,7 @@ jobs:
           python-api/tests/test_phase3m_supabase_bootstrap_domain.py
           python-api/tests/test_phase3m_supabase_bootstrap_gate.py
           python-api/tests/test_phase3m_supabase_promotion_tool.py
+          python-api/tests/test_phase3m_supabase_upgrade_tool.py
           python-api/tests/test_phase3m_supabase_writer_contract.py
           python-api/tests/test_phase3m_admin_atomic_role.py
           python-api/tests/test_phase3m_ocr_atomic_quota.py
@@ -778,6 +781,11 @@ jobs:
         run: >-
           python scripts/security/run_phase3m_supabase_bootstrap_gate.py
           --manifest supabase/bootstrap/v1/manifest.json
+          --expected-commit "$GITHUB_SHA"
+
+      - name: Exercise Phase3M append-only upgrade (release-blocking)
+        run: >-
+          python scripts/security/run_phase3m_supabase_upgrade_gate.py
           --expected-commit "$GITHUB_SHA"
 
       - name: Build FastAPI image

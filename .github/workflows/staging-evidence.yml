@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       trusted_producer_sha:
-        description: Immutable commit at security/phase3n-trusted-producer-v2 that owns this evidence producer
+        description: Immutable commit at security/phase3n-trusted-producer-v3 that owns this evidence producer
         required: true
         type: string
       max_age_seconds:
@@ -21,7 +21,7 @@ permissions:
   contents: read
 
 env:
-  TRUSTED_REF: refs/heads/security/phase3n-trusted-producer-v2
+  TRUSTED_REF: refs/heads/security/phase3n-trusted-producer-v3
 
 concurrency:
   group: phase3n-staging-evidence
@@ -57,9 +57,9 @@ jobs:
           [[ "$(git rev-parse HEAD)" == "$TRUSTED_PRODUCER_SHA" ]]
           git fetch --no-tags origin \
             "+refs/heads/develop:refs/remotes/origin/develop" \
-            "+$TRUSTED_REF:refs/remotes/origin/security/phase3n-trusted-producer-v2"
+            "+$TRUSTED_REF:refs/remotes/origin/security/phase3n-trusted-producer-v3"
           [[ "$(git rev-parse origin/develop)" == "$EXPECTED_COMMIT" ]]
-          [[ "$(git rev-parse origin/security/phase3n-trusted-producer-v2)" == "$TRUSTED_PRODUCER_SHA" ]]
+          [[ "$(git rev-parse origin/security/phase3n-trusted-producer-v3)" == "$TRUSTED_PRODUCER_SHA" ]]
           git diff --quiet "$TRUSTED_PRODUCER_SHA" "$EXPECTED_COMMIT" -- \
             .github/workflows/ci.yml \
             .github/workflows/release.yml \
@@ -68,6 +68,8 @@ jobs:
             scripts/build_model_acceptance_evidence.py \
             scripts/verify_model_acceptance.py \
             scripts/security/run_phase3m_supabase_bootstrap_gate.py \
+            scripts/security/render_phase3m_supabase_upgrade_sql.py \
+            scripts/security/run_phase3m_supabase_upgrade_gate.py \
             scripts/security/verify_phase3n_staging_evidence.py \
             scripts/security/build_phase3n_staging_evidence.py \
             keiba/keiba_ai/constants.py \

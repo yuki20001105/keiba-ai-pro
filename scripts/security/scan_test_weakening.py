@@ -69,6 +69,13 @@ ALLOWLIST_EXACT: Dict[str, str] = {
     # v2 producer; no producer-ref check is removed or relaxed.
     "python-api/tests/test_phase3l_deployment_safety.py:assert '.head_branch == \"security/phase3n-trusted-producer-v1\"' in resolver[\"run\"]": "rotated to the exact immutable v2 producer assertion",
     "python-api/tests/test_phase3n_staging_evidence_gate.py:assert \"refs/heads/security/phase3n-trusted-producer-v1\" in workflow": "rotated to the exact immutable v2 producer assertion",
+    # v2 remains immutable at its previously reviewed merge SHA. This change
+    # rotates every exact producer assertion to the separately protected v3
+    # branch that will be created only after this candidate reaches develop.
+    "python-api/tests/test_phase3l_deployment_safety.py:trusted_ref = \"refs/heads/security/phase3n-trusted-producer-v2\"": "rotated to the exact immutable v3 producer assertion",
+    "python-api/tests/test_phase3l_deployment_safety.py:assert '.head_branch == \"security/phase3n-trusted-producer-v2\"' in resolver[\"run\"]": "rotated to the exact immutable v3 producer assertion",
+    "python-api/tests/test_phase3l_deployment_safety.py:'.head_branch == \"security/phase3n-trusted-producer-v2\"',": "rotated to the exact immutable v3 producer assertion",
+    "python-api/tests/test_phase3n_staging_evidence_gate.py:assert \"refs/heads/security/phase3n-trusted-producer-v2\" in workflow": "rotated to the exact immutable v3 producer assertion",
 }
 
 
