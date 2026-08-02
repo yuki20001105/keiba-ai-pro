@@ -3,6 +3,13 @@
 Updated: 2026-07-05
 Scope: UI (src/app) + Next API (src/app/api) + FastAPI router/script mapping inventory
 
+## 2026-08-02 WP2 delta: retrain approval eligibility
+
+- The workbench can now produce a strict dry-run approval payload bound to the actor, active model, normalized feature contract, immutable data-snapshot digest, code version, and exact deployed commit.
+- `POST /api/model-redesign/approval/assess` is Admin-only and rechecks schema, payload hash, approval chronology/expiry, distinct requester and approver, active model, feature contract, code revision, Production-write block, and isolated artifact policy.
+- The UI displays payload readiness, hashes, commit/model bindings, and blockers. Missing snapshot/commit or a canonical future field produces `preview-fail`.
+- Assessment is read-only and always reports `execution_performed=false`. Durable approval storage, retrain job submission, artifact writing, evaluation comparison, and active-model switching remain unimplemented, so workflows #6 and #9 remain partial.
+
 ## 2026-08-02 WP2 delta: authenticated profiling viewer
 
 - `src/app/data-collection/profiling/[job_id]/page.tsx` now provides an Admin-only report viewer.

@@ -1,6 +1,14 @@
 # Model Redesign Workbench Specification
 
-Updated: 2026-07-06
+Updated: 2026-08-02
+
+## Current implementation boundary
+
+- Premium/Admin users may view the read-only summary and generate a dry-run preview.
+- A complete preview emits a canonical payload/hash bound to the authenticated actor, active model, feature contract, data snapshot, code version, and exact commit.
+- Admin users may call `POST /api/model-redesign/approval/assess` to evaluate an externally supplied approval record against current immutable state.
+- The assessment is non-mutating and always returns `execution_performed=false`.
+- Approval persistence, job start, model-artifact writing, candidate comparison, and promotion remain unimplemented.
 
 ## 1. Scope
 

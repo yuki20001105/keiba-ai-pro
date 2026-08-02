@@ -1,7 +1,7 @@
 # Model Retrain Approval Design
 
-Updated: 2026-07-06
-Status: design freeze (no runtime execution in this phase)
+Updated: 2026-08-02
+Status: strict payload producer and read-only eligibility assessment implemented; no runtime execution
 
 ## 1. Purpose and Non-goals
 
@@ -125,7 +125,9 @@ In-scope API contracts:
 - `POST /api/model-redesign/job` with `action=submit_approved_retrain`
 
 Current phase execution policy:
-- only `retrain_dry_run` is runtime-active.
+- `retrain_dry_run` is runtime-active, emits a strict canonical preview payload when structurally possible, and marks it approval-ready only when every safety input passes;
+- `POST /api/model-redesign/approval/assess` recomputes the payload hash and every submission precondition for Admin callers;
+- assessment always returns `execution_performed=false` and cannot write an artifact, start a job, or switch the active model.
 - approval/job endpoints are design placeholders for next phase.
 
 Response envelope (all endpoints):
@@ -158,19 +160,23 @@ Current phase constraints:
 - no `.joblib` create/overwrite in preview/approval phase
 - no production/base table write enablement
 
-## 9. Next Phase Entry Criteria
+## 9. Implemented entry contract
 
-Before implementing actual retrain:
-- dry-run payload schema is versioned and fixed.
-- approval record schema is versioned and fixed.
-- hash canonicalization is implemented and tested.
-- approval expiration and invalidation rules are enforced.
-- active model switch remains separately approved.
+Before implementing actual retrain, the repository now enforces:
+- exact dry-run and approval-record schemas with unknown-field rejection;
+- deterministic SHA-256 binding for the normalized feature contract and full dry-run payload;
+- non-overlapping out-of-time periods, canonical future-field checks, immutable data-snapshot digest, active-model identity, deployed code version, and exact commit binding;
+- separate requester/approver identities, approval chronology, expiration, immutable-state comparisons, Admin role, and staging/sandbox artifact policy;
+- active model switch remains separately approved and unimplemented.
+
+Runtime still requires a durable approval ledger, atomic job state machine, isolated artifact store, real out-of-time evaluation, and separate promotion approval. `MODEL_RETRAIN_ARTIFACT_WRITE_POLICY` defaults to `disabled`; changing it only affects eligibility assessment and does not enable a writer.
 
 ## 10. Type-Only Scaffolding
 
-Added type-only scaffolding for this design freeze:
+Contract implementation:
 - `src/lib/model-retrain-approval-types.ts`
+- `src/lib/model-retrain-approval-contract.ts`
+- `src/app/api/model-redesign/approval/assess/route.ts`
 
 Coverage:
 - dry-run payload / preview contract
@@ -179,5 +185,5 @@ Coverage:
 - active model switch approval record boundary
 
 Runtime policy:
-- type-only scaffolding does not execute jobs.
-- no approval-create runtime, no job-submit runtime, no switch runtime.
+- payload generation and eligibility assessment do not execute jobs.
+- no approval-create runtime, no durable approval ledger, no job-submit runtime, and no switch runtime.

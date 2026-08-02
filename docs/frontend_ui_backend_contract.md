@@ -359,6 +359,7 @@ Updated: 2026-07-06
 Implemented:
 - New UI page: `src/app/model-redesign-workbench/page.tsx`
 - New Next API route: `src/app/api/model-redesign/summary/route.ts`
+- New Admin-only assessment route: `src/app/api/model-redesign/approval/assess/route.ts`
 
 Purpose:
 - Provide a read-only / preview-first Model Redesign Workbench MVP.
@@ -388,6 +389,8 @@ API contract (`/api/model-redesign/summary`):
 - `POST` action execution is disabled for MVP:
 	- retrain / active-model-switch actions return `not-implemented`
 	- other POST actions return `disabled`
+- A complete dry-run can emit a canonical approval payload and SHA-256 bound to the actor, active model, feature contract, data snapshot, code version, and exact commit.
+- `/api/model-redesign/approval/assess` strictly evaluates an externally approved record but never submits a job (`execution_performed=false`).
 
 Safety constraints:
 - No retrain execution.
@@ -488,9 +491,10 @@ Approved retrain preconditions (future execution gate):
 - model artifact write only with explicit staging/sandbox policy
 - active model switch requires separate Admin approval
 
-API design freeze (spec only in this phase):
+API implementation boundary:
 - active now:
 	- `POST /api/model-redesign/summary` (`action=retrain_dry_run`)
+	- `POST /api/model-redesign/approval/assess` (Admin, assessment-only)
 - defined for next phase:
 	- `POST /api/model-redesign/approval` (`action=create_approval`)
 	- `GET /api/model-redesign/approval/:approval_id`
