@@ -53,6 +53,7 @@ Operational notes:
 | /api/prediction-history | FastAPI /api/prediction-history | prediction-history |
 | /api/prediction-history/[race_id] | FastAPI /api/prediction-history/{race_id} | race-analysis |
 | /api/features/summary | FastAPI /api/features/summary | feature-lab |
+| /api/features/catalog | FastAPI /api/features/catalog | feature-lab read-only provenance/INV-01 boundary |
 | /api/features/importance | FastAPI /api/features/importance | feature-lab |
 | /api/features/coverage | FastAPI /api/features/coverage | feature-lab |
 | /api/debug/race/[race_id] | FastAPI /api/debug/race/{race_id} | data-view |
@@ -90,7 +91,6 @@ Operational notes:
 | /api/backfill/coat-color | FastAPI /api/backfill/coat-color | maintenance utility |
 | /api/scrape/repair/[race_id] | FastAPI /api/scrape/repair/{race_id} | admin repair utility |
 | /api/scrape/rescrape-incomplete | FastAPI /api/rescrape_incomplete | maintenance utility |
-| /api/features/catalog | FastAPI /api/features/catalog | currently not used by UI |
 
 ### deprecated
 
@@ -102,7 +102,6 @@ Operational notes:
 
 | Next Route | Classification | Note |
 |---|---|---|
-| /api/features/catalog | internal | available but not used by feature-lab |
 | /api/ai-correct | experimental | no active page integration found |
 | /api/ocr | experimental | no active page integration found |
 

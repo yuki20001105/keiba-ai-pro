@@ -12,6 +12,14 @@ Scope: UI (src/app) + Next API (src/app/api) + FastAPI router/script mapping inv
 - Malformed Job IDs, 401/403 responses, non-HTML responses, empty/oversized reports, backend restart loss, loading, retry, and download states now have explicit UI behavior.
 - This closes the profiling report-viewer sub-gap. It does not make feature generation (#3) or advanced model evaluation (#6) complete.
 
+## 2026-08-02 WP2 delta: feature provenance visibility
+
+- `/feature-lab` now consumes the existing Premium/Admin `/api/features/catalog` contract.
+- Operators can inspect future-field exclusions, scraped-field count, engineered feature name/stage/type/enabled state, descriptions, excluded-column count, catalog version, and hash.
+- The view makes the INV-01 boundary explicit and remains read-only; it does not trigger feature generation, training, catalog mutation, scraping, or model activation.
+- Malformed catalog responses fail closed in the UI instead of being rendered as trusted feature provenance.
+- This advances workflow #3 from backend-only generation visibility to an operator-visible catalog. A dedicated standalone feature-generation job is still not implemented, so #3 remains `partial_ui`.
+
 ## 0. 前提と判定ルール
 
 - 連携基盤 (UI -> Next API -> FastAPI) は完成前提。
