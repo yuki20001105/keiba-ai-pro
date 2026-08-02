@@ -75,6 +75,7 @@ def wait_ready(_args: argparse.Namespace) -> int:
         try:
             response = httpx.get(f"{BASE_URL}/", timeout=2.0)
             if response.status_code == 200:
+                _event("ready", "controller")
                 return 0
         except httpx.HTTPError:
             pass
