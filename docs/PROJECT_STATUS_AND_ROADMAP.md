@@ -3,7 +3,7 @@
 > Status date: 2026-08-02
 > Evidence cutoff: repository artifacts through 2026-07-20 plus local validation on 2026-08-02
 > Current branch at assessment: `codex/fullstack-readiness`
-> Current implementation checkpoint: `d44a6e4` (`codex/fullstack-readiness` local candidate)
+> Current implementation checkpoint: `a8e2f18` (`codex/fullstack-readiness` local candidate)
 > Status: **overall 66% (reasonable range: 64-68%), Production NOT_READY**
 > Candidate branch: local readiness commits ahead of `origin/develop`; exact-SHA remote CI is pending
 
@@ -35,16 +35,16 @@ This worktree is suitable for source inspection, frontend development, and focus
 
 | Area | Observed state on 2026-08-02 | Assessment |
 |---|---|---|
-| Git source | Candidate branch `codex/fullstack-readiness` remains based on `origin/develop` commit `d9bbcbc` and is 30 commits ahead; all readiness work is local | Correct base; push and exact-SHA CI evidence still require authorization |
+| Git source | Candidate branch `codex/fullstack-readiness` remains based on `origin/develop` commit `d9bbcbc` and is 32 commits ahead; all readiness work is local | Correct base; push and exact-SHA CI evidence still require authorization |
 | Node runtime | Node 24.12.0, npm 11.6.2; clean `npm ci` and the CI `--omit=optional` dependency-tree check passed. The current development tree contains 4 optional WASM packages reported as extraneous | Verified for reproducible install; current `node_modules` is not an exact clean-tree snapshot |
-| Frontend tests | 32 test files and 335 tests passed on exact commit `0b7ec25` | Verified |
+| Frontend tests | 32 test files and 335 tests passed on exact commit `a8e2f18` | Verified; existing React `act(...)` warnings remain non-blocking |
 | Production build | Next.js 16.2.12 build completed and generated 71 routes | Verified; broad NFT trace and dependency-origin `url.parse()` warnings remain |
 | Python runtime | Worktree-local Python 3.11.9 venv exists with CI requirements, pytest, FastAPI, LightGBM, pandas and scikit-learn | Verified |
 | Python tests | Full `python-api/tests` suite passes 1,048 tests on exact commit `d44a6e4`; the model builder/verifier slice passes 72 tests and feature consistency passes 73 | Locally verified on worktree Python 3.11.9; remote exact-SHA CI remains pending |
 | Local configuration | Ignored `.env` and `.env.local` contain local dummy endpoints and fail-closed write/scheduler/Saga switches; no secrets were copied | Ready for local health/fixture smoke, not authenticated hosted flows |
 | Local operational data | A new empty 36 KiB `keiba/data/keiba_ultimate.db` fixture was initialized through the repository storage code | Ready for schema/startup smoke; real scrape/train/predict data remains absent |
 | Services and E2E | FastAPI `/health` and Next.js `/api/health` returned 200; FastAPI OpenAPI and Next home returned 200; both unauthenticated protected-API probes returned 401; public fixture Playwright smoke passed 5/5; services were stopped afterward | Local integration slice verified |
-| Dependency security | Next.js 16.2.12, PostCSS 8.5.25 and sharp 0.35.3 compatibility resolution yields 0 Critical/High in full and production audits; 5 production Moderate findings remain through Google Vision/uuid | High release blocker remediated locally; exact-SHA CI confirmation required |
+| Dependency security | `@google-cloud/vision` 5.3.7 removes the vulnerable Google Vision/uuid path; `tsx` 4.23.1 and Vitest 4.1.10 move esbuild to 0.28.1. Full and production audits now contain 0 findings at every severity, and the CI-equivalent mandatory dependency-tree install/check passes | Locally cleared; exact-SHA remote CI confirmation remains required |
 | Model acceptance path | Strict row observations are recomputed into digest-bound evidence; 72 focused builder/verifier tests pass | No current model artifact, real holdout rows, approved business thresholds, or trusted run exists |
 
 Practical readiness:
@@ -358,6 +358,7 @@ For each status review:
 | 2026-08-02 | `059d9bb` accepted-evaluation candidate | 66% authoritative / 68% provisional | NOT_READY | WP2 now validates and immutably records only a fresh sanitized accepted-report bound to the registered artifact, exact approved dry-run commit, approved contract projection, and all verifier checks. JSON null bypasses fail closed. `trusted_promotion_evidence` and `promotion_eligible` remain structurally false, so this cannot activate or promote a model. The canonical bootstrap has 16 migrations; exact-commit Python 999, Frontend 335, FastAPI 63/Next 79 authz, 71-page build, SQL parse, lint/typecheck, and scanners pass. Deployed execution, real observations/threshold approval, remote CI, and hosted Staging proof remain pending. |
 | 2026-08-02 | `0b7ec25` approved-execution boundary candidate | 66% authoritative / 68% provisional | NOT_READY | WP2 now has a 17th canonical migration that projects a service-only execution bundle only to the live lease/fence/version owner and rechecks commit, active model, snapshot, periods, safety checks, and the recomputed feature contract. Python independently validates the RPC projection and the trainer isolates snapshot/output paths, suppresses legacy sync/catalog/upload side effects, fits preprocessing only on the approved training period, and keeps validation evaluation-only. Exact-commit Python 1,029, Frontend 335, FastAPI 63/Next 79 authz, 71-page build, local two-service 200/401 smoke, lint 0 errors, scanners 0, and production audit Critical/High 0 pass. Real PostgreSQL bootstrap, deployed dispatcher/heartbeat/snapshot/uploader execution, real OOT observations and approved thresholds, push/remote CI, and trusted hosted Staging evidence remain pending. |
 | 2026-08-02 | `d44a6e4` fenced-runner candidate | 66% authoritative / 68% provisional | NOT_READY | WP2 now includes a fail-closed Staging/Sandbox one-shot runner and exact Supabase RPC/Storage adapter. It binds job/version/worker/fence/commit/active-model/policy, keeps the lease alive across snapshot copy, training and upload, hashes and uploads from one file handle, prevents non-private/upsert writes, cooperatively cancels on lease loss, and removes an uploaded object when registration fails. Exact-commit Python 1,048 and both safety scanners pass with a clean worktree. No migration was applied and no RPC, artifact upload, hosted worker, real OOT evaluation, threshold approval, remote CI, or trusted Staging run was performed; abrupt-process orphan reconciliation and scheduling also remain pending. |
+| 2026-08-02 | `a8e2f18` zero-audit candidate | 66% authoritative / 68% provisional | NOT_READY | The direct Google Vision dependency and development toolchain were compatibly updated, removing the five production Moderate uuid-path findings and the development esbuild Low finding. On the exact commit, Frontend 335, typecheck, 71-page build, lint with 0 errors, full/production audits with 0 findings, the CI-equivalent mandatory dependency tree, and both safety scanners pass locally. Remote exact-SHA CI and all hosted Staging/model evidence remain pending, so the score and release verdict do not advance. |
 
 ---
 
