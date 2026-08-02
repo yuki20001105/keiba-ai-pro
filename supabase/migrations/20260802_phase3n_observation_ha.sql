@@ -473,11 +473,11 @@ BEGIN
        OR p_lease_seconds NOT BETWEEN 2 AND 300 THEN
         RAISE EXCEPTION 'phase3n-ha-claim-invalid' USING ERRCODE = '22023';
     END IF;
-    SELECT * INTO v_job FROM public.phase3n_ha_jobs
-    WHERE (state = 'pending' OR (state = 'leased' AND lease_expires_at <= v_now))
-      AND (p_job_kind IS NULL OR job_kind = p_job_kind)
-      AND attempt_count < 20
-    ORDER BY created_at, job_id
+    SELECT * INTO v_job FROM public.phase3n_ha_jobs AS j
+    WHERE (j.state = 'pending' OR (j.state = 'leased' AND j.lease_expires_at <= v_now))
+      AND (p_job_kind IS NULL OR j.job_kind = p_job_kind)
+      AND j.attempt_count < 20
+    ORDER BY j.created_at, j.job_id
     FOR UPDATE SKIP LOCKED LIMIT 1;
     IF NOT FOUND THEN
         RETURN QUERY SELECT 'not-found', NULL::UUID, NULL::TEXT, NULL::JSONB,

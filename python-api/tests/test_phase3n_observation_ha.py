@@ -197,6 +197,7 @@ def test_migration_and_compose_contract_are_append_only_least_privilege_and_disk
     assert "clock_timestamp()" in sql
     assert "stale-fence-rejected" in sql
     assert "FOR UPDATE SKIP LOCKED" in sql
+    assert "j.lease_expires_at <= v_now" in sql
     assert "GRANT EXECUTE" in sql
     assert "TO service_role" in sql
     assert "TO anon" not in "\n".join(
