@@ -276,10 +276,11 @@ BEGIN
        OR NOT (p_allowed_actions <@ ARRAY[
             'submit_approved_retrain', 'view_approval_status', 'view_job_status'
        ]::TEXT[])
-       OR cardinality(p_allowed_actions) <>
+       OR cardinality(p_allowed_actions) <> (
             CASE WHEN 'submit_approved_retrain' = ANY (p_allowed_actions) THEN 1 ELSE 0 END
             + CASE WHEN 'view_approval_status' = ANY (p_allowed_actions) THEN 1 ELSE 0 END
             + CASE WHEN 'view_job_status' = ANY (p_allowed_actions) THEN 1 ELSE 0 END
+       )
        OR (p_execution_policy = 'read-only-preview' AND (
             'submit_approved_retrain' = ANY (p_allowed_actions)
             OR 'view_job_status' = ANY (p_allowed_actions)

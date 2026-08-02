@@ -102,6 +102,20 @@ def test_create_is_actor_bound_idempotent_and_fixed_expiry() -> None:
     assert "'pending', 1, TRUE, FALSE, FALSE" in body
 
 
+def test_create_parenthesizes_allowed_action_case_sum_for_plpgsql() -> None:
+    body = _function(_sql(), "create_model_retrain_approval")
+    assert re.search(
+        r"cardinality\(p_allowed_actions\)\s*<>\s*\(\s*"
+        r"CASE WHEN 'submit_approved_retrain' = ANY \(p_allowed_actions\) "
+        r"THEN 1 ELSE 0 END\s*\+\s*"
+        r"CASE WHEN 'view_approval_status' = ANY \(p_allowed_actions\) "
+        r"THEN 1 ELSE 0 END\s*\+\s*"
+        r"CASE WHEN 'view_job_status' = ANY \(p_allowed_actions\) "
+        r"THEN 1 ELSE 0 END\s*\)",
+        body,
+    )
+
+
 def test_transition_requires_cas_and_independent_reviewer() -> None:
     body = _function(_sql(), "transition_model_retrain_approval")
     assert "v_row.record_version <> p_expected_version" in body
