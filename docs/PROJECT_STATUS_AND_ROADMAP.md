@@ -2,10 +2,10 @@
 
 > Status date: 2026-08-02
 > Evidence cutoff: repository artifacts through 2026-07-20 plus local validation on 2026-08-02
-> Current branch at assessment: `codex/fullstack-readiness`
-> Current implementation checkpoint: `31c6b64` (`codex/fullstack-readiness` pushed candidate)
-> Status: **overall 67.65%, reported as 68% (reasonable range: 66-70%), Production NOT_READY**
-> Candidate branch: pushed to `origin/codex/fullstack-readiness`; exact-SHA CI run `30741847311` passed 12/12 jobs
+> Current branch at assessment: `codex/phase3n-staging-rollout`
+> Current implementation checkpoint: `f2614e4` (`origin/develop`, merged by PR #26)
+> Status: **overall 73.65%, reported as 74% (reasonable range: 72-76%), Production NOT_READY**
+> Candidate deployment: exact SHA `f2614e457a371f6c14797a94f889376f968db76a`; CI run `30747412029` passed 12/12 jobs
 
 This is the canonical handoff document for answering three questions:
 
@@ -35,12 +35,12 @@ This worktree is suitable for source inspection, frontend development, and focus
 
 | Area | Observed state on 2026-08-02 | Assessment |
 |---|---|---|
-| Git source | Candidate branch `codex/fullstack-readiness` remains based on `origin/develop` commit `d9bbcbc` and is 44 commits ahead at checkpoint `31c6b64`; the branch is pushed to origin | Correct base and remotely available; no PR or merge is implied |
+| Git source | Readiness and append-only-upgrade work are merged into `origin/develop` at `f2614e4`; this handoff update is isolated on `codex/phase3n-staging-rollout` | The deployed candidate and trusted producer bind to the same merged commit |
 | Node runtime | Node 24.12.0, npm 11.6.2; clean `npm ci` and the CI `--omit=optional` dependency-tree check passed. The current development tree contains 4 optional WASM packages reported as extraneous | Verified for reproducible install; current `node_modules` is not an exact clean-tree snapshot |
 | Frontend tests | 32 test files and 335 tests passed on exact commit `a8e2f18` | Verified; existing React `act(...)` warnings remain non-blocking |
 | Production build | Next.js 16.2.12 build completed and generated 71 routes | Verified; broad NFT trace and dependency-origin `url.parse()` warnings remain |
 | Python runtime | Worktree-local Python 3.11.9 venv exists with CI requirements, pytest, FastAPI, LightGBM, pandas and scikit-learn | Verified |
-| Python tests | Full `python-api/tests` suite passes 1,169 tests on exact commit `31c6b64`; accepted-evaluator runtime/configuration passes 31 tests, the source-readiness audit passes 8, and feature consistency passes 73 | Locally verified on worktree Python 3.11.9 and confirmed by exact-SHA remote CI |
+| Python tests | The full suite passed 1,169 tests at readiness checkpoint `31c6b64`; the merged exact SHA `f2614e4` subsequently passed the complete Python CI job and every other required CI job | Confirmed by exact-SHA remote CI run `30747412029` |
 | Local configuration | Ignored `.env` and `.env.local` contain local dummy endpoints and fail-closed write/scheduler/Saga switches; no secrets were copied | Ready for local health/fixture smoke, not authenticated hosted flows |
 | Local operational data | A new empty 36 KiB `keiba/data/keiba_ultimate.db` fixture was initialized through the repository storage code | Ready for schema/startup smoke; real scrape/train/predict data remains absent |
 | Services and E2E | FastAPI `/health` and Next.js `/api/health` returned 200; FastAPI OpenAPI and Next home returned 200; both unauthenticated protected-API probes returned 401; public fixture Playwright smoke passed 5/5; services were stopped afterward | Local integration slice verified |
@@ -51,28 +51,32 @@ Practical readiness:
 
 - source review and frontend/contract-test work: approximately **90% ready**;
 - self-contained local smoke execution: approximately **70% ready**;
-- isolated Staging/Production operation: governed by the separate 30% operational-proof score below.
+- isolated Staging/Production operation: governed by the separate 60% operational-proof score below.
 
 The parent worktree assets were not copied. This worktree now has independently generated local-only configuration, a Python 3.11 venv, and an empty schema fixture. Secrets and production data remain absent by design.
 
-Exact-SHA CI run `30741847311` passed all 12 jobs for commit `31c6b6478dffda6e810af448e141b4089866e23f`, including dependency security, Python, Frontend, Playwright, scanners, Phase 3G-J runtime gates, the two-database Phase 3M bootstrap replay, and both container builds. The repository-quality pillar is therefore rescored from 80% to 88%, making the authoritative overall value 67.65% (reported as 68%). This is not a release authorization.
+Exact-SHA CI run `30747412029` passed all 12 jobs for merged commit `f2614e457a371f6c14797a94f889376f968db76a`, including dependency security, Python, Frontend, Playwright, scanners, Phase 3G-J runtime gates, the two-database Phase 3M bootstrap replay, and both container builds. Hosted WP3/WP4, Auth/RLS/IDOR, bounded HTTP/no-mutation, and rollback proof raise only the operational-proof pillar; the authoritative overall value is now 73.65% (reported as 74%). This is not a release authorization.
 
-### 0.2 External governance snapshot (read-only audit)
+### 0.2 External Staging and governance snapshot
 
-GitHub metadata was inspected without changing repository or provider state on 2026-08-02:
+The owner explicitly authorized isolated Staging changes and the fresh 19-migration application. The following provider state was then applied and measured on 2026-08-02:
 
 | Boundary | Observed state | Assessment |
 |---|---|---|
 | Protected approval Environments | `staging-migration`, `staging-execution-unlock`, and `production-release` exist with required reviewer rules and explicit branch policies | Governance skeleton exists |
-| Trusted producer | Immutable v1 and v2 remain protected historical evidence; this candidate rotates consumers to `security/phase3n-trusted-producer-v3` | v3 must be created from the final merged develop SHA, protected before use, and recorded in `PHASE3N_TRUSTED_PRODUCER_SHA` |
+| Trusted producer | `security/phase3n-trusted-producer-v3` points to exact SHA `f2614e4`; repository variable `PHASE3N_TRUSTED_PRODUCER_SHA` has the same full SHA | Branch protection now enforces all 12 CI contexts, PR-only updates, resolved conversations, admin enforcement, and no force-push/deletion |
 | Trusted evidence run | Run `29730598574` passed context and migration approval, then failed after waiting at the Staging execution boundary; no successful Phase 3N run exists | No trusted evidence artifact |
 | Promotion selector | `PHASE3N_STAGING_EVIDENCE_RUN_ID` is absent | Promotion cannot select an approved run |
 | Protected evidence inputs | No Environment secret names were present for the three Phase 3N Environments; the current workflow requires `PHASE3N_STAGING_OBSERVATION_B64` and `MODEL_EVALUATION_OBSERVATIONS_GZIP_B64` at execution unlock | Trusted workflow must fail closed |
-| Vercel deployment records | GitHub records contain separate `keiba-ai-pro-staging` Preview/Production deployment Environments; the latest recorded Staging production deployment is `d9bbcbc`, not the current candidate | A distinct Vercel target likely exists, but current-commit deployment and provider identity remain unproven |
-| Provider access from this workstation | Vercel and Railway CLIs are installed but unauthenticated; Supabase CLI is absent | Provider metadata and deployed commit cannot be independently verified here |
-| Parent local links | Parent worktree has one Vercel link named `keiba-ai-pro` and one generically named Supabase link; this worktree has neither | Link presence does not prove a distinct isolated Staging topology |
+| Vercel Staging | Team `team_JH2S20AGrjXdHHTsFTy3eUd5`, project `prj_PRd5AxU90qDwj67idD8MlB8XE6Zs`, deployment `8MycthGwkUP1tVCAMN7gjxkHqdud` | Production deployment of the distinct `keiba-ai-pro-staging` project is Ready at exact SHA `f2614e4` |
+| Render Staging | Service `srv-d9nj2e8ae00c739sau0g`, deployment `dep-d9nkaj5aeets73c4l0h0` | Exact SHA `f2614e4` is live; `/health` returned 200 and the unauthenticated protected scrape-health probe returned 401 |
+| Supabase Staging | New isolated project ref `btegligclxkwzefikbzm`, Tokyo region, created after deleting the authorized legacy Staging project | Fresh bootstrap history contains exactly 19 rows, ordinals 1-19, chain `f2ab3036...656908`, manifest `080bfd88...d7883`, and applied commit `f2614e4`; hosted catalog fingerprint capture was `7c80c248...f5618` |
+| Auth/RLS/IDOR smoke | Three isolated, auto-confirmed Free/Premium/Admin users were created temporarily and exercised with real JWTs through the hosted Data API | All 11 required checks passed: three logins, anonymous denial, Free/Premium isolation, Admin own access, foreign-profile denial, role-escalation denial, privileged-RPC denial, and private-bucket write denial; cleanup left 0 test users and 0 profiles |
+| Bounded HTTP and rollback | Vercel `/`, Render `/health`, and the protected Render scrape-health route returned 200/200/401 in one bounded read-only pass | The six-table Staging DB digest remained `56d6ae6c...a2aeff`; a separate user/profile/bank-record mutation changed that digest and deletion restored the exact pre-state digest with 0 test users/profiles |
+| Secret hygiene | Render uses a purpose-specific rotated modern Supabase secret; the first temporary secret was deleted and legacy JWT API keys were disabled after migration work | No provider credential is stored in repository evidence or this document |
+| Preview cost control | The initially created Preview Branch inherited legacy schema and safely failed the fresh-target preflight; it was deleted immediately | No Preview Branch compute remains active |
 
-This confirms that WP3 is partially scaffolded in GitHub but has not met its exit condition. No provider login, secret write, Environment mutation, branch update, workflow dispatch, deployment, or migration was performed during this audit.
+This completes WP3 and WP4, the Auth/RLS/IDOR slice of WP5, and the bounded HTTP/zero-DB-mutation and rollback slices of WP6 for the exact candidate. It does not complete WP5-WP7: the protected observation secrets are intentionally still absent because the required strict out-of-time model rows, persistent-cache integrity, and multi-instance crash/recovery/fencing observations do not yet exist.
 
 ---
 
@@ -158,9 +162,9 @@ The overall percentage is a planning indicator, not a release authorization. It 
 |---|---:|---:|---:|---|
 | Product workflow completeness | 30% | 78% | 23.4% | 6 of 13 workflows are complete UI flows; 7 are partial; none are wholly missing |
 | ML and business-value proof | 25% | 65% | 16.3% | Historical AUC 0.8865 exceeds the 0.85 target, but current-commit out-of-time, calibration, ROI, and drawdown proof is incomplete |
-| Repository safety and quality gates | 25% | 88% | 22.0% | Auth/fail-closed gates, zero Critical/High dependency enforcement, Python/Frontend/Playwright, Phase 3M replay, container builds, and security scanners pass on exact-SHA CI run `30741847311` |
-| Staging and Production operational proof | 20% | 30% | 6.0% | Trusted evidence machinery exists, but isolated provider topology, hosted bootstrap, non-synthetic exercises, rollback evidence, and current Phase 3N artifact are unproven |
-| **Overall** | **100%** |  | **67.65% authoritative** | Report as 68%; Production remains NOT_READY until the external Staging, trusted Phase 3N, and business gates pass |
+| Repository safety and quality gates | 25% | 88% | 22.0% | Auth/fail-closed gates, zero Critical/High dependency enforcement, Python/Frontend/Playwright, Phase 3M replay, container builds, and security scanners pass on exact-SHA CI run `30747412029` |
+| Staging and Production operational proof | 20% | 60% | 12.0% | Exact-commit provider identities, fresh bootstrap, protected boundaries/producer, all 11 Auth/RLS/IDOR checks, bounded HTTP/no-DB-mutation, and rollback are proven; persistent-cache integrity, multi-instance recovery/fencing, accepted model evidence, and the trusted artifact remain open |
+| **Overall** | **100%** |  | **73.65% authoritative** | Report as 74%; Production remains NOT_READY until the remaining non-synthetic Staging, trusted Phase 3N, and business gates pass |
 
 Workflow scoring assigns 1.0 point to `complete`, 0.6 to `partial`, and 0 to `missing`. Thus $(6 + 7 \times 0.6) / 13 = 78.5\%$, conservatively reported as 78%. Other pillar scores are evidence-based assessments and must be revisited when their exit conditions change.
 
@@ -168,10 +172,10 @@ Workflow scoring assigns 1.0 point to `complete`, 0.6 to `partial`, and 0 to `mi
 
 - **Product implementation:** approximately 78%.
 - **Repository-level safety and quality:** approximately 88%.
-- **Real-environment readiness:** approximately 30%.
-- **Overall goal:** **67.65%, reported as 68%**, with a reasonable uncertainty range of **66-70%**.
+- **Real-environment readiness:** approximately 60%.
+- **Overall goal:** **73.65%, reported as 74%**, with a reasonable uncertainty range of **72-76%**.
 
-The overall score remains close to the 2026-07-12 baseline of 65-70%. Later phases substantially improved safety contracts, but they did not yet close the external Staging evidence and business-validation gaps.
+The overall score is now above the 2026-07-12 baseline because isolated provider topology and the hosted bootstrap are proven. Later phases substantially improved safety contracts, but they have not yet closed the non-synthetic Staging evidence and business-validation gaps.
 
 ### 3.2 What is complete
 
@@ -195,15 +199,14 @@ The overall score remains close to the 2026-07-12 baseline of 65-70%. Later phas
 
 ### 3.4 What blocks Production
 
-1. The Phase 3M bootstrap is not proven applied to an isolated Staging Supabase project.
-2. Auth/RLS/IDOR checks are not proven against the real isolated Staging project.
-3. Non-synthetic multi-instance crash/recovery and stale-fence rejection are not proven.
-4. Database/cache integrity and rollback drill evidence are not proven.
-5. The three GitHub Environment approval boundaries are not proven configured and exercised for this candidate.
-6. A fresh trusted Phase 3N artifact for the exact candidate commit does not exist.
-7. Business success thresholds are approved and encoded, but fresh current-commit row
+1. Non-synthetic multi-instance crash/recovery and stale-fence rejection are not proven.
+2. Persistent-cache integrity is not proven from the Render runtime; the database no-mutation boundary and scoped rollback drill are proven.
+3. The three GitHub Environment approval boundaries are configured but have not been exercised by a successful current-candidate run.
+4. A fresh trusted Phase 3N artifact for the exact candidate commit does not exist.
+5. Business success thresholds are approved and encoded, but fresh current-commit row
    observations have not yet passed them. Aggregate metrics are recomputed by trusted
    code and bound to model/source digests; approval alone cannot produce acceptance.
+6. The read-only parent-DB audit reports zero prediction/OOT/settled-label rows and all eight strict source capabilities absent, so `MODEL_EVALUATION_OBSERVATIONS_GZIP_B64` cannot be honestly produced from current data.
 
 ---
 
@@ -255,13 +258,13 @@ The order below is dependency-driven. An agent must not skip ahead by replacing 
 
 | Work package | Owner | Depends on | Deliverable | Exit condition | Progress impact |
 |---|---|---|---|---|---:|
-| WP0 Canonicalize current evidence | Sysop | none | **Complete for the implementation candidate:** clean pushed commit `31c6b64`, local Python 1,169/Phase 3M 17-of-17 checks, and exact-SHA CI run `30741847311` with 12/12 jobs green | Current implementation and CI artifacts bind to the same full SHA; historical reports remain explicitly labeled non-current | +2% |
+| WP0 Canonicalize current evidence | Sysop | none | **Complete for the implementation candidate:** merged commit `f2614e4`, readiness Python 1,169/Phase 3M 17-of-17 checks, and exact-SHA CI run `30747412029` with 12/12 jobs green | Current implementation, deployments, trusted producer, and CI artifacts bind to the same full SHA; historical reports remain explicitly labeled non-current | +2% |
 | WP1 Define business acceptance contract | Jobs + Trainer + Ledger | none | **Contract approved:** the authorized owner approved every threshold and the out-of-time/no-leakage/staking policy in GitHub issue #25. The versioned fail-closed contract, verifier, abuse tests, CI/trusted Phase 3N wiring, and sanitized source audit are implemented. The parent DB cannot supply the required strict observations | Fresh current-commit out-of-time evidence passes the approved attested promotion gate | +5% |
 | WP2 Finish operator workflow gaps | Harvester + Trainer + Oracle | WP1 for model decisions | **In progress:** quality bridge, authenticated Admin profiling viewer, read-only feature provenance/INV-01 catalog, strict retrain payload hashing, an Admin-only eligibility assessment, deployed-environment blocks on legacy model training/activation/deletion/repair, an Admin request/independent-decision/job-status panel, private two-person approval/job ledgers, service-only CAS/lease/fencing transitions, immutable private-bucket artifact/evaluation registration, a service-only execution bundle, an isolated OOT trainer, and a fail-closed one-shot coordinator are implemented. A bounded one-shot dispatcher selects at most five exact candidates and delegates to the fenced coordinator; a one-shot evaluator rebuilds evidence from strict rows in memory, requires the canonical approved contract and accepted verifier report, and records it through CAS while keeping promotion false. A separate reconciler handles expired leases and old unregistered exact-name objects with an immutable outcome ledger. Deployment and recurring scheduling, hosted PostgreSQL/Storage runtime evidence, trusted Phase 3N attestation and candidate comparison, separate switch/retirement approvals, standalone generation execution, and advanced evaluation remain | Accepted workflows meet G1; intentionally script-only items have runbooks | +6% |
-| WP3 Provision isolated Staging governance | Sysop | WP0 | **Partial:** three protected approval Environments, protected producer branch, and a distinct Vercel Staging deployment record exist. Current provider topology/commit, producer parity, evidence inputs, successful run selector, and authenticated Render/Supabase metadata remain absent | Authenticated metadata proves isolation and required reviewers without exposing values | +4% |
-| WP4 Apply and verify hosted bootstrap | Sysop | WP3, explicit migration approval | Phase 3M migrations and hosted schema/history evidence | Bootstrap gate passes against Staging; rollback plan is recorded | +4% |
-| WP5 Run Staging security and model checks | Sysop + Trainer + Oracle | WP4 | Auth/RLS/IDOR evidence and current candidate model report | G2 security boundary and model thresholds pass on candidate data | +4% |
-| WP6 Run bounded operational exercise | Harvester + Sysop | WP4 | Live validation, two-instance crash/recovery, fencing, integrity, and rollback observations | Every Phase 3N saga/staging boolean is supported by non-synthetic evidence | +5% |
+| WP3 Provision isolated Staging governance | Sysop | WP0 | **Complete for candidate `f2614e4`:** authenticated Vercel/Render/Supabase identities are recorded, the three approval Environments restrict the trusted branch, v3 producer parity and variable binding are exact, and v3 is protected against direct/force/deletion changes | Authenticated metadata proves isolation and required reviewers without exposing values | +4% |
+| WP4 Apply and verify hosted bootstrap | Sysop | WP3, explicit migration approval | **Complete for candidate `f2614e4`:** a new isolated Supabase Staging project received the exact fresh 19-migration bundle; history count/order/chain/manifest/commit and hosted catalog fingerprint were measured. The rejected inherited-schema Preview Branch and legacy Staging project were deleted under explicit authorization | Bootstrap gate passes against Staging; rollback plan is recorded | +4% |
+| WP5 Run Staging security and model checks | Sysop + Trainer + Oracle | WP4 | **Partial:** all 11 hosted Auth/RLS/IDOR checks passed with real Free/Premium/Admin JWTs and complete test-user cleanup. The parent source audit still reports zero strict OOT observations and eight missing source capabilities, so the current candidate model report cannot be produced | G2 security boundary and model thresholds pass on candidate data | +4% |
+| WP6 Run bounded operational exercise | Harvester + Sysop | WP4 | **Partial:** Vercel/Render bounded read-only HTTP returned 200/200/401 with an unchanged six-table DB digest. A real hosted user/profile/bank-record mutation produced a distinct digest, and cleanup restored the exact pre-state digest with no residue. Persistent-cache digest proof and non-synthetic two-instance crash/recovery/stale-fence rejection remain | Every Phase 3N saga/staging boolean is supported by non-synthetic evidence | +5% |
 | WP7 Produce trusted Phase 3N evidence | Sysop | WP5, WP6, three approvals | Attested Phase 3N artifact for exact candidate | Verifier derives `trusted=true`, `l3_eligible=true`, `production_ready=true` | +3% |
 | WP8 Promote and observe Production | Sysop + Jobs + Ledger | WP7, release approval | Controlled release, monitoring evidence, rollback readiness, business observation report | G5 passes and agreed observation period completes | +4% |
 
@@ -362,6 +365,9 @@ For each status review:
 | 2026-08-02 | `31c6b64` exact-SHA CI candidate | 67.65% authoritative / 68% reported | NOT_READY | The PostgreSQL 17.6 approval-ledger parse failure is fixed and regression-guarded. Local Python 1,169 and the Phase 3M two-fresh-database 17-of-17 gate pass; remote CI run `30741847311` is green across all 12 jobs, including Playwright, dependency/security gates, Phase 3G-J, Phase 3M bootstrap replay, and both container builds. Isolated hosted Staging, approved business thresholds, real OOT observations, trusted Phase 3N evidence, and release approval remain open. |
 | 2026-08-02 | `codex/fullstack-readiness` approved-threshold candidate | 67.65% authoritative / 68% reported | NOT_READY | Repository owner `yuki20001105` approved the complete initial Phase 3N model acceptance contract in GitHub issue #25. The durable comment timestamp and URL, all eleven thresholds, and out-of-time/no-leakage policy are encoded in the canonical contract. The score remains unchanged until fresh current-commit OOT observations pass; isolated hosted Staging and trusted Phase 3N evidence remain open. |
 | 2026-08-02 | `codex/phase3m-append-only-upgrade` candidate | 67.65% authoritative / 68% reported | NOT_READY | Authenticated provider audit found the isolated Supabase Staging project at ref `xitrnivjskfepateedms` with the unchanged 11-migration `861f46c...` Phase 3M prefix, while the candidate contains 19 migrations. A commit/segment-bound renderer now preserves every old history row and appends only a byte-identical manifest suffix; fresh Phase 3N proof remains assigned to a short-lived isolated Preview Branch. No hosted upgrade or Preview migration is claimed by repository implementation alone. |
+| 2026-08-02 | `f2614e4` isolated Staging rollout | 71.65% authoritative / 72% reported | NOT_READY | PR #26 is merged and exact-SHA CI run `30747412029` passes 12/12. Distinct Vercel and Render Staging deployments are live at the exact commit; a new isolated Supabase Staging project has exactly 19 fresh bootstrap history rows bound to the canonical chain, manifest, and commit. The v3 trusted producer is exact-SHA-bound and branch-protected. The temporary inherited-schema Preview Branch and legacy Staging project were deleted. Production remains blocked by real Auth/RLS/IDOR, multi-instance crash/recovery, integrity/rollback, strict OOT row observations, protected observation secrets, and a successful trusted run. |
+| 2026-08-02 | `f2614e4` hosted Auth/RLS/IDOR smoke | 72.65% authoritative / 73% reported | NOT_READY | Temporary Free, Premium, and Admin users logged in successfully against isolated Supabase Staging. Anonymous profile access was denied; each user could read only its own profile; cross-user reads returned zero rows; role escalation, privileged browser RPC, and private-bucket writes were denied. Cleanup verified 0 remaining test users and 0 profiles. Model OOT rows, multi-instance recovery, integrity/rollback, protected inputs, and trusted evidence remain open. |
+| 2026-08-02 | `f2614e4` bounded HTTP and rollback drill | 73.65% authoritative / 74% reported | NOT_READY | Vercel home and Render health returned 200; the unauthenticated protected Render route returned 401. The scoped six-table DB digest was unchanged by the HTTP pass. A hosted temporary user mutation changed the digest, and deletion restored the exact pre-state hash `56d6ae6c...a2aeff` with no remaining test user/profile. Persistent-cache integrity, two-instance recovery/fencing, strict OOT observations, protected evidence inputs, and a successful trusted run remain open. |
 
 ---
 
