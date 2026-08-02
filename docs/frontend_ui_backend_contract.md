@@ -32,7 +32,7 @@ Architecture (current):
 
 | UI Screen | Next API Route | FastAPI Endpoint | Permission (effective) | State | Gap |
 |---|---|---|---|---|---|
-| train | /api/ml/train/start | POST /api/train/start | premium required on backend for /api/train, unclear for /api/train/start parity | production | permission consistency should be explicit |
+| train | /api/ml/train/start | POST /api/train/start | Premium/Admin + exact local/test opt-in | local compatibility | deployed/unknown environments fail closed at Next and FastAPI; normal UI is disabled pending an approval-bound durable job runner |
 | train | /api/ml/train/status/[job_id] | GET /api/train/status/{job_id} | login required (token expected) | production | add UI pre-check for unauthorized |
 | train | /api/models | GET /api/models | login required | production | none critical |
 | train | /api/models/[id] | GET/DELETE /api/models/{model_id} | login required | production | none critical |

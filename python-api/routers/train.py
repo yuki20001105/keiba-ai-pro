@@ -7,6 +7,7 @@ GET  /api/train/status/{job_id}
 from __future__ import annotations
 
 import asyncio
+import os
 import traceback
 import uuid
 from datetime import datetime
@@ -50,6 +51,22 @@ class BCWrap:
 
 # ジョブストア（インメモリ）
 _train_jobs: dict = {}
+_LOCAL_ENVIRONMENTS = frozenset({"local", "development", "dev", "test", "ci"})
+
+
+def _require_legacy_model_training_allowed() -> None:
+    """Keep direct artifact writers behind explicit local/test compatibility."""
+
+    environment = (os.environ.get("APP_ENV") or "").strip().lower()
+    enabled = (os.environ.get("MODEL_TRAINING_LOCAL_ENABLED") or "").strip().lower() == "true"
+    if environment not in _LOCAL_ENVIRONMENTS or not enabled:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "model training requires an approval-bound durable job; "
+                "legacy direct training is available only by explicit local/test opt-in"
+            ),
+        )
 
 
 def _extract_ym_from_df(df: "pd.DataFrame") -> list:  # noqa: F821
@@ -113,6 +130,7 @@ def _get_date8_to(df: "pd.DataFrame") -> str:  # noqa: F821
 
 async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None) -> TrainResponse:
     """モデル学習内部実装（progress_cb は任意のコールバック = (msg: str, pct: int | None) -> None）"""
+    _require_legacy_model_training_allowed()
     if progress_cb is None:
         def progress_cb(msg: str, pct: int = None): pass  # noqa: F811
     try:
@@ -752,6 +770,7 @@ async def _run_train_job(job_id: str, request: TrainRequest, current_user: dict)
 @router.post("/api/train/start")
 async def train_start(request: TrainRequest, current_user: dict = Depends(require_premium)):
     """非同期学習ジョブを起動してすぐに job_id を返す"""
+    _require_legacy_model_training_allowed()
     _purge_old_jobs(_train_jobs)
     job_id = str(uuid.uuid4())
     _train_jobs[job_id] = {"status": "queued", "progress": "キュー待ち", "pct": 0, "result": None, "error": None}

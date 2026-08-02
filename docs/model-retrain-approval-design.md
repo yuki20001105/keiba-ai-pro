@@ -177,6 +177,8 @@ Runtime still requires an applied and runtime-verified Staging approval ledger, 
 
 The pre-existing direct `/api/models/{model_id}/activate` path cannot serve as a bypass. Both proxy and FastAPI now reject it in Staging, Production, and unknown environments. Compatibility is available only when `APP_ENV` is local/test and `MODEL_ACTIVATION_LOCAL_ENABLED=true`; the default is false and the workbench does not set it.
 
+The pre-existing synchronous `/api/train` and asynchronous `/api/train/start` artifact writers also cannot serve as an approval bypass. The Next proxy rejects before forwarding, FastAPI rejects before allocating a job and again at the write-capable training boundary, and the normal `/train` UI action is disabled. Compatibility requires local/test `APP_ENV` plus exact `MODEL_TRAINING_LOCAL_ENABLED=true`; deployed and unknown environments reject even when that flag is set.
+
 ## 10. Implemented repository boundary
 
 Contract implementation:

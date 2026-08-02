@@ -291,10 +291,11 @@ export default function TrainPage() {
 
           <button
             onClick={handleTrain}
-            disabled={loading}
+            disabled
+            title="モデル学習には永続的な承認と承認済みジョブ実行基盤が必要です"
             className="w-full py-3 bg-white text-black font-medium rounded-lg hover:bg-[#eee] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            {loading ? (jobProgress || '学習中...') : '学習開始'}
+            {loading ? (jobProgress || '学習中...') : '承認済みジョブ実行基盤を準備中'}
           </button>
 
           {loading && jobId && (

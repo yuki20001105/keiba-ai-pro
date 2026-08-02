@@ -37,7 +37,6 @@ Operational notes:
 | /api/models | FastAPI /api/models | train, predict-batch, race-analysis |
 | /api/models/[id] | FastAPI /api/models/{model_id} | train |
 | /api/models/[id]/activate | FastAPI /api/models/{model_id}/activate | train |
-| /api/ml/train/start | FastAPI /api/train/start | train |
 | /api/ml/train/status/[job_id] | FastAPI /api/train/status/{job_id} | train |
 | /api/analyze-race | FastAPI /api/analyze_race | predict-batch, race-analysis |
 | /api/analyze-races-batch | FastAPI /api/analyze_races_batch | backend-facing route available |
@@ -100,6 +99,7 @@ Operational notes:
 | Next Route | Replacement | Reason |
 |---|---|---|
 | /api/scrape (current implementation calls /api/scrape/start) | /api/scrape/start style naming in Next route layer (future) | name suggests legacy sync behavior, but actual behavior is async start |
+| /api/ml/train/start | approval-bound durable retrain job runner | direct `.joblib` writer is available only by exact local/test opt-in; deployed/unknown environments fail closed and the UI action is disabled |
 
 ### unused (current UI)
 
@@ -116,10 +116,8 @@ Operational notes:
 - /api/data_stats
 - /api/models
 - /api/models/{model_id}
-- /api/models/{model_id}/activate
 - /api/analyze_race
 - /api/analyze_races_batch
-- /api/train/start
 - /api/train/status/{job_id}
 - /api/races/recent
 - /api/races/{race_id}/horses
@@ -172,7 +170,8 @@ Operational notes:
 
 ### deprecated
 
-- no immediate backend endpoint removal recommended in this sprint
+- /api/train and /api/train/start are local/test compatibility writers only; both fail closed unless `APP_ENV` is local/test and `MODEL_TRAINING_LOCAL_ENABLED=true`
+- /api/models/{model_id}/activate is local/test compatibility only and is not a promotion path
 - if deprecating /api/predict later, maintain compatibility period and migrate callers first
 
 ### unused (from current Next UI flow)

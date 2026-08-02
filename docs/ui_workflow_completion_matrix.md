@@ -10,6 +10,7 @@ Scope: UI (src/app) + Next API (src/app/api) + FastAPI router/script mapping inv
 - The UI displays payload readiness, hashes, commit/model bindings, and blockers. Missing snapshot/commit or a canonical future field produces `preview-fail`.
 - Assessment is read-only and always reports `execution_performed=false`. Durable approval storage, retrain job submission, artifact writing, evaluation comparison, and active-model switching remain unimplemented, so workflows #6 and #9 remain partial.
 - The legacy `/api/models/[id]/activate` pointer mutation is now denied in every deployed/unknown environment and requires exact local/test opt-in at both Next and FastAPI layers. The `/train` activation control is disabled until the separate durable switch-approval flow exists.
+- The legacy `/api/ml/train/start` proxy and FastAPI `/api/train` writers are also denied in every deployed/unknown environment. FastAPI checks before job allocation and at the artifact-capable training boundary; the `/train` start control is disabled until an approval-bound durable job runner exists.
 
 ## 2026-08-02 WP2 delta: authenticated profiling viewer
 
@@ -81,7 +82,7 @@ Scope: UI (src/app) + Next API (src/app/api) + FastAPI router/script mapping inv
 | 取得済み一覧/詳細 | /data-collection | GET /api/races/recent, GET /api/races/[race_id]/horses | GET /api/races/recent, GET /api/races/{race_id}/horses | 結果表示あり |
 | Profiling起動 | /data-collection | POST /api/profiling | POST /api/profiling/start | レポート閲覧UIは限定 |
 | Profiling進捗 | /data-collection | GET /api/profiling/status/[job_id] | GET /api/profiling/status/{job_id} | job statusのみ |
-| 学習開始 | /train | POST /api/ml/train/start | POST /api/train/start | async job |
+| 学習開始 | /train | POST /api/ml/train/start | POST /api/train/start | local/test compatibility only; normal UI disabled pending approval-bound durable job |
 | 学習進捗 | /train | GET /api/ml/train/status/[job_id] | GET /api/train/status/{job_id} | progress表示あり |
 | モデル一覧/切替/削除 | /train | /api/models, /api/models/[id], /api/models/[id]/activate | /api/models, /api/models/{id}, /api/models/{id}/activate | UI完結 |
 | 一括予測 | /predict-batch | POST /api/analyze-race | POST /api/analyze_race | CONCURRENCY=1 |

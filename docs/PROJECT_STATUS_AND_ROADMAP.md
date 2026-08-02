@@ -3,9 +3,9 @@
 > Status date: 2026-08-02
 > Evidence cutoff: repository artifacts through 2026-07-20 plus local validation on 2026-08-02
 > Current branch at assessment: `codex/fullstack-readiness`
-> Current implementation checkpoint: `3b9836bcb7fe284c379fe92ac47375a2c9a121d1`
+> Current implementation checkpoint: `codex/fullstack-readiness` local candidate
 > Status: **overall 66% (reasonable range: 64-68%), Production NOT_READY**
-> Candidate branch: four clean local commits ahead of `origin/develop`; exact-SHA remote CI is pending
+> Candidate branch: local readiness commits ahead of `origin/develop`; exact-SHA remote CI is pending
 
 This is the canonical handoff document for answering three questions:
 
@@ -37,10 +37,10 @@ This worktree is suitable for source inspection, frontend development, and focus
 |---|---|---|
 | Git source | Candidate branch `codex/fullstack-readiness` remains based on `origin/develop` commit `d9bbcbc`; all readiness work is local | Correct base; push and exact-SHA CI evidence still require authorization |
 | Node runtime | Node 24.12.0, npm 11.6.2; clean `npm ci` and the CI `--omit=optional` dependency-tree check pass | Verified |
-| Frontend tests | 28 test files and 306 tests passed | Verified |
+| Frontend tests | 29 test files and 314 tests passed | Verified |
 | Production build | Next.js 16.2.12 build completed and generated 70 routes | Verified; broad NFT trace and dependency-origin `url.parse()` warnings remain |
 | Python runtime | Worktree-local Python 3.11.9 venv exists with CI requirements, pytest, FastAPI, LightGBM, pandas and scikit-learn | Verified |
-| Python tests | Full `python-api/tests` suite passes 965 tests; the model builder/verifier slice passes 72 tests and the leakage-sensitive feature-consistency slice passes 73 tests | Locally verified on Python 3.11.9; exact-SHA CI remains pending |
+| Python tests | Full `python-api/tests` suite passes 973 tests; the model builder/verifier slice passes 72 tests and the leakage-sensitive feature-consistency slice passes 73 tests | Locally verified on Python 3.11.9; exact-SHA CI remains pending |
 | Local configuration | Ignored `.env` and `.env.local` contain local dummy endpoints and fail-closed write/scheduler/Saga switches; no secrets were copied | Ready for local health/fixture smoke, not authenticated hosted flows |
 | Local operational data | A new empty 36 KiB `keiba/data/keiba_ultimate.db` fixture was initialized through the repository storage code | Ready for schema/startup smoke; real scrape/train/predict data remains absent |
 | Services and E2E | FastAPI `/health` and Next.js `/api/health` returned 200; public fixture Playwright smoke passed 5/5; services were stopped afterward | Local integration slice verified |
@@ -259,7 +259,7 @@ The order below is dependency-driven. An agent must not skip ahead by replacing 
 |---|---|---|---|---|---:|
 | WP0 Canonicalize current evidence | Sysop | none | Clean candidate commit and regenerated local/CI reports | All reports bind to the same current full SHA; no placeholder/stale report is treated as current | +2% |
 | WP1 Define business acceptance contract | Jobs + Trainer + Ledger | none | **In progress:** versioned fail-closed contract, verifier, contract/abuse tests, CI and trusted Phase 3N/promotion wiring are implemented; non-AUC values remain deliberately unapproved | User approves thresholds; fresh current-commit out-of-time evidence passes the attested promotion gate | +5% |
-| WP2 Finish operator workflow gaps | Harvester + Trainer + Oracle | WP1 for model decisions | **In progress:** quality bridge, authenticated Admin profiling viewer, read-only feature provenance/INV-01 catalog, strict retrain payload hashing, an Admin-only eligibility assessment, deployed-environment blocks on legacy model activation/repair, and a private two-person retrain approval ledger wired into the canonical bootstrap are implemented. Hosted ledger application/runtime evidence, durable job/artifact execution, separate switch approval, standalone generation execution, and advanced evaluation remain | Accepted workflows meet G1; intentionally script-only items have runbooks | +6% |
+| WP2 Finish operator workflow gaps | Harvester + Trainer + Oracle | WP1 for model decisions | **In progress:** quality bridge, authenticated Admin profiling viewer, read-only feature provenance/INV-01 catalog, strict retrain payload hashing, an Admin-only eligibility assessment, deployed-environment blocks on legacy model training/activation/repair, and a private two-person retrain approval ledger wired into the canonical bootstrap are implemented. Hosted ledger application/runtime evidence, durable approval-bound job/artifact execution, separate switch approval, standalone generation execution, and advanced evaluation remain | Accepted workflows meet G1; intentionally script-only items have runbooks | +6% |
 | WP3 Provision isolated Staging governance | Sysop | WP0 | **Partial:** three protected approval Environments, protected producer branch, and a distinct Vercel Staging deployment record exist. Current provider topology/commit, producer parity, evidence inputs, successful run selector, and authenticated Render/Supabase metadata remain absent | Authenticated metadata proves isolation and required reviewers without exposing values | +4% |
 | WP4 Apply and verify hosted bootstrap | Sysop | WP3, explicit migration approval | Phase 3M migrations and hosted schema/history evidence | Bootstrap gate passes against Staging; rollback plan is recorded | +4% |
 | WP5 Run Staging security and model checks | Sysop + Trainer + Oracle | WP4 | Auth/RLS/IDOR evidence and current candidate model report | G2 security boundary and model thresholds pass on candidate data | +4% |
@@ -349,6 +349,7 @@ For each status review:
 | 2026-08-02 | `codex/fullstack-readiness` repair-policy guard | 66% authoritative / 68% provisional | NOT_READY | Legacy repair and incomplete-race rescrape execution are now blocked before proxying in deployed or unknown environments and require explicit local/test opt-in at both Next and FastAPI boundaries. Frontend 295, the 115-test operational safety slice, typecheck, targeted lint, and scanners pass; durable approval-bound execution and trusted Staging evidence remain open. |
 | 2026-08-02 | `codex/fullstack-readiness` authz-canonical guard | 66% authoritative / 68% provisional | NOT_READY | The runtime extractor now recognizes the shared custom Premium/Admin guard used by the model-redesign summary and Notion report routes. The 74-route generated authorization matrix matches runtime and canonical policy; 40 Phase 2 tests and both safety scanners pass. |
 | 2026-08-02 | `codex/fullstack-readiness` durable-approval candidate | 66% authoritative / 68% provisional | NOT_READY | WP2 now contains an Admin-only, actor/hash-bound, expiring, CAS-versioned and two-person model-retrain approval ledger. RLS, append-only audit, immutable bindings, and structural `execution_enabled=false` / `job_created=false` guards are wired into the 12-migration canonical Phase 3M bootstrap. Frontend 306, Python 965, 77-route authz, 70-route build, SQL parse, and scanners pass locally; Docker runtime and hosted Staging application remain unproven. |
+| 2026-08-02 | `codex/fullstack-readiness` direct-training bypass guard | 66% authoritative / 68% provisional | NOT_READY | Legacy synchronous/asynchronous model artifact writers now fail closed in deployed and unknown environments at Next and FastAPI boundaries, reject before job creation, and are disabled in the normal UI. Frontend 314, Python 973, 77-route authz, 70-route build, lint/typecheck, scanners, and Critical/High 0 audit pass; the approval-bound durable job/artifact runner remains unimplemented. |
 
 ---
 
