@@ -89,6 +89,8 @@ boolean checks, empty blockers/failures, and freshness. This record is an evalua
 handoff only: `trusted_promotion_evidence` and `promotion_eligible` are structurally
 false. Only the separately attested Phase 3N workflow may authorize promotion.
 
+The fail-closed one-shot runtime at `python-api/retrain_evaluator_main.py` connects this contract to that RPC in Staging/Sandbox. It reads strict observations from an absolute non-symlink path, rebuilds evidence without writing a raw/evidence output file, requires `--require-accepted`-equivalent verifier semantics, independently rechecks the sanitized report, and submits it with the exact job CAS version and evaluator identity. Its successful `evaluation-recorded` state is still non-promoting and is not trusted Phase 3N evidence.
+
 ## Promotion boundary
 
 The trusted workflow receives gzip-compressed, base64-encoded row observations through the protected `MODEL_EVALUATION_OBSERVATIONS_GZIP_B64` Environment value. It bounds decompression, rebuilds the aggregate evidence, deletes both raw and aggregate inputs after verification, and retains only the sanitized gate report. This protects the gate from hand-edited aggregate metrics; the reviewed source observation set must still be retained in the approved external evidence system under the emitted digest.

@@ -212,6 +212,8 @@ Contract implementation:
 - `python-api/retrain_reconciler_main.py`
 - `python-api/training/retrain_dispatcher.py`
 - `python-api/retrain_dispatcher_main.py`
+- `python-api/training/retrain_evaluator.py`
+- `python-api/retrain_evaluator_main.py`
 - `docs/model-retrain-worker-runbook.md`
 
 Coverage:
@@ -236,4 +238,5 @@ Runtime policy:
 - the separate one-shot reconciler first recovers expired claimed/running leases through the existing CAS RPC, then considers only hour-old exact-name objects whose jobs are terminal `failed` with no artifact identity or immutable registration; registered, queued, claimed, running, malformed, and too-new objects are never candidates;
 - each bounded reconciliation records deleted, not-found, delete-failed, or candidate-zero observations in an immutable service-only ledger and fails closed after auditing any incomplete deletion;
 - the service-only dispatch projection is read-only and bounded to five exact policy/commit/active-model candidates; the one-shot Python dispatcher independently validates every returned binding and snapshot digest before delegating to the existing fenced coordinator;
-- the database contracts and local dispatcher/coordinator/trainer/uploader code exist, but no hosted migration application, deployed recurring scheduler/worker execution, trusted evaluator, or switch runtime has been evidenced.
+- the one-shot accepted evaluator rebuilds model evidence from strict OOT rows in memory, requires the canonical approved contract and an accepted sanitized report, revalidates its projection independently, and registers through exact job/CAS/evaluator/commit bindings without setting trusted-promotion or promotion eligibility;
+- the database contracts and local dispatcher/coordinator/trainer/uploader/evaluator code exist, but no hosted migration application, deployed recurring runtime, trusted Phase 3N attestation, candidate comparison, or switch runtime has been evidenced.

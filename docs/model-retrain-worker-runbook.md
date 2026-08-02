@@ -72,7 +72,32 @@ Success emits a sanitized JSON object containing `job_id`, artifact SHA-256, siz
 - No legacy `model_metadata` row, active-model pointer, evaluation, promotion, or Production resource changed.
 - The snapshot, worker logs, RPC observations, object metadata, commit SHA, reviewer approval references, and timestamps are archived as Staging evidence without secret values.
 
-Only after these checks may the separate trusted evaluator consume the registered artifact. Evaluation acceptance still does not authorize promotion.
+Only after these checks may the separate accepted evaluator process observations bound to the registered artifact. Evaluation acceptance still does not authorize promotion; the trusted Phase 3N producer remains a later boundary.
+
+## Accepted evaluation registration
+
+Use the one-shot evaluator only after the artifact is registered, the business acceptance contract is durably approved, and the reviewed strict OOT row set is available in the protected Staging/Sandbox process. Set:
+
+| Variable | Required value |
+|---|---|
+| `APP_ENV` | `staging` or `sandbox` |
+| `MODEL_RETRAIN_EVALUATION_ENABLED` | Exact string `true` |
+| `MODEL_RETRAIN_EVALUATOR_ID` | Stable 3-80 character lowercase evaluator identity |
+| `MODEL_RETRAIN_JOB_ID` | Exact artifact-registered job UUID |
+| `MODEL_RETRAIN_JOB_VERSION` | Current positive CAS version read immediately before evaluation |
+| `APP_COMMIT_SHA` | Exact nonzero 40-character lowercase candidate commit SHA |
+| `MODEL_RETRAIN_OBSERVATIONS_PATH` | Absolute non-symlink strict OOT observation JSON |
+| `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` | Protected isolated-project service credentials |
+
+Run one evaluation pass:
+
+```powershell
+& python-api/.venv/Scripts/python.exe python-api/retrain_evaluator_main.py
+```
+
+The evaluator never accepts aggregate metrics from the caller. It rebuilds metrics and digests from strict rows in memory, uses only the repository's canonical contract, requires an approved/fresh accepted verifier report, then independently checks the sanitized projection before invoking `register_model_retrain_accepted_evaluation`. The database rechecks the current approval, artifact digest, candidate commit and CAS version. Success moves only `artifact-registered` to `evaluation-recorded`; `trusted_promotion_evidence` and `promotion_eligible` remain false. A draft contract, stale rows, threshold failure, binding mismatch, or malformed RPC response exits with a generic sanitized error and no successful registration.
+
+Do not retain raw rows or aggregate evidence in ordinary command output. Preserve the reviewed source set in the approved evidence system by its observation digest, and retain only the sanitized report/job event for the operational record. This evaluator is not the trusted Phase 3N producer and cannot authorize a switch.
 
 ## Bounded queue dispatch
 
