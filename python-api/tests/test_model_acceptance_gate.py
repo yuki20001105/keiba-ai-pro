@@ -58,6 +58,9 @@ def _evidence(contract: dict) -> dict:
         "schema_version": gate.SCHEMA_VERSION,
         "candidate_commit_sha": COMMIT,
         "model_id": "lightgbm-20260802",
+        "model_artifact_sha256": "b" * 64,
+        "model_feature_columns_sha256": "c" * 64,
+        "observations_sha256": "d" * 64,
         "contract_id": contract["contract_id"],
         "contract_sha256": gate.contract_sha256(contract),
         "observed_at": FIXED_NOW.isoformat(),
@@ -163,6 +166,10 @@ def test_unapproved_threshold_cannot_hide_inside_approved_contract(metric: str) 
     [
         (lambda value: value.update(candidate_commit_sha="b" * 40), "evidence-candidate-commit-mismatch"),
         (lambda value: value.update(contract_sha256="0" * 64), "evidence-contract-digest-mismatch"),
+        (
+            lambda value: value.update(model_artifact_sha256="not-a-digest"),
+            "evidence-model-artifact-sha256-invalid",
+        ),
         (lambda value: value["evaluation"].update(holdout_kind="random"), "evidence-holdout-not-out-of-time"),
         (lambda value: value["evaluation"].update(future_field_leakage_detected=True), "evidence-leakage-check-failed"),
         (lambda value: value["metrics"].update(auc=True), "evidence-auc-invalid"),
@@ -209,6 +216,7 @@ def test_report_projection_does_not_copy_raw_metrics_or_unknown_data() -> None:
     assert "metrics" not in report["evidence"]
     assert "roi_percent" not in serialized
     assert "lightgbm-20260802" in serialized
+    assert report["evidence"]["model_artifact_sha256"] == "b" * 64
 
     contract["contract_id"] = "secret value that must not be projected"
     evidence["model_id"] = "secret value that must not be projected"
@@ -246,6 +254,7 @@ def test_trusted_report_validator_binds_accepted_report_to_commit_and_freshness(
         (("acceptance_required",), False, "report-acceptance-policy-invalid"),
         (("evaluated_commit_sha",), "b" * 40, "report-candidate-commit-mismatch"),
         (("contract", "status"), "draft", "report-contract-not-approved"),
+        (("evidence", "observations_sha256"), "bad", "report-evidence-projection-invalid"),
         (("checks", "promotion_policy"), False, "report-checks-invalid"),
     ],
 )

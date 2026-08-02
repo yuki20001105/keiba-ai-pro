@@ -35,17 +35,17 @@ This worktree is suitable for source inspection, frontend development, and focus
 
 | Area | Observed state on 2026-08-02 | Assessment |
 |---|---|---|
-| Git source | Candidate branch is based exactly on `origin/develop` commit `d9bbcbc`; readiness changes are currently uncommitted | Correct base; commit and CI evidence still required |
+| Git source | Candidate branch `codex/fullstack-readiness` remains based on `origin/develop` commit `d9bbcbc`; all readiness work is local | Correct base; push and exact-SHA CI evidence still require authorization |
 | Node runtime | Node 24.12.0, npm 11.6.2; clean `npm ci` and the CI `--omit=optional` dependency-tree check pass | Verified |
-| Frontend tests | 19 test files and 237 tests passed | Verified |
+| Frontend tests | 21 test files and 245 tests passed | Verified |
 | Production build | Next.js 16.2.12 build completed and generated 68 routes | Verified; dependency-origin `url.parse()` warning remains |
 | Python runtime | Worktree-local Python 3.11.9 venv exists with CI requirements, pytest, FastAPI, LightGBM, pandas and scikit-learn | Verified |
-| Phase 3M/3N Python tests | 188 focused contract tests passed on the worktree Python 3.11 venv | Contract slice verified, not a complete backend suite |
+| Python tests | Full `python-api/tests` suite passes 949 tests; the model builder/verifier slice passes 72 tests and the leakage-sensitive feature-consistency slice passes 73 tests | Locally verified on Python 3.11.9; exact-SHA CI remains pending |
 | Local configuration | Ignored `.env` and `.env.local` contain local dummy endpoints and fail-closed write/scheduler/Saga switches; no secrets were copied | Ready for local health/fixture smoke, not authenticated hosted flows |
 | Local operational data | A new empty 36 KiB `keiba/data/keiba_ultimate.db` fixture was initialized through the repository storage code | Ready for schema/startup smoke; real scrape/train/predict data remains absent |
 | Services and E2E | FastAPI `/health` and Next.js `/api/health` returned 200; public fixture Playwright smoke passed 5/5; services were stopped afterward | Local integration slice verified |
-| Dependency security | Next.js 16.2.12, PostCSS 8.5.25 and sharp 0.35.3 compatibility resolution yields 0 Critical/High in full and production audits; 5 production Moderate findings remain through Google Vision/uuid | High release blocker remediated in working tree; commit/CI confirmation required |
-| Uncommitted work | Readiness code, lockfile, setup script, tests, and this canonical document are modified/untracked | WP0 remains open until committed and exact-SHA CI evidence exists |
+| Dependency security | Next.js 16.2.12, PostCSS 8.5.25 and sharp 0.35.3 compatibility resolution yields 0 Critical/High in full and production audits; 5 production Moderate findings remain through Google Vision/uuid | High release blocker remediated locally; exact-SHA CI confirmation required |
+| Model acceptance path | Strict row observations are recomputed into digest-bound evidence; 72 focused builder/verifier tests pass | No current model artifact, real holdout rows, approved business thresholds, or trusted run exists |
 
 Practical readiness:
 
@@ -67,7 +67,7 @@ GitHub metadata was inspected without changing repository or provider state on 2
 | Trusted producer | `security/phase3n-trusted-producer-v1` is protected at `5ce4ad7...`; `PHASE3N_TRUSTED_PRODUCER_SHA` points to that revision | Existing producer is stale relative to current gate-critical files and cannot attest this candidate until deliberately updated/re-reviewed |
 | Trusted evidence run | Run `29730598574` passed context and migration approval, then failed after waiting at the Staging execution boundary; no successful Phase 3N run exists | No trusted evidence artifact |
 | Promotion selector | `PHASE3N_STAGING_EVIDENCE_RUN_ID` is absent | Promotion cannot select an approved run |
-| Protected evidence inputs | No Environment secret names were present for the three Phase 3N Environments; the current workflow requires `PHASE3N_STAGING_OBSERVATION_B64` and `MODEL_ACCEPTANCE_EVIDENCE_B64` at execution unlock | Trusted workflow must fail closed |
+| Protected evidence inputs | No Environment secret names were present for the three Phase 3N Environments; the current workflow requires `PHASE3N_STAGING_OBSERVATION_B64` and `MODEL_EVALUATION_OBSERVATIONS_GZIP_B64` at execution unlock | Trusted workflow must fail closed |
 | Vercel deployment records | GitHub records contain separate `keiba-ai-pro-staging` Preview/Production deployment Environments; the latest recorded Staging production deployment is `d9bbcbc`, not the current candidate | A distinct Vercel target likely exists, but current-commit deployment and provider identity remain unproven |
 | Provider access from this workstation | Vercel and Railway CLIs are installed but unauthenticated; Supabase CLI is absent | Provider metadata and deployed commit cannot be independently verified here |
 | Parent local links | Parent worktree has one Vercel link named `keiba-ai-pro` and one generically named Supabase link; this worktree has neither | Link presence does not prove a distinct isolated Staging topology |
@@ -204,7 +204,8 @@ The overall score remains close to the 2026-07-12 baseline of 65-70%. Later phas
 7. A fresh trusted Phase 3N artifact for the exact candidate commit does not exist locally.
 8. Business success thresholds beyond AUC are not approved. A versioned fail-closed
    contract and verifier now enforce that absence as `not-accepted`; approved values
-   and fresh current-commit evidence are still required.
+   and fresh current-commit row observations are still required. Aggregate metrics are
+   now recomputed by trusted code and bound to model/source digests.
 
 ---
 
@@ -342,6 +343,7 @@ For each status review:
 | 2026-08-02 | `c9b7c02` + profiling-viewer working tree | 66% authoritative / 68% provisional | NOT_READY | Exact-SHA local gates pass (Python 920, Frontend 242 including WP2, typecheck/build, Critical/High 0). WP2 fixes the Bearer-less profiling link with an Admin-only authenticated sandbox viewer; external CI and Staging remain pending. |
 | 2026-08-02 | `c568e70` + feature-catalog working tree | 66% authoritative / 68% provisional | NOT_READY | WP2 exposes the existing feature catalog in `/feature-lab`, including the INV-01 future-field blocklist and engineered-feature provenance. It remains read-only and does not claim standalone generation completion. |
 | 2026-08-02 | `3b9836b` + external read-only audit | 66% authoritative / 68% provisional | NOT_READY | Approval Environments and a distinct but stale Vercel Staging deployment record exist. The trusted producer is stale, the successful run selector and protected inputs are absent, the prior trusted run failed at execution approval, and Render/Supabase isolation is unverified. No external state was changed. |
+| 2026-08-02 | `codex/fullstack-readiness` local candidate | 66% authoritative / 68% provisional | NOT_READY | WP1 now rebuilds acceptance evidence from strict out-of-time rows, checks temporal separation and canonical future fields, recomputes all metrics, and binds model/source digests. Python 949, feature consistency 73, model gate 72, Frontend 245, typecheck/build, and scanners pass locally; real observations, threshold approval, push/CI, and trusted Staging remain open. |
 
 ---
 

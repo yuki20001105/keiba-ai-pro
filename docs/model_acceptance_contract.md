@@ -24,13 +24,25 @@ The repository currently has one authoritative threshold: AUC must be at least 0
 
 Approval requires all threshold values plus `approved_at`, `approved_by`, and `approval_reference`. The reference must identify a durable review record; a chat statement or local edit is not sufficient evidence.
 
-## Evidence contract
+## Evidence construction and contract
 
-The verifier at `scripts/verify_model_acceptance.py` requires evidence bound to:
+`scripts/build_model_acceptance_evidence.py` is the only trusted-workflow path from row observations to aggregate acceptance evidence. It recomputes every metric instead of accepting caller-supplied totals. Its strict `model-evaluation-observations` version 1 input contains:
+
+- the exact candidate commit, model ID, and model-artifact SHA-256;
+- the generation timestamp, training-data cutoff, and `out_of_time` policy;
+- the exact ordered model feature-column list and a passing expanding-window check;
+- initial bankroll and bounded row observations;
+- for each row, a unique ID, JST race date, prediction/data/settlement timestamps, binary outcome, probability, candidate and baseline wager/return values, and latency.
+
+Every prediction must occur after the training cutoff. Source data must exist before prediction, settlement must follow prediction and precede evidence generation, and the declared race date must match the prediction date in `Asia/Tokyo`. The model feature list is intersected with the canonical `keiba_ai.constants.FUTURE_FIELDS` blocklist. Missing classes, candidate or baseline wagers, duplicate IDs/columns, non-finite values, unknown fields, and invalid financial relationships fail closed.
+
+The builder deterministically calculates AUC with average ranks for ties, Brier score, 10-bin equal-width ECE, candidate ROI, settlement-grouped maximum bankroll drawdown, bet/sample count, nearest-rank P95 latency, worst data freshness, inclusive race-date coverage, and ROI delta to the baseline. The evidence binds the model artifact, ordered feature columns, and canonical source observations by separate SHA-256 digests.
+
+The verifier at `scripts/verify_model_acceptance.py` then requires that evidence to be bound to:
 
 - the exact 40-character candidate commit SHA;
 - the exact contract ID and canonical SHA-256 digest;
-- one bounded model ID;
+- one bounded model ID plus model-artifact, feature-column, and source-observation digests;
 - a fresh observation timestamp and a valid evaluation window;
 - an out-of-time holdout with no future-field leakage detected;
 - every required metric, using finite JSON numbers and integer sample/bet counts.
@@ -40,9 +52,15 @@ Unknown or missing fields, duplicate JSON keys, non-finite numbers, stale eviden
 Example assessment command:
 
 ```powershell
+python-api/.venv/Scripts/python.exe scripts/build_model_acceptance_evidence.py `
+  --input path/to/model_evaluation_observations.json `
+  --contract config/model_acceptance_contract.v1.json `
+  --expected-commit (git rev-parse HEAD) `
+  --output reports/model_acceptance_evidence.json
+
 python-api/.venv/Scripts/python.exe scripts/verify_model_acceptance.py `
   --contract config/model_acceptance_contract.v1.json `
-  --evidence path/to/model_acceptance_evidence.json `
+  --evidence reports/model_acceptance_evidence.json `
   --expected-commit (git rev-parse HEAD)
 ```
 
@@ -50,4 +68,6 @@ For a promotion gate, add `--require-accepted`. That mode exits nonzero unless t
 
 ## Promotion boundary
 
-This contract does not make the current model Production-ready. The approval record and current-commit out-of-time evidence do not yet exist. Until both are supplied by a trusted workflow, Production remains `NOT_READY` even if repository tests and isolated Staging operational checks pass.
+The trusted workflow receives gzip-compressed, base64-encoded row observations through the protected `MODEL_EVALUATION_OBSERVATIONS_GZIP_B64` Environment value. It bounds decompression, rebuilds the aggregate evidence, deletes both raw and aggregate inputs after verification, and retains only the sanitized gate report. This protects the gate from hand-edited aggregate metrics; the reviewed source observation set must still be retained in the approved external evidence system under the emitted digest.
+
+This contract does not make the current model Production-ready. The approval record and current-commit out-of-time observations do not yet exist. Until both are supplied by a trusted workflow, Production remains `NOT_READY` even if repository tests and isolated Staging operational checks pass.

@@ -61,6 +61,9 @@ EVIDENCE_KEYS = frozenset(
         "schema_version",
         "candidate_commit_sha",
         "model_id",
+        "model_artifact_sha256",
+        "model_feature_columns_sha256",
+        "observations_sha256",
         "contract_id",
         "contract_sha256",
         "observed_at",
@@ -89,7 +92,15 @@ REPORT_KEYS = frozenset(
     }
 )
 REPORT_CONTRACT_KEYS = frozenset({"contract_id", "sha256", "status"})
-REPORT_EVIDENCE_KEYS = frozenset({"model_id", "observed_at"})
+REPORT_EVIDENCE_KEYS = frozenset(
+    {
+        "model_id",
+        "model_artifact_sha256",
+        "model_feature_columns_sha256",
+        "observations_sha256",
+        "observed_at",
+    }
+)
 REPORT_CHECK_KEYS = frozenset(
     {
         "contract_schema",
@@ -293,6 +304,17 @@ def _validate_evidence(
     if not isinstance(evidence["model_id"], str) or not IDENTIFIER_RE.fullmatch(evidence["model_id"]):
         _append(failures, "evidence-model-id-invalid")
         valid = False
+    for digest_name in (
+        "model_artifact_sha256",
+        "model_feature_columns_sha256",
+        "observations_sha256",
+    ):
+        if (
+            not isinstance(evidence[digest_name], str)
+            or DIGEST_RE.fullmatch(evidence[digest_name]) is None
+        ):
+            _append(failures, f"evidence-{digest_name.replace('_', '-')}-invalid")
+            valid = False
     expected_contract_id = contract.get("contract_id") if isinstance(contract, dict) else None
     if evidence["contract_id"] != expected_contract_id:
         _append(failures, "evidence-contract-id-mismatch")
@@ -420,6 +442,15 @@ def build_report(
     contract_id = contract.get("contract_id") if isinstance(contract, dict) else None
     contract_status = contract.get("status") if isinstance(contract, dict) else None
     model_id = evidence.get("model_id") if isinstance(evidence, dict) else None
+    model_artifact_digest = (
+        evidence.get("model_artifact_sha256") if isinstance(evidence, dict) else None
+    )
+    feature_columns_digest = (
+        evidence.get("model_feature_columns_sha256") if isinstance(evidence, dict) else None
+    )
+    observations_digest = (
+        evidence.get("observations_sha256") if isinstance(evidence, dict) else None
+    )
     observed_at_value = evidence.get("observed_at") if isinstance(evidence, dict) else None
     observed_at = _parse_timestamp(observed_at_value)
     return {
@@ -440,6 +471,15 @@ def build_report(
         },
         "evidence": {
             "model_id": model_id if isinstance(model_id, str) and IDENTIFIER_RE.fullmatch(model_id) else None,
+            "model_artifact_sha256": model_artifact_digest
+            if isinstance(model_artifact_digest, str) and DIGEST_RE.fullmatch(model_artifact_digest)
+            else None,
+            "model_feature_columns_sha256": feature_columns_digest
+            if isinstance(feature_columns_digest, str) and DIGEST_RE.fullmatch(feature_columns_digest)
+            else None,
+            "observations_sha256": observations_digest
+            if isinstance(observations_digest, str) and DIGEST_RE.fullmatch(observations_digest)
+            else None,
             "observed_at": observed_at.isoformat() if observed_at is not None else None,
         },
         "blockers": blockers,
@@ -499,6 +539,16 @@ def validate_gate_report(
     else:
         if not isinstance(evidence["model_id"], str) or not IDENTIFIER_RE.fullmatch(evidence["model_id"]):
             _append(failures, "report-evidence-projection-invalid")
+        for digest_name in (
+            "model_artifact_sha256",
+            "model_feature_columns_sha256",
+            "observations_sha256",
+        ):
+            if (
+                not isinstance(evidence[digest_name], str)
+                or DIGEST_RE.fullmatch(evidence[digest_name]) is None
+            ):
+                _append(failures, "report-evidence-projection-invalid")
         observed_at = _parse_timestamp(evidence["observed_at"])
         if observed_at is None:
             _append(failures, "report-observed-at-invalid")

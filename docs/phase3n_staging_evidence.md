@@ -18,11 +18,12 @@ Each Environment must have required reviewers and a deployment branch policy tha
 
 The `staging-execution-unlock` Environment supplies one protected value named `PHASE3N_STAGING_OBSERVATION_B64`. It is the base64 encoding of sanitized observation JSON, not a credential envelope. It must contain no token, cookie, credential, connection string, raw database row, arbitrary command output, or operator filesystem path. The observation is operator-attested evidence: provider identities, integrity digests and non-synthetic exercises must be collected from the live isolated Staging resources and reviewed before approval. The workflow validates and correlates those claims but deliberately receives no provider credential.
 
-The same Environment also supplies `MODEL_ACCEPTANCE_EVIDENCE_B64`. Its JSON is checked against `config/model_acceptance_contract.v1.json`, the exact candidate SHA, evidence freshness, the out-of-time/leakage policy, and every approved business threshold. The raw metric input is deleted after validation and only the sanitized accepted gate report is retained. A draft contract, a missing threshold, or any failed metric stops the trusted workflow before Production release approval.
+The same Environment also supplies `MODEL_EVALUATION_OBSERVATIONS_GZIP_B64`. It is a bounded gzip/base64 encoding of strict row-level out-of-time model observations, not caller-computed aggregate metrics. Trusted-producer code validates temporal separation, the canonical future-field blocklist, the model artifact and feature-column digests, then recomputes AUC, calibration, ROI, drawdown, sample, latency, freshness, coverage, and baseline-delta metrics. The derived evidence is checked against `config/model_acceptance_contract.v1.json`, the exact candidate SHA, freshness, and every approved business threshold. Raw observations and derived metric input are deleted after validation; only the sanitized accepted gate report is retained. The reviewed source set must remain available in the approved external evidence system under the digest carried by that report. A draft contract, a missing threshold, or any failed metric stops the trusted workflow before Production release approval.
 
 The workflow:
 
 - validates and canonicalizes the observation before uploading it;
+- rebuilds model acceptance evidence from protected row observations instead of trusting aggregates;
 - uploads the canonical observation as a run-scoped immutable artifact;
 - retrieves authenticated GitHub workflow approval history with the built-in token;
 - projects only stable approval, actor and Environment IDs;

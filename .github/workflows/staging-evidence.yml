@@ -65,12 +65,20 @@ jobs:
             .github/workflows/release.yml \
             .github/workflows/staging-evidence.yml \
             scripts/verify_phase3h_production_readiness.py \
+            scripts/build_model_acceptance_evidence.py \
             scripts/verify_model_acceptance.py \
             scripts/security/run_phase3m_supabase_bootstrap_gate.py \
             scripts/security/verify_phase3n_staging_evidence.py \
             scripts/security/build_phase3n_staging_evidence.py \
+            keiba/keiba_ai/constants.py \
+            keiba/keiba_ai/feature_engineering.py \
+            keiba/keiba_ai/lightgbm_feature_optimizer.py \
+            keiba/keiba_ai/train.py \
+            keiba/keiba_ai/tests/test_feature_engineering.py \
+            keiba/keiba_ai/tests/test_train_inference_consistency.py \
             supabase/bootstrap/v1/manifest.json \
             config/model_acceptance_contract.v1.json \
+            python-api/tests/test_model_acceptance_evidence_builder.py \
             python-api/tests/test_model_acceptance_gate.py \
             python-api/tests/test_phase3h_production_readiness_gate.py \
             python-api/tests/test_phase3n_staging_evidence_gate.py \
@@ -130,11 +138,13 @@ jobs:
         shell: bash
         env:
           PHASE3N_STAGING_OBSERVATION_B64: ${{ secrets.PHASE3N_STAGING_OBSERVATION_B64 }}
-          MODEL_ACCEPTANCE_EVIDENCE_B64: ${{ secrets.MODEL_ACCEPTANCE_EVIDENCE_B64 }}
+          MODEL_EVALUATION_OBSERVATIONS_GZIP_B64: ${{ secrets.MODEL_EVALUATION_OBSERVATIONS_GZIP_B64 }}
         run: |
           set -euo pipefail
           python - <<'PY'
           import base64
+          import gzip
+          import io
           import os
           from pathlib import Path
 
@@ -156,10 +166,19 @@ jobs:
               "PHASE3N_STAGING_OBSERVATION_B64",
               "reports/phase3n_staging_observation_input.json",
           )
-          decode_required(
-              "MODEL_ACCEPTANCE_EVIDENCE_B64",
-              "reports/model_acceptance_evidence_input.json",
-          )
+
+          encoded = os.environ.get("MODEL_EVALUATION_OBSERVATIONS_GZIP_B64", "")
+          if not encoded or len(encoded) > 65536:
+              raise SystemExit("MODEL_EVALUATION_OBSERVATIONS_GZIP_B64 size is invalid")
+          try:
+              compressed = base64.b64decode(encoded, validate=True)
+              with gzip.GzipFile(fileobj=io.BytesIO(compressed), mode="rb") as archive:
+                  payload = archive.read(16 * 1024 * 1024 + 1)
+          except (ValueError, TypeError, OSError, EOFError) as exc:
+              raise SystemExit("MODEL_EVALUATION_OBSERVATIONS_GZIP_B64 encoding is invalid") from exc
+          if not 1 <= len(payload) <= 16 * 1024 * 1024:
+              raise SystemExit("MODEL_EVALUATION_OBSERVATIONS_GZIP_B64 payload size is invalid")
+          Path("reports/model_evaluation_observations_input.json").write_bytes(payload)
           PY
 
       - name: Canonicalize and strictly validate observation before upload
@@ -176,20 +195,25 @@ jobs:
             --output reports/phase3n_staging_observation.json
           rm -f reports/phase3n_staging_observation_input.json
 
-      - name: Require approved current-commit model acceptance evidence
+      - name: Recompute and require approved current-commit model acceptance evidence
         shell: bash
         env:
           EXPECTED_COMMIT: ${{ inputs.expected_commit }}
           MAX_AGE_SECONDS: ${{ inputs.max_age_seconds }}
         run: |
           set -euo pipefail
+          trap 'rm -f reports/model_evaluation_observations_input.json reports/model_acceptance_evidence_input.json' EXIT
+          python scripts/build_model_acceptance_evidence.py \
+            --input reports/model_evaluation_observations_input.json \
+            --contract config/model_acceptance_contract.v1.json \
+            --expected-commit "$EXPECTED_COMMIT" \
+            --output reports/model_acceptance_evidence_input.json
           python scripts/verify_model_acceptance.py \
             --contract config/model_acceptance_contract.v1.json \
             --evidence reports/model_acceptance_evidence_input.json \
             --expected-commit "$EXPECTED_COMMIT" \
             --max-age-seconds "$MAX_AGE_SECONDS" \
             --require-accepted
-          rm -f reports/model_acceptance_evidence_input.json
 
       - name: Define immutable source artifact identity
         id: metadata
