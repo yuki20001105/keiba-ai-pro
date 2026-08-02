@@ -5,6 +5,7 @@ import re
 import tempfile
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Collection, Iterable
 
@@ -14,6 +15,7 @@ COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 MAX_FEATURES = 2_048
 MAX_SNAPSHOT_BYTES = 10 * 1024 * 1024 * 1024
+DATE_RE = re.compile(r"^[0-9]{8}$")
 
 
 class ApprovedExecutionError(ValueError):
@@ -48,6 +50,10 @@ class ApprovedTrainingExecution:
     candidate_commit_sha: str
     target: str
     model_type: str
+    train_period_start: str
+    train_period_end: str
+    validation_period_start: str
+    validation_period_end: str
     selected_features: tuple[str, ...]
     removed_features: tuple[str, ...]
     workspace: Path
@@ -64,6 +70,10 @@ class ApprovedTrainingExecution:
         candidate_commit_sha: str,
         target: str,
         model_type: str,
+        train_period_start: str,
+        train_period_end: str,
+        validation_period_start: str,
+        validation_period_end: str,
         selected_features: Iterable[str],
         removed_features: Iterable[str],
         workspace: Path,
@@ -83,6 +93,25 @@ class ApprovedTrainingExecution:
             raise ApprovedExecutionError("candidate-commit-invalid")
         if target != "win" or model_type != "lightgbm":
             raise ApprovedExecutionError("training-shape-not-approved")
+        period_values = (
+            train_period_start,
+            train_period_end,
+            validation_period_start,
+            validation_period_end,
+        )
+        try:
+            period_dates = tuple(
+                datetime.strptime(value, "%Y%m%d").date()
+                for value in period_values
+                if isinstance(value, str) and DATE_RE.fullmatch(value)
+            )
+        except ValueError as exc:
+            raise ApprovedExecutionError("training-period-invalid") from exc
+        if len(period_dates) != 4 or not (
+            period_dates[0] <= period_dates[1]
+            < period_dates[2] <= period_dates[3]
+        ):
+            raise ApprovedExecutionError("training-period-invalid")
 
         selected = _validate_features(selected_features, label="selected-features")
         removed = tuple(removed_features)
@@ -131,6 +160,10 @@ class ApprovedTrainingExecution:
             candidate_commit_sha=candidate_commit_sha,
             target=target,
             model_type=model_type,
+            train_period_start=train_period_start,
+            train_period_end=train_period_end,
+            validation_period_start=validation_period_start,
+            validation_period_end=validation_period_end,
             selected_features=selected,
             removed_features=removed,
             workspace=resolved_workspace,
@@ -171,11 +204,24 @@ class ApprovedTrainingExecution:
         target: str,
         model_type: str,
         force_sync: bool,
+        test_size: float,
+        cv_folds: int,
+        use_optuna: bool,
+        training_date_from: str | None,
+        training_date_to: str | None,
     ) -> None:
         if target != self.target or model_type != self.model_type:
             raise ApprovedExecutionError("training-request-binding-mismatch")
         if force_sync:
             raise ApprovedExecutionError("approved-training-sync-forbidden")
+        if (
+            test_size != 0.2
+            or cv_folds != 5
+            or use_optuna
+            or training_date_from is not None
+            or training_date_to is not None
+        ):
+            raise ApprovedExecutionError("approved-training-parameters-not-fixed")
 
     def select_feature_columns(
         self,

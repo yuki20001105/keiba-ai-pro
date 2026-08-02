@@ -29,6 +29,10 @@ def _create_execution(
     snapshot_sha256: str | None = None,
     selected_features: tuple[str, ...] = ("feature_a", "feature_b"),
     removed_features: tuple[str, ...] = ("feature_b",),
+    train_period_start: str = "20250101",
+    train_period_end: str = "20251231",
+    validation_period_start: str = "20260101",
+    validation_period_end: str = "20260331",
 ) -> approved.ApprovedTrainingExecution:
     workspace = tmp_path / "approved-job"
     workspace.mkdir(exist_ok=True)
@@ -43,6 +47,10 @@ def _create_execution(
         candidate_commit_sha="c" * 40,
         target="win",
         model_type="lightgbm",
+        train_period_start=train_period_start,
+        train_period_end=train_period_end,
+        validation_period_start=validation_period_start,
+        validation_period_end=validation_period_end,
         selected_features=selected_features,
         removed_features=removed_features,
         workspace=workspace,
@@ -53,7 +61,16 @@ def _create_execution(
 def test_valid_execution_binds_snapshot_features_and_artifact_directory(tmp_path: Path) -> None:
     execution = _create_execution(tmp_path)
 
-    execution.validate_request(target="win", model_type="lightgbm", force_sync=False)
+    execution.validate_request(
+        target="win",
+        model_type="lightgbm",
+        force_sync=False,
+        test_size=0.2,
+        cv_folds=5,
+        use_optuna=False,
+        training_date_from=None,
+        training_date_to=None,
+    )
     execution.verify_snapshot()
 
     assert execution.effective_features == ("feature_a",)
@@ -87,6 +104,27 @@ def test_request_must_match_approved_training_shape(
             target=target,
             model_type=model_type,
             force_sync=force_sync,
+            test_size=0.2,
+            cv_folds=5,
+            use_optuna=False,
+            training_date_from=None,
+            training_date_to=None,
+        )
+
+
+def test_unapproved_tuning_or_date_overrides_are_rejected(tmp_path: Path) -> None:
+    execution = _create_execution(tmp_path)
+
+    with pytest.raises(approved.ApprovedExecutionError, match="parameters-not-fixed"):
+        execution.validate_request(
+            target="win",
+            model_type="lightgbm",
+            force_sync=False,
+            test_size=0.2,
+            cv_folds=5,
+            use_optuna=True,
+            training_date_from=None,
+            training_date_to=None,
         )
 
 
@@ -120,6 +158,35 @@ def test_feature_contract_rejects_invalid_or_unavailable_columns(tmp_path: Path)
         execution.select_feature_columns(["feature_a"], future_fields={"feature_a"})
 
 
+@pytest.mark.parametrize(
+    (
+        "train_period_start",
+        "train_period_end",
+        "validation_period_start",
+        "validation_period_end",
+    ),
+    [
+        ("20250230", "20251231", "20260101", "20260331"),
+        ("20250101", "20260101", "20260101", "20260331"),
+    ],
+)
+def test_invalid_or_overlapping_period_contract_is_rejected(
+    tmp_path: Path,
+    train_period_start: str,
+    train_period_end: str,
+    validation_period_start: str,
+    validation_period_end: str,
+) -> None:
+    with pytest.raises(approved.ApprovedExecutionError, match="training-period-invalid"):
+        _create_execution(
+            tmp_path,
+            train_period_start=train_period_start,
+            train_period_end=train_period_end,
+            validation_period_start=validation_period_start,
+            validation_period_end=validation_period_end,
+        )
+
+
 def test_workspace_must_be_an_isolated_system_temp_child() -> None:
     snapshot = Path(__file__).resolve()
 
@@ -132,6 +199,10 @@ def test_workspace_must_be_an_isolated_system_temp_child() -> None:
             candidate_commit_sha="c" * 40,
             target="win",
             model_type="lightgbm",
+            train_period_start="20250101",
+            train_period_end="20251231",
+            validation_period_start="20260101",
+            validation_period_end="20260331",
             selected_features=("feature_a",),
             removed_features=(),
             workspace=PYTHON_API,
@@ -205,4 +276,10 @@ def test_router_source_gates_legacy_side_effects_for_approved_execution() -> Non
     assert "if approved_execution is None and _catalog_path.exists():" in source
     assert "approved_execution.select_feature_columns(" in source
     assert "approved_execution.prepare_artifact_directory()" in source
+    assert "df_train_source" in source
+    assert "df_validation_source" in source
+    assert "is_training=False" in source
+    assert "optimizer=optimizer" in source
+    assert "X.iloc[:approved_train_count]" in source
+    assert 'approved_execution is None\n            and request.target not in ("speed_deviation", "rank")' in source
     assert 'bundle["approved_execution"]' in source

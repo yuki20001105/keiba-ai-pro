@@ -147,6 +147,11 @@ async def _do_train(
                 target=request.target,
                 model_type=request.model_type,
                 force_sync=request.force_sync,
+                test_size=request.test_size,
+                cv_folds=request.cv_folds,
+                use_optuna=request.use_optuna,
+                training_date_from=request.training_date_from,
+                training_date_to=request.training_date_to,
             )
             approved_execution.verify_snapshot()
         except ApprovedExecutionError as exc:
@@ -284,21 +289,71 @@ async def _do_train(
             try:
                 print("\n=== LightGBM最適化モード ===")
                 progress_cb("特徴量選択・最適化中...", 28)
-                df_optimized, optimizer, categorical_features = prepare_for_lightgbm_ultimate(
-                    df, target_col=request.target, is_training=True
-                )
                 exclude_cols = [
                     request.target, "race_id", "horse_id", "jockey_id",
                     "trainer_id", "owner_id", "finish_position",
                 ]
-                X = df_optimized.drop([c for c in exclude_cols if c in df_optimized.columns], axis=1)
-                obj_cols = X.select_dtypes(include=["object"]).columns.tolist()
-                if obj_cols:
-                    X = X.drop(columns=obj_cols)
                 if approved_execution is not None:
+                    if "race_date" not in df.columns:
+                        raise ApprovedExecutionError("approved-period-column-unavailable")
+                    approved_dates = pd.to_datetime(
+                        df["race_date"].astype(str).str.strip(),
+                        format="%Y%m%d",
+                        errors="coerce",
+                    )
+                    train_mask = approved_dates.between(
+                        pd.Timestamp(approved_execution.train_period_start),
+                        pd.Timestamp(approved_execution.train_period_end),
+                    )
+                    validation_mask = approved_dates.between(
+                        pd.Timestamp(approved_execution.validation_period_start),
+                        pd.Timestamp(approved_execution.validation_period_end),
+                    )
+                    if int(train_mask.sum()) < 200 or int(validation_mask.sum()) < 50:
+                        raise ApprovedExecutionError("approved-period-observations-insufficient")
+                    df_train_source = df.loc[train_mask].copy()
+                    df_validation_source = df.loc[validation_mask].copy()
+                    y_train_source = y.loc[train_mask].reset_index(drop=True)
+                    y_validation_source = y.loc[validation_mask].reset_index(drop=True)
+                    if y_train_source.nunique() < 2 or y_validation_source.nunique() < 2:
+                        raise ApprovedExecutionError("approved-period-target-classes-insufficient")
+
+                    df_train_optimized, optimizer, categorical_features = (
+                        prepare_for_lightgbm_ultimate(
+                            df_train_source,
+                            target_col=request.target,
+                            is_training=True,
+                        )
+                    )
+                    df_validation_optimized, _, _ = prepare_for_lightgbm_ultimate(
+                        df_validation_source,
+                        target_col=request.target,
+                        is_training=False,
+                        optimizer=optimizer,
+                    )
+                    X_train_source = df_train_optimized.drop(
+                        [c for c in exclude_cols if c in df_train_optimized.columns],
+                        axis=1,
+                    )
+                    X_validation_source = df_validation_optimized.drop(
+                        [c for c in exclude_cols if c in df_validation_optimized.columns],
+                        axis=1,
+                    )
+                    train_objects = X_train_source.select_dtypes(include=["object"]).columns.tolist()
+                    validation_objects = X_validation_source.select_dtypes(
+                        include=["object"]
+                    ).columns.tolist()
+                    if train_objects:
+                        X_train_source = X_train_source.drop(columns=train_objects)
+                    if validation_objects:
+                        X_validation_source = X_validation_source.drop(columns=validation_objects)
                     try:
                         approved_columns = approved_execution.select_feature_columns(
-                            X.columns.tolist(),
+                            X_train_source.columns.tolist(),
+                            future_fields=FUTURE_FIELDS,
+                        )
+                        approved_execution.select_feature_columns(
+                            X_validation_source.columns.tolist(),
                             future_fields=FUTURE_FIELDS,
                         )
                     except ApprovedExecutionError as exc:
@@ -306,10 +361,39 @@ async def _do_train(
                             status_code=409,
                             detail="approved training contract mismatch",
                         ) from exc
-                    X = X.loc[:, list(approved_columns)]
+                    X_train_source = X_train_source.loc[:, list(approved_columns)]
+                    X_validation_source = X_validation_source.loc[:, list(approved_columns)]
                     categorical_features = [
                         feature for feature in categorical_features if feature in approved_columns
                     ]
+                    approved_train_count = len(X_train_source)
+                    X = pd.concat(
+                        [X_train_source, X_validation_source],
+                        ignore_index=True,
+                    )
+                    y = pd.concat(
+                        [y_train_source, y_validation_source],
+                        ignore_index=True,
+                    )
+                    df = pd.concat(
+                        [df_train_source, df_validation_source],
+                        ignore_index=True,
+                    )
+                    df_optimized = pd.concat(
+                        [df_train_optimized, df_validation_optimized],
+                        ignore_index=True,
+                    )
+                else:
+                    df_optimized, optimizer, categorical_features = prepare_for_lightgbm_ultimate(
+                        df, target_col=request.target, is_training=True
+                    )
+                    X = df_optimized.drop(
+                        [c for c in exclude_cols if c in df_optimized.columns],
+                        axis=1,
+                    )
+                    obj_cols = X.select_dtypes(include=["object"]).columns.tolist()
+                    if obj_cols:
+                        X = X.drop(columns=obj_cols)
                 feature_count = len(X.columns)
                 _all_feature_columns = X.columns.tolist()
 
@@ -340,8 +424,18 @@ async def _do_train(
                         # df のインデックスを同期（race_date が時系列分割に使用される）
                         df = df.reset_index(drop=True).loc[_pre_valid].reset_index(drop=True)
 
-                _time_split = False
-                if "race_date" in df.columns:
+                _time_split = approved_execution is not None
+                if approved_execution is not None:
+                    X_train = X.iloc[:approved_train_count]
+                    X_test = X.iloc[approved_train_count:]
+                    y_train = y.iloc[:approved_train_count]
+                    y_test = y.iloc[approved_train_count:]
+                    logger.info(
+                        "Approved out-of-time split: train=%s validation=%s",
+                        len(X_train),
+                        len(X_test),
+                    )
+                elif "race_date" in df.columns:
                     _dates = pd.to_datetime(
                         df["race_date"].reset_index(drop=True).astype(str).str[:8],
                         format="%Y%m%d", errors="coerce",
@@ -638,7 +732,10 @@ async def _do_train(
         progress_cb("確率キャリブレーション中...", 88)
         calibrator = None
         logloss_calibrated = logloss
-        if request.target not in ("speed_deviation", "rank"):
+        if (
+            approved_execution is None
+            and request.target not in ("speed_deviation", "rank")
+        ):
             try:
                 from sklearn.isotonic import IsotonicRegression as _IR
                 _ir = _IR(out_of_bounds="clip")
@@ -716,6 +813,14 @@ async def _do_train(
                 "data_snapshot_sha256": approved_execution.data_snapshot_sha256,
                 "feature_contract_sha256": approved_execution.feature_contract_sha256,
                 "candidate_commit_sha": approved_execution.candidate_commit_sha,
+                "train_period": {
+                    "start": approved_execution.train_period_start,
+                    "end": approved_execution.train_period_end,
+                },
+                "validation_period": {
+                    "start": approved_execution.validation_period_start,
+                    "end": approved_execution.validation_period_end,
+                },
             }
         # LambdaRank はランカー固有フラグを保存
         if request.target == "rank" and locals().get("_is_ranker_model"):
