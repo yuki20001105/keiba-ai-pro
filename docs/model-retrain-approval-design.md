@@ -197,6 +197,7 @@ Contract implementation:
 - `src/app/api/model-redesign/jobs/[job_id]/route.ts`
 - `supabase/migrations/20260802_model_retrain_job_ledger.sql`
 - `supabase/migrations/20260802_model_retrain_worker_lease.sql`
+- `supabase/migrations/20260802_model_retrain_artifact_registration.sql`
 
 Coverage:
 - dry-run payload / preview contract
@@ -210,5 +211,8 @@ Runtime policy:
 - the approval/job ledgers are private, append-audited, CAS-bound, two-person, expiring, and approval-idempotent; only an approved requester can atomically change `job_created` from false to true while `execution_enabled` remains false;
 - queued jobs can be atomically claimed with a 30-300 second lease, monotonic fencing token, CAS version, approval recheck, heartbeat, fenced start/failure reporting, and expired-lease recovery;
 - expired claimed work returns to `queued`, while an expired running attempt becomes terminal `failed` to prevent unsafe duplicate execution;
-- artifact fields remain structurally fixed to `artifact_written=false` and null identity in every worker state;
-- the database worker contract exists, but no deployed worker dispatcher/trainer, artifact writer, advanced evaluation, or switch runtime exists.
+- before registration, artifact fields remain structurally fixed to `artifact_written=false` and null identity;
+- only the live fenced `running` worker can bind one existing object from the private `models` bucket. The object name is derived from the job UUID and SHA-256, size and media type are bounded, and the immutable registration moves the job to terminal `artifact-registered`;
+- artifact registration does not attest object contents, evaluate model quality, populate the active-model registry, or authorize activation/deletion;
+- an upload that succeeds before registration can remain as an unregistered private object if the worker loses its lease; a future dispatcher/uploader must implement bounded orphan cleanup without deleting registered objects;
+- the database worker and registration contracts exist, but no deployed worker dispatcher/trainer/uploader, advanced evaluation, or switch runtime exists.

@@ -41,6 +41,9 @@ function queuedRecord(overrides: Record<string, unknown> = {}) {
     artifact_written: false,
     artifact_uri: null,
     artifact_sha256: null,
+    artifact_size_bytes: null,
+    artifact_media_type: null,
+    artifact_registered_at: null,
     worker_id: null,
     fencing_token: null,
     lease_expires_at: null,
@@ -128,6 +131,35 @@ describe('approval-bound model retrain job ledger', () => {
       expect(result.value.job_state).toBe('claimed')
       expect(result.value.fencing_token).toBe(7)
       expect(result.value.artifact_written).toBe(false)
+    }
+  })
+
+  it('projects an immutable private-storage artifact identity without implying evaluation', async () => {
+    const now = new Date().toISOString()
+    const artifactSha256 = 'c'.repeat(64)
+    rpcMock.mockResolvedValue({ data: [queuedRecord({
+      job_state: 'artifact-registered',
+      record_version: 5,
+      execution_started: true,
+      worker_id: 'staging-worker-01',
+      fencing_token: 7,
+      lease_expires_at: now,
+      claimed_at: now,
+      started_at: now,
+      finished_at: now,
+      artifact_written: true,
+      artifact_uri: `models://retrain/${JOB}/${artifactSha256}.joblib`,
+      artifact_sha256: artifactSha256,
+      artifact_size_bytes: 4096,
+      artifact_media_type: 'application/x-python-serialized-object',
+      artifact_registered_at: now,
+    })], error: null })
+    const result = await getModelRetrainJobViaRpc({ rpc: rpcMock } as never, ACTOR, JOB)
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.value.job_state).toBe('artifact-registered')
+      expect(result.value.artifact_written).toBe(true)
+      expect(result.value.artifact_sha256).toBe(artifactSha256)
     }
   })
 

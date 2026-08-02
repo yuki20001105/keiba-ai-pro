@@ -798,6 +798,10 @@ DECLARE
     v_worker_version INTEGER;
     v_fencing_token BIGINT;
     v_worker_id TEXT;
+    v_artifact_uri TEXT;
+    v_artifact_sha256 TEXT;
+    v_artifact_size BIGINT;
+    v_artifact_object_name TEXT;
     v_denied BOOLEAN;
 BEGIN
     UPDATE public.profiles SET role = 'admin'
@@ -975,16 +979,37 @@ BEGIN
         RAISE EXCEPTION 'phase3m model retrain worker start contract failed';
     END IF;
 
-    SELECT j.job_state, j.record_version, j.artifact_written
-    INTO v_job_state, v_worker_version, v_artifact_written
-    FROM public.fail_model_retrain_job(
-        'staging-worker-01', v_retrain_job_id, 4, v_fencing_token, 'training-failed'
+    v_artifact_sha256 := repeat('c', 64);
+    v_artifact_object_name :=
+        'retrain/' || v_retrain_job_id::TEXT || '/' || v_artifact_sha256 || '.joblib';
+    INSERT INTO storage.objects (id, bucket_id, name)
+    VALUES (
+        '36000000-0000-4000-8000-000000000010',
+        'models',
+        v_artifact_object_name
+    );
+
+    SELECT j.job_state, j.record_version, j.artifact_written,
+           j.artifact_uri, j.artifact_sha256, j.artifact_size_bytes
+    INTO v_job_state, v_worker_version, v_artifact_written,
+         v_artifact_uri, v_artifact_sha256, v_artifact_size
+    FROM public.register_model_retrain_artifact(
+        'staging-worker-01', v_retrain_job_id, 4, v_fencing_token,
+        v_artifact_object_name, v_artifact_sha256, 4096,
+        'application/x-python-serialized-object'
     ) AS j;
-    IF v_job_state <> 'failed' OR v_worker_version <> 5
-       OR v_artifact_written IS DISTINCT FROM FALSE
+    IF v_job_state <> 'artifact-registered' OR v_worker_version <> 5
+       OR v_artifact_written IS DISTINCT FROM TRUE
+       OR v_artifact_uri <> 'models://' || v_artifact_object_name
+       OR v_artifact_sha256 <> repeat('c', 64)
+       OR v_artifact_size <> 4096
+       OR (SELECT count(*) FROM public.model_retrain_artifacts
+           WHERE job_id = v_retrain_job_id
+             AND approval_id = v_approval_id
+             AND artifact_uri = v_artifact_uri) <> 1
        OR (SELECT count(*) FROM public.model_retrain_job_events
            WHERE job_id = v_retrain_job_id) <> 5 THEN
-        RAISE EXCEPTION 'phase3m model retrain worker failure contract failed';
+        RAISE EXCEPTION 'phase3m model retrain artifact registration contract failed';
     END IF;
 END;
 $phase3m_model_retrain_approval$;
@@ -1020,6 +1045,7 @@ FROM (VALUES
     ('phase3m_check:model_retrain_approval_ledger'),
     ('phase3m_check:model_retrain_job_ledger'),
     ('phase3m_check:model_retrain_worker_lease'),
+    ('phase3m_check:model_retrain_artifact_registration'),
     ('phase3m_check:security_invoker_ml_view'),
     ('phase3m_check:storage_role_boundaries'),
     ('phase3m_check:required_triggers_enabled')

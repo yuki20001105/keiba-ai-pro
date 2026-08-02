@@ -86,6 +86,12 @@
       "path": "supabase/migrations/20260802_model_retrain_worker_lease.sql",
       "source": "reconciled-existing",
       "description": "Fenced worker claim, heartbeat, start, failure, and expired-lease recovery without artifact writes"
+    },
+    {
+      "version": "20260802143000",
+      "path": "supabase/migrations/20260802_model_retrain_artifact_registration.sql",
+      "source": "reconciled-existing",
+      "description": "Fenced private-storage artifact registration without evaluation or activation"
     }
   ]
 }

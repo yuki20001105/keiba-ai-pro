@@ -54,6 +54,7 @@ REQUIRED_MARKERS = frozenset(
         "model_retrain_approval_ledger",
         "model_retrain_job_ledger",
         "model_retrain_worker_lease",
+        "model_retrain_artifact_registration",
     }
 )
 
@@ -71,6 +72,8 @@ TARGET_PREFLIGHT_REQUIRED_FRAGMENTS = (
     "'create_model_retrain_job'",
     "'model_retrain_job_fencing_seq'",
     "'claim_model_retrain_job'",
+    "'model_retrain_artifacts'",
+    "'register_model_retrain_artifact'",
     "FROM storage.buckets AS b",
     "b.id = 'models' OR b.name = 'models'",
     "FROM storage.objects AS o",
@@ -104,7 +107,8 @@ BEGIN
                  'scrape_execution_reservations', 'scrape_execution_reservation_events',
                  'admin_role_change_audit', 'model_retrain_approval_requests',
                  'model_retrain_approval_events', 'model_retrain_jobs',
-                 'model_retrain_job_events', 'model_retrain_job_fencing_seq'
+                 'model_retrain_job_events', 'model_retrain_job_fencing_seq',
+                 'model_retrain_artifacts'
              ])
        )
        OR EXISTS (
@@ -144,7 +148,9 @@ BEGIN
                  '_model_retrain_validate_worker',
                  'claim_model_retrain_job', 'heartbeat_model_retrain_job',
                  'start_model_retrain_job', 'fail_model_retrain_job',
-                 'recover_expired_model_retrain_job'
+                 'recover_expired_model_retrain_job',
+                 '_reject_model_retrain_artifact_mutation',
+                 'register_model_retrain_artifact'
              ])
        )
        OR EXISTS (

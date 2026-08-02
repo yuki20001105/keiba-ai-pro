@@ -10,7 +10,7 @@ Updated: 2026-08-02
 - The assessment is non-mutating and always returns `execution_performed=false`.
 - Admin-only create/read/decision routes and a private Supabase migration implement an expiring, CAS-versioned, two-person approval ledger without enabling execution.
 - The migration remains unapplied pending isolated Staging migration approval and runtime evidence.
-- Job start, model-artifact writing, candidate comparison, and promotion remain unimplemented.
+- The canonical bootstrap defines service-only fenced job start and immutable registration of an already-uploaded private-bucket artifact. No deployed trainer/uploader exists, so actual model-artifact production, candidate comparison, and promotion remain unimplemented.
 
 ## 1. Scope
 

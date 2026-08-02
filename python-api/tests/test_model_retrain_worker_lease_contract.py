@@ -92,11 +92,13 @@ def test_bootstrap_and_projection_include_worker_lease_contract() -> None:
         "phase3m stale model retrain fencing token was accepted",
         "phase3m model retrain heartbeat contract failed",
         "phase3m model retrain worker start contract failed",
-        "phase3m model retrain worker failure contract failed",
         "phase3m_check:model_retrain_worker_lease",
     ):
         assert fragment in contract
     ledger = JOB_LEDGER.read_text(encoding="utf-8")
-    assert "ModelRetrainJobState = 'queued' | 'claimed' | 'running' | 'failed'" in ledger
+    assert (
+        "ModelRetrainJobState = 'queued' | 'claimed' | 'running' "
+        "| 'artifact-registered' | 'failed'"
+    ) in ledger
     assert "fencing_token: number | null" in ledger
     assert "lease_expires_at: string | null" in ledger
