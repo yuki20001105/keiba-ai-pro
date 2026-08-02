@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -285,6 +286,22 @@ def test_render_blueprint_has_explicit_fail_closed_production_defaults() -> None
         "key": "SUPABASE_SERVICE_KEY",
         "sync": False,
     }
+
+
+def test_local_startup_commands_use_the_worktree_venv_and_canonical_ports() -> None:
+    package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+    scripts = package["scripts"]
+    assert scripts["dev:api"] == (
+        "python-api/.venv/Scripts/python.exe python-api/main.py"
+    )
+    assert scripts["setup:api"].endswith("./scripts/setup-python.ps1")
+    assert "scraping_service_ultimate_fast.py" not in scripts["dev:api"]
+
+    start_dev = (ROOT / "scripts" / "start-dev.ps1").read_text(encoding="utf-8")
+    assert "Split-Path -Parent $PSScriptRoot" in start_dev
+    assert "localhost:8000" in start_dev
+    assert "localhost:8001" not in start_dev
+    assert '$env:PYTHONUTF8 = "1"' in start_dev
 
 
 def _workflow_triggers(workflow: dict[object, object]) -> dict[str, object]:

@@ -17,8 +17,9 @@ The critical/high paths included `concurrently -> shell-quote`, `@google-cloud/v
 
 ## Remediation boundary
 
-- `next`, `concurrently`, and `postcss` move only within their existing major versions.
-- Safe transitive releases are selected through the lockfile without `npm audit fix`, `--force`, or package overrides.
+- `next`, `concurrently`, `postcss`, and `sharp` move only within their existing major versions.
+- Next.js 16.2.12 still declares vulnerable PostCSS 8.4.31 and sharp 0.34.5 ranges. The package manager therefore resolves the audited direct PostCSS 8.5.25 and sharp 0.35.3 versions through two narrowly scoped overrides. No advisory is suppressed or allowlisted.
+- Other safe transitive releases are selected through the lockfile without a CI-time `npm audit fix` or `--force` operation.
 - `picomatch@4` is explicit so the `tinyglobby -> fdir` optional peer resolves to v4 while Tailwind's v2 consumers remain nested on fixed `2.3.2`.
 - `package.json`, GitHub Actions, and all Next.js container stages use Node 24.
 - No application route, authorization policy, database migration, worker, or deployment behavior is changed.
@@ -42,6 +43,8 @@ Windows development and Linux CI.
 ## Residual findings
 
 Moderate/Low advisories may remain when the current compatible dependency graph has no non-breaking remediation. They remain visible in the JSON evidence and must be reassessed in subsequent maintenance. They cannot be hidden by allowlists, audit suppression, or a forced downgrade.
+
+As re-audited on 2026-08-02, both the full and production graphs contain zero Critical/High findings. The production graph retains five Moderate findings through the Google Vision `google-gax`/`gaxios`/`retry-request`/`teeny-request`/`uuid` path.
 
 ## Readiness boundary
 

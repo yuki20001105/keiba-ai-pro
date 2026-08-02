@@ -27,12 +27,16 @@ def test_node_runtime_and_direct_security_floors_are_explicit() -> None:
     package_json = json.loads((REPO_ROOT / "package.json").read_text(encoding="utf-8"))
 
     assert package_json["engines"]["node"] == "24.x"
-    assert package_json["dependencies"]["next"] == "^16.2.10"
+    assert package_json["dependencies"]["next"] == "16.2.12"
+    assert package_json["dependencies"]["sharp"] == "0.35.3"
     assert package_json["devDependencies"]["concurrently"] == "^9.2.4"
     assert package_json["devDependencies"]["picomatch"] == "^4.0.5"
-    assert package_json["devDependencies"]["postcss"] == "^8.5.10"
+    assert package_json["devDependencies"]["postcss"] == "8.5.25"
     assert "lucide-react" not in package_json["dependencies"]
-    assert "overrides" not in package_json
+    assert package_json["overrides"] == {
+        "postcss": "$postcss",
+        "sharp": "$sharp",
+    }
 
 
 def test_lockfile_contains_only_fixed_critical_and_high_versions() -> None:
@@ -40,9 +44,11 @@ def test_lockfile_contains_only_fixed_critical_and_high_versions() -> None:
         "@grpc/grpc-js": (1, 14, 4),
         "@tootallnate/once": (2, 0, 1),
         "lodash": (4, 18, 0),
-        "next": (16, 2, 10),
+        "next": (16, 2, 12),
+        "postcss": (8, 5, 25),
         "protobufjs": (7, 6, 3),
         "shell-quote": (1, 9, 0),
+        "sharp": (0, 35, 3),
         "undici": (7, 28, 0),
         "vite": (8, 0, 16),
         "ws": (8, 21, 0),

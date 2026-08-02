@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from ipaddress import ip_address
 from pathlib import Path
@@ -13,6 +14,28 @@ from urllib.parse import urlsplit
 
 import joblib
 from fastapi import HTTPException
+from dotenv import load_dotenv
+
+_WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
+_MANAGED_RUNTIME_MARKERS = (
+    "RENDER",
+    "RENDER_SERVICE_ID",
+    "RENDER_SERVICE_NAME",
+    "RENDER_EXTERNAL_HOSTNAME",
+    "RAILWAY_ENVIRONMENT_ID",
+    "RAILWAY_ENVIRONMENT_NAME",
+    "RAILWAY_PROJECT_ID",
+    "RAILWAY_SERVICE_ID",
+    "RAILWAY_DEPLOYMENT_ID",
+    "K_SERVICE",
+    "WEBSITE_INSTANCE_ID",
+)
+# Match Next.js local configuration precedence without overriding explicit
+# process/CI variables. Managed runtimes never consult local dotenv files, so
+# their fail-closed missing/invalid environment checks remain authoritative.
+if not any(os.environ.get(name) for name in _MANAGED_RUNTIME_MARKERS):
+    load_dotenv(_WORKSPACE_ROOT / ".env", override=False)
+    load_dotenv(_WORKSPACE_ROOT / ".env.local", override=False)
 
 # ── keiba_ai モジュールパスを sys.path に追加 ──────────────────────
 sys.path.insert(0, str(Path(__file__).parent.parent / "keiba"))
@@ -37,8 +60,8 @@ logger.info("=" * 80)
 MODELS_DIR = Path(__file__).parent / "models"
 MODELS_DIR.mkdir(exist_ok=True)
 
-CONFIG_PATH = Path(__file__).parent.parent / "keiba" / "config.yaml"
-ULTIMATE_DB = Path(__file__).parent.parent / "keiba" / "data" / "keiba_ultimate.db"
+CONFIG_PATH = _WORKSPACE_ROOT / "keiba" / "config.yaml"
+ULTIMATE_DB = _WORKSPACE_ROOT / "keiba" / "data" / "keiba_ultimate.db"
 
 # ── keiba_ai.config の load_config を再エクスポート ──────────────
 try:
@@ -114,19 +137,6 @@ class DeploymentConfigurationError(RuntimeError):
     """Raised when a deployed process cannot establish a safe environment."""
 
 
-_MANAGED_RUNTIME_MARKERS = (
-    "RENDER",
-    "RENDER_SERVICE_ID",
-    "RENDER_SERVICE_NAME",
-    "RENDER_EXTERNAL_HOSTNAME",
-    "RAILWAY_ENVIRONMENT_ID",
-    "RAILWAY_ENVIRONMENT_NAME",
-    "RAILWAY_PROJECT_ID",
-    "RAILWAY_SERVICE_ID",
-    "RAILWAY_DEPLOYMENT_ID",
-    "K_SERVICE",
-    "WEBSITE_INSTANCE_ID",
-)
 _LOCAL_APP_ENV_ALIASES = frozenset({"development", "dev", "local", "test"})
 _DEPLOYED_APP_ENVS = frozenset({"staging", "production"})
 _TRUE_VALUES = frozenset({"true", "1", "yes"})

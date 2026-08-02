@@ -5,10 +5,15 @@
   "engines": {
     "node": "24.x"
   },
+  "overrides": {
+    "postcss": "$postcss",
+    "sharp": "$sharp"
+  },
   "scripts": {
     "dev": "next dev",
-    "dev:api": "python scraping_service_ultimate_fast.py",
+    "dev:api": "python-api/.venv/Scripts/python.exe python-api/main.py",
     "dev:all": "concurrently --names \"NEXT,API\" -c \"cyan,magenta\" \"npm run dev\" \"npm run dev:api\"",
+    "setup:api": "powershell -ExecutionPolicy Bypass -File ./scripts/setup-python.ps1",
     "build": "next build",
     "start": "next start",
     "lint": "eslint \"src/**/*.{js,jsx,ts,tsx}\" \"scripts/**/*.ts\" \".github/skills/**/*.ts\"",
@@ -35,11 +40,12 @@
     "@supabase/supabase-js": "^2.103.3",
     "cheerio": "^1.0.0-rc.12",
     "date-fns": "^3.2.0",
-    "next": "^16.2.10",
+    "next": "16.2.12",
     "openai": "^4.24.1",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "recharts": "^2.10.3",
+    "sharp": "0.35.3",
     "stripe": "^14.11.0",
     "zod": "^3.22.4"
   },
@@ -58,10 +64,10 @@
     "concurrently": "^9.2.4",
     "dotenv": "^17.4.2",
     "eslint": "^9.39.4",
-    "eslint-config-next": "^16.2.10",
+    "eslint-config-next": "16.2.12",
     "jsdom": "^29.0.2",
     "picomatch": "^4.0.5",
-    "postcss": "^8.5.10",
+    "postcss": "8.5.25",
     "tailwindcss": "^3.3.0",
     "tsx": "^4.21.0",
     "typescript": "^5",
