@@ -3,6 +3,15 @@
 Updated: 2026-07-05
 Scope: UI (src/app) + Next API (src/app/api) + FastAPI router/script mapping inventory
 
+## 2026-08-02 WP2 delta: authenticated profiling viewer
+
+- `src/app/data-collection/profiling/[job_id]/page.tsx` now provides an Admin-only report viewer.
+- The viewer retrieves report HTML through `authFetch`, so the Bearer token reaches both the Next API and FastAPI Admin boundaries.
+- The former direct anchor to `/api/profiling/html/[job_id]` was removed because normal browser navigation cannot attach the required Authorization header.
+- Report HTML is isolated in a sandboxed iframe without `allow-same-origin`; an injected CSP denies connections, frames, forms, base URL changes, and all non-inline resources except local data/blob images and fonts.
+- Malformed Job IDs, 401/403 responses, non-HTML responses, empty/oversized reports, backend restart loss, loading, retry, and download states now have explicit UI behavior.
+- This closes the profiling report-viewer sub-gap. It does not make feature generation (#3) or advanced model evaluation (#6) complete.
+
 ## 0. 前提と判定ルール
 
 - 連携基盤 (UI -> Next API -> FastAPI) は完成前提。
