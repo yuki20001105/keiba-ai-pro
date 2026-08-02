@@ -52,6 +52,7 @@ REQUIRED_MARKERS = frozenset(
         "storage_role_boundaries",
         "required_triggers_enabled",
         "model_retrain_approval_ledger",
+        "model_retrain_job_ledger",
     }
 )
 
@@ -65,6 +66,8 @@ TARGET_PREFLIGHT_REQUIRED_FRAGMENTS = (
     "'update_admin_profile_role'",
     "'model_retrain_approval_requests'",
     "'create_model_retrain_approval'",
+    "'model_retrain_jobs'",
+    "'create_model_retrain_job'",
     "FROM storage.buckets AS b",
     "b.id = 'models' OR b.name = 'models'",
     "FROM storage.objects AS o",
@@ -97,7 +100,8 @@ BEGIN
                  'scrape_uncertainty_review_events', 'scrape_execution_authorizations',
                  'scrape_execution_reservations', 'scrape_execution_reservation_events',
                  'admin_role_change_audit', 'model_retrain_approval_requests',
-                 'model_retrain_approval_events'
+                 'model_retrain_approval_events', 'model_retrain_jobs',
+                 'model_retrain_job_events'
              ])
        )
        OR EXISTS (
@@ -128,7 +132,9 @@ BEGIN
                  '_guard_model_retrain_approval_update',
                  '_expire_model_retrain_approval_if_needed',
                  'create_model_retrain_approval', 'get_model_retrain_approval',
-                 'transition_model_retrain_approval'
+                 'transition_model_retrain_approval',
+                 '_reject_model_retrain_job_mutation',
+                 'create_model_retrain_job', 'get_model_retrain_job'
              ])
        )
        OR EXISTS (

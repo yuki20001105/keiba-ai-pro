@@ -38,6 +38,8 @@ Architecture (current):
 | train | /api/models/[id] | GET /api/models/{model_id} | authenticated read | production | none critical |
 | train | /api/models/[id] | DELETE /api/models/{model_id} | Admin + exact local/test opt-in | local compatibility | deployed/unknown environments fail closed; UI deletion is disabled pending separate durable retirement approval |
 | train | /api/models/[id]/activate | PUT /api/models/{model_id}/activate | Admin + explicit local/test opt-in only | local compatibility | deployed and unknown environments fail closed; UI direct activation is disabled |
+| model-redesign-workbench | /api/model-redesign/jobs | private Supabase RPC | Admin + approved requester + exact approval CAS/hash | internal API | durable queued submission exists; UI wiring and worker execution remain absent |
+| model-redesign-workbench | /api/model-redesign/jobs/[job_id] | private Supabase RPC | Admin | internal API | authoritative queued status only; no execution claim exists |
 | predict-batch | /api/analyze-race | POST /api/analyze_race | login required | production | none critical |
 | predict-batch | /api/races/by-date | GET /api/races/by_date | login required | production | naming mixed (by-date vs by_date) |
 | predict-batch | /api/realtime-odds/[race_id] | GET /api/realtime-odds/{race_id} | login required | production | none critical |

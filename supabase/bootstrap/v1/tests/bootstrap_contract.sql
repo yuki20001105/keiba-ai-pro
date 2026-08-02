@@ -790,6 +790,11 @@ DECLARE
     v_version INTEGER;
     v_execution_enabled BOOLEAN;
     v_job_created BOOLEAN;
+    v_retrain_job_id UUID;
+    v_retrain_job_id_retry UUID;
+    v_job_state TEXT;
+    v_execution_started BOOLEAN;
+    v_artifact_written BOOLEAN;
     v_denied BOOLEAN;
 BEGIN
     UPDATE public.profiles SET role = 'admin'
@@ -871,6 +876,56 @@ BEGIN
            WHERE approval_id = v_approval_id) <> 2 THEN
         RAISE EXCEPTION 'phase3m model approval transition contract failed';
     END IF;
+
+    v_denied := FALSE;
+    BEGIN
+        INSERT INTO public.model_retrain_jobs (
+            approval_id, dry_run_id, approved_payload_hash,
+            submitted_by, requested_by, approved_by, execution_policy
+        ) VALUES (
+            v_approval_id, '36000000-0000-4000-8000-000000000001', repeat('a', 64),
+            '30000000-0000-4000-8000-000000000001',
+            '30000000-0000-4000-8000-000000000001',
+            '30000000-0000-4000-8000-000000000002', 'staging-train'
+        );
+    EXCEPTION WHEN insufficient_privilege THEN
+        v_denied := TRUE;
+    END;
+    IF NOT v_denied THEN
+        RAISE EXCEPTION 'phase3m service role directly inserted model retrain job';
+    END IF;
+
+    SELECT j.job_id, j.job_state, j.execution_started, j.artifact_written
+    INTO v_retrain_job_id, v_job_state, v_execution_started, v_artifact_written
+    FROM public.create_model_retrain_job(
+        '30000000-0000-4000-8000-000000000001', v_approval_id, 2, repeat('a', 64)
+    ) AS j;
+    IF v_job_state <> 'queued'
+       OR v_execution_started IS DISTINCT FROM FALSE
+       OR v_artifact_written IS DISTINCT FROM FALSE
+       OR (SELECT count(*) FROM public.model_retrain_job_events
+           WHERE job_id = v_retrain_job_id AND event_type = 'queued') <> 1 THEN
+        RAISE EXCEPTION 'phase3m model retrain queued job contract failed';
+    END IF;
+
+    SELECT j.job_id INTO v_retrain_job_id_retry
+    FROM public.create_model_retrain_job(
+        '30000000-0000-4000-8000-000000000001', v_approval_id, 2, repeat('a', 64)
+    ) AS j;
+    SELECT a.record_version, a.job_created, a.execution_enabled
+    INTO v_version, v_job_created, v_execution_enabled
+    FROM public.model_retrain_approval_requests AS a
+    WHERE a.approval_id = v_approval_id;
+    IF v_retrain_job_id_retry IS DISTINCT FROM v_retrain_job_id
+       OR v_version <> 3
+       OR v_job_created IS DISTINCT FROM TRUE
+       OR v_execution_enabled IS DISTINCT FROM FALSE
+       OR (SELECT count(*) FROM public.model_retrain_jobs
+           WHERE approval_id = v_approval_id) <> 1
+       OR (SELECT count(*) FROM public.model_retrain_approval_events
+           WHERE approval_id = v_approval_id) <> 3 THEN
+        RAISE EXCEPTION 'phase3m model retrain job idempotency contract failed';
+    END IF;
 END;
 $phase3m_model_retrain_approval$;
 RESET ROLE;
@@ -903,6 +958,7 @@ FROM (VALUES
     ('phase3m_check:profile_bank_trigger'),
     ('phase3m_check:private_model_storage'),
     ('phase3m_check:model_retrain_approval_ledger'),
+    ('phase3m_check:model_retrain_job_ledger'),
     ('phase3m_check:security_invoker_ml_view'),
     ('phase3m_check:storage_role_boundaries'),
     ('phase3m_check:required_triggers_enabled')

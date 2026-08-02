@@ -111,7 +111,7 @@ def test_transition_requires_cas_and_independent_reviewer() -> None:
     assert "only requester can revoke approval" in body
     assert "approval_status <> 'pending'" in body
     assert "execution_enabled = FALSE" in body
-    assert "job_created = FALSE" in body
+    assert "job_created = a.job_created" in body
 
 
 def test_next_routes_use_admin_auth_and_only_the_bounded_rpc_adapter() -> None:
@@ -126,7 +126,7 @@ def test_next_routes_use_admin_auth_and_only_the_bounded_rpc_adapter() -> None:
     assert "MODEL_RETRAIN_APPROVAL_BODY_LIMIT_BYTES = 256 * 1024" in ledger
     assert "canonicalRetrainPayloadHash(input.dry_run_payload)" in ledger
     assert "value.execution_enabled !== false" in ledger
-    assert "value.job_created !== false" in ledger
+    assert "typeof value.job_created !== 'boolean'" in ledger
     assert "requester does not match dry-run creator" in ledger
 
 

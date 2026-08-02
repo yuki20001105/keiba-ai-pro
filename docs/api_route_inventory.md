@@ -90,6 +90,8 @@ Operational notes:
 | /api/model-redesign/approval | private Supabase RPC | Admin-only durable pending approval; execution disabled |
 | /api/model-redesign/approval/[approval_id] | private Supabase RPC | Admin-only authoritative approval read |
 | /api/model-redesign/approval/[approval_id]/decision | private Supabase RPC | Admin-only CAS/two-person transition; no job creation |
+| /api/model-redesign/jobs | private Supabase RPC | Admin-only, approval-bound and idempotent durable queue submission; execution disabled |
+| /api/model-redesign/jobs/[job_id] | private Supabase RPC | Admin-only authoritative queued-job read |
 | /api/scrape/repair/[race_id] | FastAPI /api/scrape/repair/{race_id} | explicit local/test compatibility only; deployed fail-closed |
 | /api/scrape/rescrape-incomplete | FastAPI /api/rescrape_incomplete | explicit local/test compatibility only; deployed fail-closed |
 

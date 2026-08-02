@@ -48,7 +48,7 @@ export type ModelRetrainApprovalLedgerRecord = {
   record_version: number
   authoritative_record: true
   execution_enabled: false
-  job_created: false
+  job_created: boolean
 }
 
 export type LedgerValidationResult<T> =
@@ -225,7 +225,7 @@ function projectLedgerRecord(value: JsonObject): LedgerValidationResult<ModelRet
     || recordVersion < 1
     || value.authoritative_record !== true
     || value.execution_enabled !== false
-    || value.job_created !== false
+    || typeof value.job_created !== 'boolean'
     || dryRun.dry_run_id !== approval.dry_run_id
     || dryRun.created_by !== approval.requested_by
     || canonicalRetrainPayloadHash(dryRun) !== approval.approved_payload_hash
@@ -240,7 +240,7 @@ function projectLedgerRecord(value: JsonObject): LedgerValidationResult<ModelRet
       record_version: recordVersion,
       authoritative_record: true,
       execution_enabled: false,
-      job_created: false,
+      job_created: value.job_created,
     },
   }
 }

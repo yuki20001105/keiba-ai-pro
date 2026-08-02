@@ -51,7 +51,7 @@ export async function POST(request: Request) {
     guard: {
       durable_record_created: true,
       execution_enabled: false,
-      job_created: false,
+      job_created: result.value.job_created,
       model_artifact_written: false,
       active_model_switched: false,
     },

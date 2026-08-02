@@ -224,7 +224,7 @@ BEGIN
             END,
             record_version = v_version,
             execution_enabled = FALSE,
-            job_created = FALSE
+            job_created = a.job_created
         WHERE a.approval_id = p_approval_id;
 
         INSERT INTO public.model_retrain_approval_events (
@@ -433,7 +433,7 @@ BEGIN
         record_version = v_version,
         authoritative_record = TRUE,
         execution_enabled = FALSE,
-        job_created = FALSE
+        job_created = a.job_created
     WHERE a.approval_id = p_approval_id;
 
     INSERT INTO public.model_retrain_approval_events (

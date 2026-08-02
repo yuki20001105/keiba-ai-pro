@@ -192,6 +192,10 @@ Contract implementation:
 - `src/app/api/model-redesign/approval/[approval_id]/decision/route.ts`
 - `src/app/api/model-redesign/approval/assess/route.ts`
 - `supabase/migrations/20260802_model_retrain_approval_ledger.sql`
+- `src/lib/model-retrain-job-ledger.ts`
+- `src/app/api/model-redesign/jobs/route.ts`
+- `src/app/api/model-redesign/jobs/[job_id]/route.ts`
+- `supabase/migrations/20260802_model_retrain_job_ledger.sql`
 
 Coverage:
 - dry-run payload / preview contract
@@ -201,6 +205,7 @@ Coverage:
 
 Runtime policy:
 - payload generation and eligibility assessment do not execute jobs.
-- approval creation and transition are durable only after the migration is explicitly applied and verified in isolated Staging;
-- the ledger is private, append-audited, CAS-versioned, two-person, expiring, and structurally fixed to `execution_enabled=false` and `job_created=false`;
-- no job-submit runtime, artifact writer, or switch runtime exists.
+- approval creation, transition, and queued-job submission are durable only after both migrations are explicitly applied and verified in isolated Staging;
+- the approval/job ledgers are private, append-audited, CAS-bound, two-person, expiring, and approval-idempotent; only an approved requester can atomically change `job_created` from false to true while `execution_enabled` remains false;
+- the queued job is structurally fixed to `execution_started=false`, `artifact_written=false`, and null artifact identity;
+- no worker lease/claim runtime, artifact writer, advanced evaluation, or switch runtime exists.

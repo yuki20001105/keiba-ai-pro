@@ -286,6 +286,28 @@
     "detail_error_passthrough_reason": "/api/model-redesign/approval/assess emits a bounded local validation contract and has no upstream detail to pass through"
   },
   {
+    "route": "/api/model-redesign/jobs",
+    "method": "POST",
+    "policy": "Admin",
+    "auth_header_forward": false,
+    "status_propagation": false,
+    "detail_error_passthrough": false,
+    "auth_header_forward_reason": "/api/model-redesign/jobs authorizes Admin requests locally and calls a service-role RPC without forwarding the browser bearer token",
+    "status_propagation_reason": "/api/model-redesign/jobs maps ledger outcomes into its bounded queued-job response contract",
+    "detail_error_passthrough_reason": "/api/model-redesign/jobs returns sanitized ledger error classes and never passes raw backend detail"
+  },
+  {
+    "route": "/api/model-redesign/jobs/[job_id]",
+    "method": "GET",
+    "policy": "Admin",
+    "auth_header_forward": false,
+    "status_propagation": false,
+    "detail_error_passthrough": false,
+    "auth_header_forward_reason": "/api/model-redesign/jobs/[job_id] authorizes Admin requests locally and calls a service-role RPC without forwarding the browser bearer token",
+    "status_propagation_reason": "/api/model-redesign/jobs/[job_id] maps ledger outcomes into its bounded queued-job response contract",
+    "detail_error_passthrough_reason": "/api/model-redesign/jobs/[job_id] returns sanitized ledger error classes and never passes raw backend detail"
+  },
+  {
     "route": "/api/model-redesign/summary",
     "method": "GET",
     "policy": "PremiumOrAdmin",

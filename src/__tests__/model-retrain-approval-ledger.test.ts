@@ -171,13 +171,26 @@ describe('model retrain approval ledger boundary', () => {
   it('rejects backend records that claim execution or break payload binding', async () => {
     for (const record of [
       pendingRecord({ execution_enabled: true }),
-      pendingRecord({ job_created: true }),
       pendingRecord({ approved_payload_hash: 'd'.repeat(64) }),
     ]) {
       const rpc = vi.fn().mockResolvedValue({ data: [record], error: null })
       const result = await getModelRetrainApprovalViaRpc({ rpc } as never, ACTOR, APPROVAL)
       expect(result).toEqual(expect.objectContaining({ ok: false, status: 502 }))
     }
+  })
+
+  it('accepts an authoritative read after a durable job marker is recorded', async () => {
+    const rpc = vi.fn().mockResolvedValue({ data: [pendingRecord({
+      approved_by: APPROVER,
+      approved_at: new Date(TEST_NOW - 3 * 60_000).toISOString(),
+      approval_status: 'approved',
+      approval_comment: 'Independent reviewer approved isolated staging training.',
+      record_version: 3,
+      job_created: true,
+    })], error: null })
+    const result = await getModelRetrainApprovalViaRpc({ rpc } as never, ACTOR, APPROVAL)
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.value.job_created).toBe(true)
   })
 
   it('requires a correlated version and terminal status after a decision', async () => {
