@@ -188,10 +188,12 @@ No empty, dummy, estimated, or synthetic value is acceptable.
 
 ## Remaining blockers
 
-- Capture the first real qualifying prediction after exact approved-policy
-  commit `a70ef54b282d8a7057938b3d74226b6ce0cf60f2` was deployed and observation
-  capture was enabled. The verified hosted ledger currently has zero rows, so
-  no observation start date or passing cache evidence is claimed yet.
+- Capture the first real qualifying prediction after approved-policy runtime
+  `a70ef54b282d8a7057938b3d74226b6ce0cf60f2` and its documentation-only
+  evidence checkpoint `130c72484a6e2afe46cf37b384e27b4ea8f4c08d` passed CI. Render is deployed
+  with the candidate-SHA boundary aligned to `130c724` and capture enabled. The
+  verified hosted ledger currently has zero rows, so no observation start date
+  or passing cache evidence is claimed yet.
 - Run `cache-integrity` from an authorized runtime after the ledger is nonempty.
   Render Shell is unavailable while the Web Service is on its final Free
   instance; do not incur a paid upgrade while the empty-ledger check is known
@@ -203,8 +205,10 @@ No empty, dummy, estimated, or synthetic value is acceptable.
 
 Completed hosted prerequisites on 2026-08-15: owner approval is bound, exact
 commit CI run `31811447458` is green, Supabase preserves 21 append-only history
-rows with ordinals 20-21 present, Render is Live at exact `a70ef54`, the
-candidate-SHA/Staging/expanding-window/capture boundary is aligned, and the
-public health/OpenAPI plus protected-API auth regression passes. The earlier
-authorized two-instance Render exercise remains the non-synthetic HA/fencing
-evidence and the service is back on one Free instance.
+rows with ordinals 20-21 present, approved-policy runtime `a70ef54` and
+evidence-recording checkpoint `130c724` both passed their 13-job exact-commit
+CI runs, and Render is Live at `130c724` with the candidate-SHA/Staging/
+expanding-window/capture boundary aligned. The public health/OpenAPI plus
+protected-API auth regression passes. The earlier authorized two-instance
+Render exercise remains the non-synthetic HA/fencing evidence and the service
+is back on one Free instance.
