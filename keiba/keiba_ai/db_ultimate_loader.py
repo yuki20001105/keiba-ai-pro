@@ -346,8 +346,22 @@ def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
     for old_name, new_name in column_mapping.items():
         if old_name in df.columns and new_name not in df.columns:
             df[new_name] = df[old_name]
-        elif old_name in df.columns and new_name in df.columns and df[new_name].isna().all():
-            df[new_name] = df[old_name]
+        elif old_name in df.columns and new_name in df.columns:
+            # Scraper generations overlap in the same append-only database.  A
+            # canonical column can therefore be populated for older rows while
+            # newer rows only carry its legacy/source alias (for example,
+            # ``finish`` versus ``finish_position``).  Checking ``isna().all()``
+            # left those newer rows unlabeled as soon as any historical row had
+            # the canonical value.  Coalesce row by row so mixed-generation
+            # history remains usable without overwriting canonical values.
+            _missing_canonical = (
+                df[new_name].isna()
+                | df[new_name].astype(str).str.strip().isin(["", "None", "nan"])
+            )
+            if _missing_canonical.any():
+                df.loc[_missing_canonical, new_name] = df.loc[
+                    _missing_canonical, old_name
+                ]
     
     # jockey_id / trainer_id / horse_id: URLからIDを抽出、なければ名前を使用
     # ※ 地方馬・騎手は B プレフィックス付きID（例: B0060, B201600118）のため

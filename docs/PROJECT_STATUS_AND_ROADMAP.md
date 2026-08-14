@@ -3,9 +3,9 @@
 > Status date: 2026-08-15
 > Evidence cutoff: hosted Staging, local validation, and exact-commit CI through 2026-08-15
 > Current branch at assessment: `codex/phase3n-observation-ha-evidence` (PR #28)
-> Current runtime implementation checkpoint: approved-policy commit `a70ef54b282d8a7057938b3d74226b6ce0cf60f2`; evidence-recording commit `130c72484a6e2afe46cf37b384e27b4ea8f4c08d` is also CI-green and deployed to Render Staging
-> Status: **overall 75.65%, reported as 76% (reasonable range: 74-78%), Production NOT_READY**
-> Candidate status: approval binding, exact-commit CI, append-only 21-migration verification, and exact-commit Staging regression pass; observation capture is enabled but the real ledger still has zero rows
+> Current runtime implementation checkpoint: `961a5be915d1a8b8724c0c36d2cdf069eb6dd982`, which is CI-green, Live on Render Staging, and bound to the same exact Phase 3N candidate SHA
+> Status: **overall 73.15%, reported as 73% (reasonable range: 71-76%), Production NOT_READY**
+> Candidate status: approval binding, exact-commit CI, append-only 21-migration verification, and exact-commit Staging regression pass; observation capture is enabled but the real ledger still has zero rows, and the current model fails provisional historical OOT AUC/ROI acceptance
 
 This is the canonical handoff document for answering three questions:
 
@@ -21,19 +21,20 @@ This section supersedes older point-in-time values below. Historical entries rem
 
 | Boundary | Current evidence | Remaining exit condition |
 |---|---|---|
-| Isolated Staging | Vercel, Render, and Supabase are isolated. Supabase preserves the original 19 rows and has the approved append-only ordinals 20-21; Render is back to one Free instance and is Live at evidence-recording SHA `130c72484a6e2afe46cf37b384e27b4ea8f4c08d`, whose runtime implementation is unchanged from approved-policy parent `a70ef54` | Preserve the deployed runtime identity and append-only history through merge and evidence collection |
+| Isolated Staging | Vercel, Render, and Supabase are isolated. Supabase preserves the original 19 rows and has the approved append-only ordinals 20-21; Render is back to one Free instance and is Live at `961a5be915d1a8b8724c0c36d2cdf069eb6dd982`, with `PHASE3N_CANDIDATE_COMMIT_SHA` aligned to the same exact SHA | Preserve the deployed runtime identity and append-only history through merge and evidence collection |
 | Multi-instance HA/fencing | Real two-instance claim, crash/recovery, lease takeover, stale-fence rejection, and cleanup evidence passed against Staging at `f5b9c90`; the exact `a70ef54` runtime and evidence-recording `130c724` both pass their container HA gate and hosted health/auth regression | Repeat the paid hosted exercise only if HA runtime semantics change; preserve the prior non-synthetic evidence |
-| Observation collection | Exact deployed evidence checkpoint `130c724` is aligned with the Render candidate-SHA boundary, Staging project, expanding-window assertion, and enabled capture. A read-only database check still reports zero prediction and zero result observations | Capture the first real qualifying prediction to establish the observation start, then allow the 90-day/1,000-sample/100-bet window to run without synthetic backfill |
+| Observation collection | Exact deployed checkpoint `961a5be` is aligned with the Render candidate-SHA boundary, Staging project, expanding-window assertion, and enabled capture. A read-only database check still reports zero prediction and zero result observations. The first real 2026-08-15 request loaded 18 declared runners but was correctly rejected before capture because odds/popularity were not yet published | Retry after official odds publication to establish the observation start, then allow the 90-day/1,000-sample/100-bet window to run without synthetic backfill |
+| Historical OOT model evaluation | A read-only point-in-time replay against local real history after the model's 2026-02-01 cutoff used 980 complete races and 10,768 settled entries over 160 days. Brier 0.0791, ECE 0.0265, maximum drawdown 3.60%, 980 qualifying bets, and +12.71 percentage-point ROI delta to baseline pass; AUC 0.7158 and candidate ROI -8.27% fail | Treat this as fast provisional model-selection evidence, not prospective Staging evidence. Retrain/replace the candidate and rerun a reproducible OOT evaluation before spending 90 days collecting a model that already misses AUC/ROI |
 | Staking/payout | Owner approval in issue #29 is durably bound to `phase3n-tansho-flat-v1`; exact-commit CI and Staging health/auth regression pass | Accumulate and settle real qualifying wagers under the approved policy |
 | Cache integrity | A bounded command proves nonempty load, delete/reload/rebuild, pre/post cache and DB digests, and zero missing/duplicate/stale rows. The hosted ledger is currently empty and therefore intentionally cannot produce passing evidence; Shell is unavailable on the Free instance | After the first real observation, run the exact-commit command from an authorized runtime and preserve the sanitized output |
-| Repository gates | Full Python suite passed **1,186** tests locally; exact runtime commit `a70ef54` passed all 13 jobs in [CI run 31811447458](https://github.com/yuki20001105/keiba-ai-pro/actions/runs/31811447458), and evidence-recording commit `130c724` passed all 13 jobs in [CI run 31812943165](https://github.com/yuki20001105/keiba-ai-pro/actions/runs/31812943165); both Vercel checks and zero-vulnerability audits pass | Preserve these gates through merge |
+| Repository gates | Full Python suite passed **1,186** tests at the approved-policy checkpoint; exact runtime commit `961a5be` passes all 13 jobs in [CI run 31815636708](https://github.com/yuki20001105/keiba-ai-pro/actions/runs/31815636708), including Python, frontend, dependency/security, container, Phase 3G-J, and Phase 3N observation/cache/HA gates | Preserve these gates through merge and regression-test mixed scraper-generation label coalescing |
 | Trusted evidence | Trusted producer and protected approval boundaries exist | Populate `PHASE3N_STAGING_OBSERVATION_B64` and `MODEL_EVALUATION_OBSERVATIONS_GZIP_B64` only from real accepted observations, review producer parity, then run the trusted workflow |
 
-The operational-proof pillar increases from 60% to 70% because the non-synthetic HA/fencing exercise is complete and the cache/observation evidence paths are executable. The other pillars stay unchanged until accepted model observations or product workflows actually pass. The weighted calculation is:
+The operational-proof pillar remains 70% because the non-synthetic HA/fencing exercise is complete and the cache/observation evidence paths are executable. The ML/business-value pillar is reduced from 65% to 55% because the current artifact's strict provisional historical OOT replay fails both AUC and ROI; the prior historical AUC 0.8865 is not current-artifact acceptance evidence. The weighted calculation is:
 
-`78% * 30% + 65% * 25% + 88% * 25% + 70% * 20% = 75.65%`
+`78% * 30% + 55% * 25% + 88% * 25% + 70% * 20% = 73.15%`
 
-The shortest remaining route is therefore: capture the first real exact-commit observation -> run hosted cache-integrity evidence from an authorized runtime -> continue append-only observations -> wait for the approved 90-day/1,000-sample/100-bet minimums -> accepted evaluation -> trusted Phase 3N -> controlled Production promotion and observation. Neither synthetic data nor fabricated wagers may shorten the observation-period gate.
+The shortest remaining route is now two parallel tracks. Model track: preserve the historical replay inputs -> retrain or replace the failing candidate -> rerun strict OOT evaluation until every model/business threshold passes. Operations track: capture the first real exact-commit observation after odds publication -> run hosted cache-integrity evidence from an authorized runtime -> continue append-only prospective observations. Only a candidate that passes the fast historical screen should consume the full approved 90-day/1,000-sample/100-bet prospective window. Neither retrospective replay, synthetic data, nor fabricated wagers may be registered as prospective Staging evidence.
 
 ---
 
@@ -177,10 +178,10 @@ The overall percentage is a planning indicator, not a release authorization. It 
 | Pillar | Weight | Current score | Weighted result | Basis |
 |---|---:|---:|---:|---|
 | Product workflow completeness | 30% | 78% | 23.4% | 6 of 13 workflows are complete UI flows; 7 are partial; none are wholly missing |
-| ML and business-value proof | 25% | 65% | 16.3% | Historical AUC 0.8865 exceeds the 0.85 target, but current-commit out-of-time, calibration, ROI, and drawdown proof is incomplete |
+| ML and business-value proof | 25% | 55% | 13.8% | The current artifact passes provisional historical OOT Brier, ECE, drawdown, sample, bet, period, and baseline-delta checks, but fails AUC (0.7158 vs 0.85) and ROI (-8.27% vs +3%); the old AUC 0.8865 is not current-artifact proof |
 | Repository safety and quality gates | 25% | 88% | 22.0% | PR #28 implementation commit `cbae079` passes Python 1,185 locally, zero-vulnerability audits, and all 13 exact-SHA CI jobs in run `31801904942` |
 | Staging and Production operational proof | 20% | 70% | 14.0% | Isolated providers, append-only 21-migration history, Auth/RLS/IDOR, rollback, real two-instance HA/fencing, and exact-commit health/auth regression are proven; nonempty cache evidence, accepted model observations, and trusted evidence remain open |
-| **Overall** | **100%** |  | **75.65% authoritative** | Report as 76%; Production remains NOT_READY until exact-commit Staging, trusted Phase 3N, business thresholds, and controlled release gates pass |
+| **Overall** | **100%** |  | **73.15% authoritative** | Report as 73%; Production remains NOT_READY until a current candidate passes business thresholds, prospective exact-commit Staging evidence, trusted Phase 3N, and controlled release gates |
 
 Workflow scoring assigns 1.0 point to `complete`, 0.6 to `partial`, and 0 to `missing`. Thus $(6 + 7 \times 0.6) / 13 = 78.5\%$, conservatively reported as 78%. Other pillar scores are evidence-based assessments and must be revisited when their exit conditions change.
 
@@ -189,7 +190,7 @@ Workflow scoring assigns 1.0 point to `complete`, 0.6 to `partial`, and 0 to `mi
 - **Product implementation:** approximately 78%.
 - **Repository-level safety and quality:** approximately 88%.
 - **Real-environment readiness:** approximately 70%.
-- **Overall goal:** **75.65%, reported as 76%**, with a reasonable uncertainty range of **74-78%**.
+- **Overall goal:** **73.15%, reported as 73%**, with a reasonable uncertainty range of **71-76%**.
 
 The score advances only for externally proven HA/fencing and executable evidence collection. It does not count uncollected model observations, a pending policy approval, or a future trusted run as complete.
 
@@ -388,6 +389,8 @@ For each status review:
 | 2026-08-14 | Issue #29 staking/payout approval | 75.65% authoritative / 76% reported | NOT_READY | Repository owner `yuki20001105` approved the exact `phase3n-tansho-flat-v1` policy. The durable comment reference is now bound into the tracked policy candidate. The score remains unchanged until exact-commit Staging regression/cache evidence and real observations pass. |
 | 2026-08-15 | `a70ef54` approved-policy exact-commit Staging regression | 75.65% authoritative / 76% reported | NOT_READY | Local Python 1,186 and all 13 jobs in CI run `31811447458` pass. Render is Live at exact `a70ef54`, its candidate-SHA/observation/expanding-window/Staging boundaries are aligned, and hosted `/health` plus OpenAPI return 200 while the protected scrape-health API returns 401. Supabase retains all 21 append-only history rows and exposes the service-only Phase 3N schema, but prediction/result counts remain zero; cache integrity and the observation clock therefore remain honestly open. |
 | 2026-08-15 | `130c724` evidence-recording exact-commit Staging checkpoint | 75.65% authoritative / 76% reported | NOT_READY | The documentation-only follow-up passes all 13 jobs in CI run `31812943165` and is Live on Render with `PHASE3N_CANDIDATE_COMMIT_SHA` aligned to the same full SHA. Post-deploy `/health` and OpenAPI return 200 and the protected scrape-health API returns 401. Render remains one Free instance. The Supabase ledger still has zero prediction/result rows, so no cache-integrity success or observation start is claimed. |
+| 2026-08-15 | `961a5be` ephemeral-SQLite startup checkpoint | 75.65% authoritative / 76% reported | NOT_READY | Render Free now creates required SQLite tables before serving the first request, is Live at the exact commit with the candidate SHA aligned, and returns healthy. All 13 jobs in CI run `31815636708` pass. The first real 18-runner request was correctly rejected before capture because official odds/popularity were not yet published; the Staging ledger therefore remains at zero rows. |
+| 2026-08-15 | Current-artifact historical OOT replay | 73.15% authoritative / 73% reported | NOT_READY | Mixed-generation `finish_position` rows exposed a row-level coalescing defect, which is regression-fixed. A strict complete-race replay over 2026-02-02 through 2026-07-11 (980 races, 10,768 entries, 160 days) passes Brier 0.0791, ECE 0.0265, drawdown 3.60%, bet/sample/period minimums, and baseline ROI delta +12.71 points, but fails AUC 0.7158 and ROI -8.27%. This is real historical screening data, not prospective or trusted Phase 3N evidence. |
 
 ---
 
