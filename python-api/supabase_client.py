@@ -226,11 +226,12 @@ def save_race_to_supabase(race_data: dict) -> bool:
         # payout rows are stored. This removes the need for a separate
         # long-lived scheduler credential; append-only RPC idempotency makes a
         # retry safe. Invalid enabled configuration fails closed.
-        from observation.reconcile import reconcile_available_results
-        from observation.service import ObservationConfig, ObservationGateway
+        observation_switch = os.environ.get("PHASE3N_OBSERVATION_ENABLED", "").strip().lower()
+        if observation_switch not in {"", "false", "0", "no", "off"}:
+            from observation.reconcile import reconcile_available_results
+            from observation.service import ObservationConfig, ObservationGateway
 
-        observation_config = ObservationConfig.from_env()
-        if observation_config.enabled:
+            observation_config = ObservationConfig.from_env()
             observation_summary = reconcile_available_results(ObservationGateway(client))
             logger.info(
                 "[phase3n-observation] result reconciliation: pending=%s inserted=%s duplicate=%s skipped=%s",
