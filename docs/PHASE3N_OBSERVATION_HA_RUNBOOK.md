@@ -60,7 +60,7 @@ SUPABASE_SERVICE_ROLE_KEY=<staging-only-secret>
 The code verifies HTTPS, exact project-ref/URL agreement, an exact commit SHA,
 and the expanding-window assertion. It rejects Production configuration.
 
-`config/phase3n_staking_payout_policy.v1.json` defines the proposed bounded
+`config/phase3n_staking_payout_policy.v1.json` defines the approved bounded
 single-win (`tansho`) evaluation policy. The candidate places one flat JPY 100
 wager on the highest model probability x prediction-time odds only when expected
 value is at least 1.20. The baseline places one flat JPY 100 wager on the lowest
@@ -68,11 +68,12 @@ valid prediction-time win odds. Ties are resolved by horse number, transaction
 cost is explicitly zero, and payout values are read only from the authoritative
 `race_payouts` / `payouts` rows on a JPY 100 basis.
 
-The policy remains `draft` and therefore produces no candidate or baseline
-wagers until its exact values receive a durable GitHub approval reference.
-Changing only an environment variable cannot bypass this boundary. After
-approval, update the tracked policy status/reference, review the resulting
-digest and deploy that exact commit before starting the 90-day clock.
+The repository owner approved the exact policy in
+[GitHub issue #29](https://github.com/yuki20001105/keiba-ai-pro/issues/29#issuecomment-5294613277)
+on 2026-08-14. The tracked policy is now `approved` and binds that durable
+reference into its canonical digest. Changing only an environment variable
+cannot bypass this boundary. Deploy and regress the exact approved-policy
+commit before starting the 90-day clock.
 
 ## Result reconciliation and daily progress
 

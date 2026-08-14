@@ -1,5 +1,5 @@
 {
-  "approval_reference": null,
+  "approval_reference": "https://github.com/yuki20001105/keiba-ai-pro/issues/29#issuecomment-5294613277",
   "baseline": {
     "maximum_wagers_per_race": 1,
     "selection": "lowest_valid_win_odds",
@@ -30,5 +30,5 @@
   },
   "schema": "phase3n-staking-payout-policy",
   "schema_version": 1,
-  "status": "draft"
+  "status": "approved"
 }

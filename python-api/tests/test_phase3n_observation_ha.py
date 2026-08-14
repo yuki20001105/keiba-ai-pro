@@ -256,9 +256,29 @@ def test_approved_tansho_policy_selects_one_candidate_and_one_public_favorite() 
     assert baseline_outcome == ("not-bet", 0.0, 200.0)
 
 
-def test_draft_staking_policy_never_creates_a_qualifying_wager() -> None:
+def test_canonical_staking_policy_is_durably_approved() -> None:
     policy = load_staking_payout_policy()
-    assert policy.approved is False
+    assert policy.approved is True
+    assert policy.approval_reference == (
+        "https://github.com/yuki20001105/keiba-ai-pro/issues/29#issuecomment-5294613277"
+    )
+    decisions = build_staking_decisions(
+        [{"horse_number": 1, "p_norm": 0.9, "odds": 10.0}],
+        policy,
+    )
+    assert decisions[1].recommendation == "bet"
+    assert decisions[1].qualifying_bet is True
+    assert decisions[1].wager_amount == decisions[1].baseline_wager_amount == 100.0
+
+
+def test_draft_staking_policy_never_creates_a_qualifying_wager(tmp_path: Path) -> None:
+    draft = json.loads(
+        (ROOT / "config/phase3n_staking_payout_policy.v1.json").read_text(encoding="utf-8")
+    )
+    draft.update(status="draft", approval_reference=None)
+    draft_path = tmp_path / "draft-policy.json"
+    draft_path.write_text(json.dumps(draft), encoding="utf-8")
+    policy = load_staking_payout_policy(draft_path)
     decisions = build_staking_decisions(
         [{"horse_number": 1, "p_norm": 0.9, "odds": 10.0}],
         policy,

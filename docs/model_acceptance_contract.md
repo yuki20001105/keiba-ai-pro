@@ -6,6 +6,11 @@
 
 The authorized owner approved the complete Phase 3N threshold set in [GitHub issue #25](https://github.com/yuki20001105/keiba-ai-pro/issues/25#issuecomment-5157389848) on 2026-08-02. The canonical contract is now `approved`; it can produce `accepted=true` only when fresh current-commit out-of-time observations satisfy every threshold and verifier check.
 
+The same owner approved the exact `phase3n-tansho-flat-v1` candidate/baseline
+staking and payout policy in [GitHub issue #29](https://github.com/yuki20001105/keiba-ai-pro/issues/29#issuecomment-5294613277)
+on 2026-08-14. The policy status and durable reference are part of the canonical
+policy digest; any later change requires a new review reference.
+
 ## Approved thresholds
 
 | Metric | Direction | Approved value | Meaning |
