@@ -222,6 +222,23 @@ def save_race_to_supabase(race_data: dict) -> bool:
             return False
 
         logger.info(f"Supabase 正規化保存完了: {race_id} ({len(horses)}頭)")
+        # Reconcile immediately after the authoritative Staging result and
+        # payout rows are stored. This removes the need for a separate
+        # long-lived scheduler credential; append-only RPC idempotency makes a
+        # retry safe. Invalid enabled configuration fails closed.
+        from observation.reconcile import reconcile_available_results
+        from observation.service import ObservationConfig, ObservationGateway
+
+        observation_config = ObservationConfig.from_env()
+        if observation_config.enabled:
+            observation_summary = reconcile_available_results(ObservationGateway(client))
+            logger.info(
+                "[phase3n-observation] result reconciliation: pending=%s inserted=%s duplicate=%s skipped=%s",
+                observation_summary["pending"],
+                observation_summary["inserted"],
+                observation_summary["duplicates"],
+                observation_summary["skipped"],
+            )
         return True
 
     except Exception as e:

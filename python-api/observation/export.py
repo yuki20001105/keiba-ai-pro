@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .contracts import ObservationContractError, canonical_sha256, timestamp
+from .staking import StakingPayoutPolicy, load_staking_payout_policy
 
 
 def build_model_acceptance_source(
@@ -16,11 +17,15 @@ def build_model_acceptance_source(
     progress: Mapping[str, Any],
     *,
     initial_bankroll: float,
+    staking_policy: StakingPayoutPolicy | None = None,
 ) -> dict[str, Any]:
     if progress.get("readiness_verdict") != "READY_FOR_TRUSTED_REVIEW":
         raise ObservationContractError("observation-readiness-not-met")
     if initial_bankroll <= 0:
         raise ObservationContractError("initial-bankroll-invalid")
+    policy = staking_policy or load_staking_payout_policy(require_approved=True)
+    if not policy.approved or not policy.approval_reference:
+        raise ObservationContractError("staking-policy-not-approved")
     result_by_id = {str(row["observation_id"]): row for row in results}
     models = {
         (
@@ -58,7 +63,7 @@ def build_model_acceptance_source(
         )
     return {
         "schema": "model-evaluation-observations",
-        "schema_version": 1,
+        "schema_version": 2,
         "candidate_commit_sha": commit,
         "model_id": model_id,
         "model_artifact_sha256": artifact_sha,
@@ -68,6 +73,9 @@ def build_model_acceptance_source(
         "model_feature_columns": list(feature_columns),
         "expanding_window_checks_passed": True,
         "initial_bankroll": float(initial_bankroll),
+        "staking_payout_policy_id": policy.policy_id,
+        "staking_payout_policy_sha256": policy.policy_sha256,
+        "staking_payout_approval_reference": policy.approval_reference,
         "rows": rows,
     }
 

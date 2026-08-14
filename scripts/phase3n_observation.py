@@ -12,7 +12,11 @@ PYTHON_API = ROOT / "python-api"
 if str(PYTHON_API) not in sys.path:
     sys.path.insert(0, str(PYTHON_API))
 
-from observation.cache_integrity import verify_cache, write_cache_atomic  # noqa: E402
+from observation.cache_integrity import (  # noqa: E402
+    exercise_cache_rebuild,
+    verify_cache,
+    write_cache_atomic,
+)
 from observation.contracts import ObservationContractError  # noqa: E402
 from observation.export import build_model_acceptance_source, write_gzip_atomic  # noqa: E402
 from observation.progress import build_progress_report, render_progress_markdown  # noqa: E402
@@ -99,6 +103,39 @@ def command_cache_rebuild(args: argparse.Namespace) -> dict:
     }
 
 
+def command_cache_integrity(args: argparse.Namespace) -> dict:
+    gateway = _gateway()
+    cache_path = _safe_report_path(args.cache_output, ".json")
+    evidence_path = _safe_report_path(args.evidence_output, ".json")
+
+    def load_rows() -> list[dict]:
+        predictions, _results, _attempts = join_progress_rows(gateway)
+        return predictions
+
+    evidence = exercise_cache_rebuild(cache_path, load_rows)
+    config = ObservationConfig.from_env()
+    report = {
+        **evidence,
+        "candidate_commit_sha": config.candidate_commit_sha,
+        "source_environment": "staging",
+        "production_changed": False,
+        "cache": cache_path.relative_to(ROOT).as_posix(),
+    }
+    _write_text_atomic(
+        evidence_path,
+        json.dumps(report, ensure_ascii=True, allow_nan=False, sort_keys=True, indent=2) + "\n",
+    )
+    return {
+        "success": report["success"],
+        "evidence": evidence_path.relative_to(ROOT).as_posix(),
+        "candidate_commit_sha": config.candidate_commit_sha,
+        "source_row_count": report["source_row_count"],
+        "cache_digest_sha256": report["cache_digest_after_sha256"],
+        "database_unchanged": report["database_unchanged"],
+        "rebuild_ms": report["rebuild_ms"],
+    }
+
+
 def command_export(args: argparse.Namespace) -> dict:
     gateway = _gateway()
     predictions, results, report = _progress(gateway)
@@ -132,6 +169,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--cache-output", type=Path, default=Path("reports/phase3n_observation_cache.json")
     )
     cache.set_defaults(func=command_cache_rebuild)
+    integrity = subparsers.add_parser("cache-integrity")
+    integrity.add_argument(
+        "--cache-output", type=Path, default=Path("reports/phase3n_observation_cache.json")
+    )
+    integrity.add_argument(
+        "--evidence-output",
+        type=Path,
+        default=Path("reports/phase3n_cache_integrity_evidence.json"),
+    )
+    integrity.set_defaults(func=command_cache_integrity)
     export = subparsers.add_parser("export-model-source")
     export.add_argument("--initial-bankroll", required=True, type=float)
     export.add_argument(

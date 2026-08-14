@@ -13,7 +13,11 @@ PYTHON_API = ROOT / "python-api"
 if str(PYTHON_API) not in sys.path:
     sys.path.insert(0, str(PYTHON_API))
 
-from observation.cache_integrity import verify_cache, write_cache_atomic  # noqa: E402
+from observation.cache_integrity import (  # noqa: E402
+    exercise_cache_rebuild,
+    verify_cache,
+    write_cache_atomic,
+)
 from observation.contracts import ObservationContractError  # noqa: E402
 from observation.export import build_model_acceptance_source  # noqa: E402
 from observation.progress import build_progress_report, render_progress_markdown  # noqa: E402
@@ -22,10 +26,18 @@ from observation.service import (  # noqa: E402
     build_prediction_payload,
     build_result_payload,
 )
+from observation.staking import (  # noqa: E402
+    build_staking_decisions,
+    load_staking_payout_policy,
+    settled_returns,
+)
 
 
 COMMIT = "a" * 40
 PROJECT_REF = "btegligclxkwzefikbzm"
+APPROVED_STAKING_POLICY = (
+    ROOT / "python-api/tests/fixtures/phase3n_staking_payout_policy_approved_v1.json"
+)
 
 
 def test_observation_config_is_explicit_staging_only_and_project_bound() -> None:
@@ -181,6 +193,79 @@ def test_cache_is_rebuildable_with_identical_digest_and_no_missing_duplicate_or_
         "stale_count": 0,
         "success": True,
     }
+
+
+def test_hosted_cache_exercise_deletes_rebuilds_and_preserves_database_digest(
+    tmp_path: Path,
+) -> None:
+    rows = [
+        {"observation_id": "b", "race_id": "r2", "horse_id": "h2"},
+        {"observation_id": "a", "race_id": "r1", "horse_id": "h1"},
+    ]
+    calls = 0
+
+    def load_rows() -> list[dict]:
+        nonlocal calls
+        calls += 1
+        return list(reversed(rows)) if calls == 2 else list(rows)
+
+    evidence = exercise_cache_rebuild(tmp_path / "cache.json", load_rows)
+    assert calls == 3
+    assert evidence["success"] is True
+    assert evidence["cache_deleted_before_rebuild"] is True
+    assert evidence["database_unchanged"] is True
+    assert evidence["cache_digest_before_sha256"] == evidence["cache_digest_after_sha256"]
+
+
+def test_approved_tansho_policy_selects_one_candidate_and_one_public_favorite() -> None:
+    policy = load_staking_payout_policy(APPROVED_STAKING_POLICY, require_approved=True)
+    predictions = [
+        {"horse_number": 1, "p_norm": 0.4, "odds": 3.0},
+        {"horse_number": 2, "p_norm": 0.5, "odds": 2.0},
+        {"horse_number": 3, "p_norm": 0.1, "odds": 10.0},
+    ]
+    decisions = build_staking_decisions(predictions, policy)
+    assert decisions[1].qualifying_bet is True
+    assert decisions[1].wager_amount == 100.0
+    assert decisions[2].baseline_wager_amount == 100.0
+    assert sum(item.qualifying_bet for item in decisions.values()) == 1
+    assert sum(item.baseline_wager_amount > 0 for item in decisions.values()) == 1
+
+    candidate_outcome = settled_returns(
+        {
+            "horse_number": 1,
+            "wager_amount": 100.0,
+            "baseline_wager_amount": 0.0,
+        },
+        finish_order=1,
+        payout_rows=[{"bet_type": "単勝", "combination": "1", "payout": 450}],
+        policy=policy,
+    )
+    assert candidate_outcome == ("won", 450.0, 0.0)
+
+    baseline_outcome = settled_returns(
+        {
+            "horse_number": 2,
+            "wager_amount": 0.0,
+            "baseline_wager_amount": 100.0,
+        },
+        finish_order=1,
+        payout_rows=[{"bet_type": "tansho", "combination": "02", "payout": 200}],
+        policy=policy,
+    )
+    assert baseline_outcome == ("not-bet", 0.0, 200.0)
+
+
+def test_draft_staking_policy_never_creates_a_qualifying_wager() -> None:
+    policy = load_staking_payout_policy()
+    assert policy.approved is False
+    decisions = build_staking_decisions(
+        [{"horse_number": 1, "p_norm": 0.9, "odds": 10.0}],
+        policy,
+    )
+    assert decisions[1].recommendation == "pass"
+    assert decisions[1].qualifying_bet is False
+    assert decisions[1].wager_amount == decisions[1].baseline_wager_amount == 0.0
 
 
 def test_migration_and_compose_contract_are_append_only_least_privilege_and_diskless() -> None:

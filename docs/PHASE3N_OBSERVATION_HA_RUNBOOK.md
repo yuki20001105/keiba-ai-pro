@@ -60,11 +60,19 @@ SUPABASE_SERVICE_ROLE_KEY=<staging-only-secret>
 The code verifies HTTPS, exact project-ref/URL agreement, an exact commit SHA,
 and the expanding-window assertion. It rejects Production configuration.
 
-Automatic prediction capture intentionally records `qualifying_bet=false` and
-zero stake today. The current prediction response does not expose an approved
-per-horse staking decision and payout policy, so manufacturing those values
-would invalidate ROI evidence. An approved source-backed staking/payout adapter
-is therefore a real remaining blocker for the 100-bet threshold.
+`config/phase3n_staking_payout_policy.v1.json` defines the proposed bounded
+single-win (`tansho`) evaluation policy. The candidate places one flat JPY 100
+wager on the highest model probability x prediction-time odds only when expected
+value is at least 1.20. The baseline places one flat JPY 100 wager on the lowest
+valid prediction-time win odds. Ties are resolved by horse number, transaction
+cost is explicitly zero, and payout values are read only from the authoritative
+`race_payouts` / `payouts` rows on a JPY 100 basis.
+
+The policy remains `draft` and therefore produces no candidate or baseline
+wagers until its exact values receive a durable GitHub approval reference.
+Changing only an environment variable cannot bypass this boundary. After
+approval, update the tracked policy status/reference, review the resulting
+digest and deploy that exact commit before starting the 90-day clock.
 
 ## Result reconciliation and daily progress
 
@@ -75,12 +83,15 @@ above:
 python scripts/phase3n_observation.py reconcile-results
 python scripts/phase3n_observation.py progress
 python scripts/phase3n_observation.py cache-rebuild
+python scripts/phase3n_observation.py cache-integrity
 ```
 
-Reconciliation reads authoritative settled results and appends only non-bet
-outcomes for now. It skips qualifying wagers until the approved payout mapping
-exists. Repeating a command is safe: idempotency keys prevent a second logical
-record, payload-binding conflicts fail closed, and attempts remain auditable.
+Reconciliation reads authoritative settled results and payout rows, calculates
+candidate and baseline returns from the approved policy, and appends a result
+event. It also runs automatically after the normal Supabase race/result/payout
+save succeeds, so no second long-lived scheduler credential is required.
+The command remains an idempotent operational retry. Payload-binding conflicts,
+missing winning payouts and inconsistent duplicate payout values fail closed.
 
 `progress` writes JSON and Markdown under `reports/`. The report contains the
 observation start/end, elapsed days, valid samples, qualifying bets, physical or
@@ -89,10 +100,8 @@ leakage violations, invalid timestamps, model/commit counts, each threshold,
 and the fail-closed verdict.
 
 Do not add an unreviewed GitHub schedule with a long-lived service-role secret.
-Request-path prediction capture is automatic. Result reconciliation is ready
-for an approved least-privilege Staging scheduler, but scheduling remains off
-until its identity, environment protection, retry policy, and unlock behavior
-are reviewed. Existing trusted-producer branch and GitHub Environment controls
+Request-path prediction capture and successful source-save reconciliation are
+automatic. Existing trusted-producer branch and GitHub Environment controls
 must remain unchanged.
 
 ## Cache integrity test
@@ -111,6 +120,13 @@ canonical payload. The isolated contract performs this sequence:
 
 The evidence is marked `synthetic_contract_test=true` and
 `production_evidence=false`.
+
+For the exact hosted candidate, `cache-integrity` requires at least one real
+Staging observation, builds and deletes the derived cache, reloads the canonical
+rows three times, rebuilds atomically, and writes a sanitized JSON report under
+`reports/`. It requires equal cache digests, equal pre/post database digests,
+and zero missing, duplicate or stale rows. An empty ledger fails closed rather
+than producing trivial evidence.
 
 ## Two-instance crash and fencing test
 
@@ -173,8 +189,8 @@ No empty, dummy, estimated, or synthetic value is acceptable.
 
 - Apply ordinals 20 and 21 to Supabase Staging after remote CI succeeds.
 - Deploy the exact reviewed commit to Render Staging and enable capture.
-- Approve and implement the per-horse staking and authoritative payout adapter.
-- Approve a least-privilege result-reconciliation scheduler.
+- Approve the tracked single-win staking/payout policy through a durable GitHub
+  comment, then bind the approval reference and policy digest to the candidate.
 - Accumulate at least 90 days, 1,000 valid settled samples, and 100 qualifying
   bets with zero leakage/conflicts and complete results.
 - Run the manual paid two-instance Render test and return the service to Free.

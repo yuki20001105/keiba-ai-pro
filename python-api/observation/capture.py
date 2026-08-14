@@ -14,6 +14,7 @@ from .service import (
     build_model_manifest_payload,
     build_prediction_payload,
 )
+from .staking import build_staking_decisions, load_staking_payout_policy
 
 
 logger = logging.getLogger(__name__)
@@ -111,6 +112,8 @@ def capture_analyze_predictions(
             number = source.get("horse_no")
         source_by_number[int(number or index + 1)] = source
     features_by_number = _feature_row_by_horse_number(feature_frame, source_records)
+    staking_policy = load_staking_payout_policy()
+    staking_decisions = build_staking_decisions(predictions, staking_policy)
     inserted = 0
     duplicates = 0
     for prediction in predictions:
@@ -123,6 +126,7 @@ def capture_analyze_predictions(
         if not horse_id:
             raise ObservationContractError("prediction-horse-id-missing")
         observed_at = _source_timestamp(source)
+        decision = staking_decisions[number]
         payload = build_prediction_payload(
             manifest_id=manifest_id,
             race_id=race_id,
@@ -143,13 +147,10 @@ def capture_analyze_predictions(
             odds_at_prediction=(
                 float(prediction["odds"]) if prediction.get("odds") not in (None, 0, 0.0) else None
             ),
-            # A per-horse approved staking adapter does not exist yet. Recording a
-            # fabricated stake would invalidate acceptance evidence, so automatic
-            # capture remains explicitly non-qualifying until that adapter exists.
-            recommendation="unavailable",
-            qualifying_bet=False,
-            wager_amount=0.0,
-            baseline_wager_amount=0.0,
+            recommendation=decision.recommendation,
+            qualifying_bet=decision.qualifying_bet,
+            wager_amount=decision.wager_amount,
+            baseline_wager_amount=decision.baseline_wager_amount,
             latency_ms=latency_ms,
         )
         result = gateway.record_prediction(payload)
@@ -157,4 +158,11 @@ def capture_analyze_predictions(
             inserted += 1
         else:
             duplicates += 1
-    return {"enabled": True, "inserted": inserted, "duplicates": duplicates}
+    return {
+        "enabled": True,
+        "inserted": inserted,
+        "duplicates": duplicates,
+        "staking_policy_id": staking_policy.policy_id,
+        "staking_policy_sha256": staking_policy.policy_sha256,
+        "staking_policy_approved": staking_policy.approved,
+    }

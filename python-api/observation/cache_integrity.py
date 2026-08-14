@@ -4,7 +4,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from .contracts import ObservationContractError, canonical_sha256
 
@@ -85,4 +85,50 @@ def verify_cache(path: Path, source_rows: Iterable[Mapping[str, Any]]) -> dict[s
             and duplicate_count == 0
             and stale_count == 0
         ),
+    }
+
+
+def exercise_cache_rebuild(
+    path: Path,
+    load_source_rows: Callable[[], list[dict[str, Any]]],
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    source_before = load_source_rows()
+    if not source_before:
+        raise ObservationContractError("cache-integrity-source-empty")
+    database_digest_before = cache_digest(source_before)
+    cache_digest_before = write_cache_atomic(path, source_before)
+    try:
+        path.unlink()
+    except OSError as exc:
+        raise ObservationContractError("cache-delete-failed") from exc
+    rebuild_started = time.perf_counter()
+    rebuild_source = load_source_rows()
+    rebuilt_digest = write_cache_atomic(path, rebuild_source)
+    rebuild_ms = round((time.perf_counter() - rebuild_started) * 1000, 3)
+    verification = verify_cache(path, rebuild_source)
+    source_after = load_source_rows()
+    database_digest_after = cache_digest(source_after)
+    database_unchanged = database_digest_before == database_digest_after
+    success = bool(
+        verification["success"]
+        and cache_digest_before == rebuilt_digest
+        and database_unchanged
+    )
+    return {
+        "schema": "phase3n-cache-integrity-exercise",
+        "schema_version": 1,
+        "authoritative_store": "supabase-postgresql",
+        "cache_authoritative": False,
+        "source_row_count": len(source_before),
+        "cache_digest_before_sha256": cache_digest_before,
+        "cache_digest_after_sha256": rebuilt_digest,
+        "database_digest_before_sha256": database_digest_before,
+        "database_digest_after_sha256": database_digest_after,
+        "database_unchanged": database_unchanged,
+        "cache_deleted_before_rebuild": True,
+        "rebuild_ms": rebuild_ms,
+        "total_exercise_ms": round((time.perf_counter() - started) * 1000, 3),
+        **verification,
+        "success": success,
     }

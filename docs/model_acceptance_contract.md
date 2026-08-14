@@ -26,17 +26,27 @@ Approval requires all threshold values plus `approved_at`, `approved_by`, and `a
 
 ## Evidence construction and contract
 
-`scripts/build_model_acceptance_evidence.py` is the only trusted-workflow path from row observations to aggregate acceptance evidence. It recomputes every metric instead of accepting caller-supplied totals. Its strict `model-evaluation-observations` version 1 input contains:
+`scripts/build_model_acceptance_evidence.py` is the only trusted-workflow path from row observations to aggregate acceptance evidence. It recomputes every metric instead of accepting caller-supplied totals. Its strict `model-evaluation-observations` version 2 input contains:
 
 - the exact candidate commit, model ID, and model-artifact SHA-256;
 - the generation timestamp, training-data cutoff, and `out_of_time` policy;
 - the exact ordered model feature-column list and a passing expanding-window check;
 - initial bankroll and bounded row observations;
+- the exact approved staking/payout policy ID, canonical SHA-256 and durable
+  GitHub approval reference;
 - for each row, a unique ID, JST race date, prediction/data/settlement timestamps, binary outcome, probability, candidate and baseline wager/return values, and latency.
 
 Every prediction must occur after the training cutoff. Source data must exist before prediction, settlement must follow prediction and precede evidence generation, and the declared race date must match the prediction date in `Asia/Tokyo`. The model feature list is intersected with the canonical `keiba_ai.constants.FUTURE_FIELDS` blocklist. Missing classes, candidate or baseline wagers, duplicate IDs/columns, non-finite values, unknown fields, and invalid financial relationships fail closed.
 
-The builder deterministically calculates AUC with average ranks for ties, Brier score, 10-bin equal-width ECE, candidate ROI, settlement-grouped maximum bankroll drawdown, bet/sample count, nearest-rank P95 latency, worst data freshness, inclusive race-date coverage, and ROI delta to the baseline. The evidence binds the model artifact, ordered feature columns, and canonical source observations by separate SHA-256 digests.
+The builder first requires the tracked
+`config/phase3n_staking_payout_policy.v1.json` to be `approved`, recomputes its
+digest, and matches its ID, digest and approval reference to the observation
+source. It then deterministically calculates AUC with average ranks for ties,
+Brier score, 10-bin equal-width ECE, candidate ROI, settlement-grouped maximum
+bankroll drawdown, bet/sample count, nearest-rank P95 latency, worst data
+freshness, inclusive race-date coverage, and ROI delta to the baseline. The
+evidence binds the model artifact, ordered feature columns, policy-bound source
+observations and contract by separate SHA-256 digests.
 
 The verifier at `scripts/verify_model_acceptance.py` then requires that evidence to be bound to:
 

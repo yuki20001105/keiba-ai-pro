@@ -5,6 +5,7 @@ from typing import Any
 
 from .contracts import ObservationContractError, parse_timestamp
 from .service import ObservationGateway, build_result_payload
+from .staking import load_staking_payout_policy, settled_returns
 
 
 def _finish_order(data: dict[str, Any]) -> int | None:
@@ -23,7 +24,7 @@ def _finish_order(data: dict[str, Any]) -> int | None:
 def reconcile_available_results(gateway: ObservationGateway) -> dict[str, int]:
     predictions = gateway.select(
         "phase3n_prediction_observations",
-        "observation_id,race_id,horse_id,horse_number,qualifying_bet,wager_amount",
+        "observation_id,race_id,horse_id,horse_number,qualifying_bet,wager_amount,baseline_wager_amount",
     )
     results = gateway.select("phase3n_result_observation_events", "observation_id")
     settled_ids = {str(row["observation_id"]) for row in results}
@@ -40,6 +41,28 @@ def reconcile_available_results(gateway: ObservationGateway) -> dict[str, int]:
         (str(row.get("race_id") or ""), int(row.get("horse_number") or 0)): row
         for row in source_rows
     }
+    wagering_race_ids = {
+        str(row["race_id"])
+        for row in pending
+        if float(row.get("wager_amount") or 0.0) > 0
+        or float(row.get("baseline_wager_amount") or 0.0) > 0
+    }
+    staking_policy = load_staking_payout_policy()
+    if wagering_race_ids and not staking_policy.approved:
+        raise ObservationContractError("staking-policy-not-approved")
+    payout_rows: list[dict[str, Any]] = []
+    for table in staking_policy.payout_source_tables:
+        payout_rows.extend(
+            gateway.select_in(
+                table,
+                "race_id,bet_type,combination,payout,created_at",
+                "race_id",
+                wagering_race_ids,
+            )
+        )
+    payouts_by_race: dict[str, list[dict[str, Any]]] = {}
+    for row in payout_rows:
+        payouts_by_race.setdefault(str(row.get("race_id") or ""), []).append(row)
     inserted = 0
     duplicates = 0
     skipped = 0
@@ -54,22 +77,27 @@ def reconcile_available_results(gateway: ObservationGateway) -> dict[str, int]:
         if finish is None:
             skipped += 1
             continue
-        # A qualifying wager needs an approved, source-backed payout mapping.
-        # Until that adapter exists, skipping is safer than recording a zero or
-        # inferred return that could fabricate ROI evidence.
-        if bool(prediction.get("qualifying_bet")):
-            skipped += 1
-            continue
         updated_at = source.get("updated_at")
         settled_at = parse_timestamp(updated_at, code="result-source-time-invalid")
+        for payout_row in payouts_by_race.get(str(prediction["race_id"]), []):
+            created_at = payout_row.get("created_at")
+            if created_at:
+                payout_time = parse_timestamp(created_at, code="payout-source-time-invalid")
+                settled_at = max(settled_at, payout_time)
+        bet_outcome, return_amount, baseline_return_amount = settled_returns(
+            prediction,
+            finish_order=finish,
+            payout_rows=payouts_by_race.get(str(prediction["race_id"]), []),
+            policy=staking_policy,
+        )
         payload = build_result_payload(
             observation_id=str(prediction["observation_id"]),
             settled_at=settled_at,
             y_true=1 if finish == 1 else 0,
             finish_order=finish,
-            bet_outcome="not-bet",
-            return_amount=0.0,
-            baseline_return_amount=0.0,
+            bet_outcome=bet_outcome,
+            return_amount=return_amount,
+            baseline_return_amount=baseline_return_amount,
         )
         outcome = gateway.record_result(payload)["mutation_code"]
         if outcome == "inserted":

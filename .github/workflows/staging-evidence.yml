@@ -80,6 +80,7 @@ jobs:
             keiba/keiba_ai/tests/test_train_inference_consistency.py \
             supabase/bootstrap/v1/manifest.json \
             config/model_acceptance_contract.v1.json \
+            config/phase3n_staking_payout_policy.v1.json \
             python-api/tests/test_model_acceptance_evidence_builder.py \
             python-api/tests/test_model_acceptance_gate.py \
             python-api/tests/test_phase3h_production_readiness_gate.py \

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib
 import json
 import sys
@@ -22,6 +23,9 @@ COMMIT = "c" * 40
 JOB_ID = str(uuid.uuid4())
 EVALUATOR_ID = "staging-evaluator-01"
 JRA_TIMEZONE = ZoneInfo("Asia/Tokyo")
+STAKING_POLICY_PATH = (
+    PYTHON_API / "tests" / "fixtures" / "phase3n_staking_payout_policy_approved_v1.json"
+)
 
 
 def _report(**updates: Any) -> dict[str, Any]:
@@ -150,6 +154,7 @@ def test_evaluator_revalidates_pipeline_report_before_rpc(
 
 
 def _observations(now: datetime) -> dict[str, Any]:
+    staking_policy = json.loads(STAKING_POLICY_PATH.read_text(encoding="utf-8"))
     rows = []
     for index, (probability, label) in enumerate(
         ((0.1, 0), (0.9, 1), (0.2, 0), (0.8, 1)), start=1
@@ -173,7 +178,7 @@ def _observations(now: datetime) -> dict[str, Any]:
         )
     return {
         "schema": "model-evaluation-observations",
-        "schema_version": 1,
+        "schema_version": 2,
         "candidate_commit_sha": COMMIT,
         "model_id": "candidate-model",
         "model_artifact_sha256": "b" * 64,
@@ -183,6 +188,17 @@ def _observations(now: datetime) -> dict[str, Any]:
         "model_feature_columns": ["horse_age"],
         "expanding_window_checks_passed": True,
         "initial_bankroll": 100.0,
+        "staking_payout_policy_id": staking_policy["policy_id"],
+        "staking_payout_policy_sha256": hashlib.sha256(
+            json.dumps(
+                staking_policy,
+                ensure_ascii=True,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
+        "staking_payout_approval_reference": staking_policy["approval_reference"],
         "rows": rows,
     }
 
@@ -192,7 +208,10 @@ def test_canonical_draft_contract_cannot_register_even_valid_rows(tmp_path: Path
     observations.write_text(
         json.dumps(_observations(datetime.now(timezone.utc))), encoding="utf-8"
     )
-    pipeline = evaluator.ModelAcceptancePipeline(evaluator.CANONICAL_CONTRACT_PATH)
+    pipeline = evaluator.ModelAcceptancePipeline(
+        evaluator.CANONICAL_CONTRACT_PATH,
+        STAKING_POLICY_PATH,
+    )
     with pytest.raises(evaluator.RetrainEvaluationError, match="not-accepted"):
         pipeline.accepted_report(observations.resolve(), expected_commit=COMMIT)
 
@@ -231,7 +250,8 @@ def test_pipeline_recomputes_strict_rows_into_accepted_sanitized_report(
     contract_path.write_text(json.dumps(contract), encoding="utf-8")
 
     report = evaluator.ModelAcceptancePipeline(
-        contract_path.resolve()
+        contract_path.resolve(),
+        STAKING_POLICY_PATH,
     ).accepted_report(observations.resolve(), expected_commit=COMMIT)
 
     assert report["accepted"] is True
