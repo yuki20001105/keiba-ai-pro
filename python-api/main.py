@@ -25,6 +25,7 @@ main.py (slim) - ルーターを機能ごとのモジュールに分割した版
       backfill.py      - POST /api/backfill/*
       profiling.py     - POST /api/profiling/start, GET /api/profiling/*
 """
+import asyncio
 import sys
 
 # Windowsの cp932 エンコード環境で Unicode 文字列の print/log が失敗しないよう UTF-8 に固定
@@ -42,8 +43,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler  # type: ignore
 from slowapi.util import get_remote_address  # type: ignore
 from slowapi.errors import RateLimitExceeded  # type: ignore
-from app_config import ALLOWED_ORIGINS  # type: ignore
+from app_config import ALLOWED_ORIGINS, ULTIMATE_DB  # type: ignore
 from middleware.auth import SupabaseJWTMiddleware  # type: ignore
+from scraping.storage import _init_sqlite_db  # type: ignore
 
 from routers import (  # type: ignore
     backfill,
@@ -76,6 +78,12 @@ limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Render Free has an ephemeral filesystem.  After a cold start the SQLite
+    # path may exist as an empty file, so every request-path SELECT must be
+    # preceded by idempotent schema initialization.  The database is only a
+    # local working cache; authoritative Phase 3N observations remain in
+    # Supabase PostgreSQL.
+    await asyncio.to_thread(_init_sqlite_db, ULTIMATE_DB)
     start_scheduler()
     await start_operational_saga_worker()
     try:
