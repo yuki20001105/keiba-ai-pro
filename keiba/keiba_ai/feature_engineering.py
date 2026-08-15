@@ -830,6 +830,20 @@ def _fe_history(df: pd.DataFrame, full_history_df: pd.DataFrame) -> pd.DataFrame
       _feh_payout_history     — 過去単勝配当 rolling 統計
       _feh_running_style      — 脚質 rolling 統計
     """
+    # A fresh hosted runtime can legitimately contain only the upcoming race.
+    # Those rows have no settled ``finish`` value, so there is no historical
+    # signal from which expanding/rolling features can be computed.  Entering
+    # the history helpers in that state used to raise KeyError('finish') and,
+    # because add_derived_features is fail-soft, discarded every base feature
+    # calculated before this stage.  Keep the already-computed pre-race
+    # features and let the model bundle's missing-value handling represent the
+    # unavailable history instead.
+    if full_history_df.empty or "finish" not in full_history_df.columns:
+        return df
+    settled_finish = pd.to_numeric(full_history_df["finish"], errors="coerce")
+    if not settled_finish.notna().any():
+        return df
+
     df, full_history_df = _feh_jockey_course(df, full_history_df)
     df, full_history_df = _feh_horse_aptitude(df, full_history_df)
     df, full_history_df = _feh_gate_bias(df, full_history_df)

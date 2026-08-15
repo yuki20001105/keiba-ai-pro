@@ -431,3 +431,27 @@ class TestAddDerivedFeaturesIntegration:
     def test_n_horses_correct(self):
         df = add_derived_features(self._make_minimal_df())
         assert (df["n_horses"] == 2).all()
+
+    def test_future_only_history_without_finish_preserves_base_features(self):
+        """A fresh hosted DB must not discard all derived features pre-settlement."""
+        current = self._make_minimal_df().assign(
+            jockey_id=["J001", "J002"],
+            trainer_id=["T001", "T002"],
+            venue="04",
+        )
+        future_only_history = current.copy()
+
+        result = add_derived_features(
+            current,
+            full_history_df=future_only_history,
+        )
+
+        assert len(result) == len(current)
+        for column in (
+            "race_num",
+            "cos_date",
+            "sin_date",
+            "implied_prob",
+            "market_entropy",
+        ):
+            assert column in result.columns
