@@ -80,13 +80,16 @@ jobs:
             scripts/security/run_phase3m_supabase_bootstrap_gate.py \
             scripts/security/render_phase3m_supabase_upgrade_sql.py \
             scripts/security/run_phase3m_supabase_upgrade_gate.py \
+            scripts/security/scan_test_weakening.py \
             scripts/security/verify_phase3n_staging_evidence.py \
             scripts/security/build_phase3n_staging_evidence.py \
             keiba/keiba_ai/constants.py \
             keiba/keiba_ai/feature_engineering.py \
             keiba/keiba_ai/lightgbm_feature_optimizer.py \
+            keiba/keiba_ai/speed_deviation.py \
             keiba/keiba_ai/train.py \
             keiba/keiba_ai/tests/test_feature_engineering.py \
+            keiba/keiba_ai/tests/test_speed_deviation.py \
             keiba/keiba_ai/tests/test_train_inference_consistency.py \
             supabase/bootstrap/v1/manifest.json \
             config/model_acceptance_contract.v1.json \
