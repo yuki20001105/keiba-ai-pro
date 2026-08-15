@@ -33,6 +33,8 @@ from keiba_ai.speed_deviation import (  # noqa: E402
 
 
 REPORT_SCHEMA = "speed-deviation-candidate-evaluation-v1"
+STAKING_POLICY_PATH = ROOT / "config" / "phase3n_staking_payout_policy.v1.json"
+STAKING_POLICY = json.loads(STAKING_POLICY_PATH.read_text(encoding="utf-8"))
 
 
 def _date_series(frame: pd.DataFrame) -> pd.Series:
@@ -87,11 +89,19 @@ def _strategy_metrics(
     evaluation: pd.DataFrame,
     *,
     selector: str,
+    minimum_expected_value: float = 1.2,
     initial_bankroll: float = 100_000.0,
     stake: float = 100.0,
 ) -> dict[str, float | int]:
     if selector == "candidate":
-        chosen = evaluation.loc[evaluation.groupby("race_id")["score"].idxmax()].copy()
+        eligible = evaluation.copy()
+        eligible["expected_value"] = eligible["probability"] * eligible["odds"]
+        eligible = eligible[eligible["expected_value"].ge(minimum_expected_value)]
+        chosen = (
+            eligible.loc[eligible.groupby("race_id")["expected_value"].idxmax()].copy()
+            if not eligible.empty
+            else eligible.copy()
+        )
     elif selector == "baseline":
         ranked = evaluation.sort_values(
             ["race_id", "popularity", "odds"],
@@ -103,6 +113,13 @@ def _strategy_metrics(
         raise ValueError("selector is invalid")
 
     chosen = chosen.sort_values(["race_date", "race_id"])
+    if chosen.empty:
+        return {
+            "bet_count": 0,
+            "win_count": 0,
+            "roi_percent": 0.0,
+            "max_drawdown_percent": 0.0,
+        }
     returns = np.where(chosen["winner"].eq(1), chosen["odds"] * stake, 0.0)
     pnl = returns - stake
     bankroll = initial_bankroll + np.cumsum(pnl)
@@ -121,7 +138,11 @@ def _evaluate(
     validation_frame: pd.DataFrame,
     target: pd.Series,
     predictions: np.ndarray,
+    *,
+    probability_temperature: float = 1.0,
 ) -> tuple[dict[str, float | int], pd.DataFrame]:
+    if probability_temperature <= 0:
+        raise ValueError("probability_temperature must be positive")
     evaluation = validation_frame[
         ["race_id", "odds", "popularity"]
     ].copy()
@@ -144,10 +165,18 @@ def _evaluate(
     if evaluation.empty:
         raise ValueError("no complete validation races are available")
 
-    evaluation["probability"] = _softmax_by_race(evaluation, "score")
+    evaluation["probability_score"] = evaluation["score"] / probability_temperature
+    evaluation["probability"] = _softmax_by_race(evaluation, "probability_score")
     labels = evaluation["winner"].to_numpy(dtype=int)
     probabilities = evaluation["probability"].to_numpy(dtype=float)
-    candidate = _strategy_metrics(evaluation, selector="candidate")
+    minimum_expected_value = float(
+        STAKING_POLICY["candidate"]["minimum_expected_value"]
+    )
+    candidate = _strategy_metrics(
+        evaluation,
+        selector="candidate",
+        minimum_expected_value=minimum_expected_value,
+    )
     baseline = _strategy_metrics(evaluation, selector="baseline")
     correlation = spearmanr(evaluation["target"], evaluation["score"]).statistic
     metrics: dict[str, float | int] = {
@@ -170,6 +199,8 @@ def _evaluate(
         "roi_delta_to_baseline_percent": float(
             float(candidate["roi_percent"]) - float(baseline["roi_percent"])
         ),
+        "minimum_expected_value": minimum_expected_value,
+        "probability_temperature": float(probability_temperature),
     }
     return metrics, evaluation
 
@@ -364,6 +395,8 @@ def train_candidate(
         "artifact_sha256": _sha256(artifact),
         "target": bundle["target"],
         "target_definition": bundle["target_definition"],
+        "staking_policy_id": STAKING_POLICY["policy_id"],
+        "staking_policy_approval_reference": STAKING_POLICY["approval_reference"],
         "training_period": {
             "start": train_start.date().isoformat(),
             "end": train_end.date().isoformat(),

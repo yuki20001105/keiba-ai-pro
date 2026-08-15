@@ -164,6 +164,8 @@ jobs:
         run: |
           python -m pytest \
             keiba/keiba_ai/tests/test_feature_engineering.py \
+            keiba/keiba_ai/tests/test_speed_deviation.py \
+            keiba/keiba_ai/tests/test_speed_deviation_candidate_policy.py \
             keiba/keiba_ai/tests/test_train_inference_consistency.py::TestConsistencyWithSyntheticData \
             python-api/tests/test_contract_health.py \
             -v --tb=short
