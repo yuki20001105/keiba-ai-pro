@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
@@ -20,6 +20,7 @@ from .staking import build_staking_decisions, load_staking_payout_policy
 
 logger = logging.getLogger(__name__)
 JRA_TIMEZONE = ZoneInfo("Asia/Tokyo")
+MAX_SOURCE_AGE = timedelta(minutes=30)
 
 
 def _source_timestamp(record: Mapping[str, Any]) -> datetime:
@@ -126,6 +127,17 @@ def capture_analyze_predictions(
         if number is None:
             number = source.get("horse_no")
         source_by_number[int(number or index + 1)] = source
+    statuses = {
+        str(source.get("odds_status") or "").strip().lower()
+        for source in source_records
+    }
+    if statuses != {"middle"}:
+        raise ObservationContractError("prediction-odds-status-not-middle")
+    source_timestamps = [_source_timestamp(source) for source in source_records]
+    data_cutoff_at = max(source_timestamps)
+    now = datetime.now(timezone.utc)
+    if data_cutoff_at > now or now - data_cutoff_at > MAX_SOURCE_AGE:
+        raise ObservationContractError("prediction-source-freshness-invalid")
     features_by_number = _feature_row_by_horse_number(feature_frame, source_records)
     staking_policy = load_staking_payout_policy()
     staking_decisions = build_staking_decisions(predictions, staking_policy)
@@ -149,7 +161,7 @@ def capture_analyze_predictions(
             horse_number=number,
             race_date=_race_date(race_info),
             data_observed_at=observed_at,
-            data_cutoff_at=max(_source_timestamp(row) for row in source_records),
+            data_cutoff_at=data_cutoff_at,
             feature_columns=feature_columns,
             feature_values=feature_values,
             predicted_value=float(prediction.get("p_raw") or 0.0),

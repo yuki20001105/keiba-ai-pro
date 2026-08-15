@@ -962,10 +962,15 @@ async def _scrape_shutuba_fallback(
         if chunk_start + 4 < len(horses):
             await asyncio.sleep(1.0)
 
+    for horse in horses:
+        horse["odds_status"] = _odds_status
+
     logger.info(f"[shutuba] {race_id}: {len(horses)}頭取得 ({race_name} @ {venue} {distance}m)")
-    return _build_race_result(
+    snapshot = _build_race_result(
         race_id, race_name, venue, date_str, post_time, race_class,
         kai, day, course_direction, distance, track_type, weather,
         field_condition, len(horses), [], [], horses,
         (distance == 0)
     )
+    snapshot["race_info"]["odds_status"] = _odds_status
+    return snapshot

@@ -9,7 +9,7 @@ PYTHON_API = Path(__file__).resolve().parents[1]
 if str(PYTHON_API) not in sys.path:
     sys.path.insert(0, str(PYTHON_API))
 
-from observation.capture import _training_cutoff  # noqa: E402
+from observation.capture import MAX_SOURCE_AGE, _source_timestamp, _training_cutoff  # noqa: E402
 from observation.contracts import ObservationContractError  # noqa: E402
 
 
@@ -47,3 +47,9 @@ def test_training_cutoff_rejects_missing_or_mismatched_exact_date(
 ) -> None:
     with pytest.raises(ObservationContractError):
         _training_cutoff(bundle, path)
+
+
+def test_source_timestamp_accepts_bound_utc_observation_time() -> None:
+    observed_at = datetime.now(timezone.utc) - MAX_SOURCE_AGE / 2
+
+    assert _source_timestamp({"data_observed_at": observed_at.isoformat()}) == observed_at

@@ -4,6 +4,7 @@ import asyncio
 import json
 import sqlite3
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ if str(PYTHON_API) not in sys.path:
 from scraping import fetch_pipeline, horse, race  # type: ignore  # noqa: E402
 from scraping.odds import parse_tansho_odds_payload  # type: ignore  # noqa: E402
 from services.race_snapshot import (  # type: ignore  # noqa: E402
+    bind_source_observed_at,
     is_trustworthy_race_date,
     save_valid_race_snapshot,
     snapshot_validation_errors,
@@ -177,6 +179,8 @@ def test_shutuba_parser_keeps_distance_and_uses_actual_dynamic_odds(
     assert snapshot["horses"][0]["popularity"] == 3
     assert snapshot["horses"][0]["sire"] == "test-sire"
     assert snapshot["horses"][0]["prev_race_finish"] == 2
+    assert snapshot["horses"][0]["odds_status"] == "middle"
+    assert snapshot["race_info"]["odds_status"] == "middle"
     assert captured["force_refresh"] is True
 
 
@@ -274,6 +278,15 @@ def test_incomplete_stored_snapshot_requires_refresh() -> None:
         {"date": "20260402", "distance": 0},
         rows,
     ) is True
+
+
+def test_fresh_snapshot_binds_one_timezone_aware_source_timestamp() -> None:
+    snapshot = bind_source_observed_at(_snapshot())
+
+    observed_at = snapshot["race_info"]["data_observed_at"]
+    assert observed_at.endswith("Z")
+    assert snapshot["horses"][0]["data_observed_at"] == observed_at
+    assert datetime.fromisoformat(observed_at.replace("Z", "+00:00")).tzinfo is not None
 
 
 def test_invalid_snapshot_cannot_replace_an_existing_atomic_snapshot(tmp_path: Path) -> None:

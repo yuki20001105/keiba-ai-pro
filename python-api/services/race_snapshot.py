@@ -3,12 +3,27 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 
 _YYYYMMDD_RE = re.compile(r"^\d{8}$")
+
+
+def bind_source_observed_at(snapshot: dict) -> dict:
+    """Bind a coherent fresh snapshot to one UTC retrieval-completion instant."""
+
+    observed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    race_info = snapshot.get("race_info")
+    if isinstance(race_info, dict):
+        race_info["data_observed_at"] = observed_at
+    horses = snapshot.get("horses")
+    if isinstance(horses, list):
+        for horse in horses:
+            if isinstance(horse, dict):
+                horse["data_observed_at"] = observed_at
+    return snapshot
 
 
 def is_trustworthy_race_date(race_id: str, value: Any) -> bool:
@@ -95,6 +110,8 @@ def stored_rows_need_refresh(race_id: str, race_info: dict, horse_rows: list[Any
             return True
         if not isinstance(horse, dict):
             return True
+        if not str(horse.get("data_observed_at") or "").strip():
+            return True
         try:
             odds_seen = odds_seen or float(horse.get("odds")) > 0
         except (TypeError, ValueError):
@@ -135,7 +152,7 @@ async def fetch_fresh_race_snapshot(
     if use_result_first:
         result_snapshot = await _result()
         if result_snapshot and not snapshot_validation_errors(result_snapshot, race_id):
-            return result_snapshot
+            return bind_source_observed_at(result_snapshot)
 
     shutuba_snapshot = await _shutuba()
     if shutuba_snapshot and not snapshot_validation_errors(shutuba_snapshot, race_id):
@@ -150,13 +167,14 @@ async def fetch_fresh_race_snapshot(
         ):
             result_snapshot = await _result(discovered_date)
             if result_snapshot and not snapshot_validation_errors(result_snapshot, race_id):
-                return result_snapshot
-        return shutuba_snapshot
+                return bind_source_observed_at(result_snapshot)
+        return bind_source_observed_at(shutuba_snapshot)
 
     result_snapshot = await _result()
     if result_snapshot and not snapshot_validation_errors(result_snapshot, race_id):
-        return result_snapshot
-    return shutuba_snapshot or result_snapshot
+        return bind_source_observed_at(result_snapshot)
+    fallback = shutuba_snapshot or result_snapshot
+    return bind_source_observed_at(fallback) if fallback else None
 
 
 def save_valid_race_snapshot(snapshot: dict, db_path: Path, expected_race_id: str) -> bool:
