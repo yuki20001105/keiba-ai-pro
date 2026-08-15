@@ -45,8 +45,14 @@ ABILITY_EXCLUDED_MARKET_FIELDS = frozenset(
         "odds_source",
         "odds_snapshot_kind",
         "implied_prob_norm",
+        "implied_prob",
         "odds_rank_in_race",
+        "odds_z_in_race",
+        "market_entropy",
+        "top3_probability",
+        "popularity_normalized",
         "tansho_implied_prob",
+        "past5_avg_tansho_log",
     }
 )
 
@@ -193,6 +199,7 @@ def _evaluate(
     *,
     probability_temperature: float = 1.0,
     require_value_data: bool = True,
+    winner_scores: np.ndarray | None = None,
 ) -> tuple[dict[str, float | int | None], pd.DataFrame]:
     if probability_temperature <= 0:
         raise ValueError("probability_temperature must be positive")
@@ -219,6 +226,11 @@ def _evaluate(
     evaluation["finish"] = _finish_series(validation_frame)
     evaluation["target"] = target.to_numpy(dtype=float)
     evaluation["score"] = np.asarray(predictions, dtype=float)
+    if winner_scores is not None:
+        winner_scores_array = np.asarray(winner_scores, dtype=float)
+        if len(winner_scores_array) != len(evaluation):
+            raise ValueError("winner_scores must align with validation_frame")
+        evaluation["winner_score"] = winner_scores_array
     evaluation["winner"] = evaluation["finish"].eq(1).astype(int)
 
     complete_races: list[str] = []
@@ -233,7 +245,10 @@ def _evaluate(
     if evaluation.empty:
         raise ValueError("no complete validation races are available")
 
-    evaluation["probability_score"] = evaluation["score"] / probability_temperature
+    probability_source = "winner_score" if winner_scores is not None else "score"
+    evaluation["probability_score"] = (
+        evaluation[probability_source] / probability_temperature
+    )
     evaluation["probability"] = _softmax_by_race(evaluation, "probability_score")
     labels = evaluation["winner"].to_numpy(dtype=int)
     probabilities = evaluation["probability"].to_numpy(dtype=float)

@@ -29,6 +29,7 @@ from keiba_ai.lightgbm_feature_optimizer import (  # noqa: E402
 from keiba_ai.speed_deviation import (  # noqa: E402
     apply_speed_deviation_baseline,
     fit_speed_deviation_baseline,
+    raw_speed_mps,
 )
 from scripts.train_speed_deviation_candidate import (  # noqa: E402
     ABILITY_EXCLUDED_MARKET_FIELDS,
@@ -42,9 +43,68 @@ from scripts.train_speed_deviation_candidate import (  # noqa: E402
 )
 
 
-REPORT_SCHEMA = "speed-deviation-walk-forward-evaluation-v1"
+REPORT_SCHEMA = "speed-deviation-walk-forward-evaluation-v2"
 ACCEPTANCE_CONTRACT_PATH = ROOT / "config" / "model_acceptance_contract.v1.json"
 DEFAULT_FOLDS = (2016, 2017, 2018, 2025)
+
+WINNER_META_FEATURES = frozenset(
+    {
+        "horse_number",
+        "frame_number",
+        "distance",
+        "num_horses",
+        "race_number",
+        "carried_weight",
+        "horse_weight",
+        "horse_weight_change",
+        "days_since_last_race",
+        "prev_race_finish",
+        "prev2_race_finish",
+        "prev3_race_finish",
+        "prev4_race_finish",
+        "prev5_race_finish",
+        "prev_race_distance",
+        "prev2_race_distance",
+        "prev_speed_index",
+        "prev_speed_zscore",
+        "prev2_speed_index",
+        "prev2_speed_zscore",
+        "recent_form_weighted",
+        "form_trend",
+        "speed_index_change",
+        "prior_speed_mps_last",
+        "prior_speed_mps_mean_3",
+        "prior_speed_mps_mean_5",
+        "prior_speed_mps_std_5",
+        "prior_speed_mps_career_mean",
+        "prior_speed_mps_surface_mean",
+        "prior_speed_mps_distance_band_mean",
+        "prior_speed_mps_trend",
+        "prior_speed_observation_count",
+        "horse_distance_win_rate",
+        "horse_surface_win_rate",
+        "horse_venue_win_rate",
+        "past3_avg_finish",
+        "past3_win_rate",
+        "past5_win_rate",
+        "jockey_course_win_rate",
+        "jockey_recent30_win_rate",
+        "trainer_recent30_win_rate",
+        "jockey_show_rate",
+        "trainer_show_rate",
+        "sire_win_rate",
+        "sire_show_rate",
+        "damsire_win_rate",
+        "damsire_show_rate",
+        "venue_encoded",
+        "venue_code_encoded",
+        "field_condition_encoded",
+        "race_class_encoded",
+        "sex_encoded",
+        "date_month",
+        "date_dayofweek",
+    }
+)
 
 
 def _params() -> dict[str, Any]:
@@ -115,6 +175,65 @@ def _weights(
     return np.power(0.5, age_years / recency_half_life_years)
 
 
+def _add_prior_speed_history(source: pd.DataFrame) -> pd.DataFrame:
+    """Add strictly shifted realized-speed history; the current result is never used."""
+    if "horse_id" not in source.columns:
+        return source.copy()
+    result = source.copy()
+    horse = result["horse_id"].astype("string").str.strip()
+    missing_horse = horse.isna() | horse.eq("")
+    if missing_horse.any():
+        horse = horse.mask(
+            missing_horse,
+            pd.Series(
+                [f"__missing_horse_{index}" for index in result.index],
+                index=result.index,
+                dtype="string",
+            ),
+        )
+    speed = raw_speed_mps(result)
+    prior = speed.groupby(horse, sort=False).shift(1)
+    prior_grouped = prior.groupby(horse, sort=False)
+    result["prior_speed_mps_last"] = prior
+    result["prior_speed_mps_mean_3"] = prior_grouped.transform(
+        lambda values: values.rolling(3, min_periods=1).mean()
+    )
+    result["prior_speed_mps_mean_5"] = prior_grouped.transform(
+        lambda values: values.rolling(5, min_periods=1).mean()
+    )
+    result["prior_speed_mps_std_5"] = prior_grouped.transform(
+        lambda values: values.rolling(5, min_periods=2).std()
+    )
+    result["prior_speed_mps_career_mean"] = prior_grouped.transform(
+        lambda values: values.expanding(min_periods=1).mean()
+    )
+    result["prior_speed_observation_count"] = prior.notna().groupby(
+        horse, sort=False
+    ).cumsum()
+
+    if "surface" in result.columns:
+        surface = result["surface"].astype("string").fillna("unknown")
+    elif "track_type" in result.columns:
+        surface = result["track_type"].astype("string").fillna("unknown")
+    else:
+        surface = pd.Series("unknown", index=result.index, dtype="string")
+    surface_prior = speed.groupby([horse, surface], sort=False).shift(1)
+    result["prior_speed_mps_surface_mean"] = surface_prior.groupby(
+        [horse, surface], sort=False
+    ).transform(lambda values: values.expanding(min_periods=1).mean())
+
+    distance = pd.to_numeric(result.get("distance"), errors="coerce")
+    distance_band = (distance // 400 * 400).astype("Int64").astype("string")
+    distance_prior = speed.groupby([horse, distance_band], sort=False).shift(1)
+    result["prior_speed_mps_distance_band_mean"] = distance_prior.groupby(
+        [horse, distance_band], sort=False
+    ).transform(lambda values: values.expanding(min_periods=1).mean())
+    result["prior_speed_mps_trend"] = (
+        result["prior_speed_mps_last"] - result["prior_speed_mps_mean_3"]
+    )
+    return result
+
+
 def _select_probability_temperature(evaluated: pd.DataFrame) -> float:
     def objective(log_temperature: float) -> float:
         temperature = math.exp(log_temperature)
@@ -133,6 +252,155 @@ def _select_probability_temperature(evaluated: pd.DataFrame) -> float:
     if not result.success:
         raise RuntimeError("inner probability temperature optimization failed")
     return float(math.exp(float(result.x)))
+
+
+def _winner_meta_matrix(
+    base_features: pd.DataFrame,
+    race_ids: pd.Series,
+    speed_scores: np.ndarray,
+) -> pd.DataFrame:
+    """Build a market-free winner matrix from pre-race fields and speed OOF scores."""
+    if len(base_features) != len(race_ids) or len(base_features) != len(speed_scores):
+        raise ValueError("winner meta inputs must have identical lengths")
+    selected = [column for column in base_features.columns if column in WINNER_META_FEATURES]
+    matrix = base_features.loc[:, selected].reset_index(drop=True).copy()
+    race = race_ids.astype("string").reset_index(drop=True)
+    score = pd.Series(np.asarray(speed_scores, dtype=float), name="speed_score")
+    grouped = score.groupby(race, sort=False)
+    group_mean = grouped.transform("mean")
+    group_std = grouped.transform("std").replace(0.0, np.nan)
+    matrix["speed_score"] = score
+    matrix["speed_score_race_z"] = (score - group_mean) / group_std
+    matrix["speed_gap_to_best"] = score - grouped.transform("max")
+    matrix["speed_rank_percentile"] = grouped.rank(
+        method="average", ascending=False, pct=True
+    )
+    matrix["field_size"] = race.groupby(race, sort=False).transform("size").astype(float)
+    return matrix.replace([np.inf, -np.inf], np.nan)
+
+
+def _fit_winner_meta(
+    *,
+    inner_features: pd.DataFrame,
+    inner_source: pd.DataFrame,
+    inner_speed_scores: np.ndarray,
+    validation_features: pd.DataFrame,
+    validation_source: pd.DataFrame,
+    validation_speed_scores: np.ndarray,
+) -> tuple[np.ndarray, float, dict[str, Any]]:
+    """Fit an inner-period OOF winner model and score the untouched outer year."""
+    inner_source = inner_source.reset_index(drop=True)
+    validation_source = validation_source.reset_index(drop=True)
+    inner_x = _winner_meta_matrix(
+        inner_features,
+        inner_source["race_id"],
+        inner_speed_scores,
+    )
+    validation_x = _winner_meta_matrix(
+        validation_features,
+        validation_source["race_id"],
+        validation_speed_scores,
+    )
+    for column in inner_x.columns:
+        if column not in validation_x.columns:
+            validation_x[column] = np.nan
+    validation_x = validation_x.loc[:, inner_x.columns]
+
+    labels = pd.to_numeric(inner_source["finish"], errors="coerce").eq(1).astype(int)
+    race_ids = inner_source["race_id"].astype("string")
+    race_sizes = race_ids.groupby(race_ids, sort=False).transform("size")
+    race_winners = labels.groupby(race_ids, sort=False).transform("sum")
+    usable = race_sizes.ge(5) & race_winners.eq(1)
+    inner_x = inner_x.loc[usable].reset_index(drop=True)
+    labels = labels.loc[usable].reset_index(drop=True)
+    race_ids = race_ids.loc[usable].reset_index(drop=True)
+    dates = inner_source.loc[usable, "_race_date"].reset_index(drop=True)
+
+    unique_dates = dates.dropna().drop_duplicates().sort_values()
+    if len(unique_dates) < 10 or len(inner_x) < 1_000:
+        raise ValueError("winner meta inner period is insufficient")
+    split_index = min(max(int(len(unique_dates) * 0.7), 1), len(unique_dates) - 1)
+    calibration_start = pd.Timestamp(unique_dates.iloc[split_index])
+    fit_mask = dates.lt(calibration_start)
+    calibration_mask = dates.ge(calibration_start)
+    if int(fit_mask.sum()) < 500 or int(calibration_mask.sum()) < 200:
+        raise ValueError("winner meta fit/calibration split is insufficient")
+
+    params = {
+        "objective": "binary",
+        "metric": "binary_logloss",
+        "learning_rate": 0.03,
+        "num_leaves": 15,
+        "min_data_in_leaf": 100,
+        "feature_fraction": 0.8,
+        "bagging_fraction": 0.8,
+        "bagging_freq": 1,
+        "reg_alpha": 0.2,
+        "reg_lambda": 0.5,
+        "verbosity": -1,
+        "seed": 42,
+        "feature_fraction_seed": 42,
+        "bagging_seed": 42,
+    }
+    fit_set = Dataset(
+        inner_x.loc[fit_mask].reset_index(drop=True),
+        label=labels.loc[fit_mask].reset_index(drop=True),
+        free_raw_data=False,
+    )
+    calibration_set = Dataset(
+        inner_x.loc[calibration_mask].reset_index(drop=True),
+        label=labels.loc[calibration_mask].reset_index(drop=True),
+        reference=fit_set,
+        free_raw_data=False,
+    )
+    selector: Booster = train(
+        params,
+        fit_set,
+        num_boost_round=800,
+        valid_sets=[calibration_set],
+        valid_names=["winner_meta_calibration"],
+        callbacks=[early_stopping(50, verbose=False), log_evaluation(0)],
+    )
+    selected_iterations = max(int(selector.best_iteration), 1)
+    calibration_scores = selector.predict(
+        inner_x.loc[calibration_mask].reset_index(drop=True),
+        num_iteration=selected_iterations,
+        raw_score=True,
+    )
+    calibration_evaluation = pd.DataFrame(
+        {
+            "race_id": race_ids.loc[calibration_mask].reset_index(drop=True),
+            "score": calibration_scores,
+            "winner": labels.loc[calibration_mask].reset_index(drop=True),
+        }
+    )
+    temperature = _select_probability_temperature(calibration_evaluation)
+
+    full_set = Dataset(inner_x, label=labels, free_raw_data=False)
+    model: Booster = train(
+        params,
+        full_set,
+        num_boost_round=selected_iterations,
+        callbacks=[log_evaluation(0)],
+    )
+    validation_scores = model.predict(
+        validation_x,
+        num_iteration=selected_iterations,
+        raw_score=True,
+    )
+    metadata = {
+        "training_sample_count": int(len(inner_x)),
+        "training_race_count": int(race_ids.nunique()),
+        "calibration_start": calibration_start.date().isoformat(),
+        "selected_iterations": selected_iterations,
+        "probability_temperature": temperature,
+        "feature_count": int(len(inner_x.columns)),
+        "features": list(inner_x.columns),
+        "market_feature_intersection": sorted(
+            set(inner_x.columns) & set(ABILITY_EXCLUDED_MARKET_FIELDS)
+        ),
+    }
+    return np.asarray(validation_scores, dtype=float), temperature, metadata
 
 
 def _fit_fold(
@@ -226,14 +494,6 @@ def _fit_fold(
     inner_tuning_evaluation_source = inner_tuning_source.loc[
         inner_tuning_valid
     ].reset_index(drop=True)
-    _, inner_evaluated = _evaluate(
-        inner_tuning_evaluation_source,
-        inner_tuning_target,
-        inner_predictions,
-        require_value_data=False,
-    )
-    probability_temperature = _select_probability_temperature(inner_evaluated)
-
     final_baseline = fit_speed_deviation_baseline(
         training_source,
         min_group_size=min_group_size,
@@ -269,12 +529,21 @@ def _fit_fold(
         callbacks=[log_evaluation(0)],
     )
     predictions = model.predict(validation_x, num_iteration=selected_iterations)
+    winner_scores, probability_temperature, winner_meta = _fit_winner_meta(
+        inner_features=inner_tuning_x,
+        inner_source=inner_tuning_evaluation_source,
+        inner_speed_scores=inner_predictions,
+        validation_features=validation_x,
+        validation_source=validation_source,
+        validation_speed_scores=predictions,
+    )
     metrics, evaluated = _evaluate(
         validation_source,
         validation_target,
         predictions,
         probability_temperature=probability_temperature,
         require_value_data=False,
+        winner_scores=winner_scores,
     )
     fold = {
         "validation_year": validation_year,
@@ -293,6 +562,7 @@ def _fit_fold(
         "inner_tuning_sample_count": int(len(inner_tuning_target)),
         "selected_iterations": selected_iterations,
         "probability_temperature": probability_temperature,
+        "winner_meta": winner_meta,
         "feature_count": int(len(train_x.columns)),
         "future_feature_intersection": sorted(set(train_x.columns) & set(FUTURE_FIELDS)),
         "market_feature_intersection": sorted(
@@ -424,6 +694,7 @@ def evaluate_walk_forward(
     source = source.sort_values(
         ["_race_date", "race_id", "horse_number"]
     ).reset_index(drop=True)
+    source = _add_prior_speed_history(source)
     engineered = add_derived_features(source, full_history_df=source)
     engineered = engineered.loc[:, ~engineered.columns.duplicated()]
 
@@ -476,6 +747,9 @@ def evaluate_walk_forward(
             "inner_tuning_fraction": tuning_fraction,
             "outer_fold_never_used_for_iteration_selection": True,
             "feature_policy_fixed_before_outer_validation": True,
+            "prior_speed_features_strictly_shifted": True,
+            "winner_probability_source": "inner-period-oof-speed-winner-meta",
+            "winner_meta_outer_year_never_seen": True,
             "ability_market_fields_excluded": sorted(ABILITY_EXCLUDED_MARKET_FIELDS),
         },
         "staking_policy_id": STAKING_POLICY["policy_id"],
