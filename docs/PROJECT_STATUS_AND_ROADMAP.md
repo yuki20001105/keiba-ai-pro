@@ -89,7 +89,7 @@ GitHub metadata was inspected without changing repository or provider state on 2
 | Boundary | Observed state | Assessment |
 |---|---|---|
 | Protected approval Environments | `staging-migration`, `staging-execution-unlock`, and `production-release` exist with required reviewer rules and explicit branch policies | Governance skeleton exists |
-| Trusted producer | Immutable v1 and v2 remain protected historical evidence; this candidate rotates consumers to `security/phase3n-trusted-producer-v3` | v3 must be created from the final merged develop SHA, protected before use, and recorded in `PHASE3N_TRUSTED_PRODUCER_SHA` |
+| Trusted producer | Immutable v1-v3 remain protected historical evidence; this candidate rotates consumers to `security/phase3n-trusted-producer-v4` | v4 must pass its protected review CI, be locked after merge, and be recorded in `PHASE3N_TRUSTED_PRODUCER_SHA` |
 | Trusted evidence run | Run `29730598574` passed context and migration approval, then failed after waiting at the Staging execution boundary; no successful Phase 3N run exists | No trusted evidence artifact |
 | Promotion selector | `PHASE3N_STAGING_EVIDENCE_RUN_ID` is absent | Promotion cannot select an approved run |
 | Protected evidence inputs | No Environment secret names were present for the three Phase 3N Environments; the current workflow requires `PHASE3N_STAGING_OBSERVATION_B64` and `MODEL_EVALUATION_OBSERVATIONS_GZIP_B64` at execution unlock | Trusted workflow must fail closed |
@@ -313,7 +313,7 @@ The percentages above are prioritization estimates, not additive score increment
 ### Immediate next sequence
 
 1. Complete review of the limited observation contract, runtime guards, workflow split, health-mode projection, and runbook; merge only with an unchanged candidate tree.
-2. Update and independently review `security/phase3n-trusted-producer-v3`, then run `staging-evidence.yml` with `evidence_scope=limited-observation` for the exact candidate.
+2. Independently review and lock `security/phase3n-trusted-producer-v4`, then run `staging-evidence.yml` with `evidence_scope=limited-observation` for the exact candidate.
 3. Finish Production health/error/observation alerts, incident ownership, and an executable rollback rehearsal; configure Production with observation enabled last and automatic betting disabled.
 4. Run the protected limited release authorization, deploy the exact merge, and pass health/auth/prediction/append-only observation/rollback smoke without enabling automatic betting.
 5. After race `202604020812` is authoritative, reconcile its result exactly once and continue prospective collection to 90 days, 1,000 settled samples, and 100 qualifying virtual bets.

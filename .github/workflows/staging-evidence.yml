@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       trusted_producer_sha:
-        description: Immutable commit at security/phase3n-trusted-producer-v3 that owns this evidence producer
+        description: Immutable commit at security/phase3n-trusted-producer-v4 that owns this evidence producer
         required: true
         type: string
       max_age_seconds:
@@ -29,7 +29,7 @@ permissions:
   contents: read
 
 env:
-  TRUSTED_REF: refs/heads/security/phase3n-trusted-producer-v3
+  TRUSTED_REF: refs/heads/security/phase3n-trusted-producer-v4
 
 concurrency:
   group: phase3n-staging-evidence
@@ -66,9 +66,9 @@ jobs:
           [[ "$(git rev-parse HEAD)" == "$TRUSTED_PRODUCER_SHA" ]]
           git fetch --no-tags origin \
             "+refs/heads/develop:refs/remotes/origin/develop" \
-            "+$TRUSTED_REF:refs/remotes/origin/security/phase3n-trusted-producer-v3"
+            "+$TRUSTED_REF:refs/remotes/origin/security/phase3n-trusted-producer-v4"
           [[ "$(git rev-parse origin/develop)" == "$EXPECTED_COMMIT" ]]
-          [[ "$(git rev-parse origin/security/phase3n-trusted-producer-v3)" == "$TRUSTED_PRODUCER_SHA" ]]
+          [[ "$(git rev-parse origin/security/phase3n-trusted-producer-v4)" == "$TRUSTED_PRODUCER_SHA" ]]
           git diff --quiet "$TRUSTED_PRODUCER_SHA" "$EXPECTED_COMMIT" -- \
             .github/workflows/ci.yml \
             .github/workflows/release.yml \
