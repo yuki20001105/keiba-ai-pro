@@ -164,8 +164,13 @@ jobs:
         run: |
           python -m pytest \
             keiba/keiba_ai/tests/test_feature_engineering.py \
+            keiba/keiba_ai/tests/test_licensed_history.py \
+            keiba/keiba_ai/tests/test_nested_strategy.py \
+            keiba/keiba_ai/tests/test_phase3n_oof_value.py \
+            keiba/keiba_ai/tests/test_point_in_time_odds.py \
             keiba/keiba_ai/tests/test_speed_deviation.py \
             keiba/keiba_ai/tests/test_speed_deviation_candidate_policy.py \
+            keiba/keiba_ai/tests/test_winner_meta_model.py \
             keiba/keiba_ai/tests/test_train_inference_consistency.py::TestConsistencyWithSyntheticData \
             python-api/tests/test_contract_health.py \
             -v --tb=short

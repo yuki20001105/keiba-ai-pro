@@ -162,6 +162,37 @@ def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
     # race_results_ultimate から全データ取得（イテレータでメモリ消費を削減）
     cursor.execute("SELECT race_id, data FROM race_results_ultimate")
     rows = cursor.fetchall()  # NOTE: 10万行超の場合は cursor.fetchmany() に切り替えの余地あり
+
+    # Keep licensed imports physically separate and append-only, then expose
+    # their canonical payloads through the same training-frame contract.
+    cursor.execute(
+        "SELECT name FROM sqlite_master "
+        "WHERE type='table' AND name='licensed_history_entries'"
+    )
+    if cursor.fetchone():
+        cursor.execute(
+            "SELECT race_id, horse_id, payload_json FROM licensed_history_entries "
+            "ORDER BY race_date, race_id, horse_id"
+        )
+        licensed_records = cursor.fetchall()
+        licensed_keys = {(str(race_id), str(horse_id)) for race_id, horse_id, _ in licensed_records}
+        licensed_race_ids = {race_id for race_id, _ in licensed_keys}
+        retained_rows = []
+        for race_id, payload_json in rows:
+            if str(race_id) not in licensed_race_ids:
+                retained_rows.append((race_id, payload_json))
+                continue
+            try:
+                horse_id = str(json.loads(payload_json).get("horse_id", ""))
+            except (json.JSONDecodeError, TypeError):
+                horse_id = ""
+            if (str(race_id), horse_id) not in licensed_keys:
+                retained_rows.append((race_id, payload_json))
+        rows = retained_rows + [
+            (race_id, payload_json) for race_id, _, payload_json in licensed_records
+        ]
+        licensed_rows = len(licensed_records)
+        print(f"  licensed_history_entries: {licensed_rows} records loaded")
     
     # races_ultimate から distance/track_type/date/num_horses を取得（イテレータで处理）
     race_meta = {}

@@ -1,0 +1,14 @@
+{
+  "schema": "phase3n-strategy-search-space",
+  "schema_version": 1,
+  "status": "research-only-unapproved",
+  "deployment_eligible": false,
+  "selection_data": "inner-out-of-fold-only",
+  "minimum_bets": 100,
+  "maximum_drawdown_percent": 20.0,
+  "minimum_expected_values": [1.2, 1.3, 1.5, 2.0],
+  "minimum_probability_edges": [0.0, 0.01, 0.03, 0.05],
+  "minimum_odds": [1.01, 3.0, 5.0],
+  "maximum_odds": [10.0, 20.0, 50.0, 1000.0],
+  "target_bet_rates": [0.05, 0.1, 0.15, 0.2]
+}
