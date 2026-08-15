@@ -359,9 +359,10 @@ def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
                 | df[new_name].astype(str).str.strip().isin(["", "None", "nan"])
             )
             if _missing_canonical.any():
-                df.loc[_missing_canonical, new_name] = df.loc[
-                    _missing_canonical, old_name
-                ]
+                replacement = df.loc[_missing_canonical, old_name]
+                if pd.api.types.is_numeric_dtype(df[new_name].dtype):
+                    replacement = pd.to_numeric(replacement, errors="coerce")
+                df.loc[_missing_canonical, new_name] = replacement
     
     # jockey_id / trainer_id / horse_id: URLからIDを抽出、なければ名前を使用
     # ※ 地方馬・騎手は B プレフィックス付きID（例: B0060, B201600118）のため
