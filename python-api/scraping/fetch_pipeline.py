@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+import re
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -453,18 +454,25 @@ async def fetch_bytes(
     if retry_statuses is None:
         retry_statuses = {429, 500, 502, 503, 504}
 
-    if resume_key:
+    if resume_key and not force_refresh:
+        # A resume row is completion metadata, not a cached response body.  The
+        # old implementation returned HTTP 200 with body=b"" forever after the
+        # first successful fetch, which prevented mutable race/odds pages from
+        # ever being refreshed.  A resume hit is safe only while the matching
+        # HTTP cache entry (including its body and TTL) is still valid.
         resume_row = await asyncio.to_thread(_read_resume, resume_key)
-        if resume_row and str(resume_row.get("status")) == "success" and not force_refresh:
-            _metrics_inc("resume_hits", 1)
-            return FetchResult(
-                url=url,
-                normalized_url=normalized_url,
-                status=int(resume_row.get("http_status") or 200),
-                body=b"",
-                source="resume",
-                attempts=int(resume_row.get("attempts") or 1),
-            )
+        if resume_row and str(resume_row.get("status")) == "success":
+            cached = await asyncio.to_thread(_read_cache, normalized_url)
+            if cached is not None:
+                _metrics_inc("resume_hits", 1)
+                return FetchResult(
+                    url=str(cached["url"]),
+                    normalized_url=normalized_url,
+                    status=int(cached["status"]),
+                    body=bytes(cached["body"]),
+                    source="resume-cache",
+                    attempts=int(resume_row.get("attempts") or 1),
+                )
 
     if use_cache and not force_refresh:
         cached = await asyncio.to_thread(_read_cache, normalized_url)
@@ -594,12 +602,49 @@ async def fetch_bytes(
             inflight.pop(normalized_url, None)
 
 
+_CHARSET_RE = re.compile(br"charset\s*=\s*[\"']?\s*([a-zA-Z0-9._-]+)", re.IGNORECASE)
+
+
+def _decode_text_body(body: bytes) -> str:
+    """Decode Japanese race pages without assuming their historical encoding.
+
+    netkeiba currently serves race.netkeiba.com as UTF-8 while older database
+    pages and cached fixtures may still be EUC-JP.  Detect an HTML charset first,
+    then use strict fallbacks so UTF-8 text is never silently mojibaked as EUC-JP.
+    """
+
+    if not body:
+        return ""
+
+    head = body[:8192]
+    match = _CHARSET_RE.search(head)
+    declared = match.group(1).decode("ascii", errors="ignore").lower() if match else ""
+    aliases = {
+        "utf8": "utf-8",
+        "shift_jis": "cp932",
+        "shift-jis": "cp932",
+        "sjis": "cp932",
+        "x-sjis": "cp932",
+        "eucjp": "euc-jp",
+    }
+    candidates = [aliases.get(declared, declared)] if declared else []
+    candidates.extend(["utf-8-sig", "euc-jp", "cp932"])
+
+    seen: set[str] = set()
+    for encoding in candidates:
+        if not encoding or encoding in seen:
+            continue
+        seen.add(encoding)
+        try:
+            return body.decode(encoding, errors="strict")
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return body.decode("utf-8", errors="replace")
+
+
 async def fetch_text(session, url: str, **kwargs: Any) -> tuple[FetchResult, str]:
     result = await fetch_bytes(session, url, **kwargs)
-    text = ""
-    if result.body:
-        text = result.body.decode("euc-jp", errors="replace")
-    return result, text
+    return result, _decode_text_body(result.body)
 
 
 def get_fetch_metrics(reset: bool = False) -> dict[str, int]:
@@ -613,17 +658,23 @@ def get_fetch_metrics(reset: bool = False) -> dict[str, int]:
 
 def estimate_fetch_plan(urls: list[str], resume_keys: list[str] | None = None) -> dict[str, Any]:
     unique_urls = list(dict.fromkeys(_normalize_url(u) for u in urls if u))
-    cache_hits = 0
-    for normalized in unique_urls:
-        if _read_cache(normalized) is not None:
-            cache_hits += 1
-
-    resume_hits = 0
+    resume_by_url: dict[str, str] = {}
     if resume_keys:
-        for key in resume_keys:
-            row = _read_resume(key)
-            if row and str(row.get("status")) == "success":
-                resume_hits += 1
+        for raw_url, key in zip(urls, resume_keys):
+            if raw_url and key:
+                resume_by_url.setdefault(_normalize_url(raw_url), key)
+
+    cache_hits = 0
+    resume_hits = 0
+    for normalized in unique_urls:
+        if _read_cache(normalized) is None:
+            continue
+        resume_key = resume_by_url.get(normalized)
+        resume_row = _read_resume(resume_key) if resume_key else None
+        if resume_row and str(resume_row.get("status")) == "success":
+            resume_hits += 1
+        else:
+            cache_hits += 1
 
     estimated_network = max(0, len(unique_urls) - cache_hits - resume_hits)
     return {

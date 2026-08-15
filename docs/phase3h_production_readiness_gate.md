@@ -1,5 +1,11 @@
 # Phase 3H Production Readiness Decision Gate
 
+> Full model-validated Production and Limited Production observation are now
+> separate release classes. This document continues to define the full
+> `production_ready` gate. The system-only observation release is defined in
+> `docs/limited_production_observation_release.md` and must never be described
+> as model-business-validated or `ACTIVE`.
+
 ## 1. Decision
 
 Phase 3H is a release-blocking decision-contract gate. Its correct current result is:
@@ -10,7 +16,7 @@ Phase 3H is a release-blocking decision-contract gate. Its correct current resul
 
 This result is not a failed develop CI run. Develop CI succeeds when the gate proves, without ambiguity, that production prerequisites are incomplete and emits the complete schema-version-1 blocker set. Malformed, stale, inconsistent or self-promoting input fails the gate.
 
-For ordinary develop runs, the current repository-only assessment remains `not-ready`. For a `develop -> main` promotion, CI accepts READY only from the separate Phase 3N trusted Staging workflow running at the immutable `security/phase3n-trusted-producer-v3` SHA: the exact candidate commit, selected successful workflow run and attempt, GitHub-signed artifact provenance, repository ID, Environment approvals, freshness, provider identities, Phase 3M bootstrap fingerprints, Saga checks and Staging checks are all revalidated. Missing, ambiguous, stale, unsigned or mismatched evidence fails closed. A green develop assessment must never be interpreted as production authorization.
+For ordinary develop runs, the current repository-only assessment remains `not-ready`. For a `develop -> main` promotion, CI accepts READY only from the separate Phase 3N trusted Staging workflow running at the immutable `security/phase3n-trusted-producer-v4` SHA: the exact candidate commit, selected successful workflow run and attempt, GitHub-signed artifact provenance, repository ID, Environment approvals, freshness, provider identities, Phase 3M bootstrap fingerprints, Saga checks and Staging checks are all revalidated. Missing, ambiguous, stale, unsigned or mismatched evidence fails closed. A green develop assessment must never be interpreted as production authorization.
 
 ## 2. Inputs
 

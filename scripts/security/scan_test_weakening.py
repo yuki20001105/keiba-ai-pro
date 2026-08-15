@@ -33,6 +33,13 @@ ALLOWLIST_EXACT: Dict[str, str] = {
     # The canonical Phase 3M chain gained one guarded forward migration; the
     # replacement assertion remains exact and the manifest-order gate is unchanged.
     "python-api/tests/test_phase3m_supabase_bootstrap_gate.py:assert len(manifest.migrations) == 11": "replaced by exact 19-migration assertion after adding guarded model approval, job, worker-lease, artifact, evaluation, execution-bundle, orphan-reconciliation, and dispatch-queue contracts",
+    "python-api/tests/test_phase3m_supabase_bootstrap_gate.py:assert len(manifest.migrations) == 19": "replaced by exact 21-migration assertion after append-only shared outbox and immutable observation/HA contracts",
+    "python-api/tests/test_phase3m_supabase_upgrade_tool.py:assert len(candidate.migrations) == 19": "replaced by exact 21-migration assertion for the same append-only extension",
+    "python-api/tests/test_phase3m_supabase_upgrade_tool.py:assert sql.count(\"-- phase3m append migration \") == 8": "replaced by an exact 10-appended-migration assertion after adding ordinals 20 and 21",
+    "python-api/tests/test_phase3m_supabase_upgrade_tool.py:assert len(rows) == 19": "replaced by exact 21-row history assertion after append-only extension",
+    "python-api/tests/test_phase3m_supabase_upgrade_tool.py:assert {row[-1] for row in rows[11:]} == {current_commit}": "replaced by exact old/current/candidate history segment assertions for all 21 ordinals",
+    "python-api/tests/test_phase3j_saga_outbox_runtime_gate.py:assert len(jobs) == 11": "replaced by exact 12-job assertion after adding the release-blocking Phase3N HA contract job",
+    "python-api/tests/test_phase3j_saga_outbox_runtime_gate.py:assert len(all_jobs) == 12": "replaced by exact 13-job assertion after adding the release-blocking Phase3N HA contract job",
     # The dependency gate moved from permissive ranges/no override to stricter
     # exact patched versions plus explicit resolution checks in the same test.
     "python-api/tests/test_phase3k_dependency_security_contract.py:assert package_json[\"dependencies\"][\"next\"] == \"^16.2.10\"": "replaced by exact Next.js 16.2.12 security pin assertion",
@@ -64,6 +71,7 @@ ALLOWLIST_EXACT: Dict[str, str] = {
     "python-api/tests/test_phase3l_deployment_safety.py:assert set(jobs) == {\"production-release-blocked\"}": "tombstone replaced by single environment-gated authorization job",
     "python-api/tests/test_phase3l_deployment_safety.py:assert len(steps) == 1": "replacement authorization workflow has multiple independently asserted gates",
     "python-api/tests/test_phase3l_deployment_safety.py:assert \"exit 1\" in steps[0][\"run\"]": "unconditional tombstone replaced by multiple fail-closed exact-context gates",
+    "python-api/tests/test_phase3l_deployment_safety.py:assert set(inputs) == {\"expected_commit\", \"trusted_producer_sha\", \"max_age_seconds\"}": "expanded by an exact evidence_scope input assertion whose only values preserve full validation or add the stricter automatic-betting-disabled limited-observation path",
     # The immutable v1 producer cannot be updated. Its exact assertions are
     # replaced by the same fail-closed assertions for the separately protected
     # v2 producer; no producer-ref check is removed or relaxed.
@@ -76,6 +84,10 @@ ALLOWLIST_EXACT: Dict[str, str] = {
     "python-api/tests/test_phase3l_deployment_safety.py:assert '.head_branch == \"security/phase3n-trusted-producer-v2\"' in resolver[\"run\"]": "rotated to the exact immutable v3 producer assertion",
     "python-api/tests/test_phase3l_deployment_safety.py:'.head_branch == \"security/phase3n-trusted-producer-v2\"',": "rotated to the exact immutable v3 producer assertion",
     "python-api/tests/test_phase3n_staging_evidence_gate.py:assert \"refs/heads/security/phase3n-trusted-producer-v2\" in workflow": "rotated to the exact immutable v3 producer assertion",
+    # v3 is locked by a no-bypass update ruleset. The replacement assertions
+    # bind the same fail-closed producer checks to the separately reviewed v4.
+    "python-api/tests/test_phase3l_deployment_safety.py:assert '.head_branch == \"security/phase3n-trusted-producer-v3\"' in resolver[\"run\"]": "rotated to the exact protected v4 producer assertion without weakening the immutable v3 branch",
+    "python-api/tests/test_phase3n_staging_evidence_gate.py:assert \"refs/heads/security/phase3n-trusted-producer-v3\" in workflow": "rotated to the exact protected v4 producer assertion without weakening the immutable v3 branch",
 }
 
 

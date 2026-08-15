@@ -1,0 +1,34 @@
+{
+  "approval_reference": "https://github.com/yuki20001105/keiba-ai-pro/issues/999#issuecomment-1",
+  "baseline": {
+    "maximum_wagers_per_race": 1,
+    "selection": "lowest_valid_win_odds",
+    "stake_yen": 100
+  },
+  "candidate": {
+    "maximum_wagers_per_race": 1,
+    "minimum_expected_value": 1.2,
+    "selection": "highest_model_expected_value",
+    "stake_yen": 100
+  },
+  "costs": {
+    "transaction_cost_yen_per_wager": 0
+  },
+  "policy_id": "phase3n-tansho-flat-v1",
+  "payout": {
+    "bet_type": "tansho",
+    "bet_type_aliases": [
+      "tansho",
+      "win",
+      "単勝"
+    ],
+    "source_tables": [
+      "race_payouts",
+      "payouts"
+    ],
+    "unit_yen": 100
+  },
+  "schema": "phase3n-staking-payout-policy",
+  "schema_version": 1,
+  "status": "approved"
+}

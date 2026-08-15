@@ -37,21 +37,26 @@ def test_node_runtime_and_direct_security_floors_are_explicit() -> None:
     assert package_json["devDependencies"]["vitest"] == "^4.1.10"
     assert "lucide-react" not in package_json["dependencies"]
     assert package_json["overrides"] == {
+        "js-yaml": "4.3.1",
+        "nanoid": "3.3.18",
         "postcss": "$postcss",
         "sharp": "$sharp",
+        "undici": "7.29.0",
     }
 
 
 def test_lockfile_contains_only_fixed_critical_and_high_versions() -> None:
     minimums = {
         "@grpc/grpc-js": (1, 14, 4),
+        "js-yaml": (4, 3, 1),
         "lodash": (4, 18, 0),
+        "nanoid": (3, 3, 18),
         "next": (16, 2, 12),
         "postcss": (8, 5, 25),
         "protobufjs": (7, 6, 3),
         "shell-quote": (1, 9, 0),
         "sharp": (0, 35, 3),
-        "undici": (7, 28, 0),
+        "undici": (7, 29, 0),
         "vite": (8, 0, 16),
         "ws": (8, 21, 0),
     }
