@@ -6,6 +6,7 @@ on:
       - develop
       - main
       - release
+      - security/phase3n-trusted-producer-v3
   push:
     branches:
       - main
