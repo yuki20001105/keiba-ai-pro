@@ -116,6 +116,18 @@
       "path": "supabase/migrations/20260802_model_retrain_dispatch_queue.sql",
       "source": "reconciled-existing",
       "description": "Service-only bounded approved retrain dispatch queue projection"
+    },
+    {
+      "version": "20260802148000",
+      "path": "supabase/migrations/20260720_scrape_operational_outbox.sql",
+      "source": "phase3n-ha-extension",
+      "description": "Shared PostgreSQL operational outbox with leases and fencing"
+    },
+    {
+      "version": "20260802149000",
+      "path": "supabase/migrations/20260802_phase3n_observation_ha.sql",
+      "source": "phase3n-ha-extension",
+      "description": "Immutable model observation ledger and fenced HA maintenance jobs"
     }
   ]
 }

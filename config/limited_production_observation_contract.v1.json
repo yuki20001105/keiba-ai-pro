@@ -1,0 +1,31 @@
+{
+  "schema": "limited-production-observation-contract",
+  "schema_version": 1,
+  "contract_id": "limited-production-observation-v1",
+  "status": "approved",
+  "approved_at": "2026-08-15T15:00:00Z",
+  "approved_by": "yuki20001105",
+  "approval_reference": "https://github.com/yuki20001105/keiba-ai-pro/pull/28",
+  "release_mode": "limited-observation",
+  "release_gate": {
+    "trusted_system_attestation_required": true,
+    "model_business_validation_required": false,
+    "production_environment_approval_required": true,
+    "exact_commit_required": true
+  },
+  "runtime_controls": {
+    "model_runtime_status": "observation",
+    "automated_betting_enabled": false,
+    "deployed_model_activation_enabled": false,
+    "deployed_model_training_enabled": false,
+    "observation_capture_required": true,
+    "point_in_time_middle_odds_required": true,
+    "rollback_ready_required": true
+  },
+  "post_release_validation": {
+    "contract_id": "model-acceptance-v1",
+    "required_for_observation_release": false,
+    "required_for_validated_status": true,
+    "required_for_active_status": true
+  }
+}

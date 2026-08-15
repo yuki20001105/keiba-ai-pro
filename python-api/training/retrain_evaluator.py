@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 BUILDER_PATH = ROOT / "scripts" / "build_model_acceptance_evidence.py"
 VERIFIER_PATH = ROOT / "scripts" / "verify_model_acceptance.py"
 CANONICAL_CONTRACT_PATH = ROOT / "config" / "model_acceptance_contract.v1.json"
+CANONICAL_STAKING_POLICY_PATH = ROOT / "config" / "phase3n_staking_payout_policy.v1.json"
 
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -104,7 +105,11 @@ def _load_module(name: str, path: Path) -> Any:
 class ModelAcceptancePipeline:
     """Strict rows -> recomputed evidence -> accepted sanitized report, in memory only."""
 
-    def __init__(self, contract_path: Path = CANONICAL_CONTRACT_PATH) -> None:
+    def __init__(
+        self,
+        contract_path: Path = CANONICAL_CONTRACT_PATH,
+        staking_policy_path: Path = CANONICAL_STAKING_POLICY_PATH,
+    ) -> None:
         if not contract_path.is_absolute() or contract_path.is_symlink():
             raise RetrainEvaluationError("retrain-evaluation-contract-invalid")
         try:
@@ -113,6 +118,14 @@ class ModelAcceptancePipeline:
             raise RetrainEvaluationError("retrain-evaluation-contract-invalid") from exc
         if not self._contract_path.is_file():
             raise RetrainEvaluationError("retrain-evaluation-contract-invalid")
+        if not staking_policy_path.is_absolute() or staking_policy_path.is_symlink():
+            raise RetrainEvaluationError("retrain-evaluation-staking-policy-invalid")
+        try:
+            self._staking_policy_path = staking_policy_path.resolve(strict=True)
+        except OSError as exc:
+            raise RetrainEvaluationError("retrain-evaluation-staking-policy-invalid") from exc
+        if not self._staking_policy_path.is_file():
+            raise RetrainEvaluationError("retrain-evaluation-staking-policy-invalid")
         self._builder = _load_module("retrain_evaluation_builder", BUILDER_PATH)
         self._verifier = _load_module("retrain_evaluation_verifier", VERIFIER_PATH)
 
@@ -136,6 +149,7 @@ class ModelAcceptancePipeline:
                 source,
                 contract,
                 expected_commit=expected_commit,
+                staking_policy_path=self._staking_policy_path,
             )
             report = self._verifier.build_report(
                 contract,

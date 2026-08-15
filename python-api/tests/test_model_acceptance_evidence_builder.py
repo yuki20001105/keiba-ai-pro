@@ -14,6 +14,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "build_model_acceptance_evidence.py"
 CONTRACT_PATH = ROOT / "config" / "model_acceptance_contract.v1.json"
+STAKING_POLICY_PATH = (
+    ROOT / "python-api" / "tests" / "fixtures" / "phase3n_staking_payout_policy_approved_v1.json"
+)
 COMMIT = "a" * 40
 FIXED_NOW = datetime(2026, 8, 2, 12, 0, tzinfo=timezone.utc)
 
@@ -21,6 +24,7 @@ SPEC = importlib.util.spec_from_file_location("model_acceptance_evidence_builder
 assert SPEC is not None and SPEC.loader is not None
 builder = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(builder)
+builder.STAKING_POLICY_PATH = STAKING_POLICY_PATH
 
 
 def _contract() -> dict:
@@ -28,6 +32,7 @@ def _contract() -> dict:
 
 
 def _source() -> dict:
+    staking_policy = json.loads(STAKING_POLICY_PATH.read_text(encoding="utf-8"))
     rows = []
     probabilities = [0.1, 0.9, 0.8, 0.2]
     labels = [0, 1, 0, 1]
@@ -67,6 +72,9 @@ def _source() -> dict:
         "model_feature_columns": ["horse_age", "jockey_win_rate"],
         "expanding_window_checks_passed": True,
         "initial_bankroll": 100.0,
+        "staking_payout_policy_id": staking_policy["policy_id"],
+        "staking_payout_policy_sha256": builder._canonical_sha256(staking_policy),
+        "staking_payout_approval_reference": staking_policy["approval_reference"],
         "rows": rows,
     }
 
@@ -297,6 +305,8 @@ def test_cli_writes_atomic_evidence_consumable_by_existing_gate(tmp_path: Path) 
             COMMIT,
             "--output",
             str(output_path),
+            "--staking-policy",
+            str(STAKING_POLICY_PATH),
         ],
         cwd=ROOT,
         check=False,
@@ -337,6 +347,8 @@ def test_failed_cli_does_not_overwrite_existing_output(tmp_path: Path) -> None:
             COMMIT,
             "--output",
             str(output_path),
+            "--staking-policy",
+            str(STAKING_POLICY_PATH),
         ],
         cwd=ROOT,
         check=False,

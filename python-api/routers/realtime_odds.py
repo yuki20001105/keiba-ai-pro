@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends
 from app_config import logger  # type: ignore
 from deps.auth import require_admin  # type: ignore
 from scraping.constants import SCRAPE_HEADERS  # type: ignore
+from scraping.odds import fetch_tansho_odds_api  # type: ignore
 
 router = APIRouter()
 
@@ -49,6 +50,10 @@ async def _fetch_tansho_odds(session: aiohttp.ClientSession, race_id: str) -> di
     netkeiba は JavaScript でオッズを動的ロードするため静的 HTML では ---.- となる場合が多い。
     静的 HTML で取得できなかった場合は _fetch_tansho_odds_playwright を使うこと。
     """
+    api_odds, _api_popularity, _api_status = await fetch_tansho_odds_api(session, race_id)
+    if api_odds:
+        return {str(number): value for number, value in api_odds.items()}
+
     url = f"https://race.netkeiba.com/odds/index.html?type=b1&race_id={race_id}"
     try:
         async with session.get(url) as resp:

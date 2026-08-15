@@ -44,7 +44,7 @@ def test_manifest_is_strict_ordered_and_content_addressed(runner: ModuleType) ->
     manifest = runner.load_manifest(MANIFEST_PATH)
     assert manifest.schema_version == 1
     assert manifest.postgres_image == EXPECTED_IMAGE == runner.IMAGE
-    assert len(manifest.migrations) == 19
+    assert len(manifest.migrations) == 21
     assert [entry.version for entry in manifest.migrations] == sorted(
         entry.version for entry in manifest.migrations
     )
@@ -52,6 +52,10 @@ def test_manifest_is_strict_ordered_and_content_addressed(runner: ModuleType) ->
     assert re.fullmatch(r"[0-9a-f]{64}", manifest.sha256)
     assert re.fullmatch(r"[0-9a-f]{64}", manifest.chain_digest)
     assert all(re.fullmatch(r"[0-9a-f]{64}", entry.sha256) for entry in manifest.migrations)
+    assert [entry.version for entry in manifest.migrations[-2:]] == [
+        "20260802148000",
+        "20260802149000",
+    ]
 
 
 def test_gate_accepts_only_the_canonical_manifest_path(

@@ -307,11 +307,12 @@ async def scrape_horse_detail(
     # ── JRA馬
     # 2025/8以降: netkeiba の馬詳細は /horse/{id}/ から /horse/result/{id}/ へ移行
     # horse_url が渡された場合はそのURLを使用し、/horse/result/{id}/ 方式にも対応
-    if horse_url.startswith("http"):
-        url = horse_url
-        if not url.endswith("/"):
-            url = url + "/"
+    if horse_url.startswith("http") and "/horse/result/" in horse_url:
+        url = horse_url if horse_url.endswith("/") else horse_url + "/"
     else:
+        # Shutuba links point at /horse/{id}/, whose current page does not
+        # consistently expose the historical-results table. Use the canonical
+        # result endpoint even when an absolute main-profile URL was supplied.
         url = f"https://db.netkeiba.com/horse/result/{horse_id}/"
     result = {}
 
@@ -337,16 +338,16 @@ async def scrape_horse_detail(
             return None
 
     _cached_ped = (pedigree_cache or {}).get(horse_id)
+    if _cached_ped is None:
+        _cached_ped = _get_pedigree_sqlite(horse_id)
     _has_ped_cache = bool(_cached_ped and _cached_ped.get("sire"))
 
-    async def _noop_fetch():
-        return None
-
-    # 新URLと血統ページを並列取得（旧URLリクエストは廃止して1リクエスト削減）
-    html, _pre_ped_html = await asyncio.gather(
-        _safe_get_horse(url),
-        _noop_fetch() if _has_ped_cache else _safe_get_horse(f"https://db.netkeiba.com/horse/ped/{horse_id}/"),
-    )
+    # Fetch the result page first. Concurrent requests for the result and
+    # pedigree pages share one host-level rate limiter and intermittently let
+    # only the pedigree request succeed, silently dropping every prior-race
+    # field. Pedigree is loaded from cache or by the existing fallback below.
+    html = await _safe_get_horse(url)
+    _pre_ped_html = None
 
     # フォールバック: /horse/result/{id}/ が失敗した場合は旧 /horse/{id}/ を試みる
     if html is None and not horse_url.startswith("http"):
@@ -427,9 +428,7 @@ async def scrape_horse_detail(
     pedigree_cached = False
 
     if horse_id:
-        cached = (pedigree_cache or {}).get(horse_id) if pedigree_cache is not None else None
-        if cached is None:
-            cached = _get_pedigree_sqlite(horse_id)
+        cached = _cached_ped
         if cached:
             result["sire"] = cached.get("sire") or ""
             result["dam"] = cached.get("dam") or ""

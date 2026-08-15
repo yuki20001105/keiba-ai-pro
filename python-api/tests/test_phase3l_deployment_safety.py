@@ -20,6 +20,14 @@ import main  # noqa: E402
 import scheduler  # noqa: E402
 
 
+def test_ci_runs_for_trusted_producer_review_branch() -> None:
+    workflow = yaml.load(
+        (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    assert "security/phase3n-trusted-producer-v4" in workflow["on"]["pull_request"]["branches"]
+
+
 def test_scheduler_is_disabled_by_default_and_for_ambiguous_values() -> None:
     assert scheduler.scheduler_enabled({}) is False
     for value in ("", "false", "0", "no", "off", "on", "enabled", "maybe"):
@@ -318,9 +326,18 @@ def test_staging_evidence_runs_only_from_immutable_trusted_producer() -> None:
         )
     )
     inputs = _workflow_triggers(workflow)["workflow_dispatch"]["inputs"]
-    assert set(inputs) == {"expected_commit", "trusted_producer_sha", "max_age_seconds"}
+    assert set(inputs) == {
+        "expected_commit",
+        "trusted_producer_sha",
+        "max_age_seconds",
+        "evidence_scope",
+    }
+    assert inputs["evidence_scope"]["options"] == [
+        "full-model-validation",
+        "limited-observation",
+    ]
     assert inputs["trusted_producer_sha"]["required"] is True
-    trusted_ref = "refs/heads/security/phase3n-trusted-producer-v3"
+    trusted_ref = "refs/heads/security/phase3n-trusted-producer-v4"
     assert workflow["env"]["TRUSTED_REF"] == trusted_ref
 
     jobs = workflow["jobs"]
@@ -345,21 +362,27 @@ def test_staging_evidence_runs_only_from_immutable_trusted_producer() -> None:
         ".github/workflows/release.yml",
         ".github/workflows/staging-evidence.yml",
         "scripts/verify_phase3h_production_readiness.py",
+        "scripts/verify_limited_production_observation_release.py",
         "scripts/build_model_acceptance_evidence.py",
         "scripts/verify_model_acceptance.py",
         "scripts/security/run_phase3m_supabase_bootstrap_gate.py",
+        "scripts/security/scan_test_weakening.py",
         "scripts/security/verify_phase3n_staging_evidence.py",
         "scripts/security/build_phase3n_staging_evidence.py",
         "keiba/keiba_ai/constants.py",
         "keiba/keiba_ai/feature_engineering.py",
         "keiba/keiba_ai/lightgbm_feature_optimizer.py",
+        "keiba/keiba_ai/speed_deviation.py",
         "keiba/keiba_ai/train.py",
         "keiba/keiba_ai/tests/test_feature_engineering.py",
+        "keiba/keiba_ai/tests/test_speed_deviation.py",
         "keiba/keiba_ai/tests/test_train_inference_consistency.py",
         "supabase/bootstrap/v1/manifest.json",
         "config/model_acceptance_contract.v1.json",
+        "config/limited_production_observation_contract.v1.json",
         "python-api/tests/test_model_acceptance_evidence_builder.py",
         "python-api/tests/test_model_acceptance_gate.py",
+        "python-api/tests/test_limited_production_observation_release.py",
     ):
         assert required in gate
 
@@ -381,12 +404,14 @@ def test_staging_evidence_runs_only_from_immutable_trusted_producer() -> None:
     assert protected_input["env"]["MODEL_EVALUATION_OBSERVATIONS_GZIP_B64"] == (
         "${{ secrets.MODEL_EVALUATION_OBSERVATIONS_GZIP_B64 }}"
     )
-    model_gate = next(
+    model_gate_step = next(
         step
         for step in observation_steps
         if step.get("name")
         == "Recompute and require approved current-commit model acceptance evidence"
-    )["run"]
+    )
+    assert model_gate_step["if"] == "inputs.evidence_scope == 'full-model-validation'"
+    model_gate = model_gate_step["run"]
     assert "scripts/build_model_acceptance_evidence.py" in model_gate
     assert "model_evaluation_observations_input.json" in model_gate
     assert "trap 'rm -f reports/model_evaluation_observations_input.json" in model_gate
@@ -451,7 +476,7 @@ def test_ci_requires_fixed_trusted_attestation_for_main_promotion() -> None:
     assert "actions/runs/$STAGING_EVIDENCE_RUN_ID" in resolver["run"]
     assert "develop -> main" in resolver["run"]
     assert '.path == ".github/workflows/staging-evidence.yml"' in resolver["run"]
-    assert '.head_branch == "security/phase3n-trusted-producer-v3"' in resolver["run"]
+    assert '.head_branch == "security/phase3n-trusted-producer-v4"' in resolver["run"]
     assert ".head_sha == $producer" in resolver["run"]
     assert ".run_attempt >= 1" in resolver["run"]
     assert "^{tree}" in resolver["run"]
@@ -551,6 +576,7 @@ def test_release_workflow_authorizes_only_exact_attested_main_merge() -> None:
         "production_commit",
         "attested_candidate_sha",
         "staging_evidence_run_id",
+        "release_mode",
     }
     assert all(value["required"] is True for value in inputs.values())
     assert workflow["permissions"] == {"actions": "read", "contents": "read"}
@@ -571,6 +597,7 @@ def test_release_workflow_authorizes_only_exact_attested_main_merge() -> None:
     assert '"$PRODUCTION_COMMIT" != "$GITHUB_SHA"' in merge_gate["run"]
     assert "git rev-parse origin/main" in merge_gate["run"]
     assert '"$STAGING_EVIDENCE_RUN_ID" != "$EXPECTED_STAGING_EVIDENCE_RUN_ID"' in merge_gate["run"]
+    assert '"$RELEASE_MODE" != "limited-observation"' in merge_gate["run"]
     assert "${parents[1]}" in merge_gate["run"]
     assert "^{tree}" in merge_gate["run"]
 
@@ -583,7 +610,7 @@ def test_release_workflow_authorizes_only_exact_attested_main_merge() -> None:
         "actions/runs/$STAGING_EVIDENCE_RUN_ID",
         '.path == ".github/workflows/staging-evidence.yml"',
         ".head_sha == $producer",
-        '.head_branch == "security/phase3n-trusted-producer-v3"',
+        '.head_branch == "security/phase3n-trusted-producer-v4"',
         '.event == "workflow_dispatch"',
         '.conclusion == "success"',
         ".run_attempt >= 1",
@@ -610,12 +637,33 @@ def test_release_workflow_authorizes_only_exact_attested_main_merge() -> None:
     assert "--deny-self-hosted-runners" in provenance["run"]
 
     readiness = next(step for step in steps if step.get("name") == "Require trusted Phase3H READY decision")
+    assert readiness["if"] == "inputs.release_mode == 'full-model-validation'"
     assert "--trusted-attestation" in readiness["run"]
+    assert "--model-acceptance-report" in readiness["run"]
     assert "--expected-attestation-run-id" in readiness["run"]
     assert "--expected-attestation-run-attempt" in readiness["run"]
     assert "--expected-repository" in readiness["run"]
     assert "--expected-repository-id" in readiness["run"]
     assert "--require-ready" in readiness["run"]
+
+    limited = next(
+        step
+        for step in steps
+        if step.get("name") == "Require limited Production observation readiness"
+    )
+    assert limited["if"] == "inputs.release_mode == 'limited-observation'"
+    for required in (
+        "verify_limited_production_observation_release.py",
+        "limited_production_observation_contract.v1.json",
+        "--trusted-attestation",
+        "--expected-run-id",
+        "--expected-run-attempt",
+        "--expected-repository",
+        "--expected-repository-id",
+        "--expected-commit",
+        "--require-observation-ready",
+    ):
+        assert required in limited["run"]
 
     high_trust_uses = [step["uses"] for step in steps if "uses" in step]
     assert all(not value.endswith(("@v4", "@v5")) for value in high_trust_uses)
@@ -663,9 +711,15 @@ def test_production_template_uses_canonical_urls_and_safe_switches() -> None:
         "PHASE3J_REMOTE_EFFECTS_ENABLED",
         "PHASE3J_WORKER_DISPATCH_ENABLED",
         "PHASE3J_EXECUTION_UNLOCK_ENABLED",
+        "AUTOMATED_BETTING_ENABLED",
+        "PHASE3N_OBSERVATION_ENABLED",
     ):
         assert values[key] == "false"
     assert values["PHASE3J_SAGA_RUNTIME_MODE"] == "disabled"
+    assert values["MODEL_RUNTIME_STATUS"] == "observation"
+    assert values["PHASE3N_OBSERVATION_RELEASE_MODE"] == "limited-observation"
+    assert values["PHASE3N_RELEASE_CONTRACT_ID"] == "limited-production-observation-v1"
+    assert values["PHASE3N_EXPANDING_WINDOW_CHECKS_PASSED"] == "false"
     assert "NEXT_PUBLIC_ML_API_URL" not in values
     assert "NEXT_PUBLIC_SCRAPING_API_URL" not in values
 
