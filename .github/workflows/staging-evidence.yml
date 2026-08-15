@@ -94,6 +94,7 @@ jobs:
             config/phase3n_staking_payout_policy.v1.json \
             python-api/tests/test_model_acceptance_evidence_builder.py \
             python-api/tests/test_model_acceptance_gate.py \
+            python-api/tests/test_limited_production_observation_release.py \
             python-api/tests/test_phase3h_production_readiness_gate.py \
             python-api/tests/test_phase3n_staging_evidence_gate.py \
             python-api/tests/test_phase3l_deployment_safety.py \

@@ -371,6 +371,7 @@ def test_staging_evidence_runs_only_from_immutable_trusted_producer() -> None:
         "config/limited_production_observation_contract.v1.json",
         "python-api/tests/test_model_acceptance_evidence_builder.py",
         "python-api/tests/test_model_acceptance_gate.py",
+        "python-api/tests/test_limited_production_observation_release.py",
     ):
         assert required in gate
 
