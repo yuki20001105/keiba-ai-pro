@@ -14,6 +14,7 @@ from bs4 import BeautifulSoup
 from scraping.constants import HTML_STRAINER, VENUE_MAP, is_cloudflare_block
 from scraping.fetch_pipeline import fetch_text
 from scraping.horse import scrape_horse_detail
+from scraping.odds import fetch_tansho_odds_api
 
 try:
     from app_config import logger  # type: ignore
@@ -23,7 +24,11 @@ except ImportError:
 
 
 async def scrape_race_full(
-    session, race_id: str, date_hint: str = "", quick_mode: bool = False
+    session,
+    race_id: str,
+    date_hint: str = "",
+    quick_mode: bool = False,
+    force_refresh: bool = False,
 ) -> Optional[dict]:
     """
     単一レースの完全データを netkeiba.com から取得。
@@ -46,6 +51,7 @@ async def scrape_race_full(
         retry_jitter_sec=0.6,
         circuit_threshold=3,
         circuit_cooldown_sec=120.0,
+        force_refresh=force_refresh,
     )
     if _fetch.status != 200:
         logger.warning(f"HTTP {_fetch.status}: {url}")
@@ -244,7 +250,12 @@ async def scrape_race_full(
     table = soup.find("table", class_="race_table_01")
     if not table:
         logger.warning(f"race_table_01 not found: {race_id} → 出馬表ページへフォールバック")
-        return await _scrape_shutuba_fallback(session, race_id, date_hint)
+        return await _scrape_shutuba_fallback(
+            session,
+            race_id,
+            date_hint,
+            force_refresh=force_refresh,
+        )
 
     all_rows = table.find_all("tr")
     if not all_rows:
@@ -698,7 +709,11 @@ def _build_race_result(race_id, race_name, venue, date_str, post_time, race_clas
 
 
 async def _scrape_shutuba_fallback(
-    session, race_id: str, date_hint: str = ""
+    session,
+    race_id: str,
+    date_hint: str = "",
+    *,
+    force_refresh: bool = False,
 ) -> Optional[dict]:
     """
     db.netkeiba.com に結果がない（当日・未来レース）場合に
@@ -717,6 +732,7 @@ async def _scrape_shutuba_fallback(
         retry_jitter_sec=0.6,
         circuit_threshold=3,
         circuit_cooldown_sec=120.0,
+        force_refresh=force_refresh,
     )
     if _fetch.status != 200:
         logger.warning(f"shutuba HTTP {_fetch.status}: {race_id}")
@@ -907,6 +923,21 @@ async def _scrape_shutuba_fallback(
     if not horses:
         logger.warning(f"shutuba: 出走馬なし {race_id}")
         return None
+
+    # The visible odds cells are populated by JavaScript.  Query the same JSON
+    # endpoint used by the page and accept only actual market/result statuses;
+    # forecast (yoso) odds must never enter point-in-time evidence.
+    live_odds, live_popularity, _odds_status = await fetch_tansho_odds_api(session, race_id)
+    if live_odds:
+        for horse in horses:
+            try:
+                horse_number = int(horse.get("horse_number"))
+            except (TypeError, ValueError):
+                continue
+            if horse_number in live_odds:
+                horse["odds"] = live_odds[horse_number]
+            if horse_number in live_popularity:
+                horse["popularity"] = live_popularity[horse_number]
 
     logger.info(f"[shutuba] {race_id}: {len(horses)}頭取得 ({race_name} @ {venue} {distance}m)")
     return _build_race_result(
