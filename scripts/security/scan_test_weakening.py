@@ -84,6 +84,10 @@ ALLOWLIST_EXACT: Dict[str, str] = {
     "python-api/tests/test_phase3l_deployment_safety.py:assert '.head_branch == \"security/phase3n-trusted-producer-v2\"' in resolver[\"run\"]": "rotated to the exact immutable v3 producer assertion",
     "python-api/tests/test_phase3l_deployment_safety.py:'.head_branch == \"security/phase3n-trusted-producer-v2\"',": "rotated to the exact immutable v3 producer assertion",
     "python-api/tests/test_phase3n_staging_evidence_gate.py:assert \"refs/heads/security/phase3n-trusted-producer-v2\" in workflow": "rotated to the exact immutable v3 producer assertion",
+    # v3 is locked by a no-bypass update ruleset. The replacement assertions
+    # bind the same fail-closed producer checks to the separately reviewed v4.
+    "python-api/tests/test_phase3l_deployment_safety.py:assert '.head_branch == \"security/phase3n-trusted-producer-v3\"' in resolver[\"run\"]": "rotated to the exact protected v4 producer assertion without weakening the immutable v3 branch",
+    "python-api/tests/test_phase3n_staging_evidence_gate.py:assert \"refs/heads/security/phase3n-trusted-producer-v3\" in workflow": "rotated to the exact protected v4 producer assertion without weakening the immutable v3 branch",
 }
 
 

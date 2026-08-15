@@ -8,7 +8,7 @@ Repository assertions, pull-request artifacts, local files, synthetic databases,
 
 ## Workflow
 
-The manual workflow is `.github/workflows/staging-evidence.yml`. The workflow file and its verifier run only from the immutable, externally protected branch `security/phase3n-trusted-producer-v3`; the exact branch head is supplied as `trusted_producer_sha`. The separately supplied `expected_commit` must equal the current deployed `origin/develop` commit. Gate-critical workflow, verifier, test and contract files must be byte-for-byte identical between the trusted producer and the candidate or the run stops before any approval. It uses these sequential GitHub Environments:
+The manual workflow is `.github/workflows/staging-evidence.yml`. The workflow file and its verifier run only from the immutable, externally protected branch `security/phase3n-trusted-producer-v4`; the exact branch head is supplied as `trusted_producer_sha`. The separately supplied `expected_commit` must equal the current deployed `origin/develop` commit. Gate-critical workflow, verifier, test and contract files must be byte-for-byte identical between the trusted producer and the candidate or the run stops before any approval. It uses these sequential GitHub Environments:
 
 1. `staging-migration`
 2. `staging-execution-unlock`
