@@ -6,8 +6,8 @@ POST /api/analyze_race
 from __future__ import annotations
 
 import json
+import os
 import traceback
-from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -34,6 +34,11 @@ from models import (  # type: ignore
     BatchAnalyzeRequest,
 )
 from keiba_ai.constants import FUTURE_FIELDS  # type: ignore
+from services.race_snapshot import (  # type: ignore
+    fetch_fresh_race_snapshot,
+    save_valid_race_snapshot,
+    stored_rows_need_refresh,
+)
 
 import asyncio
 import time as _time
@@ -272,6 +277,7 @@ class ModelPredictor:
         except Exception as _e:
             logger.warning(f"[ModelPredictor:{self.target}] add_derived_features 部分失敗: {_e}")
         df = df.loc[:, ~df.columns.duplicated()]
+        engineered_df = df.copy()
 
         # Step 2: モデル付属 optimizer による前処理（失敗時は再学習が必要）
         if self.optimizer is not None:
@@ -299,6 +305,18 @@ class ModelPredictor:
                         f"エラー ({type(_e).__name__}): {_e}"
                     ),
                 )
+
+        # Bundles created before the optimizer pruning update can legitimately
+        # require numeric engineered fields (for example age and season) that
+        # the current optimizer removes. Restore only fields that were really
+        # computed from the pre-race input; never invent or zero-fill absent
+        # history. The final bundle-order verification remains authoritative.
+        for required_column in self.feature_columns:
+            if required_column in df.columns or required_column not in engineered_df.columns:
+                continue
+            source = engineered_df[required_column]
+            if pd.api.types.is_numeric_dtype(source) or pd.api.types.is_bool_dtype(source):
+                df[required_column] = pd.to_numeric(source, errors="coerce")
 
         # Step 3: 未来情報・識別子列を除外
         X = _drop_non_features(df)
@@ -453,13 +471,21 @@ async def predict(request: PredictRequest, http_req: Request):
 
 async def _analyze_race_impl(request: AnalyzeRaceRequest):
     """レース分析と購入推奨エンドポイント"""
+    _observation_started_at = _time.perf_counter()
     # ── キャッシュチェック（TTL=5分、bankroll/risk_mode が同一の場合のみ）
     _cache_key = f"{request.race_id}:{request.model_id}:{request.bankroll}:{request.risk_mode}"
     _now = _time.time()
     _cached = _ANALYZE_CACHE.get(_cache_key)
     if _cached and (_now - _cached[0]) < _ANALYZE_CACHE_TTL:
-        logger.info(f"[cache hit] analyze_race {request.race_id} (age={(int(_now - _cached[0]))}s)")
-        return AnalyzeRaceResponse(**_cached[1])
+        _cached_predictions = _cached[1].get("predictions", [])
+        _cached_market_complete = bool(_cached_predictions) and all(
+            prediction.get("odds") not in (None, 0, 0.0, "")
+            for prediction in _cached_predictions
+        )
+        if _cached_market_complete:
+            logger.info(f"[cache hit] analyze_race {request.race_id} (age={(int(_now - _cached[0]))}s)")
+            return AnalyzeRaceResponse(**_cached[1])
+        logger.info(f"[cache bypass] analyze_race {request.race_id}: market data incomplete")
 
     try:
         from betting.strategy import BettingRecommender  # type: ignore
@@ -487,19 +513,19 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
                 logger.info(f"[analyze] レース {request.race_id} がDBに未登録 → オンデマンドスクレイプ開始")
                 try:
                     import aiohttp as _aiohttp
-                    from scraping.race import scrape_race_full as _scrape_race_full  # type: ignore
-                    from scraping.storage import _save_race_to_ultimate_db  # type: ignore
                     from scraping.constants import get_random_headers  # type: ignore
-                    _date_hint = request.race_id[0:4] + request.race_id[4:6] + request.race_id[6:8]
                     _timeout = _aiohttp.ClientTimeout(total=60)
                     async with _aiohttp.ClientSession(headers=get_random_headers(), timeout=_timeout) as _sess:
-                        _scraped = await _scrape_race_full(_sess, request.race_id, date_hint=_date_hint)
+                        _scraped = await fetch_fresh_race_snapshot(
+                            _sess,
+                            request.race_id,
+                        )
                     if not _scraped or not _scraped.get("horses"):
                         raise HTTPException(
                             status_code=404,
                             detail=f"レース {request.race_id} のスクレイプに失敗しました（データなし）",
                         )
-                    _save_race_to_ultimate_db(_scraped, ULTIMATE_DB, overwrite=True)
+                    save_valid_race_snapshot(_scraped, ULTIMATE_DB, request.race_id)
                     logger.info(f"[analyze] レース {request.race_id} をDBに保存完了 ({len(_scraped['horses'])}頭)")
                 except HTTPException:
                     raise
@@ -522,17 +548,6 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
                     _conn.close()
                     raise HTTPException(status_code=500, detail=f"レース {request.race_id} の保存後読み込みに失敗しました")
             _race_data = json.loads(_rrow[0])
-            race_info = {
-                "race_id": request.race_id,
-                "race_name": _race_data.get("race_name", ""),
-                "venue": _race_data.get("venue", ""),
-                "date": _race_data.get("date", ""),
-                "distance": _race_data.get("distance", 0),
-                "track_type": _race_data.get("track_type", ""),
-                "weather": _race_data.get("weather", ""),
-                "field_condition": _race_data.get("field_condition", ""),
-                "num_horses": _race_data.get("num_horses", 0),
-            }
             _cur.execute(
                 "SELECT data FROM race_results_ultimate WHERE race_id = ? ORDER BY json_extract(data, '$.horse_number')",
                 (request.race_id,),
@@ -544,18 +559,20 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
                 logger.info(f"[analyze] レース {request.race_id} は races_ultimate にあるが horse データなし → 再スクレイプ")
                 try:
                     import aiohttp as _aiohttp
-                    from scraping.race import scrape_race_full as _scrape_race_full  # type: ignore
-                    from scraping.storage import _save_race_to_ultimate_db  # type: ignore
                     from scraping.constants import get_random_headers  # type: ignore
                     _timeout = _aiohttp.ClientTimeout(total=60)
                     async with _aiohttp.ClientSession(headers=get_random_headers(), timeout=_timeout) as _sess:
-                        _scraped = await _scrape_race_full(_sess, request.race_id)
+                        _scraped = await fetch_fresh_race_snapshot(
+                            _sess,
+                            request.race_id,
+                            _race_data.get("date", ""),
+                        )
                     if not _scraped or not _scraped.get("horses"):
                         raise HTTPException(
                             status_code=404,
                             detail=f"レース {request.race_id} の馬データが見つかりません（スクレイプでも取得できませんでした）",
                         )
-                    _save_race_to_ultimate_db(_scraped, ULTIMATE_DB, overwrite=True)
+                    save_valid_race_snapshot(_scraped, ULTIMATE_DB, request.race_id)
                     logger.info(f"[analyze] レース {request.race_id} 馬データ再スクレイプ完了 ({len(_scraped['horses'])}頭)")
                     # 再スクレイプ後に再取得
                     _conn2 = _sq3.connect(str(db_path))
@@ -584,6 +601,55 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
                         status_code=404,
                         detail=f"レース {request.race_id} の馬データが見つかりません（再スクレイプ失敗: {_se}）",
                     )
+
+            # Existing Render SQLite rows may be an incomplete pre-publication
+            # snapshot.  Refresh the whole race (not odds alone), validate it,
+            # and replace metadata + every horse row in one transaction.
+            if stored_rows_need_refresh(request.race_id, _race_data, _hrows):
+                try:
+                    import aiohttp as _aiohttp_refresh
+                    from scraping.constants import get_random_headers as _refresh_headers  # type: ignore
+
+                    _refresh_timeout = _aiohttp_refresh.ClientTimeout(total=60)
+                    async with _aiohttp_refresh.ClientSession(
+                        headers=_refresh_headers(),
+                        timeout=_refresh_timeout,
+                    ) as _refresh_session:
+                        _fresh_snapshot = await fetch_fresh_race_snapshot(
+                            _refresh_session,
+                            request.race_id,
+                            _race_data.get("date", ""),
+                        )
+                    if _fresh_snapshot:
+                        save_valid_race_snapshot(_fresh_snapshot, ULTIMATE_DB, request.race_id)
+                        _race_data = dict(_fresh_snapshot["race_info"])
+                        _hrows = [
+                            (json.dumps(horse, ensure_ascii=False),)
+                            for horse in _fresh_snapshot["horses"]
+                        ]
+                        logger.info(
+                            f"[analyze] {request.race_id}: fresh race snapshotを原子的に更新 "
+                            f"({len(_fresh_snapshot['horses'])}頭, distance={_race_data.get('distance')})"
+                        )
+                except Exception as _refresh_error:
+                    logger.warning(
+                        f"[analyze] {request.race_id}: fresh race snapshot更新失敗; "
+                        f"品質ゲートで旧入力を拒否します: {_refresh_error}"
+                    )
+
+            # Rebuild from the final in-memory snapshot. This also covers the
+            # "race row exists but horse rows were missing" repair path above.
+            race_info = {
+                "race_id": request.race_id,
+                "race_name": _race_data.get("race_name", ""),
+                "venue": _race_data.get("venue", ""),
+                "date": _race_data.get("date", ""),
+                "distance": _race_data.get("distance", 0),
+                "track_type": _race_data.get("track_type", ""),
+                "weather": _race_data.get("weather", ""),
+                "field_condition": _race_data.get("field_condition", ""),
+                "num_horses": _race_data.get("num_horses", 0),
+            }
 
             _horse_records = []
             for _hr in _hrows:
@@ -649,29 +715,14 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
             if _odds_missing:
                 try:
                     import aiohttp as _aiohttp2
-                    from scraping.storage import _save_race_to_ultimate_db as _srtud  # type: ignore
                     from scraping.constants import get_random_headers as _get_rh  # type: ignore
-                    _today_str = datetime.now().strftime("%Y%m%d")
-                    _race_date_str = race_info.get("date", "") or ""
-                    # 当日レース（終了済み）も结果ページで確定オッズを取得できるため <= に変更
-                    _is_past = _race_date_str and _race_date_str <= _today_str
                     _timeout2 = _aiohttp2.ClientTimeout(total=60)
-                    _fresh = None
-                    if _is_past:
-                        # 過去・当日レース → 結果ページ（確定オッズあり）
-                        from scraping.race import scrape_race_full as _srf2  # type: ignore
-                        async with _aiohttp2.ClientSession(headers=_get_rh(), timeout=_timeout2) as _sess2:
-                            _fresh = await _srf2(_sess2, request.race_id, date_hint=_race_date_str)
-                        # 結果ページにオッズがない場合（レース未了）→ 出馬表にフォールバック
-                        if not _fresh or not any(h.get("odds") for h in (_fresh or {}).get("horses", [])):
-                            from scraping.race import _scrape_shutuba_fallback as _ssf  # type: ignore
-                            async with _aiohttp2.ClientSession(headers=_get_rh(), timeout=_timeout2) as _sess2:
-                                _fresh = await _ssf(_sess2, request.race_id)
-                    else:
-                        # 未来レース → 出馬表ページ（暫定オッズ）
-                        from scraping.race import _scrape_shutuba_fallback as _ssf  # type: ignore
-                        async with _aiohttp2.ClientSession(headers=_get_rh(), timeout=_timeout2) as _sess2:
-                            _fresh = await _ssf(_sess2, request.race_id)
+                    async with _aiohttp2.ClientSession(headers=_get_rh(), timeout=_timeout2) as _sess2:
+                        _fresh = await fetch_fresh_race_snapshot(
+                            _sess2,
+                            request.race_id,
+                            race_info.get("date", ""),
+                        )
                     if _fresh and _fresh.get("horses"):
                         _odds_map = {
                             h["horse_number"]: h.get("odds")
@@ -694,11 +745,10 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
                                 )
                             # DBも更新して次回スクレイプ不要にする
                             try:
-                                _srtud(_fresh, ULTIMATE_DB, overwrite=True)
+                                save_valid_race_snapshot(_fresh, ULTIMATE_DB, request.race_id)
                             except Exception:
                                 pass
-                            _src = "結果ページ" if _is_past else "出馬表"
-                            logger.info(f"[analyze] {request.race_id}: {_src}再スクレイプでodds補完完了 ({len(_odds_map)}頭)")
+                            logger.info(f"[analyze] {request.race_id}: fresh snapshotでodds補完完了 ({len(_odds_map)}頭)")
                         else:
                             logger.info(f"[analyze] {request.race_id}: shutuba再スクレイプ完了だがoddはまだ未公開")
                 except Exception as _roe:
@@ -911,6 +961,55 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
             race_level=result["race_level"],
             recommendation=result["recommendation"],
         )
+        # Phase 3N strict observation capture is an explicit deployed-runtime
+        # opt-in. Production is accepted only in the independently authorized
+        # limited-observation mode; all other production configurations fail
+        # closed before an observation write.
+        # When enabled it is awaited before responding and fails closed: a
+        # prediction is never claimed as observed unless PostgreSQL accepted the
+        # append-only rows. Missing authoritative source timestamps are rejected.
+        try:
+            from observation.capture import capture_analyze_predictions  # type: ignore
+
+            _observation_result = await asyncio.to_thread(
+                capture_analyze_predictions,
+                bundle=bundle,
+                model_path=model_path,
+                feature_frame=X_pred,
+                source_records=_horse_records,
+                race_id=request.race_id,
+                race_info=result["race_info"],
+                predictions=result["predictions"],
+                latency_ms=(_time.perf_counter() - _observation_started_at) * 1000.0,
+            )
+            if _observation_result.get("enabled"):
+                logger.info(
+                    "[phase3n-observation] accepted predictions: inserted=%s duplicate=%s",
+                    _observation_result["inserted"],
+                    _observation_result["duplicates"],
+                )
+        except Exception as _observation_error:
+            # Invalid/partial opt-in is also fail-closed. Only explicit false
+            # values may bypass capture; this avoids a malformed switch turning
+            # an intended Staging observation run into an unobserved response.
+            _observation_switch = os.environ.get(
+                "PHASE3N_OBSERVATION_ENABLED", ""
+            ).strip().lower()
+            if _observation_switch not in {"", "false", "0", "no", "off"}:
+                _observation_code = getattr(
+                    _observation_error,
+                    "code",
+                    type(_observation_error).__name__,
+                )
+                logger.error(
+                    "[phase3n-observation] fail closed: %s",
+                    _observation_code,
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail="strict observation capture failed closed",
+                ) from _observation_error
+            logger.debug("[phase3n-observation] disabled")
         # 予測ログをDBに非同期保存（レスポンスをブロックしない）
         try:
             _model_id_log = bundle.get("model_id", bundle.get("created_at", "unknown"))

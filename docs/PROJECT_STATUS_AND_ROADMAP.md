@@ -1,11 +1,12 @@
 # Project Status and Roadmap
 
-> Status date: 2026-08-02
-> Evidence cutoff: repository artifacts through 2026-07-20 plus local validation on 2026-08-02
-> Current branch at assessment: `codex/fullstack-readiness`
-> Current implementation checkpoint: `31c6b64` (`codex/fullstack-readiness` pushed candidate)
-> Status: **overall 67.65%, reported as 68% (reasonable range: 66-70%), Production NOT_READY**
-> Candidate branch: pushed to `origin/codex/fullstack-readiness`; exact-SHA CI run `30741847311` passed 12/12 jobs
+> Status date: 2026-08-15
+> Evidence cutoff: hosted Staging, local validation, and exact-commit CI through 2026-08-15
+> Current branch at assessment: `codex/phase3n-observation-ha-evidence` (PR #28)
+> Current runtime implementation checkpoint: `2d39111bc0ad3aaef75977e6e5def3122761e951`, which is CI-green, Live on Render Staging, and verified against the same effective Phase 3N candidate SHA
+> Status: **overall 74.15%, reported as 74% (reasonable range: 72-77%), Production NOT_READY**
+> Limited Production observation readiness: **80.53%** when the model-business-value pillar is reported separately; this is not a release authorization
+> Candidate status: the first prospective `middle` observation succeeded for race `202604020812`: 15 exact-SHA horse predictions are append-only in Supabase and the nonempty cache delete/rebuild exercise passes. An earlier 15-row run bound to legacy SHA `961a5be...` remains as explicit audit history and is excluded from exact-candidate counts. Results are not settled, so formal progress remains 0/1,000 valid samples, 0/100 qualifying bets, and 0/90 elapsed settled days. The market-free OOF winner-meta AUC remains 0.7581 against the approved 0.85 gate; all generated replacement candidates remain research-only, unapproved, and undeployed
 
 This is the canonical handoff document for answering three questions:
 
@@ -14,6 +15,30 @@ This is the canonical handoff document for answering three questions:
 3. What must happen, in what order, before the goal is complete?
 
 Do not infer readiness from code presence, a green synthetic test, or an old report. Use the evidence rules in this document.
+
+## Current Phase 3N checkpoint (2026-08-15)
+
+This section supersedes older point-in-time values below. Historical entries remain for auditability.
+
+| Boundary | Current evidence | Remaining exit condition |
+|---|---|---|
+| Release contract split | `limited-production-observation-v1` separates `system_release_ready` from `model_business_validated`. The existing full READY path remains intact. Limited mode requires exact trusted system evidence and forces `MODEL_RUNTIME_STATUS=observation`, automatic betting off, deployed activation/training off, prospective `middle` observations, and rollback readiness | Review and merge PR #28, update/re-review the immutable trusted producer, then exercise the limited evidence and release workflows against one exact commit |
+| Isolated Staging | Vercel, Render, and Supabase are isolated. Supabase preserves the original 19 rows and approved append-only ordinals 20-21; Render remains one Free instance and is Live at `2d39111bc0ad3aaef75977e6e5def3122761e951`. The effective `PHASE3N_CANDIDATE_COMMIT_SHA` was revealed and rechecked after save, then the same commit was redeployed | Preserve the deployed runtime identity and append-only history through merge and evidence collection |
+| Multi-instance HA/fencing | Real two-instance claim, crash/recovery, lease takeover, stale-fence rejection, and cleanup evidence passed against Staging at `f5b9c90`; the exact `a70ef54` runtime and evidence-recording `130c724` both pass their container HA gate and hosted health/auth regression | Repeat the paid hosted exercise only if HA runtime semantics change; preserve the prior non-synthetic evidence |
+| Observation collection | Race `202604020812` supplied a complete result-unknown `middle` snapshot with 15 real odds. Authenticated analyze returned 200 and Supabase contains 15 horse predictions joined to exact SHA `2d39111...`, all at source time `2026-08-15T14:53:52.390863Z`. A prior 15-row real run joined to legacy SHA `961a5be...` remains append-only audit history and is not counted for the current candidate. No synthetic, forecast, final-result, retrospective, or Production row was used | Reconcile the race only after the authoritative result, then continue prospective collection to 90 settled days, 1,000 valid samples, and 100 qualifying bets |
+| Historical OOT model evaluation | A read-only point-in-time replay against local real history after the model's 2026-02-01 cutoff used 980 complete races and 10,768 settled entries over 160 days. Brier 0.0791, ECE 0.0265, maximum drawdown 3.60%, 980 qualifying bets, and +12.71 percentage-point ROI delta to baseline pass; AUC 0.7158 and candidate ROI -8.27% fail | Treat this as fast provisional model-selection evidence, not prospective Staging evidence. Retrain/replace the candidate and rerun a reproducible OOT evaluation before spending 90 days collecting a model that already misses AUC/ROI |
+| Speed-deviation annual walk-forward | Strict outer years 2020-2024 remain unseen by iteration and meta-model fitting. The ability matrix now excludes the full direct and derived market family, including implied probability, race odds z-score, entropy, top-3 market mass, normalized popularity, and payout history. Strictly shifted prior-speed histories feed the speed-deviation regressor, and only inner-period OOF speed scores plus pre-race fields train the winner meta-model. Across 229,190 entries and 16,644 races it records RMSE 2.4954, Spearman 0.6496, winner AUC 0.7581, Brier 0.06260, and ECE 0.00301; 2024 AUC reaches 0.7720. All future/market intersections are empty. AUC still fails 0.85 and ROI/DD/bet gates remain closed because genuine point-in-time historical odds do not exist | Keep the candidate unapproved and undeployed. Preserve this as the market-free ability baseline; next improvement requires richer legitimate pre-race context or a newly reserved period. Do not tune further on the now-observed 2020-2024 outer years, and keep nested purchase search blocked until timestamped odds exist |
+| Official history and OOF value path | The free/no-contract outcome route is complete. The official-host-only index contains 1,729 unique JRA PDFs for 2019-2024; all exact bytes have URL, UTC retrieval time, size, and SHA-256. Conversion produced 273,187 timed runners in 19,846 flat races. It audited 755 jump races and explicitly excluded 87 unreadable/incomplete flat-race layouts plus three unsupported-font source documents rather than guessing. Full-bundle dry-run validated all 273,187 records without writing, then the identical manifest `4e52d5f...d399e` was appended to a recoverable research DB copy. `PRAGMA quick_check` is `ok`; annual authorized outcome coverage is 3,281-3,325 races and passes the speed-fold readiness gate. Result-time odds remain quarantined outside the training payload. The existing OOF evaluator now fails closed unless complete `middle`, pre-start, <=30-minute quotes carry source and one exact non-zero SHA; it enforces an Inner-only 5-15%/one-wager search, 95% ROI lower bound, drawdown, baseline delta, annual stability, neighborhood robustness, and digest-bound audit output | Preserve this immutable research evidence and its reviewed exclusions. Treat 2020-2024 as an observed fixed ability benchmark. Collect genuine point-in-time odds prospectively in Staging; until those rows exist, the hardened evaluator must produce no selected or accepted ROI policy |
+| Staking/payout | Owner approval in issue #29 is durably bound to `phase3n-tansho-flat-v1`; exact-commit CI and Staging health/auth regression pass | Accumulate and settle real qualifying wagers under the approved policy |
+| Cache integrity | The authorized non-paid local runtime read all 30 append-only prediction rows from Supabase PostgreSQL, wrote and deleted the cache, rebuilt it from the database, and verified identical DB/cache SHA-256 `46ff587b...a39a0e`, zero missing/duplicate/stale cache rows, and `database_unchanged=true`. Sanitized evidence is saved at `reports/phase3n_cache_integrity_evidence.json`; Render Shell remains intentionally unused because Free does not support it | Re-run only when the observation schema/runtime semantics change or when assembling final trusted evidence; keep PostgreSQL authoritative |
+| Repository gates | Exact commit `2d39111...` passes local Python 1,325 with 6 skips and all 13 jobs in [CI run 31890053180](https://github.com/yuki20001105/keiba-ai-pro/actions/runs/31890053180). The first Playwright attempt exposed an unrelated timing flake; the unchanged 92-test job passed on attempt 2. Render is Live at the same full SHA | Preserve green exact-commit gates through review/merge and subsequent evidence-producing changes |
+| Trusted evidence | Trusted producer and protected approval boundaries exist | Populate `PHASE3N_STAGING_OBSERVATION_B64` and `MODEL_EVALUATION_OBSERVATIONS_GZIP_B64` only from real accepted observations, review producer parity, then run the trusted workflow |
+
+The operational-proof pillar advances from 70% to 75% because the first prospective exact-SHA observation and nonempty database/cache rebuild evidence now pass. It does not advance further because settlement, the 90-day/1,000-sample/100-bet window, and trusted evidence remain open. The ML/business-value pillar remains 55% because the current evidence still fails AUC and ROI acceptance. The weighted calculation is:
+
+`78% * 30% + 55% * 25% + 88% * 25% + 75% * 20% = 74.15%`
+
+The release plan now has two explicit finish lines. Limited system release: finish monitoring/alert/rollback and critical operator procedures -> review/merge the exact tree -> update and independently review the trusted producer -> produce trusted system evidence -> authorize and deploy only `MODEL_RUNTIME_STATUS=observation` with automatic betting disabled -> pass Production smoke and rollback. Model validation continues after that release: settle prospective `middle` observations -> freeze the Inner-selected purchase policy -> apply it once to the untouched Outer stream -> pass 90 days/1,000 settled samples/100 qualifying bets plus AUC/ROI/DD/calibration/latency/freshness -> produce trusted model evidence -> move to `validated`; `active` and any automatic betting require a later independent approval. Neither retrospective replay, synthetic data, forecast odds, final-result odds, nor fabricated wagers may be registered as prospective evidence.
 
 ---
 
@@ -29,7 +54,7 @@ Do not infer readiness from code presence, a green synthetic test, or an old rep
 
 Therefore, the directory suffix must not be counted as completed Phase 3O work. If the next phase is named Phase 3O, it should first receive an approved scope and exit contract. A reasonable proposed scope is **current-commit evidence reconciliation plus isolated Staging execution**, corresponding to WP0 and WP3 through WP7 below. This proposal is not yet an approved phase definition.
 
-### 0.1 Local worktree environment snapshot
+### 0.1 Historical local worktree environment snapshot (2026-08-02)
 
 This worktree is suitable for source inspection, frontend development, and focused contract tests. It is not yet a self-contained full-stack runtime.
 
@@ -57,7 +82,7 @@ The parent worktree assets were not copied. This worktree now has independently 
 
 Exact-SHA CI run `30741847311` passed all 12 jobs for commit `31c6b6478dffda6e810af448e141b4089866e23f`, including dependency security, Python, Frontend, Playwright, scanners, Phase 3G-J runtime gates, the two-database Phase 3M bootstrap replay, and both container builds. The repository-quality pillar is therefore rescored from 80% to 88%, making the authoritative overall value 67.65% (reported as 68%). This is not a release authorization.
 
-### 0.2 External governance snapshot (read-only audit)
+### 0.2 Historical external governance snapshot (2026-08-02)
 
 GitHub metadata was inspected without changing repository or provider state on 2026-08-02:
 
@@ -157,10 +182,10 @@ The overall percentage is a planning indicator, not a release authorization. It 
 | Pillar | Weight | Current score | Weighted result | Basis |
 |---|---:|---:|---:|---|
 | Product workflow completeness | 30% | 78% | 23.4% | 6 of 13 workflows are complete UI flows; 7 are partial; none are wholly missing |
-| ML and business-value proof | 25% | 65% | 16.3% | Historical AUC 0.8865 exceeds the 0.85 target, but current-commit out-of-time, calibration, ROI, and drawdown proof is incomplete |
-| Repository safety and quality gates | 25% | 88% | 22.0% | Auth/fail-closed gates, zero Critical/High dependency enforcement, Python/Frontend/Playwright, Phase 3M replay, container builds, and security scanners pass on exact-SHA CI run `30741847311` |
-| Staging and Production operational proof | 20% | 30% | 6.0% | Trusted evidence machinery exists, but isolated provider topology, hosted bootstrap, non-synthetic exercises, rollback evidence, and current Phase 3N artifact are unproven |
-| **Overall** | **100%** |  | **67.65% authoritative** | Report as 68%; Production remains NOT_READY until the external Staging, trusted Phase 3N, and business gates pass |
+| ML and business-value proof | 25% | 55% | 13.8% | Strict training-only annual speed-deviation walk-forward records Spearman 0.8025 and calibrated winner AUC 0.8047, passing Brier/ECE/sample/bet checks, but still fails AUC, ROI (-23.23% vs +3%), maximum drawdown, and baseline ROI delta (-2.76 points vs +1); the old AUC 0.8865 is not current-artifact proof |
+| Repository safety and quality gates | 25% | 88% | 22.0% | PR #28 implementation commit `cbae079` passes Python 1,185 locally, zero-vulnerability audits, and all 13 exact-SHA CI jobs in run `31801904942` |
+| Staging and Production operational proof | 20% | 75% | 15.0% | Isolated providers, append-only 21-migration history, Auth/RLS/IDOR, rollback, real two-instance HA/fencing, exact-commit health/auth regression, first prospective exact-SHA observations, and nonempty cache integrity are proven; settlement volume and trusted evidence remain open |
+| **Overall** | **100%** |  | **74.15% authoritative** | Report as 74%; Production remains NOT_READY until a current candidate passes business thresholds, the prospective window, trusted Phase 3N, and controlled release gates |
 
 Workflow scoring assigns 1.0 point to `complete`, 0.6 to `partial`, and 0 to `missing`. Thus $(6 + 7 \times 0.6) / 13 = 78.5\%$, conservatively reported as 78%. Other pillar scores are evidence-based assessments and must be revisited when their exit conditions change.
 
@@ -168,10 +193,21 @@ Workflow scoring assigns 1.0 point to `complete`, 0.6 to `partial`, and 0 to `mi
 
 - **Product implementation:** approximately 78%.
 - **Repository-level safety and quality:** approximately 88%.
-- **Real-environment readiness:** approximately 30%.
-- **Overall goal:** **67.65%, reported as 68%**, with a reasonable uncertainty range of **66-70%**.
+- **Real-environment readiness:** approximately 75%.
+- **Overall goal:** **74.15%, reported as 74%**, with a reasonable uncertainty range of **72-77%**.
 
-The overall score remains close to the 2026-07-12 baseline of 65-70%. Later phases substantially improved safety contracts, but they did not yet close the external Staging evidence and business-validation gaps.
+The score now counts the externally proven HA/fencing exercise, the first exact-SHA prospective observations, and a successful nonempty cache rebuild. It does not count unsettled predictions as valid samples, nor a future trusted run as complete.
+
+The revised policy also reports a separate Limited Production system-release
+indicator without the deferred ML/business-value pillar:
+
+`(78% * 30% + 88% * 25% + 75% * 20%) / 75% = 80.53%`
+
+This is the evidence-based current value, so the informal 85-90% estimate is
+not yet adopted. Monitoring/alerting, executable Production rollback, critical
+operator runbooks, trusted-producer parity, exact authorization, and Production
+smoke must pass before that system-only score can advance. The original 74.15%
+continues to measure the complete project through model business validation.
 
 ### 3.2 What is complete
 
@@ -190,26 +226,33 @@ The overall score remains close to the 2026-07-12 baseline of 65-70%. Later phas
 - Profiling, smoke suites, and some diagnostics still depend on scripts.
 - Operator quality/remediation flow remains fragmented.
 - Refresh and P0 repair execution remain intentionally disabled.
-- Operational saga code exists, but current non-synthetic multi-instance Staging proof is absent.
+- Operational saga and non-synthetic multi-instance Staging proof exist; Production monitoring, incident, and rollback execution remain open.
 - Historical model quality is encouraging and the business acceptance criteria are approved, but fresh current-commit evidence is incomplete.
 
-### 3.4 What blocks Production
+### 3.4 What blocks each release class
 
-1. The Phase 3M bootstrap is not proven applied to an isolated Staging Supabase project.
-2. Auth/RLS/IDOR checks are not proven against the real isolated Staging project.
-3. Non-synthetic multi-instance crash/recovery and stale-fence rejection are not proven.
-4. Database/cache integrity and rollback drill evidence are not proven.
-5. The three GitHub Environment approval boundaries are not proven configured and exercised for this candidate.
-6. A fresh trusted Phase 3N artifact for the exact candidate commit does not exist.
-7. Business success thresholds are approved and encoded, but fresh current-commit row
-   observations have not yet passed them. Aggregate metrics are recomputed by trusted
-   code and bound to model/source digests; approval alone cannot produce acceptance.
+Limited Production observation remains blocked by:
+
+1. Review/merge of the exact observation-release contract and runtime controls.
+2. Immutable trusted-producer update/re-review and a GitHub-signed system attestation for the exact candidate.
+3. Production monitoring/alerting, incident ownership, rollback rehearsal, environment binding, and final smoke evidence.
+4. Protected Production release approval. Provider deployment remains a separate explicit operation.
+
+Model `validated`/`active` remains blocked by:
+
+1. AUC 0.7581 versus 0.85 and insufficient prospective ROI/MaxDD evidence.
+2. Zero settled valid samples, qualifying settled bets, and elapsed settled days versus 1,000/100/90.
+3. Trusted model-evaluation payload, accepted-candidate registration, and the full Phase 3H READY decision.
+4. A later independent activation approval; automatic betting is not authorized by either observation release or model validation alone.
 
 ---
 
 ## 4. Definition of Done
 
-The project reaches 100% only when every gate below is satisfied.
+Limited Production observation is complete when the system-release controls in
+`docs/limited_production_observation_release.md` pass. The complete project
+reaches 100% only when every gate below, including model business validation,
+is satisfied.
 
 ### Gate G1: Core product loop
 
@@ -255,13 +298,13 @@ The order below is dependency-driven. An agent must not skip ahead by replacing 
 
 | Work package | Owner | Depends on | Deliverable | Exit condition | Progress impact |
 |---|---|---|---|---|---:|
-| WP0 Canonicalize current evidence | Sysop | none | **Complete for the implementation candidate:** clean pushed commit `31c6b64`, local Python 1,169/Phase 3M 17-of-17 checks, and exact-SHA CI run `30741847311` with 12/12 jobs green | Current implementation and CI artifacts bind to the same full SHA; historical reports remain explicitly labeled non-current | +2% |
+| WP0 Canonicalize current evidence | Sysop | none | **Complete for the approved-policy candidate:** runtime commit `a70ef54b282d8a7057938b3d74226b6ce0cf60f2` passes Python 1,186 locally and all 13 CI jobs in run `31811447458`; evidence-recording commit `130c72484a6e2afe46cf37b384e27b4ea8f4c08d` passes all 13 jobs in run `31812943165`, is deployed with a matching candidate SHA, and passes the hosted health/auth regression | Preserve the deployed runtime identity through merge; historical reports remain explicitly labeled non-current | +2% |
 | WP1 Define business acceptance contract | Jobs + Trainer + Ledger | none | **Contract approved:** the authorized owner approved every threshold and the out-of-time/no-leakage/staking policy in GitHub issue #25. The versioned fail-closed contract, verifier, abuse tests, CI/trusted Phase 3N wiring, and sanitized source audit are implemented. The parent DB cannot supply the required strict observations | Fresh current-commit out-of-time evidence passes the approved attested promotion gate | +5% |
 | WP2 Finish operator workflow gaps | Harvester + Trainer + Oracle | WP1 for model decisions | **In progress:** quality bridge, authenticated Admin profiling viewer, read-only feature provenance/INV-01 catalog, strict retrain payload hashing, an Admin-only eligibility assessment, deployed-environment blocks on legacy model training/activation/deletion/repair, an Admin request/independent-decision/job-status panel, private two-person approval/job ledgers, service-only CAS/lease/fencing transitions, immutable private-bucket artifact/evaluation registration, a service-only execution bundle, an isolated OOT trainer, and a fail-closed one-shot coordinator are implemented. A bounded one-shot dispatcher selects at most five exact candidates and delegates to the fenced coordinator; a one-shot evaluator rebuilds evidence from strict rows in memory, requires the canonical approved contract and accepted verifier report, and records it through CAS while keeping promotion false. A separate reconciler handles expired leases and old unregistered exact-name objects with an immutable outcome ledger. Deployment and recurring scheduling, hosted PostgreSQL/Storage runtime evidence, trusted Phase 3N attestation and candidate comparison, separate switch/retirement approvals, standalone generation execution, and advanced evaluation remain | Accepted workflows meet G1; intentionally script-only items have runbooks | +6% |
-| WP3 Provision isolated Staging governance | Sysop | WP0 | **Partial:** three protected approval Environments, protected producer branch, and a distinct Vercel Staging deployment record exist. Current provider topology/commit, producer parity, evidence inputs, successful run selector, and authenticated Render/Supabase metadata remain absent | Authenticated metadata proves isolation and required reviewers without exposing values | +4% |
-| WP4 Apply and verify hosted bootstrap | Sysop | WP3, explicit migration approval | Phase 3M migrations and hosted schema/history evidence | Bootstrap gate passes against Staging; rollback plan is recorded | +4% |
-| WP5 Run Staging security and model checks | Sysop + Trainer + Oracle | WP4 | Auth/RLS/IDOR evidence and current candidate model report | G2 security boundary and model thresholds pass on candidate data | +4% |
-| WP6 Run bounded operational exercise | Harvester + Sysop | WP4 | Live validation, two-instance crash/recovery, fencing, integrity, and rollback observations | Every Phase 3N saga/staging boolean is supported by non-synthetic evidence | +5% |
+| WP3 Provision isolated Staging governance | Sysop | WP0 | **Complete:** isolated Vercel/Render/Supabase identities and protected approval boundaries are established; exact Render deployment identity was revalidated and the service remains one Free instance after the authorized HA exercise | Preserve the isolated identities and Free final state | +4% |
+| WP4 Apply and verify hosted bootstrap | Sysop | WP3, explicit migration approval | **Complete:** isolated Supabase Staging retains ordinals 1-19 and has append-only ordinals 20-21. Read-only verification reports 21 history rows, both Phase 3N additions, required RPC/table presence, service-role execution, and anon denial | Keep the append-only history invariant through evidence collection | +4% |
+| WP5 Run Staging security and model checks | Sysop + Trainer + Oracle | WP4 | **Partial:** hosted Auth/RLS/IDOR, approved staking/payout, exact-commit deployment, public health/OpenAPI 200, protected API 401, and the first exact-SHA `middle` prediction batch pass. No settled row or acceptance-complete model exists | G2 security boundary and all approved model thresholds pass on real candidate data | +4% |
+| WP6 Run bounded operational exercise | Harvester + Sysop | WP4 | **Substantially complete:** bounded HTTP/no-mutation, rollback, real two-instance crash/recovery/fencing, exact-commit CI HA, hosted health/auth regression, and nonempty cache delete/rebuild/digest evidence pass. Final trusted-evidence assembly is deferred until the prospective window completes | Every Phase 3N saga/staging boolean is supported by sanitized non-synthetic evidence | +5% |
 | WP7 Produce trusted Phase 3N evidence | Sysop | WP5, WP6, three approvals | Attested Phase 3N artifact for exact candidate | Verifier derives `trusted=true`, `l3_eligible=true`, `production_ready=true` | +3% |
 | WP8 Promote and observe Production | Sysop + Jobs + Ledger | WP7, release approval | Controlled release, monitoring evidence, rollback readiness, business observation report | G5 passes and agreed observation period completes | +4% |
 
@@ -269,11 +312,12 @@ The percentages above are prioritization estimates, not additive score increment
 
 ### Immediate next sequence
 
-1. Generate current-commit out-of-time model evidence that satisfies the approved contract.
-2. Execute WP3 and WP4 under the granted external-environment and migration approval.
-3. Execute the non-synthetic Staging exercises and rollback drill.
-4. Run the trusted Phase 3N workflow; it requires and attests the model acceptance report alongside operational evidence.
-5. Promote only when both trusted Staging and model gates derive READY; then complete the Production observation period.
+1. Complete review of the limited observation contract, runtime guards, workflow split, health-mode projection, and runbook; merge only with an unchanged candidate tree.
+2. Update and independently review `security/phase3n-trusted-producer-v3`, then run `staging-evidence.yml` with `evidence_scope=limited-observation` for the exact candidate.
+3. Finish Production health/error/observation alerts, incident ownership, and an executable rollback rehearsal; configure Production with observation enabled last and automatic betting disabled.
+4. Run the protected limited release authorization, deploy the exact merge, and pass health/auth/prediction/append-only observation/rollback smoke without enabling automatic betting.
+5. After race `202604020812` is authoritative, reconcile its result exactly once and continue prospective collection to 90 days, 1,000 settled samples, and 100 qualifying virtual bets.
+6. Improve and evaluate the market-free model only on the predeclared schedule, freeze Inner policy before Outer inspection, and require all business gates before `validated`; require a later separate approval before `active`.
 
 ---
 
@@ -362,6 +406,22 @@ For each status review:
 | 2026-08-02 | `31c6b64` exact-SHA CI candidate | 67.65% authoritative / 68% reported | NOT_READY | The PostgreSQL 17.6 approval-ledger parse failure is fixed and regression-guarded. Local Python 1,169 and the Phase 3M two-fresh-database 17-of-17 gate pass; remote CI run `30741847311` is green across all 12 jobs, including Playwright, dependency/security gates, Phase 3G-J, Phase 3M bootstrap replay, and both container builds. Isolated hosted Staging, approved business thresholds, real OOT observations, trusted Phase 3N evidence, and release approval remain open. |
 | 2026-08-02 | `codex/fullstack-readiness` approved-threshold candidate | 67.65% authoritative / 68% reported | NOT_READY | Repository owner `yuki20001105` approved the complete initial Phase 3N model acceptance contract in GitHub issue #25. The durable comment timestamp and URL, all eleven thresholds, and out-of-time/no-leakage policy are encoded in the canonical contract. The score remains unchanged until fresh current-commit OOT observations pass; isolated hosted Staging and trusted Phase 3N evidence remain open. |
 | 2026-08-02 | `codex/phase3m-append-only-upgrade` candidate | 67.65% authoritative / 68% reported | NOT_READY | Authenticated provider audit found the isolated Supabase Staging project at ref `xitrnivjskfepateedms` with the unchanged 11-migration `861f46c...` Phase 3M prefix, while the candidate contains 19 migrations. A commit/segment-bound renderer now preserves every old history row and appends only a byte-identical manifest suffix; fresh Phase 3N proof remains assigned to a short-lived isolated Preview Branch. No hosted upgrade or Preview migration is claimed by repository implementation alone. |
+| 2026-08-02 | `f2614e4` isolated Staging rollout | 73.65% authoritative / 74% reported | NOT_READY | Exact-SHA CI, isolated Vercel/Render/Supabase identities, fresh 19-migration bootstrap, hosted Auth/RLS/IDOR, bounded HTTP/no-mutation, and rollback evidence passed. Persistent-cache, multi-instance HA/fencing, model observations, and trusted evidence remained open. |
+| 2026-08-14 | `f5b9c90` hosted HA/fencing baseline | 75.65% authoritative / 76% reported | NOT_READY | The authorized Render two-instance Starter exercise proved real claim/crash/recovery, lease takeover, stale-fence rejection, and cleanup; Render was then returned to one Free instance. No Production change was made. |
+| 2026-08-14 | `cbae079` PR #28 observation/evidence candidate | 75.65% authoritative / 76% reported | NOT_READY | Deterministic fail-closed staking/payout, append-only result reconciliation, and a bounded cache-integrity evidence command are implemented. Local Python 1,185, zero-vulnerability audits, all 13 exact-commit CI jobs in run `31801904942`, and both Vercel checks pass. The score does not count pending Staging regression, issue #29 approval, uncollected 90-day observations, or trusted evidence as complete. |
+| 2026-08-14 | Issue #29 staking/payout approval | 75.65% authoritative / 76% reported | NOT_READY | Repository owner `yuki20001105` approved the exact `phase3n-tansho-flat-v1` policy. The durable comment reference is now bound into the tracked policy candidate. The score remains unchanged until exact-commit Staging regression/cache evidence and real observations pass. |
+| 2026-08-15 | `a70ef54` approved-policy exact-commit Staging regression | 75.65% authoritative / 76% reported | NOT_READY | Local Python 1,186 and all 13 jobs in CI run `31811447458` pass. Render is Live at exact `a70ef54`, its candidate-SHA/observation/expanding-window/Staging boundaries are aligned, and hosted `/health` plus OpenAPI return 200 while the protected scrape-health API returns 401. Supabase retains all 21 append-only history rows and exposes the service-only Phase 3N schema, but prediction/result counts remain zero; cache integrity and the observation clock therefore remain honestly open. |
+| 2026-08-15 | `130c724` evidence-recording exact-commit Staging checkpoint | 75.65% authoritative / 76% reported | NOT_READY | The documentation-only follow-up passes all 13 jobs in CI run `31812943165` and is Live on Render with `PHASE3N_CANDIDATE_COMMIT_SHA` aligned to the same full SHA. Post-deploy `/health` and OpenAPI return 200 and the protected scrape-health API returns 401. Render remains one Free instance. The Supabase ledger still has zero prediction/result rows, so no cache-integrity success or observation start is claimed. |
+| 2026-08-15 | `961a5be` ephemeral-SQLite startup checkpoint | 75.65% authoritative / 76% reported | NOT_READY | Render Free now creates required SQLite tables before serving the first request, is Live at the exact commit with the candidate SHA aligned, and returns healthy. All 13 jobs in CI run `31815636708` pass. The first real 18-runner request was correctly rejected before capture because official odds/popularity were not yet published; the Staging ledger therefore remains at zero rows. |
+| 2026-08-15 | Current-artifact historical OOT replay | 73.15% authoritative / 73% reported | NOT_READY | Mixed-generation `finish_position` rows exposed a row-level coalescing defect, which is regression-fixed. A strict complete-race replay over 2026-02-02 through 2026-07-11 (980 races, 10,768 entries, 160 days) passes Brier 0.0791, ECE 0.0265, drawdown 3.60%, bet/sample/period minimums, and baseline ROI delta +12.71 points, but fails AUC 0.7158 and ROI -8.27%. This is real historical screening data, not prospective or trusted Phase 3N evidence. |
+| 2026-08-15 | Ten-year speed-deviation regression screen | 73.15% authoritative / 73% reported | NOT_READY | The first 2016-2026 candidate exposed `time_index` and current-race lap/pace leakage and was quarantined without activation. The corrected candidate uses 267,700 training entries across 23,495 races, a training-only distance/surface target baseline, five-year recency half-life, and 1,293 complete OOT races. It records RMSE 0.6947, Spearman 0.7990, winner AUC 0.7802, Brier 0.0791, ECE 0.0420, ROI -14.81%, drawdown 21.42%, and +4.15-point ROI delta to the favorite baseline. Data are dense in 2016-2018 and 2025-2026 but sparse in 2019-2024, so the candidate remains unapproved and undeployed. |
+| 2026-08-15 | Strict annual speed-deviation walk-forward | 73.15% authoritative / 73% reported | NOT_READY | Four outer years (2016, 2017, 2018, 2025) are never used for iteration, feature, temperature, or wagering-policy selection. Aggregate evaluation covers 264,705 entries and 23,208 complete races with RMSE 0.6069, Spearman 0.8025, calibrated AUC 0.8047, Brier 0.0694, and ECE 0.0045. The approved EV>=1.2 flat-win policy produces 21,823 wagers, ROI -23.23%, drawdown above 20%, and -2.76-point delta to the favorite baseline; AUC/ROI/drawdown/delta therefore fail. The earlier single-window ROI is retained only as historical development evidence because it forced one wager per race instead of enforcing the approved EV threshold. No model was activated or deployed, and data after 2026-07-11 remain reserved. |
+| 2026-08-15 | Licensed-history and nested OOF value implementation | 73.15% authoritative / 73% reported | NOT_READY | The research path now has a hash-verified append-only 2019-2024 import contract, canonical point-in-time odds selection, an OOF-only winner meta-model, and inner-meta-OOF-only strategy search. A read-only audit of the current DB records 576/548/830/0/0/42 legacy entries for 2019-2024, respectively, but zero licensed entries and zero timestamped odds entries in every year. No authorized export was fabricated or downloaded, no DB was modified, no outer evaluation was claimed, and all generated candidates remain unapproved and undeployed. |
+| 2026-08-15 | Free JRA official-history full evaluation | 73.15% authoritative / 73% reported | NOT_READY | All 1,729 official 2019-2024 PDFs were hash-recorded and converted into 273,187 timed runners across 19,846 flat races; 755 jump races, 87 unreadable/incomplete flat layouts, and three unsupported-font documents are explicitly audited rather than guessed. The identical manifest passed a no-write 273,187-record dry-run and append-only import to a research DB copy; `quick_check=ok` and every year exceeds 3,281 outcome races. The initial corrected 2020-2024 expanding evaluation excluded direct odds but reported AUC 0.7137. A subsequent audit removed six remaining derived market/payout fields, added strictly shifted prior-speed histories, and trained the winner probability layer only from inner-period OOF speed scores and pre-race context. The 229,190-entry / 16,644-race v2 report reaches AUC 0.7581, Brier 0.06260, and ECE 0.00301 with zero future/market intersections, but still fails 0.85; ROI/DD remain unavailable. No model was approved, activated, or deployed. |
+| 2026-08-15 | `fc56d22` live-input exact-SHA rollout and market-free OOF-meta baseline | 73.15% authoritative / 73% reported | NOT_READY | All 13 remote CI jobs pass and the same SHA is Live on one Free Render instance; hosted health returns 200, unauthenticated analyze returns 401, and the next-race `yoso` quote is rejected without an observation write. The research-only v2 annual evaluation adds shifted horse-speed histories and an inner-period OOF winner meta-model, improves AUC from 0.7137 to 0.7581, and records zero future or market-feature intersections. The AUC and prospective ROI/evidence gates remain open, so neither the candidate nor Production changed. |
+| 2026-08-15 | `3d24948` Phase3N nested-value hardening | 73.15% authoritative / 73% reported | NOT_READY | The existing OOF value path now requires complete fresh `middle` quotes, source, and one exact SHA; rejects final/result, stale, mixed-SHA, and post-start inputs; keeps the winner meta-model market-free and strategy selection Inner-only; and enforces one wager per race, 5-15% realized bet rate, minimum count, drawdown, baseline delta, year stability, ROI confidence bounds, and adjacent-grid robustness. Reports bind the approved policy, search space, decision, and Inner/Outer input rows by SHA-256. Local FastAPI 1,196 plus research 118 tests pass with 6 research skips; both safety scanners report zero findings. All 13 jobs in CI run `31884370561` and both Vercel checks pass. No genuine point-in-time dataset was created, no ROI result was claimed, and no model was approved or deployed; the overall score therefore remains 73.15%. |
+| 2026-08-15 | `2d39111` first exact-SHA prospective observation and cache evidence | 74.15% authoritative / 74% reported | NOT_READY | The result-unknown race `202604020812` had `middle` status and 15 complete actual odds. Normal authenticated Staging analysis returned 200 and wrote 15 predictions joined to exact SHA `2d39111...`. A separate earlier 15-row run bound to legacy SHA `961a5be...` remains append-only audit history and is excluded from current-candidate counts. The authorized non-paid cache exercise used all 30 PostgreSQL rows and proved identical DB/cache digest `46ff587b...a39a0e`, database unchanged, and zero missing/duplicate/stale cache rows. Local Python 1,325 passes with 6 skips; all 13 jobs in CI run `31890053180` pass after an unrelated Playwright timing flake passed unchanged on attempt 2. Settled progress remains 0/1,000 samples, 0/100 bets, and 0/90 days; AUC remains 0.7581, so Production stays NOT_READY. |
+| 2026-08-16 | Limited Production observation contract candidate | 74.15% authoritative / 74% reported; 80.53% system-release indicator | NOT_READY | System release and model business validation are now separate executable gates. The candidate adds an exact-commit trusted-system verifier, an explicit `limited-observation` workflow path, Production observation boundary checks, non-secret health mode reporting, and a hard runtime denial of live betting unless a future independently approved `active` model explicitly opts in. Full model validation remains the workflow default. Local Python 1,211, workflow YAML parsing, secret scanning, test-weakening scanning, and diff checks pass. This implementation does not deploy or authorize Production: PR review/merge, trusted-producer parity/review, monitoring and rollback readiness, protected Production approval, exact-commit deploy, and Production smoke evidence remain required. |
 
 ---
 
@@ -376,6 +436,7 @@ For each status review:
 - `docs/phase3l_staging_readiness_gate.md`: external Staging prerequisites.
 - `docs/phase3n_staging_evidence.md`: trusted evidence and approval contract.
 - `docs/model_acceptance_contract.md`: versioned business thresholds, evidence schema, and approval boundary.
+- `docs/limited_production_observation_release.md`: system-release/model-validation split, observation-only controls, monitoring, and rollback.
 - `docs/repair_execution_policy.md`: fail-closed direct-repair boundary and prerequisites for future approval-bound execution.
 
 Historical documents may contain stale versions or assumptions. When they conflict, prefer `docs/specs/SYSTEM.md`, executable current-commit evidence, and this status document.

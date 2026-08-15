@@ -119,6 +119,13 @@ class IPATVoter:
             headless:   True でブラウザをヘッドレス起動（サーバー向け）。
             timeout_ms: 各操作のタイムアウト（ms）。
         """
+        if not dry_run:
+            automated_betting = os.environ.get("AUTOMATED_BETTING_ENABLED", "").strip().lower()
+            runtime_status = os.environ.get("MODEL_RUNTIME_STATUS", "").strip().lower()
+            if automated_betting not in {"true", "1", "yes"}:
+                raise RuntimeError("automated-betting-explicit-opt-in-required")
+            if runtime_status != "active":
+                raise RuntimeError("automated-betting-active-model-required")
         self.dry_run = dry_run
         self.headless = headless
         self.timeout_ms = timeout_ms

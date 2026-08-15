@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import sys
 
 import httpx
@@ -28,6 +29,48 @@ def test_health_contract() -> None:
     payload = res.json()
     assert isinstance(payload, dict)
     assert payload.get("status") == "ok"
+
+
+def test_lifespan_initializes_empty_ephemeral_sqlite(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "keiba" / "data" / "keiba_ultimate.db"
+    events: list[str] = []
+
+    monkeypatch.setattr(main, "ULTIMATE_DB", db_path)
+    monkeypatch.setattr(main, "start_scheduler", lambda: events.append("scheduler-start"))
+    monkeypatch.setattr(main, "stop_scheduler", lambda: events.append("scheduler-stop"))
+
+    async def _start_worker() -> None:
+        events.append("worker-start")
+
+    async def _stop_worker() -> None:
+        events.append("worker-stop")
+
+    monkeypatch.setattr(main, "start_operational_saga_worker", _start_worker)
+    monkeypatch.setattr(main, "stop_operational_saga_worker", _stop_worker)
+
+    async def _run_lifespan() -> None:
+        async with main.lifespan(main.app):
+            with sqlite3.connect(db_path) as conn:
+                tables = {
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    )
+                }
+            assert {
+                "races_ultimate",
+                "race_results_ultimate",
+                "return_tables_ultimate",
+                "scraped_dates",
+            } <= tables
+
+    asyncio.run(_run_lifespan())
+    assert events == [
+        "scheduler-start",
+        "worker-start",
+        "worker-stop",
+        "scheduler-stop",
+    ]
 
 
 def test_auth_middleware_exempt_and_protected_paths() -> None:

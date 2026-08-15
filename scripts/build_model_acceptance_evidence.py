@@ -17,9 +17,10 @@ from zoneinfo import ZoneInfo
 ROOT = Path(__file__).resolve().parents[1]
 VERIFIER_PATH = ROOT / "scripts" / "verify_model_acceptance.py"
 CONSTANTS_PATH = ROOT / "keiba" / "keiba_ai" / "constants.py"
+STAKING_POLICY_PATH = ROOT / "config" / "phase3n_staking_payout_policy.v1.json"
 
 SOURCE_SCHEMA = "model-evaluation-observations"
-SOURCE_SCHEMA_VERSION = 1
+SOURCE_SCHEMA_VERSION = 2
 MAX_INPUT_BYTES = 16 * 1024 * 1024
 MAX_ROWS = 100_000
 MAX_FEATURE_COLUMNS = 2_048
@@ -43,6 +44,9 @@ SOURCE_KEYS = frozenset(
         "model_feature_columns",
         "expanding_window_checks_passed",
         "initial_bankroll",
+        "staking_payout_policy_id",
+        "staking_payout_policy_sha256",
+        "staking_payout_approval_reference",
         "rows",
     }
 )
@@ -259,6 +263,7 @@ def build_evidence(
     *,
     expected_commit: str,
     now: datetime | None = None,
+    staking_policy_path: Path | None = None,
 ) -> dict[str, Any]:
     failures: list[str] = []
     now_utc = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -286,6 +291,46 @@ def build_evidence(
         failures.append("observations-expanding-window-check-required")
     if not _finite_number(source["initial_bankroll"], minimum=0.000000001):
         failures.append("observations-initial-bankroll-invalid")
+    try:
+        staking_policy = load_json(
+            staking_policy_path or STAKING_POLICY_PATH,
+            prefix="staking-policy",
+        )
+    except EvidenceBuildError as exc:
+        failures.extend(exc.failure_codes)
+        staking_policy = None
+    if not isinstance(staking_policy, dict):
+        failures.append("staking-policy-schema-invalid")
+    else:
+        if (
+            staking_policy.get("schema") != "phase3n-staking-payout-policy"
+            or staking_policy.get("schema_version") != 1
+            or staking_policy.get("status") != "approved"
+            or not isinstance(staking_policy.get("approval_reference"), str)
+            or not staking_policy["approval_reference"].startswith("https://github.com/")
+        ):
+            failures.append("staking-policy-not-approved")
+        if source["staking_payout_policy_id"] != staking_policy.get("policy_id"):
+            failures.append("observations-staking-policy-id-mismatch")
+        if source["staking_payout_policy_sha256"] != _canonical_sha256(staking_policy):
+            failures.append("observations-staking-policy-digest-mismatch")
+        if source["staking_payout_approval_reference"] != staking_policy.get("approval_reference"):
+            failures.append("observations-staking-policy-approval-mismatch")
+    if (
+        not isinstance(source["staking_payout_policy_id"], str)
+        or IDENTIFIER_RE.fullmatch(source["staking_payout_policy_id"]) is None
+    ):
+        failures.append("observations-staking-policy-id-invalid")
+    if (
+        not isinstance(source["staking_payout_policy_sha256"], str)
+        or acceptance_gate.DIGEST_RE.fullmatch(source["staking_payout_policy_sha256"]) is None
+    ):
+        failures.append("observations-staking-policy-digest-invalid")
+    if (
+        not isinstance(source["staking_payout_approval_reference"], str)
+        or not source["staking_payout_approval_reference"].startswith("https://github.com/")
+    ):
+        failures.append("observations-staking-policy-approval-invalid")
 
     generated_at = _parse_timestamp(source["generated_at"])
     training_ended_at = _parse_timestamp(source["training_data_ended_at"])
@@ -469,6 +514,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--contract", type=Path, required=True)
     parser.add_argument("--expected-commit", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--staking-policy", type=Path, default=STAKING_POLICY_PATH)
     return parser.parse_args(argv)
 
 
@@ -485,6 +531,7 @@ def main(argv: list[str] | None = None) -> int:
             source,
             contract,
             expected_commit=args.expected_commit,
+            staking_policy_path=args.staking_policy,
         )
         write_json_atomic(args.output, evidence)
     except EvidenceBuildError as exc:
