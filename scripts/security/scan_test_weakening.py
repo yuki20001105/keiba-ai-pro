@@ -71,6 +71,7 @@ ALLOWLIST_EXACT: Dict[str, str] = {
     "python-api/tests/test_phase3l_deployment_safety.py:assert set(jobs) == {\"production-release-blocked\"}": "tombstone replaced by single environment-gated authorization job",
     "python-api/tests/test_phase3l_deployment_safety.py:assert len(steps) == 1": "replacement authorization workflow has multiple independently asserted gates",
     "python-api/tests/test_phase3l_deployment_safety.py:assert \"exit 1\" in steps[0][\"run\"]": "unconditional tombstone replaced by multiple fail-closed exact-context gates",
+    "python-api/tests/test_phase3l_deployment_safety.py:assert set(inputs) == {\"expected_commit\", \"trusted_producer_sha\", \"max_age_seconds\"}": "expanded by an exact evidence_scope input assertion whose only values preserve full validation or add the stricter automatic-betting-disabled limited-observation path",
     # The immutable v1 producer cannot be updated. Its exact assertions are
     # replaced by the same fail-closed assertions for the separately protected
     # v2 producer; no producer-ref check is removed or relaxed.

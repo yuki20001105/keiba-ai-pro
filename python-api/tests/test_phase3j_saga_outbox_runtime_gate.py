@@ -377,6 +377,7 @@ def test_ci_keeps_phase3j_release_blocking_topology_and_artifact_budget() -> Non
         "phase3g-review-ledger-runtime-json",
         "phase3n-observation-ha-contract",
         "phase3h-production-readiness-json",
+        "limited-production-observation-release-json",
         "phase3i-saga-failure-injection-json",
         "phase3j-saga-outbox-runtime-json",
         "phase3m-supabase-bootstrap-json",

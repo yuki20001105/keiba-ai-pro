@@ -510,6 +510,7 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           STAGING_EVIDENCE_RUN_ID: ${{ vars.PHASE3N_STAGING_EVIDENCE_RUN_ID }}
           TRUSTED_PRODUCER_SHA: ${{ vars.PHASE3N_TRUSTED_PRODUCER_SHA }}
+          PRODUCTION_RELEASE_MODE: ${{ vars.PRODUCTION_RELEASE_MODE }}
           TRUSTED_REF: refs/heads/security/phase3n-trusted-producer-v3
         shell: bash
         run: |
@@ -569,6 +570,11 @@ jobs:
             echo "::error::Resolved candidate SHA is invalid."
             exit 1
           fi
+          release_mode="${PRODUCTION_RELEASE_MODE:-full-model-validation}"
+          if [[ "$release_mode" != "full-model-validation" && "$release_mode" != "limited-observation" ]]; then
+            echo "::error::PRODUCTION_RELEASE_MODE is invalid."
+            exit 1
+          fi
 
           if [[ ! "$STAGING_EVIDENCE_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
             echo "::error::PHASE3N_STAGING_EVIDENCE_RUN_ID must identify one approved trusted-producer run."
@@ -601,6 +607,7 @@ jobs:
           echo "run_id=$STAGING_EVIDENCE_RUN_ID" >> "$GITHUB_OUTPUT"
           echo "run_attempt=$run_attempt" >> "$GITHUB_OUTPUT"
           echo "producer_sha=$TRUSTED_PRODUCER_SHA" >> "$GITHUB_OUTPUT"
+          echo "release_mode=$release_mode" >> "$GITHUB_OUTPUT"
 
       - name: Download trusted Phase3N staging attestation
         if: >-
@@ -621,12 +628,15 @@ jobs:
           (github.event_name == 'workflow_dispatch' && (github.ref_name == 'main' || github.ref_name == 'release'))
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_MODE: ${{ steps.trusted-attestation.outputs.release_mode }}
         shell: bash
         run: |
           set -euo pipefail
-          for subject in \
-            reports/phase3n-input/phase3n_staging_evidence_gate.json \
-            reports/phase3n-input/model_acceptance_gate.json
+          subjects=(reports/phase3n-input/phase3n_staging_evidence_gate.json)
+          if [[ "$RELEASE_MODE" == "full-model-validation" ]]; then
+            subjects+=(reports/phase3n-input/model_acceptance_gate.json)
+          fi
+          for subject in "${subjects[@]}"
           do
             gh attestation verify "$subject" \
               --repo "$GITHUB_REPOSITORY" \
@@ -639,9 +649,11 @@ jobs:
 
       - name: Require trusted READY evidence for promotion
         if: >-
-          (github.event_name == 'pull_request' && (github.base_ref == 'main' || github.base_ref == 'release')) ||
-          (github.event_name == 'push' && (github.ref_name == 'main' || github.ref_name == 'release')) ||
-          (github.event_name == 'workflow_dispatch' && (github.ref_name == 'main' || github.ref_name == 'release'))
+          steps.trusted-attestation.outputs.release_mode == 'full-model-validation' && (
+            (github.event_name == 'pull_request' && (github.base_ref == 'main' || github.base_ref == 'release')) ||
+            (github.event_name == 'push' && (github.ref_name == 'main' || github.ref_name == 'release')) ||
+            (github.event_name == 'workflow_dispatch' && (github.ref_name == 'main' || github.ref_name == 'release'))
+          )
         run: >-
           python scripts/verify_phase3h_production_readiness.py
           --manifest python-api/tests/fixtures/phase3h_production_readiness_current_not_ready.json
@@ -655,12 +667,39 @@ jobs:
           --max-age-seconds 3600
           --require-ready
 
+      - name: Require limited observation release evidence for promotion
+        if: >-
+          steps.trusted-attestation.outputs.release_mode == 'limited-observation' && (
+            (github.event_name == 'pull_request' && (github.base_ref == 'main' || github.base_ref == 'release')) ||
+            (github.event_name == 'push' && (github.ref_name == 'main' || github.ref_name == 'release')) ||
+            (github.event_name == 'workflow_dispatch' && (github.ref_name == 'main' || github.ref_name == 'release'))
+          )
+        run: >-
+          python scripts/verify_limited_production_observation_release.py
+          --contract config/limited_production_observation_contract.v1.json
+          --trusted-attestation reports/phase3n-input/phase3n_staging_evidence_gate.json
+          --expected-run-id "${{ steps.trusted-attestation.outputs.run_id }}"
+          --expected-run-attempt "${{ steps.trusted-attestation.outputs.run_attempt }}"
+          --expected-repository "$GITHUB_REPOSITORY"
+          --expected-repository-id "${{ github.repository_id }}"
+          --expected-commit "${{ steps.trusted-attestation.outputs.candidate_sha }}"
+          --max-age-seconds 3600
+          --require-observation-ready
+
       - name: Upload Phase3H production readiness decision
-        if: always()
+        if: always() && steps.trusted-attestation.outputs.release_mode != 'limited-observation'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: phase3h-production-readiness-json
           path: reports/phase3h_production_readiness_gate.json
+          if-no-files-found: error
+
+      - name: Upload limited observation release decision
+        if: always() && steps.trusted-attestation.outputs.release_mode == 'limited-observation'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: limited-production-observation-release-json
+          path: reports/limited_production_observation_release_gate.json
           if-no-files-found: error
 
   phase3i-saga-failure-injection:

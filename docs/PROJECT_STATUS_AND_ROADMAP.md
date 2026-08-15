@@ -5,6 +5,7 @@
 > Current branch at assessment: `codex/phase3n-observation-ha-evidence` (PR #28)
 > Current runtime implementation checkpoint: `2d39111bc0ad3aaef75977e6e5def3122761e951`, which is CI-green, Live on Render Staging, and verified against the same effective Phase 3N candidate SHA
 > Status: **overall 74.15%, reported as 74% (reasonable range: 72-77%), Production NOT_READY**
+> Limited Production observation readiness: **80.53%** when the model-business-value pillar is reported separately; this is not a release authorization
 > Candidate status: the first prospective `middle` observation succeeded for race `202604020812`: 15 exact-SHA horse predictions are append-only in Supabase and the nonempty cache delete/rebuild exercise passes. An earlier 15-row run bound to legacy SHA `961a5be...` remains as explicit audit history and is excluded from exact-candidate counts. Results are not settled, so formal progress remains 0/1,000 valid samples, 0/100 qualifying bets, and 0/90 elapsed settled days. The market-free OOF winner-meta AUC remains 0.7581 against the approved 0.85 gate; all generated replacement candidates remain research-only, unapproved, and undeployed
 
 This is the canonical handoff document for answering three questions:
@@ -21,6 +22,7 @@ This section supersedes older point-in-time values below. Historical entries rem
 
 | Boundary | Current evidence | Remaining exit condition |
 |---|---|---|
+| Release contract split | `limited-production-observation-v1` separates `system_release_ready` from `model_business_validated`. The existing full READY path remains intact. Limited mode requires exact trusted system evidence and forces `MODEL_RUNTIME_STATUS=observation`, automatic betting off, deployed activation/training off, prospective `middle` observations, and rollback readiness | Review and merge PR #28, update/re-review the immutable trusted producer, then exercise the limited evidence and release workflows against one exact commit |
 | Isolated Staging | Vercel, Render, and Supabase are isolated. Supabase preserves the original 19 rows and approved append-only ordinals 20-21; Render remains one Free instance and is Live at `2d39111bc0ad3aaef75977e6e5def3122761e951`. The effective `PHASE3N_CANDIDATE_COMMIT_SHA` was revealed and rechecked after save, then the same commit was redeployed | Preserve the deployed runtime identity and append-only history through merge and evidence collection |
 | Multi-instance HA/fencing | Real two-instance claim, crash/recovery, lease takeover, stale-fence rejection, and cleanup evidence passed against Staging at `f5b9c90`; the exact `a70ef54` runtime and evidence-recording `130c724` both pass their container HA gate and hosted health/auth regression | Repeat the paid hosted exercise only if HA runtime semantics change; preserve the prior non-synthetic evidence |
 | Observation collection | Race `202604020812` supplied a complete result-unknown `middle` snapshot with 15 real odds. Authenticated analyze returned 200 and Supabase contains 15 horse predictions joined to exact SHA `2d39111...`, all at source time `2026-08-15T14:53:52.390863Z`. A prior 15-row real run joined to legacy SHA `961a5be...` remains append-only audit history and is not counted for the current candidate. No synthetic, forecast, final-result, retrospective, or Production row was used | Reconcile the race only after the authoritative result, then continue prospective collection to 90 settled days, 1,000 valid samples, and 100 qualifying bets |
@@ -36,7 +38,7 @@ The operational-proof pillar advances from 70% to 75% because the first prospect
 
 `78% * 30% + 55% * 25% + 88% * 25% + 75% * 20% = 74.15%`
 
-The shortest remaining route is now two parallel tracks. Model track: preserve the market-free prior-speed/OOF-meta baseline -> add only richer legitimate pre-race context -> evaluate once on a newly reserved period rather than retuning the observed 2020-2024 folds -> pass AUC 0.85 before activation. Result-PDF final odds remain quarantined. Operations track: reconcile the first exact-SHA race only after its authoritative result -> continue append-only `middle` observations -> freeze the Inner-selected purchase policy -> apply it once to the untouched Outer stream -> assemble trusted evidence only after 90 days/1,000 settled samples/100 qualifying bets. Neither retrospective replay, synthetic data, forecast odds, final-result odds, nor fabricated wagers may be registered as prospective Staging evidence.
+The release plan now has two explicit finish lines. Limited system release: finish monitoring/alert/rollback and critical operator procedures -> review/merge the exact tree -> update and independently review the trusted producer -> produce trusted system evidence -> authorize and deploy only `MODEL_RUNTIME_STATUS=observation` with automatic betting disabled -> pass Production smoke and rollback. Model validation continues after that release: settle prospective `middle` observations -> freeze the Inner-selected purchase policy -> apply it once to the untouched Outer stream -> pass 90 days/1,000 settled samples/100 qualifying bets plus AUC/ROI/DD/calibration/latency/freshness -> produce trusted model evidence -> move to `validated`; `active` and any automatic betting require a later independent approval. Neither retrospective replay, synthetic data, forecast odds, final-result odds, nor fabricated wagers may be registered as prospective evidence.
 
 ---
 
@@ -196,6 +198,17 @@ Workflow scoring assigns 1.0 point to `complete`, 0.6 to `partial`, and 0 to `mi
 
 The score now counts the externally proven HA/fencing exercise, the first exact-SHA prospective observations, and a successful nonempty cache rebuild. It does not count unsettled predictions as valid samples, nor a future trusted run as complete.
 
+The revised policy also reports a separate Limited Production system-release
+indicator without the deferred ML/business-value pillar:
+
+`(78% * 30% + 88% * 25% + 75% * 20%) / 75% = 80.53%`
+
+This is the evidence-based current value, so the informal 85-90% estimate is
+not yet adopted. Monitoring/alerting, executable Production rollback, critical
+operator runbooks, trusted-producer parity, exact authorization, and Production
+smoke must pass before that system-only score can advance. The original 74.15%
+continues to measure the complete project through model business validation.
+
 ### 3.2 What is complete
 
 - Core architecture: Next.js, FastAPI, SQLite, Supabase boundary, LightGBM pipeline.
@@ -213,22 +226,33 @@ The score now counts the externally proven HA/fencing exercise, the first exact-
 - Profiling, smoke suites, and some diagnostics still depend on scripts.
 - Operator quality/remediation flow remains fragmented.
 - Refresh and P0 repair execution remain intentionally disabled.
-- Operational saga code exists, but current non-synthetic multi-instance Staging proof is absent.
+- Operational saga and non-synthetic multi-instance Staging proof exist; Production monitoring, incident, and rollback execution remain open.
 - Historical model quality is encouraging and the business acceptance criteria are approved, but fresh current-commit evidence is incomplete.
 
-### 3.4 What blocks Production
+### 3.4 What blocks each release class
 
-1. The market-free winner model remains at AUC 0.7581 versus the approved 0.85 threshold; ROI/MaxDD acceptance is not yet measurable from a sufficient prospective Outer stream.
-2. The exact candidate has 15 prospective predictions but zero settled valid samples, zero qualifying settled bets, and zero completed observation days versus 1,000/100/90 requirements.
-3. `PHASE3N_STAGING_OBSERVATION_B64` and `MODEL_EVALUATION_OBSERVATIONS_GZIP_B64` have not been generated from an acceptance-complete dataset.
-4. Trusted producer parity, GitHub-signed Phase 3N attestation, PR #28 review/merge, accepted-candidate registration, and final exact-commit Staging regression remain open.
-5. Explicit Production release approval and the controlled Production observation window remain open.
+Limited Production observation remains blocked by:
+
+1. Review/merge of the exact observation-release contract and runtime controls.
+2. Immutable trusted-producer update/re-review and a GitHub-signed system attestation for the exact candidate.
+3. Production monitoring/alerting, incident ownership, rollback rehearsal, environment binding, and final smoke evidence.
+4. Protected Production release approval. Provider deployment remains a separate explicit operation.
+
+Model `validated`/`active` remains blocked by:
+
+1. AUC 0.7581 versus 0.85 and insufficient prospective ROI/MaxDD evidence.
+2. Zero settled valid samples, qualifying settled bets, and elapsed settled days versus 1,000/100/90.
+3. Trusted model-evaluation payload, accepted-candidate registration, and the full Phase 3H READY decision.
+4. A later independent activation approval; automatic betting is not authorized by either observation release or model validation alone.
 
 ---
 
 ## 4. Definition of Done
 
-The project reaches 100% only when every gate below is satisfied.
+Limited Production observation is complete when the system-release controls in
+`docs/limited_production_observation_release.md` pass. The complete project
+reaches 100% only when every gate below, including model business validation,
+is satisfied.
 
 ### Gate G1: Core product loop
 
@@ -288,12 +312,12 @@ The percentages above are prioritization estimates, not additive score increment
 
 ### Immediate next sequence
 
-1. After race `202604020812` is authoritative, reconcile its result exactly once and verify the exact-SHA observation/result join.
-2. Continue append-only `middle`, pre-start, <=30-minute observations until at least 90 settled days, 1,000 valid samples, and 100 qualifying bets are complete.
-3. In parallel, improve the market-free model using only legitimate pre-race context and evaluate it once on a newly reserved untouched period; require AUC >= 0.85 or obtain a durable threshold-change approval.
-4. Freeze the Inner-selected policy digest before inspecting Outer results, then require ROI >= 3%, MaxDD <= 20%, baseline delta >= 1 point, calibration, latency, and freshness gates.
-5. Build and independently verify both trusted evidence payloads, producer parity, and GitHub-signed attestation for one exact candidate.
-6. Promote only after PR review/merge, accepted-candidate registration, final exact-commit Staging regression, and explicit Production approval.
+1. Complete review of the limited observation contract, runtime guards, workflow split, health-mode projection, and runbook; merge only with an unchanged candidate tree.
+2. Update and independently review `security/phase3n-trusted-producer-v3`, then run `staging-evidence.yml` with `evidence_scope=limited-observation` for the exact candidate.
+3. Finish Production health/error/observation alerts, incident ownership, and an executable rollback rehearsal; configure Production with observation enabled last and automatic betting disabled.
+4. Run the protected limited release authorization, deploy the exact merge, and pass health/auth/prediction/append-only observation/rollback smoke without enabling automatic betting.
+5. After race `202604020812` is authoritative, reconcile its result exactly once and continue prospective collection to 90 days, 1,000 settled samples, and 100 qualifying virtual bets.
+6. Improve and evaluate the market-free model only on the predeclared schedule, freeze Inner policy before Outer inspection, and require all business gates before `validated`; require a later separate approval before `active`.
 
 ---
 
@@ -397,6 +421,7 @@ For each status review:
 | 2026-08-15 | `fc56d22` live-input exact-SHA rollout and market-free OOF-meta baseline | 73.15% authoritative / 73% reported | NOT_READY | All 13 remote CI jobs pass and the same SHA is Live on one Free Render instance; hosted health returns 200, unauthenticated analyze returns 401, and the next-race `yoso` quote is rejected without an observation write. The research-only v2 annual evaluation adds shifted horse-speed histories and an inner-period OOF winner meta-model, improves AUC from 0.7137 to 0.7581, and records zero future or market-feature intersections. The AUC and prospective ROI/evidence gates remain open, so neither the candidate nor Production changed. |
 | 2026-08-15 | `3d24948` Phase3N nested-value hardening | 73.15% authoritative / 73% reported | NOT_READY | The existing OOF value path now requires complete fresh `middle` quotes, source, and one exact SHA; rejects final/result, stale, mixed-SHA, and post-start inputs; keeps the winner meta-model market-free and strategy selection Inner-only; and enforces one wager per race, 5-15% realized bet rate, minimum count, drawdown, baseline delta, year stability, ROI confidence bounds, and adjacent-grid robustness. Reports bind the approved policy, search space, decision, and Inner/Outer input rows by SHA-256. Local FastAPI 1,196 plus research 118 tests pass with 6 research skips; both safety scanners report zero findings. All 13 jobs in CI run `31884370561` and both Vercel checks pass. No genuine point-in-time dataset was created, no ROI result was claimed, and no model was approved or deployed; the overall score therefore remains 73.15%. |
 | 2026-08-15 | `2d39111` first exact-SHA prospective observation and cache evidence | 74.15% authoritative / 74% reported | NOT_READY | The result-unknown race `202604020812` had `middle` status and 15 complete actual odds. Normal authenticated Staging analysis returned 200 and wrote 15 predictions joined to exact SHA `2d39111...`. A separate earlier 15-row run bound to legacy SHA `961a5be...` remains append-only audit history and is excluded from current-candidate counts. The authorized non-paid cache exercise used all 30 PostgreSQL rows and proved identical DB/cache digest `46ff587b...a39a0e`, database unchanged, and zero missing/duplicate/stale cache rows. Local Python 1,325 passes with 6 skips; all 13 jobs in CI run `31890053180` pass after an unrelated Playwright timing flake passed unchanged on attempt 2. Settled progress remains 0/1,000 samples, 0/100 bets, and 0/90 days; AUC remains 0.7581, so Production stays NOT_READY. |
+| 2026-08-16 | Limited Production observation contract candidate | 74.15% authoritative / 74% reported; 80.53% system-release indicator | NOT_READY | System release and model business validation are now separate executable gates. The candidate adds an exact-commit trusted-system verifier, an explicit `limited-observation` workflow path, Production observation boundary checks, non-secret health mode reporting, and a hard runtime denial of live betting unless a future independently approved `active` model explicitly opts in. Full model validation remains the workflow default. Local Python 1,211, workflow YAML parsing, secret scanning, test-weakening scanning, and diff checks pass. This implementation does not deploy or authorize Production: PR review/merge, trusted-producer parity/review, monitoring and rollback readiness, protected Production approval, exact-commit deploy, and Production smoke evidence remain required. |
 
 ---
 
@@ -411,6 +436,7 @@ For each status review:
 - `docs/phase3l_staging_readiness_gate.md`: external Staging prerequisites.
 - `docs/phase3n_staging_evidence.md`: trusted evidence and approval contract.
 - `docs/model_acceptance_contract.md`: versioned business thresholds, evidence schema, and approval boundary.
+- `docs/limited_production_observation_release.md`: system-release/model-validation split, observation-only controls, monitoring, and rollback.
 - `docs/repair_execution_policy.md`: fail-closed direct-repair boundary and prerequisites for future approval-bound execution.
 
 Historical documents may contain stale versions or assumptions. When they conflict, prefer `docs/specs/SYSTEM.md`, executable current-commit evidence, and this status document.

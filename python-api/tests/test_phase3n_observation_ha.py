@@ -40,7 +40,7 @@ APPROVED_STAKING_POLICY = (
 )
 
 
-def test_observation_config_is_explicit_staging_only_and_project_bound() -> None:
+def test_observation_config_is_explicit_and_project_bound() -> None:
     assert ObservationConfig.from_env({}).enabled is False
     valid = {
         "PHASE3N_OBSERVATION_ENABLED": "true",
@@ -66,6 +66,37 @@ def test_observation_config_is_explicit_staging_only_and_project_bound() -> None
         )
 
 
+def test_limited_production_observation_requires_every_safety_binding() -> None:
+    valid = {
+        "PHASE3N_OBSERVATION_ENABLED": "true",
+        "APP_ENV": "production",
+        "PHASE3N_PRODUCTION_PROJECT_REF": PROJECT_REF,
+        "SUPABASE_URL": f"https://{PROJECT_REF}.supabase.co",
+        "PHASE3N_CANDIDATE_COMMIT_SHA": COMMIT,
+        "PHASE3N_EXPANDING_WINDOW_CHECKS_PASSED": "true",
+        "PHASE3N_OBSERVATION_RELEASE_MODE": "limited-observation",
+        "PHASE3N_RELEASE_CONTRACT_ID": "limited-production-observation-v1",
+        "MODEL_RUNTIME_STATUS": "observation",
+        "AUTOMATED_BETTING_ENABLED": "false",
+    }
+    config = ObservationConfig.from_env(valid)
+    config.require_environment_boundary()
+    assert config.app_env == "production"
+
+    for key, replacement in (
+        ("PHASE3N_OBSERVATION_RELEASE_MODE", "full"),
+        ("PHASE3N_RELEASE_CONTRACT_ID", "other"),
+        ("MODEL_RUNTIME_STATUS", "active"),
+        ("AUTOMATED_BETTING_ENABLED", "true"),
+        ("PHASE3N_PRODUCTION_PROJECT_REF", "wrong"),
+    ):
+        with pytest.raises(ObservationContractError):
+            ObservationConfig.from_env({**valid, key: replacement})
+
+    with pytest.raises(ObservationContractError, match="automated-betting-enabled-invalid"):
+        ObservationConfig.from_env({**valid, "AUTOMATED_BETTING_ENABLED": "maybe"})
+
+
 def test_prediction_and_result_payloads_are_digest_bound_and_temporally_strict() -> None:
     observed = datetime.now(timezone.utc) - timedelta(minutes=2)
     prediction = build_prediction_payload(
@@ -87,6 +118,23 @@ def test_prediction_and_result_payloads_are_digest_bound_and_temporally_strict()
     assert prediction["idempotency_key"].startswith("prediction:")
     assert len(prediction["payload_sha256"]) == 64
     assert prediction["qualifying_bet"] is False
+    production_prediction = build_prediction_payload(
+        manifest_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        race_id="202608020101",
+        horse_id="horse-01",
+        horse_number=1,
+        race_date="2026-08-02",
+        data_observed_at=observed,
+        data_cutoff_at=observed + timedelta(seconds=1),
+        feature_columns=["horse_number", "odds"],
+        feature_values=[1, 2.5],
+        predicted_value=0.4,
+        predicted_probability=0.4,
+        predicted_rank=1,
+        odds_at_prediction=2.5,
+        source_environment="production",
+    )
+    assert production_prediction["source_environment"] == "production"
     result = build_result_payload(
         observation_id=prediction["observation_id"],
         settled_at=datetime.now(timezone.utc),

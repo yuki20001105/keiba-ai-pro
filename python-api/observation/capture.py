@@ -98,7 +98,7 @@ def capture_analyze_predictions(
     config = ObservationConfig.from_env(values)
     if not config.enabled:
         return {"enabled": False, "inserted": 0, "duplicates": 0}
-    config.require_staging_boundary()
+    config.require_environment_boundary()
     if client is None:
         from app_config import get_supabase_client  # type: ignore
 
@@ -114,7 +114,7 @@ def capture_analyze_predictions(
         candidate_commit_sha=str(config.candidate_commit_sha),
         feature_columns=feature_columns,
         training_data_ended_at=_training_cutoff(bundle, model_path),
-        environment="staging",
+        environment=config.app_env,
         expanding_window_checks_passed=config.expanding_window_checks_passed,
     )
     registered = gateway.register_manifest(manifest)
@@ -179,6 +179,7 @@ def capture_analyze_predictions(
             wager_amount=decision.wager_amount,
             baseline_wager_amount=decision.baseline_wager_amount,
             latency_ms=latency_ms,
+            source_environment=config.app_env,
         )
         result = gateway.record_prediction(payload)
         if result["mutation_code"] == "inserted":

@@ -37,6 +37,7 @@ for _s in (sys.stdout, sys.stderr):
             pass
 
 from contextlib import asynccontextmanager
+import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -147,7 +148,20 @@ async def live_validation_no_store(request, call_next):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "app_env": os.environ.get("APP_ENV", "development").strip().lower(),
+        "model_runtime_status": os.environ.get("MODEL_RUNTIME_STATUS", "disabled").strip().lower(),
+        "observation_enabled": os.environ.get("PHASE3N_OBSERVATION_ENABLED", "").strip().lower()
+        in {"true", "1", "yes"},
+        "observation_release_mode": os.environ.get(
+            "PHASE3N_OBSERVATION_RELEASE_MODE", "disabled"
+        ).strip().lower(),
+        "automated_betting_enabled": os.environ.get(
+            "AUTOMATED_BETTING_ENABLED", ""
+        ).strip().lower()
+        in {"true", "1", "yes"},
+    }
 
 
 if __name__ == "__main__":

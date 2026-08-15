@@ -1,5 +1,11 @@
 # Phase 3H Production Readiness Decision Gate
 
+> Full model-validated Production and Limited Production observation are now
+> separate release classes. This document continues to define the full
+> `production_ready` gate. The system-only observation release is defined in
+> `docs/limited_production_observation_release.md` and must never be described
+> as model-business-validated or `ACTIVE`.
+
 ## 1. Decision
 
 Phase 3H is a release-blocking decision-contract gate. Its correct current result is:

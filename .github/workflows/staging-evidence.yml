@@ -16,6 +16,14 @@ on:
         required: true
         default: '3600'
         type: string
+      evidence_scope:
+        description: Full model validation or system-only evidence for a limited observation release
+        required: true
+        default: full-model-validation
+        type: choice
+        options:
+          - full-model-validation
+          - limited-observation
 
 permissions:
   contents: read
@@ -53,6 +61,7 @@ jobs:
           [[ "$GITHUB_WORKFLOW_REF" == "$GITHUB_REPOSITORY/.github/workflows/staging-evidence.yml@$TRUSTED_REF" ]]
           [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
           [[ "$TRUSTED_PRODUCER_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${{ inputs.evidence_scope }}" == "full-model-validation" || "${{ inputs.evidence_scope }}" == "limited-observation" ]]
           [[ "$GITHUB_SHA" == "$TRUSTED_PRODUCER_SHA" ]]
           [[ "$(git rev-parse HEAD)" == "$TRUSTED_PRODUCER_SHA" ]]
           git fetch --no-tags origin \
@@ -65,6 +74,7 @@ jobs:
             .github/workflows/release.yml \
             .github/workflows/staging-evidence.yml \
             scripts/verify_phase3h_production_readiness.py \
+            scripts/verify_limited_production_observation_release.py \
             scripts/build_model_acceptance_evidence.py \
             scripts/verify_model_acceptance.py \
             scripts/security/run_phase3m_supabase_bootstrap_gate.py \
@@ -80,6 +90,7 @@ jobs:
             keiba/keiba_ai/tests/test_train_inference_consistency.py \
             supabase/bootstrap/v1/manifest.json \
             config/model_acceptance_contract.v1.json \
+            config/limited_production_observation_contract.v1.json \
             config/phase3n_staking_payout_policy.v1.json \
             python-api/tests/test_model_acceptance_evidence_builder.py \
             python-api/tests/test_model_acceptance_gate.py \
@@ -142,6 +153,7 @@ jobs:
         env:
           PHASE3N_STAGING_OBSERVATION_B64: ${{ secrets.PHASE3N_STAGING_OBSERVATION_B64 }}
           MODEL_EVALUATION_OBSERVATIONS_GZIP_B64: ${{ secrets.MODEL_EVALUATION_OBSERVATIONS_GZIP_B64 }}
+          EVIDENCE_SCOPE: ${{ inputs.evidence_scope }}
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -170,18 +182,19 @@ jobs:
               "reports/phase3n_staging_observation_input.json",
           )
 
-          encoded = os.environ.get("MODEL_EVALUATION_OBSERVATIONS_GZIP_B64", "")
-          if not encoded or len(encoded) > 65536:
-              raise SystemExit("MODEL_EVALUATION_OBSERVATIONS_GZIP_B64 size is invalid")
-          try:
-              compressed = base64.b64decode(encoded, validate=True)
-              with gzip.GzipFile(fileobj=io.BytesIO(compressed), mode="rb") as archive:
-                  payload = archive.read(16 * 1024 * 1024 + 1)
-          except (ValueError, TypeError, OSError, EOFError) as exc:
-              raise SystemExit("MODEL_EVALUATION_OBSERVATIONS_GZIP_B64 encoding is invalid") from exc
-          if not 1 <= len(payload) <= 16 * 1024 * 1024:
-              raise SystemExit("MODEL_EVALUATION_OBSERVATIONS_GZIP_B64 payload size is invalid")
-          Path("reports/model_evaluation_observations_input.json").write_bytes(payload)
+          if os.environ.get("EVIDENCE_SCOPE") == "full-model-validation":
+              encoded = os.environ.get("MODEL_EVALUATION_OBSERVATIONS_GZIP_B64", "")
+              if not encoded or len(encoded) > 65536:
+                  raise SystemExit("MODEL_EVALUATION_OBSERVATIONS_GZIP_B64 size is invalid")
+              try:
+                  compressed = base64.b64decode(encoded, validate=True)
+                  with gzip.GzipFile(fileobj=io.BytesIO(compressed), mode="rb") as archive:
+                      payload = archive.read(16 * 1024 * 1024 + 1)
+              except (ValueError, TypeError, OSError, EOFError) as exc:
+                  raise SystemExit("MODEL_EVALUATION_OBSERVATIONS_GZIP_B64 encoding is invalid") from exc
+              if not 1 <= len(payload) <= 16 * 1024 * 1024:
+                  raise SystemExit("MODEL_EVALUATION_OBSERVATIONS_GZIP_B64 payload size is invalid")
+              Path("reports/model_evaluation_observations_input.json").write_bytes(payload)
           PY
 
       - name: Canonicalize and strictly validate observation before upload
@@ -199,6 +212,7 @@ jobs:
           rm -f reports/phase3n_staging_observation_input.json
 
       - name: Recompute and require approved current-commit model acceptance evidence
+        if: inputs.evidence_scope == 'full-model-validation'
         shell: bash
         env:
           EXPECTED_COMMIT: ${{ inputs.expected_commit }}
@@ -342,15 +356,18 @@ jobs:
           EXPECTED_COMMIT: ${{ inputs.expected_commit }}
           MAX_AGE_SECONDS: ${{ inputs.max_age_seconds }}
           WORKFLOW_REF: ${{ github.workflow_ref }}
+          EVIDENCE_SCOPE: ${{ inputs.evidence_scope }}
         run: |
           set -euo pipefail
-          MODEL_REPORT="$(find reports/source -type f -name model_acceptance_gate.json -print -quit)"
-          [[ -n "$MODEL_REPORT" ]]
-          cp "$MODEL_REPORT" reports/model_acceptance_gate.json
-          python scripts/verify_model_acceptance.py \
-            --trusted-report reports/model_acceptance_gate.json \
-            --expected-commit "$EXPECTED_COMMIT" \
-            --max-age-seconds "$MAX_AGE_SECONDS"
+          if [[ "$EVIDENCE_SCOPE" == "full-model-validation" ]]; then
+            MODEL_REPORT="$(find reports/source -type f -name model_acceptance_gate.json -print -quit)"
+            [[ -n "$MODEL_REPORT" ]]
+            cp "$MODEL_REPORT" reports/model_acceptance_gate.json
+            python scripts/verify_model_acceptance.py \
+              --trusted-report reports/model_acceptance_gate.json \
+              --expected-commit "$EXPECTED_COMMIT" \
+              --max-age-seconds "$MAX_AGE_SECONDS"
+          fi
           python scripts/security/verify_phase3n_staging_evidence.py \
             --evidence reports/phase3n_staging_evidence.json \
             --expected-commit "$EXPECTED_COMMIT" \
@@ -363,6 +380,7 @@ jobs:
             --report reports/phase3n_staging_evidence_gate.json
 
       - name: Write evidence file digests without exposing contents
+        if: inputs.evidence_scope == 'full-model-validation'
         shell: bash
         run: |
           set -euo pipefail
@@ -373,6 +391,7 @@ jobs:
             > reports/phase3n_staging_evidence_files.sha256
 
       - name: Upload trusted evidence and gate report
+        if: inputs.evidence_scope == 'full-model-validation'
         id: trusted_artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -387,9 +406,41 @@ jobs:
           compression-level: 9
 
       - name: Create GitHub artifact provenance attestation
+        if: inputs.evidence_scope == 'full-model-validation'
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: |
             reports/phase3n_staging_evidence.json
             reports/phase3n_staging_evidence_gate.json
             reports/model_acceptance_gate.json
+
+      - name: Write limited-observation evidence file digests without exposing contents
+        if: inputs.evidence_scope == 'limited-observation'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum \
+            reports/phase3n_staging_evidence.json \
+            reports/phase3n_staging_evidence_gate.json \
+            > reports/phase3n_staging_evidence_files.sha256
+
+      - name: Upload trusted limited-observation system evidence
+        if: inputs.evidence_scope == 'limited-observation'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phase3n-staging-evidence-json
+          path: |
+            reports/phase3n_staging_evidence.json
+            reports/phase3n_staging_evidence_gate.json
+            reports/phase3n_staging_evidence_files.sha256
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 9
+
+      - name: Create limited-observation GitHub artifact provenance attestation
+        if: inputs.evidence_scope == 'limited-observation'
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: |
+            reports/phase3n_staging_evidence.json
+            reports/phase3n_staging_evidence_gate.json

@@ -961,7 +961,10 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
             race_level=result["race_level"],
             recommendation=result["recommendation"],
         )
-        # Phase 3N strict observation capture is an explicit Staging-only opt-in.
+        # Phase 3N strict observation capture is an explicit deployed-runtime
+        # opt-in. Production is accepted only in the independently authorized
+        # limited-observation mode; all other production configurations fail
+        # closed before an observation write.
         # When enabled it is awaited before responding and fails closed: a
         # prediction is never claimed as observed unless PostgreSQL accepted the
         # append-only rows. Missing authoritative source timestamps are rejected.
@@ -1004,7 +1007,7 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
                 )
                 raise HTTPException(
                     status_code=503,
-                    detail="strict Staging observation capture failed closed",
+                    detail="strict observation capture failed closed",
                 ) from _observation_error
             logger.debug("[phase3n-observation] disabled")
         # 予測ログをDBに非同期保存（レスポンスをブロックしない）

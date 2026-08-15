@@ -24,6 +24,8 @@ from .contracts import (
 TRUE_VALUES = frozenset({"true", "1", "yes"})
 FALSE_VALUES = frozenset({"", "false", "0", "no", "off"})
 PROJECT_REF_RE = re.compile(r"^[a-z]{20}$")
+LIMITED_PRODUCTION_RELEASE_MODE = "limited-observation"
+LIMITED_PRODUCTION_CONTRACT_ID = "limited-production-observation-v1"
 
 
 @dataclass(frozen=True)
@@ -34,6 +36,10 @@ class ObservationConfig:
     supabase_url: str | None
     candidate_commit_sha: str | None
     expanding_window_checks_passed: bool
+    release_mode: str | None
+    model_runtime_status: str | None
+    release_contract_id: str | None
+    automated_betting_enabled: bool
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "ObservationConfig":
@@ -46,9 +52,24 @@ class ObservationConfig:
         else:
             raise ObservationContractError("observation-enabled-invalid")
         app_env = values.get("APP_ENV", "").strip().lower()
-        project_ref = values.get("PHASE3N_STAGING_PROJECT_REF", "").strip().lower() or None
+        project_ref_name = (
+            "PHASE3N_PRODUCTION_PROJECT_REF"
+            if app_env == "production"
+            else "PHASE3N_STAGING_PROJECT_REF"
+        )
+        project_ref = values.get(project_ref_name, "").strip().lower() or None
         supabase_url = values.get("SUPABASE_URL", "").strip() or None
         commit = values.get("PHASE3N_CANDIDATE_COMMIT_SHA", "").strip().lower() or None
+        release_mode = values.get("PHASE3N_OBSERVATION_RELEASE_MODE", "").strip().lower() or None
+        model_runtime_status = values.get("MODEL_RUNTIME_STATUS", "").strip().lower() or None
+        release_contract_id = values.get("PHASE3N_RELEASE_CONTRACT_ID", "").strip() or None
+        raw_automated_betting = values.get("AUTOMATED_BETTING_ENABLED", "").strip().lower()
+        if raw_automated_betting in TRUE_VALUES:
+            automated_betting_enabled = True
+        elif raw_automated_betting in FALSE_VALUES:
+            automated_betting_enabled = False
+        else:
+            raise ObservationContractError("automated-betting-enabled-invalid")
         raw_expanding = values.get(
             "PHASE3N_EXPANDING_WINDOW_CHECKS_PASSED", ""
         ).strip().lower()
@@ -62,21 +83,44 @@ class ObservationConfig:
             supabase_url,
             commit,
             expanding_window_checks_passed,
+            release_mode,
+            model_runtime_status,
+            release_contract_id,
+            automated_betting_enabled,
         )
         if enabled:
-            config.require_staging_boundary()
+            config.require_environment_boundary()
         return config
 
     def require_staging_boundary(self) -> None:
         if self.app_env != "staging":
-            raise ObservationContractError("observation-staging-only")
+            raise ObservationContractError("observation-staging-boundary-required")
+        self._require_project_boundary("staging")
+
+    def require_environment_boundary(self) -> None:
+        if self.app_env == "staging":
+            self.require_staging_boundary()
+            return
+        if self.app_env != "production":
+            raise ObservationContractError("observation-deployed-environment-required")
+        if self.release_mode != LIMITED_PRODUCTION_RELEASE_MODE:
+            raise ObservationContractError("production-observation-release-mode-required")
+        if self.model_runtime_status != "observation":
+            raise ObservationContractError("production-model-observation-status-required")
+        if self.release_contract_id != LIMITED_PRODUCTION_CONTRACT_ID:
+            raise ObservationContractError("production-observation-contract-required")
+        if self.automated_betting_enabled:
+            raise ObservationContractError("production-automated-betting-forbidden")
+        self._require_project_boundary("production")
+
+    def _require_project_boundary(self, environment: str) -> None:
         if self.project_ref is None or PROJECT_REF_RE.fullmatch(self.project_ref) is None:
-            raise ObservationContractError("staging-project-ref-invalid")
+            raise ObservationContractError(f"{environment}-project-ref-invalid")
         if self.supabase_url is None:
-            raise ObservationContractError("staging-supabase-url-required")
+            raise ObservationContractError(f"{environment}-supabase-url-required")
         parsed = urlparse(self.supabase_url)
         if parsed.scheme != "https" or parsed.hostname != f"{self.project_ref}.supabase.co":
-            raise ObservationContractError("staging-supabase-project-mismatch")
+            raise ObservationContractError(f"{environment}-supabase-project-mismatch")
         if self.candidate_commit_sha is None or COMMIT_RE.fullmatch(self.candidate_commit_sha) is None:
             raise ObservationContractError("candidate-commit-invalid")
         if self.expanding_window_checks_passed is not True:
@@ -205,8 +249,8 @@ def build_model_manifest_payload(
     require_identifier(model_version, code="model-version-invalid")
     if COMMIT_RE.fullmatch(candidate_commit_sha) is None:
         raise ObservationContractError("candidate-commit-invalid")
-    if environment != "staging":
-        raise ObservationContractError("observation-staging-only")
+    if environment not in {"staging", "production"}:
+        raise ObservationContractError("observation-environment-invalid")
     if expanding_window_checks_passed is not True:
         raise ObservationContractError("expanding-window-check-required")
     artifact_sha = sha256_file(model_path)
@@ -246,12 +290,15 @@ def build_prediction_payload(
     wager_amount: float = 0.0,
     baseline_wager_amount: float = 0.0,
     latency_ms: float = 0.0,
+    source_environment: str = "staging",
 ) -> dict[str, Any]:
     if data_observed_at.tzinfo is None or data_cutoff_at.tzinfo is None:
         raise ObservationContractError("prediction-source-timezone-required")
     if data_observed_at > data_cutoff_at:
         raise ObservationContractError("prediction-source-temporal-order-invalid")
     feature_sha = feature_row_sha256(feature_columns, feature_values)
+    if source_environment not in {"staging", "production"}:
+        raise ObservationContractError("observation-environment-invalid")
     base = {
         "manifest_id": manifest_id,
         "race_id": str(race_id),
@@ -270,7 +317,7 @@ def build_prediction_payload(
         "wager_amount": float(wager_amount),
         "baseline_wager_amount": float(baseline_wager_amount),
         "latency_ms": float(latency_ms),
-        "source_environment": "staging",
+        "source_environment": source_environment,
         "leakage_violation_count": 0,
     }
     digest = canonical_sha256(base)
