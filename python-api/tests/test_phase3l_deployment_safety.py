@@ -20,6 +20,14 @@ import main  # noqa: E402
 import scheduler  # noqa: E402
 
 
+def test_ci_runs_for_trusted_producer_review_branch() -> None:
+    workflow = yaml.load(
+        (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    assert "security/phase3n-trusted-producer-v3" in workflow["on"]["pull_request"]["branches"]
+
+
 def test_scheduler_is_disabled_by_default_and_for_ambiguous_values() -> None:
     assert scheduler.scheduler_enabled({}) is False
     for value in ("", "false", "0", "no", "off", "on", "enabled", "maybe"):
