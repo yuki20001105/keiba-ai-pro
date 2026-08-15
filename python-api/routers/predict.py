@@ -993,9 +993,14 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
                 "PHASE3N_OBSERVATION_ENABLED", ""
             ).strip().lower()
             if _observation_switch not in {"", "false", "0", "no", "off"}:
+                _observation_code = getattr(
+                    _observation_error,
+                    "code",
+                    type(_observation_error).__name__,
+                )
                 logger.error(
                     "[phase3n-observation] fail closed: %s",
-                    type(_observation_error).__name__,
+                    _observation_code,
                 )
                 raise HTTPException(
                     status_code=503,

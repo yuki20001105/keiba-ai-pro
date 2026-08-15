@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from datetime import datetime, time, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -34,14 +35,28 @@ def _source_timestamp(record: Mapping[str, Any]) -> datetime:
     raise ObservationContractError("authoritative-source-observed-at-missing")
 
 
-def _training_cutoff(bundle: Mapping[str, Any]) -> datetime:
+_MODEL_TRAINING_RANGE_RE = re.compile(r"(?:^|_)(\d{8})_(\d{8})(?:_|$)")
+
+
+def _training_cutoff(bundle: Mapping[str, Any], model_path: Path | None = None) -> datetime:
     value = bundle.get("training_date_to")
     if not isinstance(value, str):
         raise ObservationContractError("training-cutoff-missing")
     compact = value.replace("-", "")
+    if len(compact) == 6 and compact.isdigit() and model_path is not None:
+        match = _MODEL_TRAINING_RANGE_RE.search(model_path.stem)
+        if match is None or not match.group(2).startswith(compact):
+            raise ObservationContractError("training-cutoff-artifact-mismatch")
+        compact = match.group(2)
+        training_from = str(bundle.get("training_date_from") or "").replace("-", "")
+        if training_from and not match.group(1).startswith(training_from):
+            raise ObservationContractError("training-cutoff-artifact-mismatch")
     if len(compact) != 8 or not compact.isdigit():
         raise ObservationContractError("training-cutoff-invalid")
-    parsed = datetime.strptime(compact, "%Y%m%d").date()
+    try:
+        parsed = datetime.strptime(compact, "%Y%m%d").date()
+    except ValueError as exc:
+        raise ObservationContractError("training-cutoff-invalid") from exc
     return datetime.combine(parsed, time.max, tzinfo=JRA_TIMEZONE).astimezone(timezone.utc)
 
 
@@ -97,7 +112,7 @@ def capture_analyze_predictions(
         model_path=model_path,
         candidate_commit_sha=str(config.candidate_commit_sha),
         feature_columns=feature_columns,
-        training_data_ended_at=_training_cutoff(bundle),
+        training_data_ended_at=_training_cutoff(bundle, model_path),
         environment="staging",
         expanding_window_checks_passed=config.expanding_window_checks_passed,
     )
