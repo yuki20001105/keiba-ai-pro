@@ -43,6 +43,30 @@ def audit(database: Path, *, minimum_annual_races: int = 2_500) -> dict[str, obj
                 GROUP BY substr(race_date, 1, 4)
                 ORDER BY year
                 """).fetchall()
+        official: list[tuple[object, ...]] = []
+        if "official_history_entries" in tables:
+            official = connection.execute("""
+                SELECT substr(race_date, 1, 4) AS year,
+                       COUNT(*) AS entries,
+                       COUNT(DISTINCT race_id) AS races
+                FROM official_history_entries
+                WHERE substr(race_date, 1, 4) BETWEEN '2019' AND '2024'
+                GROUP BY substr(race_date, 1, 4)
+                ORDER BY year
+                """).fetchall()
+        authorized_races: list[tuple[object, ...]] = []
+        unions: list[str] = []
+        if "official_history_entries" in tables:
+            unions.append("SELECT race_date, race_id FROM official_history_entries")
+        if "licensed_history_entries" in tables:
+            unions.append("SELECT race_date, race_id FROM licensed_history_entries")
+        if unions:
+            authorized_races = connection.execute(
+                "SELECT substr(race_date, 1, 4), COUNT(DISTINCT race_id) FROM ("
+                + " UNION ALL ".join(unions)
+                + ") WHERE substr(race_date, 1, 4) BETWEEN '2019' AND '2024' "
+                "GROUP BY substr(race_date, 1, 4) ORDER BY 1"
+            ).fetchall()
     years: dict[str, dict[str, int]] = {
         str(year): {
             "legacy_entries": 0,
@@ -51,6 +75,9 @@ def audit(database: Path, *, minimum_annual_races: int = 2_500) -> dict[str, obj
             "licensed_entries": 0,
             "licensed_races": 0,
             "licensed_timestamped_odds_entries": 0,
+            "official_result_entries": 0,
+            "official_result_races": 0,
+            "authorized_outcome_races": 0,
         }
         for year in range(2019, 2025)
     }
@@ -70,6 +97,15 @@ def audit(database: Path, *, minimum_annual_races: int = 2_500) -> dict[str, obj
                 "licensed_timestamped_odds_entries": int(timestamped or 0),
             }
         )
+    for year, entries, races in official:
+        years[str(year)].update(
+            {
+                "official_result_entries": int(entries),
+                "official_result_races": int(races),
+            }
+        )
+    for year, races in authorized_races:
+        years[str(year)]["authorized_outcome_races"] = int(races)
     licensed_entries = sum(year["licensed_entries"] for year in years.values())
     timestamped_entries = sum(
         year["licensed_timestamped_odds_entries"] for year in years.values()
@@ -80,12 +116,19 @@ def audit(database: Path, *, minimum_annual_races: int = 2_500) -> dict[str, obj
         "target_years": [2019, 2020, 2021, 2022, 2023, 2024],
         "coverage_by_year": years,
         "licensed_history_table_present": "licensed_history_entries" in tables,
+        "official_history_table_present": "official_history_entries" in tables,
         "licensed_entry_count": licensed_entries,
+        "official_result_entry_count": sum(
+            year["official_result_entries"] for year in years.values()
+        ),
         "point_in_time_licensed_entry_count": timestamped_entries,
         "minimum_annual_races": minimum_annual_races,
         "ready_for_continuous_walk_forward": all(
-            year["licensed_races"] >= minimum_annual_races
-            and year["licensed_timestamped_odds_entries"] == year["licensed_entries"]
+            year["authorized_outcome_races"] >= minimum_annual_races
+            for year in years.values()
+        ),
+        "ready_for_speed_deviation_walk_forward": all(
+            year["authorized_outcome_races"] >= minimum_annual_races
             for year in years.values()
         ),
         "ready_for_oof_value_evaluation": (

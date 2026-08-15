@@ -35,6 +35,20 @@ from keiba_ai.speed_deviation import (  # noqa: E402
 REPORT_SCHEMA = "speed-deviation-candidate-evaluation-v1"
 STAKING_POLICY_PATH = ROOT / "config" / "phase3n_staking_payout_policy.v1.json"
 STAKING_POLICY = json.loads(STAKING_POLICY_PATH.read_text(encoding="utf-8"))
+ABILITY_EXCLUDED_MARKET_FIELDS = frozenset(
+    {
+        "odds",
+        "popularity",
+        "odds_observed_at",
+        "odds_cutoff_at",
+        "odds_age_minutes",
+        "odds_source",
+        "odds_snapshot_kind",
+        "implied_prob_norm",
+        "odds_rank_in_race",
+        "tansho_implied_prob",
+    }
+)
 
 
 def _date_series(frame: pd.DataFrame) -> pd.Series:
@@ -134,18 +148,73 @@ def _strategy_metrics(
     }
 
 
+def _point_in_time_value_frame(evaluation: pd.DataFrame) -> pd.DataFrame:
+    """Fail closed unless every runner has a validated decision-time quote."""
+
+    required = {
+        "race_id",
+        "odds",
+        "popularity",
+        "odds_observed_at",
+        "odds_cutoff_at",
+        "odds_age_minutes",
+        "odds_source",
+        "odds_snapshot_kind",
+    }
+    if not required.issubset(evaluation.columns):
+        return evaluation.iloc[0:0].copy()
+    work = evaluation.copy()
+    observed = pd.to_datetime(work["odds_observed_at"], utc=True, errors="coerce")
+    cutoff = pd.to_datetime(work["odds_cutoff_at"], utc=True, errors="coerce")
+    age = pd.to_numeric(work["odds_age_minutes"], errors="coerce")
+    valid = (
+        work[["odds", "popularity"]].notna().all(axis=1)
+        & work["odds"].gt(1.0)
+        & observed.notna()
+        & cutoff.notna()
+        & observed.le(cutoff)
+        & age.between(0.0, 30.0)
+        & work["odds_source"].fillna("").astype(str).str.strip().ne("")
+        & work["odds_snapshot_kind"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.lower()
+        .isin({"pre_race", "decision_time"})
+    )
+    complete_races = valid.groupby(work["race_id"].astype(str)).transform("all")
+    return work.loc[complete_races].copy()
+
+
 def _evaluate(
     validation_frame: pd.DataFrame,
     target: pd.Series,
     predictions: np.ndarray,
     *,
     probability_temperature: float = 1.0,
-) -> tuple[dict[str, float | int], pd.DataFrame]:
+    require_value_data: bool = True,
+) -> tuple[dict[str, float | int | None], pd.DataFrame]:
     if probability_temperature <= 0:
         raise ValueError("probability_temperature must be positive")
-    evaluation = validation_frame[
-        ["race_id", "odds", "popularity"]
-    ].copy()
+    evaluation = validation_frame[["race_id"]].copy()
+    evaluation["odds"] = pd.to_numeric(
+        validation_frame["odds"] if "odds" in validation_frame else np.nan,
+        errors="coerce",
+    )
+    evaluation["popularity"] = pd.to_numeric(
+        validation_frame["popularity"] if "popularity" in validation_frame else np.nan,
+        errors="coerce",
+    )
+    for column in (
+        "odds_observed_at",
+        "odds_cutoff_at",
+        "odds_age_minutes",
+        "odds_source",
+        "odds_snapshot_kind",
+    ):
+        evaluation[column] = (
+            validation_frame[column] if column in validation_frame else np.nan
+        )
     evaluation["race_date"] = _date_series(validation_frame)
     evaluation["finish"] = _finish_series(validation_frame)
     evaluation["target"] = target.to_numpy(dtype=float)
@@ -157,8 +226,7 @@ def _evaluate(
         if (
             len(group) >= 5
             and int(group["winner"].sum()) == 1
-            and group[["finish", "target", "score", "odds"]].notna().all().all()
-            and group["odds"].gt(0).all()
+            and group[["finish", "target", "score"]].notna().all().all()
         ):
             complete_races.append(str(race_id))
     evaluation = evaluation[evaluation["race_id"].astype(str).isin(complete_races)].copy()
@@ -172,14 +240,25 @@ def _evaluate(
     minimum_expected_value = float(
         STAKING_POLICY["candidate"]["minimum_expected_value"]
     )
-    candidate = _strategy_metrics(
-        evaluation,
-        selector="candidate",
-        minimum_expected_value=minimum_expected_value,
+    value_evaluation = _point_in_time_value_frame(evaluation)
+    if require_value_data and value_evaluation.empty:
+        raise ValueError("no complete point-in-time odds races are available")
+    candidate = (
+        _strategy_metrics(
+            value_evaluation,
+            selector="candidate",
+            minimum_expected_value=minimum_expected_value,
+        )
+        if not value_evaluation.empty
+        else None
     )
-    baseline = _strategy_metrics(evaluation, selector="baseline")
+    baseline = (
+        _strategy_metrics(value_evaluation, selector="baseline")
+        if not value_evaluation.empty
+        else None
+    )
     correlation = spearmanr(evaluation["target"], evaluation["score"]).statistic
-    metrics: dict[str, float | int] = {
+    metrics: dict[str, float | int | None] = {
         "rmse": float(mean_squared_error(evaluation["target"], evaluation["score"]) ** 0.5),
         "mae": float(mean_absolute_error(evaluation["target"], evaluation["score"])),
         "spearman": float(correlation) if math.isfinite(float(correlation)) else 0.0,
@@ -191,13 +270,18 @@ def _evaluate(
         "observation_period_days": int(
             (evaluation["race_date"].max() - evaluation["race_date"].min()).days + 1
         ),
-        "candidate_bet_count": int(candidate["bet_count"]),
-        "candidate_win_count": int(candidate["win_count"]),
-        "candidate_roi_percent": float(candidate["roi_percent"]),
-        "candidate_max_drawdown_percent": float(candidate["max_drawdown_percent"]),
-        "baseline_roi_percent": float(baseline["roi_percent"]),
-        "roi_delta_to_baseline_percent": float(
+        "point_in_time_value_race_count": int(value_evaluation["race_id"].nunique()),
+        "candidate_bet_count": int(candidate["bet_count"]) if candidate else None,
+        "candidate_win_count": int(candidate["win_count"]) if candidate else None,
+        "candidate_roi_percent": float(candidate["roi_percent"]) if candidate else None,
+        "candidate_max_drawdown_percent": (
+            float(candidate["max_drawdown_percent"]) if candidate else None
+        ),
+        "baseline_roi_percent": float(baseline["roi_percent"]) if baseline else None,
+        "roi_delta_to_baseline_percent": (
             float(candidate["roi_percent"]) - float(baseline["roi_percent"])
+            if candidate and baseline
+            else None
         ),
         "minimum_expected_value": minimum_expected_value,
         "probability_temperature": float(probability_temperature),
@@ -273,7 +357,7 @@ def train_candidate(
         is_training=False,
         optimizer=optimizer,
     )
-    excluded = set(FUTURE_FIELDS) | set(ID_COLUMNS) | {
+    excluded = set(FUTURE_FIELDS) | set(ID_COLUMNS) | set(ABILITY_EXCLUDED_MARKET_FIELDS) | {
         "speed_deviation",
         "_race_date",
         "race_date",

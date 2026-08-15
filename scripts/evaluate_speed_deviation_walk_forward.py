@@ -31,10 +31,12 @@ from keiba_ai.speed_deviation import (  # noqa: E402
     fit_speed_deviation_baseline,
 )
 from scripts.train_speed_deviation_candidate import (  # noqa: E402
+    ABILITY_EXCLUDED_MARKET_FIELDS,
     STAKING_POLICY,
     _date_series,
     _ece,
     _evaluate,
+    _point_in_time_value_frame,
     _softmax_by_race,
     _strategy_metrics,
 )
@@ -79,7 +81,7 @@ def _prepare_matrices(
         is_training=False,
         optimizer=optimizer,
     )
-    excluded = set(FUTURE_FIELDS) | set(ID_COLUMNS) | {
+    excluded = set(FUTURE_FIELDS) | set(ID_COLUMNS) | set(ABILITY_EXCLUDED_MARKET_FIELDS) | {
         "speed_deviation",
         "_race_date",
         "race_date",
@@ -228,6 +230,7 @@ def _fit_fold(
         inner_tuning_evaluation_source,
         inner_tuning_target,
         inner_predictions,
+        require_value_data=False,
     )
     probability_temperature = _select_probability_temperature(inner_evaluated)
 
@@ -271,6 +274,7 @@ def _fit_fold(
         validation_target,
         predictions,
         probability_temperature=probability_temperature,
+        require_value_data=False,
     )
     fold = {
         "validation_year": validation_year,
@@ -291,23 +295,35 @@ def _fit_fold(
         "probability_temperature": probability_temperature,
         "feature_count": int(len(train_x.columns)),
         "future_feature_intersection": sorted(set(train_x.columns) & set(FUTURE_FIELDS)),
+        "market_feature_intersection": sorted(
+            set(train_x.columns) & set(ABILITY_EXCLUDED_MARKET_FIELDS)
+        ),
         "metrics": metrics,
     }
     evaluated["validation_year"] = validation_year
     return fold, evaluated
 
 
-def _aggregate(evaluated: pd.DataFrame) -> dict[str, float | int]:
+def _aggregate(evaluated: pd.DataFrame) -> dict[str, float | int | None]:
     labels = evaluated["winner"].to_numpy(dtype=int)
     probabilities = evaluated["probability"].to_numpy(dtype=float)
-    candidate = _strategy_metrics(
-        evaluated,
-        selector="candidate",
-        minimum_expected_value=float(
-            STAKING_POLICY["candidate"]["minimum_expected_value"]
-        ),
+    value_evaluated = _point_in_time_value_frame(evaluated)
+    candidate = (
+        _strategy_metrics(
+            value_evaluated,
+            selector="candidate",
+            minimum_expected_value=float(
+                STAKING_POLICY["candidate"]["minimum_expected_value"]
+            ),
+        )
+        if not value_evaluated.empty
+        else None
     )
-    baseline = _strategy_metrics(evaluated, selector="baseline")
+    baseline = (
+        _strategy_metrics(value_evaluated, selector="baseline")
+        if not value_evaluated.empty
+        else None
+    )
     correlation = spearmanr(evaluated["target"], evaluated["score"]).statistic
     return {
         "rmse": float(mean_squared_error(evaluated["target"], evaluated["score"]) ** 0.5),
@@ -318,13 +334,18 @@ def _aggregate(evaluated: pd.DataFrame) -> dict[str, float | int]:
         "expected_calibration_error": _ece(labels, probabilities),
         "sample_count": int(len(evaluated)),
         "race_count": int(evaluated["race_id"].nunique()),
-        "candidate_bet_count": int(candidate["bet_count"]),
-        "candidate_win_count": int(candidate["win_count"]),
-        "candidate_roi_percent": float(candidate["roi_percent"]),
-        "candidate_max_drawdown_percent": float(candidate["max_drawdown_percent"]),
-        "baseline_roi_percent": float(baseline["roi_percent"]),
-        "roi_delta_to_baseline_percent": float(
+        "point_in_time_value_race_count": int(value_evaluated["race_id"].nunique()),
+        "candidate_bet_count": int(candidate["bet_count"]) if candidate else None,
+        "candidate_win_count": int(candidate["win_count"]) if candidate else None,
+        "candidate_roi_percent": float(candidate["roi_percent"]) if candidate else None,
+        "candidate_max_drawdown_percent": (
+            float(candidate["max_drawdown_percent"]) if candidate else None
+        ),
+        "baseline_roi_percent": float(baseline["roi_percent"]) if baseline else None,
+        "roi_delta_to_baseline_percent": (
             float(candidate["roi_percent"]) - float(baseline["roi_percent"])
+            if candidate and baseline
+            else None
         ),
         "minimum_expected_value": float(
             STAKING_POLICY["candidate"]["minimum_expected_value"]
@@ -332,7 +353,7 @@ def _aggregate(evaluated: pd.DataFrame) -> dict[str, float | int]:
     }
 
 
-def _gate_results(metrics: dict[str, float | int]) -> dict[str, Any]:
+def _gate_results(metrics: dict[str, float | int | None]) -> dict[str, Any]:
     contract = json.loads(ACCEPTANCE_CONTRACT_PATH.read_text(encoding="utf-8"))
     mappings = {
         "auc": "winner_auc",
@@ -347,7 +368,18 @@ def _gate_results(metrics: dict[str, float | int]) -> dict[str, Any]:
     results: dict[str, Any] = {}
     for contract_name, metric_name in mappings.items():
         threshold = contract["thresholds"][contract_name]
-        actual = float(metrics[metric_name])
+        raw_actual = metrics[metric_name]
+        if raw_actual is None:
+            results[contract_name] = {
+                "metric": metric_name,
+                "actual": None,
+                "operator": threshold["operator"],
+                "threshold": float(threshold["value"]),
+                "passed": False,
+                "reason": "point-in-time-odds-unavailable",
+            }
+            continue
+        actual = float(raw_actual)
         passed = (
             actual >= float(threshold["value"])
             if threshold["operator"] == "gte"
@@ -414,7 +446,12 @@ def evaluate_walk_forward(
         print(
             f"fold={year} auc={fold['metrics']['winner_auc']:.4f} "
             f"spearman={fold['metrics']['spearman']:.4f} "
-            f"roi={fold['metrics']['candidate_roi_percent']:.2f}%",
+            "roi="
+            + (
+                f"{fold['metrics']['candidate_roi_percent']:.2f}%"
+                if fold["metrics"]["candidate_roi_percent"] is not None
+                else "unavailable"
+            ),
             flush=True,
         )
 
@@ -439,6 +476,7 @@ def evaluate_walk_forward(
             "inner_tuning_fraction": tuning_fraction,
             "outer_fold_never_used_for_iteration_selection": True,
             "feature_policy_fixed_before_outer_validation": True,
+            "ability_market_fields_excluded": sorted(ABILITY_EXCLUDED_MARKET_FIELDS),
         },
         "staking_policy_id": STAKING_POLICY["policy_id"],
         "staking_policy_approval_reference": STAKING_POLICY["approval_reference"],
@@ -461,7 +499,8 @@ def evaluate_walk_forward(
         "excluded_final_unknown_period": "after-2026-07-11",
         "limitations": [
             "historical-development-screen-not-prospective-staging-evidence",
-            "2019-through-2024-source-coverage-is-insufficient-for-annual-folds",
+            "official-result-pdfs-have-limited-pre-race-feature-depth",
+            "point-in-time-odds-are-unavailable-for-2019-through-2024",
             "outer-fold-results-are-now-observed-and-cannot-be-reused-as-final-unknown-data",
             "runtime-latency-freshness-and-90-day-observation-gates-are-not-evaluated",
         ],
