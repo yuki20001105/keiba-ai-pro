@@ -939,6 +939,29 @@ async def _scrape_shutuba_fallback(
             if horse_number in live_popularity:
                 horse["popularity"] = live_popularity[horse_number]
 
+    # The shutuba table contains only the current entry card. The active
+    # pre-race model also consumes prior-race and pedigree fields, all of which
+    # are available before post time on the horse detail pages. Enrich the
+    # coherent snapshot before it is atomically persisted so inference never
+    # depends on a later, result-page-only refresh.
+    async def _fetch_shutuba_detail(horse: dict) -> None:
+        horse_id = str(horse.get("horse_id") or "")
+        if not horse_id:
+            return
+        detail = await scrape_horse_detail(
+            session,
+            horse_id,
+            str(horse.get("horse_url") or ""),
+            quick_mode=True,
+        )
+        horse.update(detail)
+
+    for chunk_start in range(0, len(horses), 4):
+        chunk = horses[chunk_start : chunk_start + 4]
+        await asyncio.gather(*(_fetch_shutuba_detail(horse) for horse in chunk))
+        if chunk_start + 4 < len(horses):
+            await asyncio.sleep(1.0)
+
     logger.info(f"[shutuba] {race_id}: {len(horses)}頭取得 ({race_name} @ {venue} {distance}m)")
     return _build_race_result(
         race_id, race_name, venue, date_str, post_time, race_class,

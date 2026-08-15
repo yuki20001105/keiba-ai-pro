@@ -277,6 +277,7 @@ class ModelPredictor:
         except Exception as _e:
             logger.warning(f"[ModelPredictor:{self.target}] add_derived_features 部分失敗: {_e}")
         df = df.loc[:, ~df.columns.duplicated()]
+        engineered_df = df.copy()
 
         # Step 2: モデル付属 optimizer による前処理（失敗時は再学習が必要）
         if self.optimizer is not None:
@@ -304,6 +305,18 @@ class ModelPredictor:
                         f"エラー ({type(_e).__name__}): {_e}"
                     ),
                 )
+
+        # Bundles created before the optimizer pruning update can legitimately
+        # require numeric engineered fields (for example age and season) that
+        # the current optimizer removes. Restore only fields that were really
+        # computed from the pre-race input; never invent or zero-fill absent
+        # history. The final bundle-order verification remains authoritative.
+        for required_column in self.feature_columns:
+            if required_column in df.columns or required_column not in engineered_df.columns:
+                continue
+            source = engineered_df[required_column]
+            if pd.api.types.is_numeric_dtype(source) or pd.api.types.is_bool_dtype(source):
+                df[required_column] = pd.to_numeric(source, errors="coerce")
 
         # Step 3: 未来情報・識別子列を除外
         X = _drop_non_features(df)

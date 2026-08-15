@@ -15,7 +15,7 @@ PYTHON_API = ROOT / "python-api"
 if str(PYTHON_API) not in sys.path:
     sys.path.insert(0, str(PYTHON_API))
 
-from scraping import fetch_pipeline, race  # type: ignore  # noqa: E402
+from scraping import fetch_pipeline, horse, race  # type: ignore  # noqa: E402
 from scraping.odds import parse_tansho_odds_payload  # type: ignore  # noqa: E402
 from services.race_snapshot import (  # type: ignore  # noqa: E402
     is_trustworthy_race_date,
@@ -145,8 +145,25 @@ def test_shutuba_parser_keeps_distance_and_uses_actual_dynamic_odds(
         del session, race_id
         return {1: 4.2}, {1: 3}, "middle"
 
+    async def _fake_horse_detail(
+        session: Any,
+        horse_id: str,
+        horse_url: str = "",
+        pedigree_cache: Any = None,
+        quick_mode: bool = False,
+    ) -> dict[str, Any]:
+        del session, horse_url, pedigree_cache
+        assert horse_id == "2023100001"
+        assert quick_mode is True
+        return {
+            "sire": "test-sire",
+            "prev_race_finish": 2,
+            "prev_race_distance": 1800,
+        }
+
     monkeypatch.setattr(race, "fetch_text", _fake_fetch_text)
     monkeypatch.setattr(race, "fetch_tansho_odds_api", _fake_odds)
+    monkeypatch.setattr(race, "scrape_horse_detail", _fake_horse_detail)
     snapshot = asyncio.run(race._scrape_shutuba_fallback(
         object(),
         "202604020812",
@@ -158,6 +175,8 @@ def test_shutuba_parser_keeps_distance_and_uses_actual_dynamic_odds(
     assert snapshot["race_info"]["date"] == "20260816"
     assert snapshot["horses"][0]["odds"] == 4.2
     assert snapshot["horses"][0]["popularity"] == 3
+    assert snapshot["horses"][0]["sire"] == "test-sire"
+    assert snapshot["horses"][0]["prev_race_finish"] == 2
     assert captured["force_refresh"] is True
 
 
@@ -174,6 +193,44 @@ def test_forecast_odds_are_not_accepted_as_point_in_time_market_odds() -> None:
     allowed, ranks, _ = parse_tansho_odds_payload(payload, allow_predicted=True)
     assert allowed == {1: 2.5}
     assert ranks == {1: 1}
+
+
+def test_horse_detail_prioritizes_result_page_when_pedigree_is_cached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    html = """
+    <html><body><table>
+      <tr><th>日付</th><th>開催</th><th>着順</th><th>タイム</th><th>馬体重</th><th>距離</th></tr>
+      <tr><td>2026/07/26</td><td>2新潟2</td><td>3</td><td>1:53.5</td><td>476(+2)</td><td>ダ1800</td></tr>
+      <tr><td>2026/06/27</td><td>2福島1</td><td>8</td><td>1:48.3</td><td>482(+4)</td><td>ダ1700</td></tr>
+    </table></body></html>
+    """
+    calls: list[str] = []
+
+    async def _fake_fetch_text(session: Any, url: str, **kwargs: Any):
+        del session, kwargs
+        calls.append(url)
+        result = fetch_pipeline.FetchResult(url, url, 200, html.encode(), "network", 1)
+        return result, html
+
+    monkeypatch.setattr(horse, "fetch_text", _fake_fetch_text)
+    monkeypatch.setattr(
+        horse,
+        "_get_pedigree_sqlite",
+        lambda horse_id: {"sire": "cached-sire", "dam": "cached-dam", "damsire": "cached-damsire"},
+    )
+
+    detail = asyncio.run(horse.scrape_horse_detail(
+        object(),
+        "2023106889",
+        "https://db.netkeiba.com/horse/2023106889/",
+        quick_mode=True,
+    ))
+
+    assert calls == ["https://db.netkeiba.com/horse/result/2023106889/"]
+    assert detail["prev_race_finish"] == 3
+    assert detail["prev2_race_distance"] == 1700
+    assert detail["sire"] == "cached-sire"
 
 
 def _snapshot(distance: int = 2000) -> dict[str, Any]:

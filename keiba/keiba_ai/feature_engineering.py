@@ -622,13 +622,14 @@ def _fe_prev_race(df: pd.DataFrame) -> pd.DataFrame:
     """前走日由来の days_since_last_race 補完・距離変化・馬の通算勝率・スピード指数を追加する。"""
     # prev_race_date → days 補完（DB 計算値が優先、こちらは残った NaN を埋める）
     if 'prev_race_date' in df.columns:
-        if 'race_date' in df.columns:
-            _race_dt = pd.to_datetime(df['race_date'].astype(str).str.strip(), format='%Y%m%d', errors='coerce')
+        _current_date_col = 'race_date' if 'race_date' in df.columns else ('date' if 'date' in df.columns else None)
+        if _current_date_col is not None:
+            _race_dt = pd.to_datetime(df[_current_date_col].astype(str).str.strip(), format='%Y%m%d', errors='coerce')
             if _race_dt.isna().mean() > 0.5:
-                _race_dt = pd.to_datetime(df['race_date'].astype(str).str.strip(), errors='coerce')
+                _race_dt = pd.to_datetime(df[_current_date_col].astype(str).str.strip(), errors='coerce')
         else:
             import warnings as _w
-            _w.warn("race_date 列がありません。race_id[:8] で代替しますが精度が低下します。", UserWarning, stacklevel=3)
+            _w.warn("race_date/date 列がありません。race_id[:8] で代替しますが精度が低下します。", UserWarning, stacklevel=3)
             _race_dt = pd.to_datetime(df['race_id'].str[:8], format='%Y%m%d', errors='coerce')
         _prev_dt     = pd.to_datetime(df['prev_race_date'].astype(str).str.replace('/', '-').str.strip(), errors='coerce')
         _scraped_days = (_race_dt - _prev_dt).dt.days.where(lambda d: d >= 1, np.nan)

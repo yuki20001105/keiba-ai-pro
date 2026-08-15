@@ -274,6 +274,17 @@ class TestFePrevRace:
         df = _fe_prev_race(df)
         assert df["days_since_last_race"].iloc[0] == 20
 
+    def test_days_since_last_race_uses_explicit_date_before_legacy_race_id(self):
+        source = pd.DataFrame([{
+            "race_id": "202604020812",
+            "date": "20260816",
+            "prev_race_date": "2026/07/26",
+        }])
+
+        df = add_derived_features(source)
+
+        assert df["days_since_last_race"].iloc[0] == 21
+
     def test_negative_days_becomes_nan(self):
         """prev_race_date が race_date より後 → NaN"""
         df = pd.DataFrame([{
