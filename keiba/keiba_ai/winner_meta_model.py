@@ -11,16 +11,11 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from .point_in_time_odds import normalized_market_probability
-
 META_FEATURE_COLUMNS = (
     "base_score",
     "base_probability",
     "score_rank_fraction",
     "score_gap_to_top",
-    "market_probability",
-    "market_probability_gap",
-    "log_odds",
     "field_size",
 )
 
@@ -36,9 +31,9 @@ def _softmax_by_race(frame: pd.DataFrame, column: str) -> pd.Series:
 
 
 def build_winner_meta_features(frame: pd.DataFrame) -> pd.DataFrame:
-    """Build only race-relative and decision-time market features."""
+    """Build market-free race-relative features from the OOF ability score."""
 
-    required = {"race_id", "base_score", "odds"}
+    required = {"race_id", "base_score"}
     missing = required - set(frame.columns)
     if missing:
         raise ValueError("winner meta input is missing: " + ", ".join(sorted(missing)))
@@ -47,7 +42,6 @@ def build_winner_meta_features(frame: pd.DataFrame) -> pd.DataFrame:
     if result["base_score"].isna().any() or not np.isfinite(result["base_score"]).all():
         raise ValueError("base_score must be finite")
     result["base_probability"] = _softmax_by_race(result, "base_score")
-    result["market_probability"] = normalized_market_probability(result)
     result["field_size"] = result.groupby("race_id")["race_id"].transform("size")
     result["score_rank_fraction"] = (
         result.groupby("race_id")["base_score"].rank(method="average", ascending=False)
@@ -56,10 +50,6 @@ def build_winner_meta_features(frame: pd.DataFrame) -> pd.DataFrame:
     result["score_gap_to_top"] = result["base_score"] - result.groupby("race_id")[
         "base_score"
     ].transform("max")
-    result["market_probability_gap"] = (
-        result["base_probability"] - result["market_probability"]
-    )
-    result["log_odds"] = np.log(pd.to_numeric(result["odds"], errors="coerce"))
     if result[list(META_FEATURE_COLUMNS)].isna().any().any():
         raise ValueError("winner meta features contain missing values")
     return result
@@ -88,7 +78,7 @@ def expanding_year_splits(
 
 @dataclass
 class WinnerProbabilityMetaModel:
-    """Logistic meta-model fitted exclusively on out-of-fold base scores."""
+    """Market-free logistic meta-model fitted only on out-of-fold ability scores."""
 
     random_state: int = 42
 

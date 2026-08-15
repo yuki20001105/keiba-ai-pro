@@ -47,6 +47,16 @@ def test_meta_model_rejects_prediction_inside_fit_period() -> None:
         model.predict(_frame([2021]).drop(columns=["base_prediction_is_oof"]))
 
 
+def test_meta_model_probability_is_independent_of_market_odds() -> None:
+    model = WinnerProbabilityMetaModel().fit(_frame([2019, 2020, 2021]))
+    future = _frame([2022]).drop(columns=["base_prediction_is_oof"])
+    changed_market = future.copy()
+    changed_market["odds"] = list(reversed(future["odds"].tolist()))
+    assert model.predict(future).tolist() == pytest.approx(
+        model.predict(changed_market).tolist()
+    )
+
+
 def test_expanding_year_splits_never_include_validation_year_in_training() -> None:
     dates = pd.Series(["2018-01-01", "2019-01-01", "2020-01-01", "2021-01-01"])
     splits = list(expanding_year_splits(dates, minimum_training_years=2))

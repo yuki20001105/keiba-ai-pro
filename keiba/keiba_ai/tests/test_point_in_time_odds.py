@@ -134,3 +134,24 @@ def test_unknown_snapshot_kind_is_not_treated_as_pre_race() -> None:
         ]
     )
     assert select_point_in_time_win_odds(snapshots, _races(expected=1)).empty
+
+
+def test_quote_at_race_start_is_rejected_even_with_zero_offset() -> None:
+    snapshots = pd.DataFrame(
+        [
+            {
+                "race_id": "202001010101",
+                "horse_id": "H1",
+                "odds": 4.0,
+                "observed_at": "2020-01-01T06:00:00Z",
+                "source": "licensed",
+                "snapshot_kind": "decision_time",
+            }
+        ]
+    )
+    selected = select_point_in_time_win_odds(
+        snapshots,
+        _races(expected=1),
+        policy=PointInTimeOddsPolicy(decision_offset_minutes=0),
+    )
+    assert selected.empty

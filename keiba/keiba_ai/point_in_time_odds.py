@@ -125,7 +125,8 @@ def select_point_in_time_win_odds(
     eligible = work[
         work["odds"].ge(policy.minimum_odds)
         & np.isfinite(work["odds"])
-        & work["odds_age_minutes"].between(0.0, float(policy.max_age_minutes))
+        & work["odds_age_minutes"].gt(0.0)
+        & work["odds_age_minutes"].le(float(policy.max_age_minutes))
         & ~work["snapshot_kind"].isin(FORBIDDEN_SNAPSHOT_KINDS)
         & work["snapshot_kind"].isin(ALLOWED_SNAPSHOT_KINDS)
     ].copy()
