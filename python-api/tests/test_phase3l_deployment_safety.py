@@ -481,7 +481,7 @@ def test_ci_requires_fixed_trusted_attestation_for_main_promotion() -> None:
     assert ".run_attempt >= 1" in resolver["run"]
     assert "^{tree}" in resolver["run"]
     for required in (
-        "git fetch --no-tags --prune origin main:refs/remotes/origin/main",
+        'git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/main"',
         'git show -s --format=%P "$GITHUB_SHA"',
         '"${#parents[@]}" -ne 2',
         '"${parents[0]}" != "$(git rev-parse origin/main)"',
@@ -490,6 +490,7 @@ def test_ci_requires_fixed_trusted_attestation_for_main_promotion() -> None:
         'git rev-parse "$PR_HEAD_SHA^{tree}"',
     ):
         assert required in resolver["run"]
+    assert "git fetch --no-tags --prune" not in resolver["run"]
     assert resolver["env"]["STAGING_EVIDENCE_RUN_ID"] == "${{ vars.PHASE3N_STAGING_EVIDENCE_RUN_ID }}"
     assert resolver["env"]["TRUSTED_PRODUCER_SHA"] == "${{ vars.PHASE3N_TRUSTED_PRODUCER_SHA }}"
     assert 'echo "run_attempt=$run_attempt"' in resolver["run"]
