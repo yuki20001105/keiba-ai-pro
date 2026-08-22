@@ -74,7 +74,7 @@ Supabase Auth, the operational RPC, recent rejected/conflicting observation
 ingest attempts, and the Render provider-bound live commit. Failures are posted
 to incident Issue #32 without secrets or row payloads. Before enabling the
 schedule, configure the four `PRODUCTION_*_URL/SERVICE_ID` repository variables,
-the `PRODUCTION_SUPABASE_SERVICE_KEY` and `RENDER_API_KEY` repository secrets,
+the existing Production `SUPABASE_SERVICE_KEY` and a `RENDER_API_KEY` repository secret,
 run the non-destructive notification test, and then set
 `LIMITED_PRODUCTION_MONITOR_ENABLED=true`.
 - Incident ownership and escalation timing must be recorded in the protected release approval/runbook.
