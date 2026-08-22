@@ -1,0 +1,248 @@
+{
+  "schema": "limited-production-operational-preflight",
+  "schema_version": 1,
+  "observed_at": "2026-08-16T10:51:10.901Z",
+  "repository": "yuki20001105/keiba-ai-pro",
+  "candidate_sha": "86a2d314a641160e852d3597396aadcd03e81347",
+  "evidence_branch_head": "07ed8f6cb0fa98225a7073c7479ef33252b5f7aa",
+  "production_changed": true,
+  "production_change": "authorized-production-supabase-resume-only",
+  "automatic_betting_enabled": false,
+  "overall_pass": false,
+  "gates": {
+    "monitoring_alert": {
+      "pass": false,
+      "checks": {
+        "render_workspace_email_failure_notifications": true,
+        "render_staging_service_uses_workspace_failure_notifications": true,
+        "render_production_service_managed_in_current_workspace": false,
+        "production_health_consecutive_failure_alert_proven": false,
+        "observation_failure_alert_proven": false,
+        "supabase_connectivity_alert_proven": false,
+        "production_supabase_connectivity_verified": true,
+        "vercel_monitoring_configuration_reviewed": true,
+        "vercel_native_alerts_available": false,
+        "vercel_production_project_identity_verified": true,
+        "vercel_production_environment_names_reviewed": true,
+        "vercel_required_observation_safety_environment_present": false,
+        "non_destructive_incident_route_test": true
+      },
+      "facts": {
+        "render_managed_service_count": 1,
+        "render_managed_service": "keiba-ai-api-staging-yuki",
+        "render_notification_destination": "account-email",
+        "render_notification_level": "failure-only",
+        "public_production_frontend_initial_health_status": 503,
+        "public_production_frontend_warm_health_status": 200,
+        "public_production_frontend_warm_health_attempts": 3,
+        "public_production_frontend_warm_health_elapsed_ms": [
+          1194,
+          734,
+          925
+        ],
+        "public_production_backend_health_status": 200,
+        "production_backend_health_payload_keys": [
+          "status"
+        ],
+        "production_supabase_project_ref": "grfwkutcsavqicaimssn",
+        "production_supabase_state": "active-after-authorized-resume",
+        "production_supabase_resume_authorized": true,
+        "production_supabase_write_performed": false,
+        "vercel_dashboard_access": "authenticated-read-only-review-complete",
+        "vercel_team": "yukitsudas-projects",
+        "vercel_plan": "hobby",
+        "vercel_production_project": "keiba-ai-pro",
+        "vercel_production_project_id": "prj_UcRcUHUW97SnrZRfByLK570XW3Er",
+        "vercel_staging_project": "keiba-ai-pro-staging",
+        "vercel_staging_project_id": "prj_PRd5AxU90qDwj67idD8MlB8XE6Zs",
+        "vercel_production_deployment_id": "6sU5g1kPkuSiSpsSFqxjWRQAZU2t",
+        "vercel_production_runtime_sha": "69dd9e9fe8252013b1f6ad6fb34ec673c1bbd550",
+        "vercel_production_branch": "main",
+        "vercel_production_deployment_provider_status": "ready",
+        "vercel_production_root_status": 200,
+        "vercel_observability_error_rate_before_warm_recheck": "100%",
+        "vercel_initial_health_failure_duration_seconds": 4.01,
+        "vercel_health_route_timeout_seconds": 4,
+        "vercel_health_failure_inference": "render-cold-start-exceeded-frontend-health-timeout",
+        "vercel_alert_configuration": "unavailable-on-hobby-plan",
+        "vercel_project_environment_names": [
+          "NEXT_PUBLIC_APP_URL",
+          "NEXT_PUBLIC_SUPABASE_ANON_KEY",
+          "NEXT_PUBLIC_API_URL",
+          "SUPABASE_SERVICE_ROLE_KEY",
+          "NEXT_PUBLIC_SUPABASE_URL"
+        ],
+        "vercel_project_environment_scope": "all-environments",
+        "vercel_production_api_url": "https://keiba-ai-api.onrender.com",
+        "vercel_production_supabase_url": "https://grfwkutcsavqicaimssn.supabase.co",
+        "vercel_missing_release_safety_environment_names": [
+          "PHASE3N_CANDIDATE_COMMIT_SHA",
+          "PHASE3N_RELEASE_CONTRACT_ID",
+          "MODEL_RUNTIME_STATUS",
+          "PHASE3N_OBSERVATION_ENABLED",
+          "AUTOMATED_BETTING_ENABLED",
+          "MODEL_TRAINING_ENABLED",
+          "MODEL_ACTIVATION_ENABLED"
+        ]
+      },
+      "failure_codes": [
+        "production-monitor-target-not-managed",
+        "production-alert-delivery-not-exercised",
+        "observation-and-supabase-alerts-not-implemented",
+        "vercel-native-alerts-unavailable-on-hobby",
+        "production-health-cold-start-sensitive",
+        "production-release-safety-environment-missing"
+      ]
+    },
+    "production_supabase_read_only_review": {
+      "pass": false,
+      "resume_authorized": true,
+      "resumed": true,
+      "write_performed": false,
+      "project_ref": "grfwkutcsavqicaimssn",
+      "compute": "nano",
+      "checks": {
+        "auth_health_status": 200,
+        "rest_schema_status": 200,
+        "auth_admin_read_status": 200,
+        "service_role_claim": "service_role",
+        "service_role_project_ref_matches": true,
+        "dashboard_migration_history_count": 0,
+        "rest_openapi_version": "2.0",
+        "rest_exposed_path_count": 29,
+        "phase3n_schema_present": false
+      },
+      "missing_phase3n_resources": [
+        "phase3n_model_manifests",
+        "phase3n_prediction_observations",
+        "phase3n_result_observation_events",
+        "phase3n_observation_ingest_attempts",
+        "phase3n_ha_jobs",
+        "phase3n_ha_effects",
+        "phase3n_ha_events"
+      ],
+      "failure_codes": [
+        "production-migration-history-empty",
+        "production-phase3n-schema-not-applied"
+      ]
+    },
+    "legacy_schema_adoption_review": {
+      "pass": false,
+      "production_changed": false,
+      "migration_apply_authorized": false,
+      "review_status": "pending",
+      "strategy": "in-place-archive-and-canonical-rebuild",
+      "candidate_commit_sha": "86a2d314a641160e852d3597396aadcd03e81347",
+      "production_project_ref": "grfwkutcsavqicaimssn",
+      "archive_schema": "phase3n_legacy_20260816",
+      "migration_count": 21,
+      "source_public_table_count": 24,
+      "source_nonempty_table_count": 10,
+      "source_row_count_total": 18400,
+      "checks": {
+        "read_only_catalog_capture_completed": true,
+        "source_row_counts_captured": true,
+        "source_row_digests_captured": true,
+        "parent_auth_and_storage_links_valid": true,
+        "double_encoded_json_conversion_valid": true,
+        "source_delete_or_truncate_present": false,
+        "review_sql_aborts_before_first_change": true,
+        "standalone_preflight_repeatable_read_only": true,
+        "disposable_clone_execution_passed": true,
+        "clone_forced_rollback_after_archive_passed": true,
+        "clone_canonical_auth_rls_idor_contract_passed": true,
+        "clone_deleted_after_validation": true,
+        "provider_restore_point_verified": true,
+        "separate_migration_approval_recorded": false
+      },
+      "clone_validation": {
+        "evidence": "reports/phase3n_legacy_production_clone_validation_20260816.json",
+        "project_ref": "txaqkmzfqmukhocgnbce",
+        "with_data": true,
+        "migration_count": 21,
+        "candidate_sha": "86a2d314a641160e852d3597396aadcd03e81347",
+        "public_tables_without_rls": 0,
+        "anon_table_privileges": 0,
+        "canonical_contract_fingerprint": "44e20d1c1e9a54fc40ba88ad6a8d643666e44fb6fadea56f61c96fc946772012"
+      },
+      "restore_point": {
+        "backup_id": 1391364483,
+        "inserted_at": "2026-08-16T10:51:14.656Z",
+        "status": "COMPLETED",
+        "physical": true,
+        "pitr_enabled": false
+      },
+      "failure_codes": [
+        "legacy-adoption-review-pending",
+        "production-migration-not-authorized"
+      ]
+    },
+    "incident_ownership": {
+      "pass": true,
+      "primary_owner": "yuki20001105",
+      "contact_route": "https://github.com/yuki20001105/keiba-ai-pro/issues/32",
+      "route_test": "issue-created-and-assigned",
+      "immediate_stop_conditions": [
+        "observation-write-failure-duplicate-stale-or-sha-mismatch",
+        "unexpected-model-activation-or-training",
+        "automated-betting-enabled-or-live-purchase-attempt",
+        "supabase-identity-connectivity-or-database-integrity-anomaly",
+        "repeated-non-2xx-or-auth-boundary-regression"
+      ],
+      "failure_codes": []
+    },
+    "rollback": {
+      "pass": false,
+      "candidate_sha": "86a2d314a641160e852d3597396aadcd03e81347",
+      "repository_main_sha": "62748ce32eab0d67de97c62b1bc8b2cb3d10e256",
+      "known_good_production_sha": null,
+      "observed_vercel_production_sha": "69dd9e9fe8252013b1f6ad6fb34ec673c1bbd550",
+      "observed_vercel_production_deployment_id": "6sU5g1kPkuSiSpsSFqxjWRQAZU2t",
+      "checks": {
+        "candidate_and_rollback_target_separated": true,
+        "disable_observation_first": true,
+        "append_only_evidence_preserved": true,
+        "post_rollback_health_auth_supabase_mode_checks_documented": true,
+        "provider_deployed_sha_identified": true,
+        "provider_rollback_target_verified": false,
+        "production_rollback_rehearsed": false
+      },
+      "failure_codes": [
+        "known-good-production-sha-unverified",
+        "observed-production-runtime-health-failing",
+        "production-backend-provider-bound-sha-unverified",
+        "production-rollback-not-exercised"
+      ]
+    },
+    "credential_invalidation": {
+      "pass": false,
+      "checks": {
+        "new_e2e_password_login_status": 200,
+        "old_e2e_password_rejection_proven": false,
+        "current_staging_secret_server_status": 200,
+        "deleted_default_staging_secret_rejection_status": 401,
+        "deleted_named_staging_secret_rejection_status": 401,
+        "render_uses_remaining_current_staging_secret": true,
+        "tracked_or_staged_secret_scan_count": 0,
+        "local_old_staging_secret_found": false,
+        "github_environment_staging_key_secret_found": false,
+        "vercel_environment_names_reviewed": true,
+        "vercel_e2e_credentials_present": false,
+        "vercel_service_key_is_distinct_legacy_production_credential": true,
+        "vercel_environment_old_key_absence_proven": true,
+        "vercel_service_key_marked_sensitive": false
+      },
+      "deleted_staging_secret_names": [
+        "default",
+        "render_staging_f2614e4_v2"
+      ],
+      "remaining_staging_secret_name": "render_phase3n_ha_f5b9c90_20260814",
+      "failure_codes": [
+        "old-e2e-password-rejection-not-proven",
+        "vercel-production-service-key-not-marked-sensitive"
+      ]
+    }
+  },
+  "production_environment_review_allowed": false,
+  "production_deploy_allowed": false
+}
