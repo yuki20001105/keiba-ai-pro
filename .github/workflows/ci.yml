@@ -532,7 +532,7 @@ jobs:
             # A pull_request workflow checks out GitHub's synthetic merge commit.
             # Bind that exact merge tree to the current main tip and the attested
             # develop candidate so a diverged or stale merge cannot be promoted.
-            git fetch --no-tags --prune origin main:refs/remotes/origin/main
+            git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/main"
             mapfile -t parents < <(git show -s --format=%P "$GITHUB_SHA" | tr ' ' '\n')
             if [[ "${#parents[@]}" -ne 2 ]]; then
               echo "::error::The pull request validation commit must be a two-parent synthetic merge."
