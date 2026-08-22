@@ -79,9 +79,10 @@ payload, user email, credential, object name, or connection string is stored.
   link, or Storage reference has changed.
 - `scripts/security/render_phase3n_legacy_production_adoption_sql.py` emits
   `reports/phase3n_legacy_production_adoption_review.sql`. The complete
-  migration is present for review, but an unconditional exception is placed
-  before the first schema change while the contract has
-  `migration_apply_authorized=false`.
+  migration is present for review, but review scope always places an
+  unconditional exception before the first schema change. The separately
+  rendered, digest-bound Production artifact is
+  `reports/phase3n_legacy_production_adoption_apply.sql`.
 - The review SQL contains no `DROP TABLE`, `TRUNCATE`, or source-row `DELETE`.
   It has no provider credential and no remote apply capability.
 
@@ -95,11 +96,13 @@ python scripts/security/render_phase3n_legacy_production_adoption_sql.py `
   --expected-commit 86a2d314a641160e852d3597396aadcd03e81347
 ```
 
-An approved apply bundle can be rendered only after a separate review changes
-the contract to `migration_apply_authorized=true`. The renderer additionally
-requires the exact canonical JSON SHA-256 of that approved contract and a
-durable approval reference. Passing approval arguments to the current pending
-contract fails closed.
+The owner approved Production application on 2026-08-22 under
+`codex-user-instruction-2026-08-22-production-migration-approval`. The approved
+contract has canonical SHA-256 `27372764c3e577e0cf9d158d50dbf2673bd7b05edfc6739911985740ece589e8`;
+the resulting Production apply SQL has SHA-256
+`42249f1ab036e800ef66873026acfd6f58403a55066d0eaf4aaaef1b595220a7`.
+The renderer continues to require the exact digest, approval reference,
+Production project ref, and candidate SHA and fails closed on any mismatch.
 
 The renderer also has a separate `disposable-clone` scope. It requires the
 exact contract digest, the recorded clone approval reference, and a 20-letter
@@ -201,11 +204,22 @@ Supabase identity, observation-only state, and automatic-betting-disabled
 state. A repository SHA that has not run successfully on the provider is not a
 rollback target.
 
-## Approval boundary
+## Approval and application result
 
-The present state is `CLONE_VALIDATED / RESTORE_POINT_VERIFIED /
-MIGRATION_NOT_AUTHORIZED`. Review must cover
-the read-only contract, complete generated SQL, archive exposure, JSON
-conversions, backup/restore evidence, disposable-clone result, maintenance
-window, and rollback ownership. Only a later explicit Production migration
-approval may update the contract and render an apply-capable SQL file.
+The present state is `PRODUCTION_MIGRATION_APPLIED / POSTCONDITIONS_VERIFIED`.
+Production was placed in maintenance by suspending the Render API. The latest
+physical backup was verified, the standalone read-only preflight returned
+PASS, and the approved single transaction committed. Independent audit found
+21 history rows bound only to `86a2d314a641160e852d3597396aadcd03e81347`,
+24 preserved archive tables, 45 canonical public tables, zero public tables
+without RLS, zero direct anon table privileges, 19 policies, four Auth users,
+all 146 model Storage objects, and the Phase 3N observation table. Render then
+resumed and both backend and frontend health returned 200. The sanitized
+execution record is
+`reports/phase3n_production_credential_rotation_and_migration_20260822.json`.
+
+This database result does not authorize the Limited Production runtime by
+itself. The exact candidate remains undeployed to Production, automatic
+betting remains disabled, and Production remains NOT_READY until the separate
+environment review, observation-only deploy, monitoring, rollback, and smoke
+gates pass.
