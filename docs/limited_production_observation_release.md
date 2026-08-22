@@ -67,6 +67,16 @@ The health endpoint exposes only non-secret mode booleans for smoke checks.
 - Supabase connectivity and observation RPC failures must alert without logging secrets or row payloads.
 - Scrape/odds freshness failures, prediction failures, model-load failures, and observation-write failures need separate counters.
 - The smoke check must verify the exact SHA, `MODEL_RUNTIME_STATUS=observation`, observation enabled, and automatic betting disabled.
+
+`.github/workflows/limited-production-monitor.yml` implements the free monitoring
+path. Every enabled run probes the frontend and backend safety envelope,
+Supabase Auth, the operational RPC, recent rejected/conflicting observation
+ingest attempts, and the Render provider-bound live commit. Failures are posted
+to incident Issue #32 without secrets or row payloads. Before enabling the
+schedule, configure the four `PRODUCTION_*_URL/SERVICE_ID` repository variables,
+the `PRODUCTION_SUPABASE_SERVICE_KEY` and `RENDER_API_KEY` repository secrets,
+run the non-destructive notification test, and then set
+`LIMITED_PRODUCTION_MONITOR_ENABLED=true`.
 - Incident ownership and escalation timing must be recorded in the protected release approval/runbook.
 
 ## Operational ownership and fail-closed preflight

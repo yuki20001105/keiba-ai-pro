@@ -1,0 +1,82 @@
+name: Limited Production Monitor
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      notification_test:
+        description: Send a non-destructive test alert to the incident issue
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: limited-production-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    if: github.event_name == 'workflow_dispatch' || vars.LIMITED_PRODUCTION_MONITOR_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PRODUCTION_FRONTEND_HEALTH_URL: ${{ vars.PRODUCTION_FRONTEND_HEALTH_URL }}
+      PRODUCTION_BACKEND_HEALTH_URL: ${{ vars.PRODUCTION_BACKEND_HEALTH_URL }}
+      PRODUCTION_SUPABASE_URL: ${{ vars.PRODUCTION_SUPABASE_URL }}
+      PRODUCTION_RENDER_SERVICE_ID: ${{ vars.PRODUCTION_RENDER_SERVICE_ID }}
+      PRODUCTION_SUPABASE_SERVICE_KEY: ${{ secrets.PRODUCTION_SUPABASE_SERVICE_KEY }}
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.11'
+
+      - name: Probe fail-closed Production boundaries
+        id: probe
+        if: inputs.notification_test != true
+        continue-on-error: true
+        run: python scripts/monitor_limited_production.py
+
+      - name: Record notification test evidence
+        if: inputs.notification_test == true
+        run: |
+          mkdir -p reports
+          printf '%s\n' '{"schema":"limited-production-monitor-notification-test","schema_version":1,"success":true}' > reports/limited_production_monitor.json
+
+      - name: Upload sanitized monitor evidence
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: limited-production-monitor-${{ github.run_id }}-${{ github.run_attempt }}
+          path: reports/limited_production_monitor.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Send incident notification
+        if: inputs.notification_test == true || steps.probe.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          INCIDENT_ISSUE: '32'
+          TEST_MODE: ${{ inputs.notification_test }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [[ "$TEST_MODE" == "true" ]]; then
+            kind="NON-DESTRUCTIVE TEST ALERT"
+          else
+            kind="LIMITED PRODUCTION ALERT"
+          fi
+          gh issue comment "$INCIDENT_ISSUE" --body "${kind}: monitor run ${RUN_URL}. Review the sanitized artifact; no secret or row payload is included."
+
+      - name: Fail on monitor error
+        if: inputs.notification_test != true && steps.probe.outcome == 'failure'
+        run: exit 1
