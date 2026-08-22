@@ -138,10 +138,10 @@
     "preserve_auth_schema_in_place": true,
     "preserve_storage_objects_in_place": true
   },
-  "review_status": "pending",
+  "review_status": "approved",
   "disposable_clone_test_authorized": true,
   "clone_test_approval_reference": "codex-user-instruction-2026-08-16-preview-clone-validation",
-  "migration_apply_authorized": false,
-  "approval_reference": null,
+  "migration_apply_authorized": true,
+  "approval_reference": "codex-user-instruction-2026-08-22-production-migration-approval",
   "production_changed_by_this_contract": false
 }

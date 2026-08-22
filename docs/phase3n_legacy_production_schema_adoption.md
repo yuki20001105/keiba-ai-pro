@@ -98,7 +98,9 @@ python scripts/security/render_phase3n_legacy_production_adoption_sql.py `
 
 The owner approved Production application on 2026-08-22 under
 `codex-user-instruction-2026-08-22-production-migration-approval`. The approved
-contract has canonical SHA-256 `27372764c3e577e0cf9d158d50dbf2673bd7b05edfc6739911985740ece589e8`;
+contract is retained separately as
+`reports/phase3n_legacy_production_adoption_contract_approved_20260822.json`
+with canonical SHA-256 `27372764c3e577e0cf9d158d50dbf2673bd7b05edfc6739911985740ece589e8`;
 the resulting Production apply SQL has SHA-256
 `42249f1ab036e800ef66873026acfd6f58403a55066d0eaf4aaaef1b595220a7`.
 The renderer continues to require the exact digest, approval reference,

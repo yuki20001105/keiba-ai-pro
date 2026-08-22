@@ -38,19 +38,16 @@ def _contract() -> dict[str, object]:
     return json.loads(CONTRACT.read_text(encoding="utf-8"))
 
 
-def test_observed_contract_is_approved_exact_candidate_and_data_preserving() -> None:
+def test_observed_contract_is_pending_exact_candidate_and_data_preserving() -> None:
     contract = _contract()
 
     assert contract["candidate_commit_sha"] == CANDIDATE
-    assert contract["migration_apply_authorized"] is True
+    assert contract["migration_apply_authorized"] is False
     assert contract["disposable_clone_test_authorized"] is True
     assert contract["clone_test_approval_reference"] == (
         "codex-user-instruction-2026-08-16-preview-clone-validation"
     )
-    assert contract["review_status"] == "approved"
-    assert contract["approval_reference"] == (
-        "codex-user-instruction-2026-08-22-production-migration-approval"
-    )
+    assert contract["review_status"] == "pending"
     assert contract["source_row_counts"]["race_results"] == 9588
     assert contract["source_row_counts"]["race_payouts"] == 5847
     assert contract["source_row_counts"]["race_results_ultimate"] == 719
@@ -128,26 +125,18 @@ def test_review_sql_is_full_but_unconditionally_aborts_before_first_change() -> 
 
 def test_pending_contract_cannot_render_an_approved_apply_bundle(tmp_path: Path) -> None:
     module = _module()
-    contract = _contract()
-    contract["review_status"] = "pending"
-    contract["migration_apply_authorized"] = False
-    contract["approval_reference"] = None
-    path = ROOT / "reports" / "phase3n-legacy-adoption-pending-test.json"
-    path.write_text(json.dumps(contract), encoding="utf-8")
-    try:
-        with pytest.raises(module.RenderFailure, match="production-migration-approval-not-recorded"):
-            module.render_bundle(
-                contract_path=path,
-                manifest_path=module.DEFAULT_MANIFEST,
-                expected_commit=CANDIDATE,
-                output_path=ROOT / "reports" / "phase3n-adoption-should-not-exist.sql",
-                approval_digest="0" * 64,
-                approval_reference="not-authorized",
-                target_scope="production",
-                target_project_ref="grfwkutcsavqicaimssn",
-            )
-    finally:
-        path.unlink(missing_ok=True)
+
+    with pytest.raises(module.RenderFailure, match="production-migration-approval-not-recorded"):
+        module.render_bundle(
+            contract_path=CONTRACT,
+            manifest_path=module.DEFAULT_MANIFEST,
+            expected_commit=CANDIDATE,
+            output_path=ROOT / "reports" / "phase3n-adoption-should-not-exist.sql",
+            approval_digest="0" * 64,
+            approval_reference="not-authorized",
+            target_scope="production",
+            target_project_ref="grfwkutcsavqicaimssn",
+        )
 
 
 def test_approved_contract_requires_exact_contract_digest_and_reference() -> None:
@@ -228,7 +217,7 @@ def test_exact_clone_authorization_renders_only_for_distinct_disposable_project(
         assert result["review_only"] is False
         assert result["target_scope"] == "disposable-clone"
         assert result["target_project_ref"] == clone_ref
-        assert result["migration_apply_authorized"] is True
+        assert result["migration_apply_authorized"] is False
         assert "phase3n-legacy-adoption-review-only-not-authorized" not in sql
         assert "-- execution target scope disposable-clone" in sql
         assert f"-- execution target project ref {clone_ref}" in sql
