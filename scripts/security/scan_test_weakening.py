@@ -1,11 +1,26 @@
 #!/usr/bin/env python3
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
 
-BASE_REF = "origin/develop"
+def _resolve_base_ref() -> str:
+    value = os.environ.get("SCANNER_BASE_REF", "origin/develop").strip() or "origin/develop"
+    proc = subprocess.run(
+        ["git", "check-ref-format", f"refs/remotes/{value}"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if proc.returncode != 0:
+        raise RuntimeError("SCANNER_BASE_REF must be a valid remote-tracking branch")
+    return value
+
+
+BASE_REF = _resolve_base_ref()
 
 PATTERNS: List[Tuple[str, re.Pattern[str]]] = [
     ("test.skip", re.compile(r"\btest\.skip\s*\(")),

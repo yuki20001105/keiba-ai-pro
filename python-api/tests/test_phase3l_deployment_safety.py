@@ -435,6 +435,18 @@ def test_ci_requires_fixed_trusted_attestation_for_main_promotion() -> None:
     assert workflow["permissions"] == {"actions": "read", "contents": "read"}
 
     jobs = workflow["jobs"]
+    scanner_steps = jobs["security-scanners-release-blocking"]["steps"]
+    scanner_base = next(
+        step
+        for step in scanner_steps
+        if step.get("name") == "Resolve and fetch scanner comparison base"
+    )
+    assert scanner_base["env"]["PR_BASE_REF"] == "${{ github.base_ref }}"
+    assert 'base_ref="${PR_BASE_REF:-develop}"' in scanner_base["run"]
+    assert 'git check-ref-format --branch "$base_ref"' in scanner_base["run"]
+    assert '"+refs/heads/$base_ref:refs/remotes/origin/$base_ref"' in scanner_base["run"]
+    assert 'SCANNER_BASE_REF=origin/$base_ref' in scanner_base["run"]
+
     python_steps = jobs["python-static-and-tests"]["steps"]
     assert any(
         "test_phase3l_deployment_safety.py" in step.get("run", "")

@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -33,8 +34,24 @@ def _init_temp_repo(tmp_path: Path) -> Path:
     return repo
 
 
-def _run_scanner(scanner_path: Path, repo: Path) -> tuple[int, dict]:
-    proc = _run([sys.executable, str(scanner_path)], repo, check=False)
+def _run_scanner(
+    scanner_path: Path,
+    repo: Path,
+    *,
+    base_ref: str | None = None,
+) -> tuple[int, dict]:
+    env = os.environ.copy()
+    if base_ref is not None:
+        env["SCANNER_BASE_REF"] = base_ref
+    proc = subprocess.run(
+        [sys.executable, str(scanner_path)],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+    )
     assert proc.stdout.strip(), f"scanner produced no output: {scanner_path}"
     summary = json.loads(proc.stdout.strip().splitlines()[-1])
     report_path = repo / summary["report"]
@@ -61,6 +78,38 @@ def _allowlist_dummy_service_role() -> str:
 
 def _skip_call_source() -> str:
     return "".join(["test", ".", "skip", "('demo', async () => {})"])
+
+
+@pytest.mark.parametrize("scanner", [SECRET_SCANNER, WEAKENING_SCANNER])
+def test_scanner_honors_explicit_pr_base_ref(tmp_path: Path, scanner: Path) -> None:
+    repo = _init_temp_repo(tmp_path)
+
+    test_file = repo / "python-api" / "tests" / "test_trusted_base.py"
+    test_file.parent.mkdir(parents=True, exist_ok=True)
+    test_file.write_text(
+        "def test_trusted_base():\n"
+        "    value = 1 + 1\n"
+        "    assert value == 2\n",
+        encoding="utf-8",
+    )
+    _run(["git", "add", "python-api/tests/test_trusted_base.py"], repo)
+    _run(["git", "commit", "-m", "trusted base"], repo)
+    _run(["git", "update-ref", "refs/remotes/origin/trusted", "HEAD"], repo)
+
+    (repo / "README.md").write_text("base\npr change\n", encoding="utf-8")
+    _run(["git", "add", "README.md"], repo)
+    _run(["git", "commit", "-m", "pr change"], repo)
+    _assert_clean_worktree(repo)
+
+    code, report = _run_scanner(scanner, repo, base_ref="origin/trusted")
+    assert code == 0
+    assert report["base"] == "origin/trusted"
+    if scanner == SECRET_SCANNER:
+        assert report["scanned_line_count"] > 0
+    else:
+        assert report["scanned_line_count"] == 0
+        assert report["has_test_scope_changes"] is False
+        assert report["coverage_error"] is None
 
 
 @pytest.mark.parametrize("scanner", [SECRET_SCANNER, WEAKENING_SCANNER])
