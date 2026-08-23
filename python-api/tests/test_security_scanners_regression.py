@@ -41,6 +41,7 @@ def _run_scanner(
     base_ref: str | None = None,
 ) -> tuple[int, dict]:
     env = os.environ.copy()
+    env.pop("SCANNER_BASE_REF", None)
     if base_ref is not None:
         env["SCANNER_BASE_REF"] = base_ref
     proc = subprocess.run(
