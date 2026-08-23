@@ -367,19 +367,6 @@ async def fetch_bytes(
     if retry_statuses is None:
         retry_statuses = {429, 500, 502, 503, 504}
 
-    if resume_key:
-        resume_row = await asyncio.to_thread(_read_resume, resume_key)
-        if resume_row and str(resume_row.get("status")) == "success" and not force_refresh:
-            _metrics_inc("resume_hits", 1)
-            return FetchResult(
-                url=url,
-                normalized_url=normalized_url,
-                status=int(resume_row.get("http_status") or 200),
-                body=b"",
-                source="resume",
-                attempts=int(resume_row.get("attempts") or 1),
-            )
-
     if use_cache and not force_refresh:
         cached = await asyncio.to_thread(_read_cache, normalized_url)
         if cached is not None:
@@ -403,6 +390,16 @@ async def fetch_bytes(
                 source="cache",
                 attempts=1,
             )
+
+    # A resume row proves that a previous request completed, but it does not
+    # contain the response body.  Returning an empty body here used to make
+    # parsers report missing tables after a successful prior fetch.  Count the
+    # resume marker for observability, then continue to a real fetch whenever
+    # no usable cached body exists.
+    if resume_key and not force_refresh:
+        resume_row = await asyncio.to_thread(_read_resume, resume_key)
+        if resume_row and str(resume_row.get("status")) == "success":
+            _metrics_inc("resume_hits", 1)
 
     if dry_run:
         _metrics_inc("dry_run_skips", 1)

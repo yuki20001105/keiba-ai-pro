@@ -34,6 +34,10 @@ from models import (  # type: ignore
     BatchAnalyzeRequest,
 )
 from keiba_ai.constants import FUTURE_FIELDS  # type: ignore
+from routers.predict_data_refresh import (  # type: ignore
+    merge_fresh_pre_race_data,
+    race_metadata_invalid,
+)
 
 import asyncio
 import time as _time
@@ -647,7 +651,8 @@ async def analyze_race(request: AnalyzeRaceRequest):
                 or df_pred["odds"].isna().all()
                 or (df_pred["odds"].fillna(0) == 0).all()  # 全馬 0.0 もオッズ未取得扱い
             )
-            if _odds_missing:
+            _metadata_invalid = race_metadata_invalid(df_pred)
+            if _odds_missing or _metadata_invalid:
                 try:
                     import aiohttp as _aiohttp2
                     from scraping.storage import _save_race_to_ultimate_db as _srtud  # type: ignore
@@ -674,6 +679,11 @@ async def analyze_race(request: AnalyzeRaceRequest):
                         async with _aiohttp2.ClientSession(headers=_get_rh(), timeout=_timeout2) as _sess2:
                             _fresh = await _ssf(_sess2, request.race_id)
                     if _fresh and _fresh.get("horses"):
+                        _fresh_changed = merge_fresh_pre_race_data(
+                            df_pred,
+                            race_info,
+                            _fresh,
+                        )
                         _odds_map = {
                             h["horse_number"]: h.get("odds")
                             for h in _fresh["horses"]
@@ -693,15 +703,20 @@ async def analyze_race(request: AnalyzeRaceRequest):
                                 df_pred["popularity"] = df_pred.apply(
                                     lambda r: _pop_map.get(r.get("horse_number") or r.get("bracket_number")), axis=1
                                 )
-                            # DBも更新して次回スクレイプ不要にする
-                            try:
-                                _srtud(_fresh, ULTIMATE_DB, overwrite=True)
-                            except Exception:
-                                pass
                             _src = "結果ページ" if _is_past else "出馬表"
                             logger.info(f"[analyze] {request.race_id}: {_src}再スクレイプでodds補完完了 ({len(_odds_map)}頭)")
                         else:
                             logger.info(f"[analyze] {request.race_id}: shutuba再スクレイプ完了だがoddはまだ未公開")
+                        if _fresh_changed:
+                            # Persist the same complete pre-race snapshot used
+                            # by this request. This prevents a later request
+                            # from reloading an old distance=0 record.
+                            try:
+                                _srtud(_fresh, ULTIMATE_DB, overwrite=True)
+                            except Exception as _save_error:
+                                logger.warning(
+                                    f"[analyze] {request.race_id}: fresh race snapshot save failed: {_save_error}"
+                                )
                 except Exception as _roe:
                     logger.warning(f"[analyze] {request.race_id}: odds再スクレイプ失敗 → NaNのまま続行: {_roe}")
 
