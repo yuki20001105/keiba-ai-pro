@@ -17,8 +17,8 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 
-EXPECTED_SHA = "86a2d314a641160e852d3597396aadcd03e81347"
 EXPECTED_CONTRACT = "limited-production-observation-v1"
+SHA_LENGTH = 40
 
 
 @dataclass(frozen=True)
@@ -152,7 +152,13 @@ def _find_render_deploy(payload: Any) -> tuple[str | None, str | None, str | Non
     )
 
 
-def _render_probe(service_id: str, api_key: str, *, opener: Callable[..., Any] = urlopen) -> Probe:
+def _render_probe(
+    service_id: str,
+    api_key: str,
+    expected_sha: str,
+    *,
+    opener: Callable[..., Any] = urlopen,
+) -> Probe:
     try:
         status, payload = _request_json(
             f"https://api.render.com/v1/services/{service_id}/deploys?limit=1",
@@ -162,7 +168,7 @@ def _render_probe(service_id: str, api_key: str, *, opener: Callable[..., Any] =
     except RuntimeError as exc:
         return Probe("render_exact_sha", False, None, "render-deploy-unreachable", {"error_type": str(exc)})
     deployment_id, commit_sha, deploy_status = _find_render_deploy(payload)
-    valid = status == 200 and commit_sha == EXPECTED_SHA and deploy_status == "live"
+    valid = status == 200 and commit_sha == expected_sha and deploy_status == "live"
     return Probe(
         "render_exact_sha",
         valid,
@@ -187,8 +193,30 @@ def run(env: dict[str, str], *, opener: Callable[..., Any] = urlopen) -> dict[st
         "RENDER_API_KEY",
     )
     missing = sorted(key for key in required if not env.get(key, "").strip())
+    expected_deploy_sha = env.get("PRODUCTION_EXPECTED_DEPLOY_SHA", "").strip().lower()
+    candidate_sha = env.get("PHASE3N_CANDIDATE_COMMIT_SHA", "").strip().lower()
+    binding_missing = (
+        []
+        if missing
+        else sorted(
+            name
+            for name, value in (
+                ("PRODUCTION_EXPECTED_DEPLOY_SHA", expected_deploy_sha),
+                ("PHASE3N_CANDIDATE_COMMIT_SHA", candidate_sha),
+            )
+            if not value
+        )
+    )
+    invalid_sha = sorted(
+        name
+        for name, value in (
+            ("PRODUCTION_EXPECTED_DEPLOY_SHA", expected_deploy_sha),
+            ("PHASE3N_CANDIDATE_COMMIT_SHA", candidate_sha),
+        )
+        if value and (len(value) != SHA_LENGTH or any(char not in "0123456789abcdef" for char in value))
+    )
     probes: list[Probe] = []
-    if not missing:
+    if not missing and not binding_missing and not invalid_sha:
         probes.extend(
             [
                 _runtime_probe("frontend", env["PRODUCTION_FRONTEND_HEALTH_URL"], opener=opener),
@@ -196,13 +224,26 @@ def run(env: dict[str, str], *, opener: Callable[..., Any] = urlopen) -> dict[st
             ]
         )
         probes.extend(_supabase_probes(env["PRODUCTION_SUPABASE_URL"], env["PRODUCTION_SUPABASE_SERVICE_KEY"], opener=opener))
-        probes.append(_render_probe(env["PRODUCTION_RENDER_SERVICE_ID"], env["RENDER_API_KEY"], opener=opener))
-    failures = ([f"missing-config:{name}" for name in missing] + [probe.code for probe in probes if not probe.passed])
+        probes.append(
+            _render_probe(
+                env["PRODUCTION_RENDER_SERVICE_ID"],
+                env["RENDER_API_KEY"],
+                expected_deploy_sha,
+                opener=opener,
+            )
+        )
+    failures = (
+        [f"missing-config:{name}" for name in missing]
+        + [f"missing-config:{name}" for name in binding_missing]
+        + [f"invalid-config:{name}" for name in invalid_sha]
+        + [probe.code for probe in probes if not probe.passed]
+    )
     return {
         "schema": "limited-production-monitor-evidence",
         "schema_version": 1,
         "observed_at": datetime.now(timezone.utc).isoformat(),
-        "expected_candidate_sha": EXPECTED_SHA,
+        "expected_candidate_sha": candidate_sha or None,
+        "expected_production_deploy_sha": expected_deploy_sha or None,
         "release_contract_id": EXPECTED_CONTRACT,
         "success": not failures,
         "failure_codes": failures,
