@@ -368,8 +368,16 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Ensure origin/develop ref is available
-        run: git fetch --no-tags origin develop:refs/remotes/origin/develop
+      - name: Resolve and fetch scanner comparison base
+        env:
+          PR_BASE_REF: ${{ github.base_ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_ref="${PR_BASE_REF:-develop}"
+          git check-ref-format --branch "$base_ref" >/dev/null
+          git fetch --no-tags origin "+refs/heads/$base_ref:refs/remotes/origin/$base_ref"
+          echo "SCANNER_BASE_REF=origin/$base_ref" >> "$GITHUB_ENV"
 
       - uses: actions/setup-python@v5
         with:
@@ -532,7 +540,7 @@ jobs:
             # A pull_request workflow checks out GitHub's synthetic merge commit.
             # Bind that exact merge tree to the current main tip and the attested
             # develop candidate so a diverged or stale merge cannot be promoted.
-            git fetch --no-tags --prune origin main:refs/remotes/origin/main
+            git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/main"
             mapfile -t parents < <(git show -s --format=%P "$GITHUB_SHA" | tr ' ' '\n')
             if [[ "${#parents[@]}" -ne 2 ]]; then
               echo "::error::The pull request validation commit must be a two-parent synthetic merge."

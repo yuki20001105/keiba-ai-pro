@@ -435,6 +435,18 @@ def test_ci_requires_fixed_trusted_attestation_for_main_promotion() -> None:
     assert workflow["permissions"] == {"actions": "read", "contents": "read"}
 
     jobs = workflow["jobs"]
+    scanner_steps = jobs["security-scanners-release-blocking"]["steps"]
+    scanner_base = next(
+        step
+        for step in scanner_steps
+        if step.get("name") == "Resolve and fetch scanner comparison base"
+    )
+    assert scanner_base["env"]["PR_BASE_REF"] == "${{ github.base_ref }}"
+    assert 'base_ref="${PR_BASE_REF:-develop}"' in scanner_base["run"]
+    assert 'git check-ref-format --branch "$base_ref"' in scanner_base["run"]
+    assert '"+refs/heads/$base_ref:refs/remotes/origin/$base_ref"' in scanner_base["run"]
+    assert 'SCANNER_BASE_REF=origin/$base_ref' in scanner_base["run"]
+
     python_steps = jobs["python-static-and-tests"]["steps"]
     assert any(
         "test_phase3l_deployment_safety.py" in step.get("run", "")
@@ -481,7 +493,7 @@ def test_ci_requires_fixed_trusted_attestation_for_main_promotion() -> None:
     assert ".run_attempt >= 1" in resolver["run"]
     assert "^{tree}" in resolver["run"]
     for required in (
-        "git fetch --no-tags --prune origin main:refs/remotes/origin/main",
+        'git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/main"',
         'git show -s --format=%P "$GITHUB_SHA"',
         '"${#parents[@]}" -ne 2',
         '"${parents[0]}" != "$(git rev-parse origin/main)"',
@@ -490,6 +502,7 @@ def test_ci_requires_fixed_trusted_attestation_for_main_promotion() -> None:
         'git rev-parse "$PR_HEAD_SHA^{tree}"',
     ):
         assert required in resolver["run"]
+    assert "git fetch --no-tags --prune" not in resolver["run"]
     assert resolver["env"]["STAGING_EVIDENCE_RUN_ID"] == "${{ vars.PHASE3N_STAGING_EVIDENCE_RUN_ID }}"
     assert resolver["env"]["TRUSTED_PRODUCER_SHA"] == "${{ vars.PHASE3N_TRUSTED_PRODUCER_SHA }}"
     assert 'echo "run_attempt=$run_attempt"' in resolver["run"]
