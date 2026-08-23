@@ -240,7 +240,7 @@ def command_reconcile(args: argparse.Namespace) -> dict:
 async def _fetch_result_snapshot(race_id: str, race_date: str) -> dict[str, Any]:
     try:
         import aiohttp
-        from scraping.race import scrape_current_race_result, scrape_race_full  # type: ignore
+        from scraping.race import scrape_current_race_result  # type: ignore
     except ImportError as exc:
         raise ObservationContractError("result-source-client-unavailable") from exc
     timeout = aiohttp.ClientTimeout(total=60)
@@ -251,13 +251,6 @@ async def _fetch_result_snapshot(race_id: str, race_date: str) -> dict[str, Any]
         snapshot = await scrape_current_race_result(
             session, race_id, force_refresh=True
         )
-        if not snapshot:
-            snapshot = await scrape_race_full(
-                session,
-                race_id,
-                date_hint=race_date,
-                force_refresh=True,
-            )
     if not isinstance(snapshot, dict) or not isinstance(snapshot.get("horses"), list):
         raise ObservationContractError("settlement-result-source-unavailable")
     return snapshot
