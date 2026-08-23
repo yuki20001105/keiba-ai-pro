@@ -28,6 +28,7 @@ BASE_REF = _resolve_base_ref()
 ALLOWLIST_EXACT: Dict[str, str] = {
     "e2e-dummy-service-role-key": "E2E dummy credential value",
     "e2e-dummy-anon-key": "E2E dummy credential value",
+    "ci-dummy-service-role-key": "CI dummy credential value",
     "sk_test_e2e_dummy": "E2E dummy Stripe test placeholder",
 }
 
