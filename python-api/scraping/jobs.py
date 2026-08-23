@@ -107,7 +107,30 @@ def _load_job_from_db(job_id: str) -> dict | None:
     return None
 
 
+def mark_interrupted_scrape_jobs(db_path: Path = _JOBS_DB_PATH) -> int:
+    """Fail closed for jobs whose worker disappeared during a backend restart."""
+    message = "Backend restarted before the scrape job completed. Start a new job to resume safely."
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.execute(
+            """
+            UPDATE scrape_jobs
+            SET status = 'error', error = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE status IN ('queued', 'running')
+            """,
+            (json.dumps(message),),
+        )
+        conn.commit()
+        changed = int(cursor.rowcount or 0)
+        conn.close()
+        return changed
+    except Exception as exc:
+        logger.warning(f"中断スクレイピングジョブの復旧処理に失敗: {exc}")
+        return 0
+
+
 _init_jobs_db()
+mark_interrupted_scrape_jobs()
 
 
 # ============================================================

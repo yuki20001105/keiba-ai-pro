@@ -1,5 +1,6 @@
 'use client'
-import { useState, useRef, useCallback } from 'react'
+
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { authFetch } from '@/lib/auth-fetch'
 
 export type BatchProgress = {
@@ -15,138 +16,197 @@ export type BatchResult = {
   stats: { period: string; total_months: number }
 }
 
+type StoredBatchJob = {
+  jobId: string
+  startPeriod: string
+  endPeriod: string
+  forceRescrape: boolean
+  startedAt: number
+}
+
+export const ACTIVE_SCRAPE_JOB_KEY = 'keiba-ai-pro:active-scrape-job:v1'
+
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+function monthSpan(startPeriod: string, endPeriod: string): number {
+  const [sy, sm] = startPeriod.split('-').map(Number)
+  const [ey, em] = endPeriod.split('-').map(Number)
+  return Math.max(0, (ey - sy) * 12 + (em - sm) + 1)
+}
+
+function toDateRange(startPeriod: string, endPeriod: string) {
+  const [sy, sm] = startPeriod.split('-').map(Number)
+  const [ey, em] = endPeriod.split('-').map(Number)
+  const pad = (value: number) => String(value).padStart(2, '0')
+  const lastDay = new Date(ey, em, 0).getDate()
+  return {
+    startDate: `${sy}${pad(sm)}01`,
+    endDate: `${ey}${pad(em)}${pad(lastDay)}`,
+  }
+}
+
+function readStoredJob(): StoredBatchJob | null {
+  try {
+    const raw = localStorage.getItem(ACTIVE_SCRAPE_JOB_KEY)
+    if (!raw) return null
+    const value = JSON.parse(raw)
+    if (!value || typeof value.jobId !== 'string' || !value.jobId) return null
+    return value as StoredBatchJob
+  } catch {
+    localStorage.removeItem(ACTIVE_SCRAPE_JOB_KEY)
+    return null
+  }
+}
+
+function clearStoredJob(jobId: string) {
+  const stored = readStoredJob()
+  if (stored?.jobId === jobId) localStorage.removeItem(ACTIVE_SCRAPE_JOB_KEY)
+}
+
 /**
- * 期間指定バッチスクレイピングフック。
- * 月単位でジョブを順次投入し、各ジョブが完了するまで 3 秒間隔でポーリングする。
- * `start()` は完了時に BatchResult を返し、エラー時はスローする。
+ * Tracks one backend-owned scrape job for the entire selected date range.
+ * The active job metadata is stored in localStorage so a page reload can
+ * reconnect without starting a duplicate job.
  */
 export function useBatchScrape() {
   const [loading, setLoading] = useState(false)
   const [progress, setProgress] = useState<BatchProgress>({ current: 0, total: 100, message: '', eta: '' })
   const [result, setResult] = useState<BatchResult | null>(null)
+  const [jobId, setJobId] = useState<string | null>(null)
   const abortRef = useRef(false)
-  const startTimeRef = useRef(0)
+  const trackingRef = useRef<string | null>(null)
+
+  const trackJob = useCallback(async (stored: StoredBatchJob): Promise<BatchResult> => {
+    if (trackingRef.current === stored.jobId) {
+      throw new Error('This scrape job is already being tracked.')
+    }
+    trackingRef.current = stored.jobId
+    abortRef.current = false
+    setJobId(stored.jobId)
+    setLoading(true)
+    setResult(null)
+
+    let consecutiveFailures = 0
+    try {
+      while (!abortRef.current) {
+        const statusRes = await authFetch(`/api/scrape/status/${stored.jobId}`)
+        if (!statusRes.ok) {
+          consecutiveFailures += 1
+          if (consecutiveFailures >= 10) throw new Error(`ステータス取得失敗 (job_id: ${stored.jobId})`)
+          await delay(3000)
+          continue
+        }
+
+        consecutiveFailures = 0
+        const status = await statusRes.json()
+        if (status.status === 'not_found') {
+          clearStoredJob(stored.jobId)
+          throw new Error(`ジョブが見つかりません (job_id: ${stored.jobId})`)
+        }
+
+        const backendProgress = status.progress || {}
+        const done = Number(backendProgress.done || 0)
+        const total = Number(backendProgress.total || 0)
+        const fraction = total > 0 ? Math.min(1, done / total) : 0
+        const current = status.status === 'completed' ? 100 : Math.round(fraction * 95)
+        const elapsedMs = Math.max(1, Date.now() - stored.startedAt)
+        const remainingSeconds = done > 0 && total > done
+          ? Math.round((elapsedMs / done) * (total - done) / 1000)
+          : 0
+        const eta = remainingSeconds > 0
+          ? remainingSeconds >= 60
+            ? `残り約${Math.ceil(remainingSeconds / 60)}分`
+            : `残り約${remainingSeconds}秒`
+          : ''
+
+        setProgress({
+          current,
+          total: 100,
+          message: backendProgress.message || `バックエンドジョブ ${stored.jobId} を実行中...`,
+          eta,
+        })
+
+        if (status.status === 'completed') {
+          const payload = status.result || {}
+          const completed: BatchResult = {
+            races_collected: Number(payload.races_collected || 0),
+            elapsed_time: Number(payload.elapsed_time || 0),
+            stats: {
+              period: `${stored.startPeriod} ～ ${stored.endPeriod}`,
+              total_months: monthSpan(stored.startPeriod, stored.endPeriod),
+            },
+          }
+          clearStoredJob(stored.jobId)
+          setProgress({ current: 100, total: 100, message: `完了: ${completed.races_collected}レース取得`, eta: '' })
+          setResult(completed)
+          return completed
+        }
+
+        if (status.status === 'error') {
+          clearStoredJob(stored.jobId)
+          throw new Error(status.error || 'スクレイピングジョブが失敗しました')
+        }
+
+        await delay(3000)
+      }
+
+      throw new Error('画面上の追跡を停止しました。バックエンドジョブは継続しています。')
+    } finally {
+      trackingRef.current = null
+      setLoading(false)
+      setJobId(null)
+    }
+  }, [])
 
   const start = useCallback(async (
     startPeriod: string,
     endPeriod: string,
     forceRescrape: boolean,
   ): Promise<BatchResult> => {
-    const [startYearStr, startMonthStr] = startPeriod.split('-')
-    const [endYearStr, endMonthStr] = endPeriod.split('-')
-    const startYear = parseInt(startYearStr, 10)
-    const startMonth = parseInt(startMonthStr, 10)
-    const endYear = parseInt(endYearStr, 10)
-    const endMonth = parseInt(endMonthStr, 10)
-
-    // 取得対象の月リストを生成
-    const months: { year: number; month: number }[] = []
-    let y = startYear, m = startMonth
-    while (y < endYear || (y === endYear && m <= endMonth)) {
-      months.push({ year: y, month: m })
-      m++
-      if (m > 12) { m = 1; y++ }
+    const { startDate, endDate } = toDateRange(startPeriod, endPeriod)
+    const startRes = await authFetch('/api/scrape', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        start_date: startDate,
+        end_date: endDate,
+        force_rescrape: forceRescrape,
+        dry_run: false,
+      }),
+    })
+    if (!startRes.ok) {
+      const error = await startRes.json().catch(() => ({}))
+      throw new Error(error.detail || `HTTP ${startRes.status}`)
     }
-    const totalMonths = months.length
 
-    setLoading(true)
-    setResult(null)
-    abortRef.current = false
-    startTimeRef.current = Date.now()
-    let totalRaces = 0
-    let completedMonths = 0
-
-    try {
-      for (const { year, month } of months) {
-        if (abortRef.current) break
-
-        const pad = (n: number) => String(n).padStart(2, '0')
-        const startDateStr = `${year}${pad(month)}01`
-        const lastDay = new Date(year, month, 0).getDate()
-        const endDateStr = `${year}${pad(month)}${pad(lastDay)}`
-
-        setProgress({
-          current: Math.round((completedMonths / totalMonths) * 95),
-          total: 100,
-          message: `${year}年${month}月を取得中… (${completedMonths + 1}/${totalMonths}ヶ月)`,
-          eta: '',
-        })
-
-        const startRes = await authFetch('/api/scrape', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ start_date: startDateStr, end_date: endDateStr, force_rescrape: forceRescrape }),
-        })
-        if (!startRes.ok) {
-          const err = await startRes.json()
-          throw new Error(err.detail || `HTTP ${startRes.status}`)
-        }
-        const { job_id } = await startRes.json()
-
-        // ジョブ完了までポーリング（3秒間隔）
-        let done = false
-        let failCount = 0
-        const MAX_FAIL = 10
-        while (!done && !abortRef.current) {
-          await new Promise(resolve => setTimeout(resolve, 3000))
-          const statusRes = await authFetch(`/api/scrape/status/${job_id}`)
-          if (!statusRes.ok) {
-            if (++failCount >= MAX_FAIL) throw new Error(`ステータス取得失敗 (job_id: ${job_id})`)
-            continue
-          }
-          failCount = 0
-          const status = await statusRes.json()
-          if (status.status === 'not_found') {
-            if (++failCount >= MAX_FAIL) throw new Error(`ジョブが見つかりません (job_id: ${job_id})`)
-            continue
-          }
-          failCount = 0
-
-          const prog = status.progress || {}
-          const monthPct = prog.total > 0 ? prog.done / prog.total : 0
-          const overallPct = Math.round(((completedMonths + monthPct) / totalMonths) * 95)
-          let eta = ''
-          if (completedMonths > 0) {
-            const elapsed = Date.now() - startTimeRef.current
-            const msPerMonth = elapsed / completedMonths
-            const remainingSec = Math.round(msPerMonth * (totalMonths - completedMonths) / 1000)
-            eta = remainingSec >= 60 ? `残り約${Math.ceil(remainingSec / 60)}分` : `残り約${remainingSec}秒`
-          }
-          setProgress({
-            current: overallPct,
-            total: 100,
-            message: `${year}年${month}月 (${completedMonths + 1}/${totalMonths}ヶ月): ${prog.message || '処理中...'}`,
-            eta,
-          })
-
-          if (status.status === 'completed') {
-            done = true
-            totalRaces += status.result?.races_collected || 0
-            completedMonths++
-          } else if (status.status === 'error') {
-            throw new Error(status.error || `${year}年${month}月のスクレイピングが失敗しました`)
-          }
-        }
-      }
-
-      const elapsed = Math.round((Date.now() - startTimeRef.current) / 1000)
-      setProgress({ current: 100, total: 100, message: `完了: ${totalRaces}レース取得`, eta: '' })
-      const batchResult: BatchResult = {
-        races_collected: totalRaces,
-        elapsed_time: elapsed,
-        stats: { period: `${startYear}年${startMonth}月〜${endYear}年${endMonth}月`, total_months: totalMonths },
-      }
-      setResult(batchResult)
-      return batchResult
-    } catch (error: unknown) {
-      setProgress({ current: 0, total: 100, message: 'エラーが発生しました', eta: '' })
-      throw error
-    } finally {
-      setLoading(false)
+    const response = await startRes.json()
+    const stored: StoredBatchJob = {
+      jobId: String(response.job_id),
+      startPeriod,
+      endPeriod,
+      forceRescrape,
+      startedAt: Date.now(),
     }
+    localStorage.setItem(ACTIVE_SCRAPE_JOB_KEY, JSON.stringify(stored))
+    return trackJob(stored)
+  }, [trackJob])
+
+  useEffect(() => {
+    const stored = readStoredJob()
+    if (!stored || trackingRef.current) return
+    trackJob(stored).catch(error => {
+      setProgress({
+        current: 0,
+        total: 100,
+        message: error instanceof Error ? error.message : '再接続に失敗しました',
+        eta: '',
+      })
+    })
+  }, [trackJob])
+
+  const abort = useCallback(() => {
+    abortRef.current = true
   }, [])
 
-  const abort = useCallback(() => { abortRef.current = true }, [])
-
-  return { loading, progress, result, start, abort }
+  return { loading, progress, result, jobId, start, abort }
 }

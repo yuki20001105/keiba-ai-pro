@@ -30,6 +30,11 @@ from models import TrainRequest, TrainResponse  # type: ignore
 from keiba_ai.constants import FUTURE_FIELDS  # type: ignore
 from keiba_ai.feature_catalog import FeatureCatalog  # type: ignore
 from scraping.jobs import _purge_old_jobs, _MAX_JOBS  # type: ignore
+from training.job_store import (  # type: ignore
+    load_train_job,
+    mark_interrupted_train_jobs,
+    persist_train_job,
+)
 
 router = APIRouter()
 
@@ -50,6 +55,7 @@ class BCWrap:
 
 # ジョブストア（インメモリ）
 _train_jobs: dict = {}
+mark_interrupted_train_jobs()
 
 
 def _extract_ym_from_df(df: "pd.DataFrame") -> list:  # noqa: F821
@@ -726,11 +732,13 @@ async def _run_train_job(job_id: str, request: TrainRequest) -> None:
     job = _train_jobs[job_id]
     job["status"] = "running"
     job["pct"] = 0
+    persist_train_job(job_id, job)
 
     def _cb(msg: str, pct: int = None) -> None:
         job["progress"] = msg
         if pct is not None:
             job["pct"] = pct
+        persist_train_job(job_id, job)
 
     try:
         train_result = await _do_train(request, {"user_id": "background-job"}, progress_cb=_cb)
@@ -738,14 +746,17 @@ async def _run_train_job(job_id: str, request: TrainRequest) -> None:
         job["result"] = train_result.dict()
         job["progress"] = "完了"
         job["pct"] = 100
+        persist_train_job(job_id, job)
     except HTTPException as e:
         job["status"] = "error"
         job["error"] = e.detail
         job["progress"] = f"エラー: {e.detail}"
+        persist_train_job(job_id, job)
     except Exception as e:
         job["status"] = "error"
         job["error"] = str(e)
         job["progress"] = f"エラー: {str(e)}"
+        persist_train_job(job_id, job)
         logger.error(f"学習ジョブ {job_id} 失敗:\n{traceback.format_exc()}")
 
 
@@ -755,6 +766,7 @@ async def train_start(request: TrainRequest):
     _purge_old_jobs(_train_jobs)
     job_id = str(uuid.uuid4())
     _train_jobs[job_id] = {"status": "queued", "progress": "キュー待ち", "pct": 0, "result": None, "error": None}
+    persist_train_job(job_id, _train_jobs[job_id], request.model_dump())
     try:
         import threading
         def _bg() -> None:
@@ -764,13 +776,14 @@ async def train_start(request: TrainRequest):
     except Exception as e:
         _train_jobs[job_id]["status"] = "error"
         _train_jobs[job_id]["error"] = f"タスク起動失敗: {e}"
+    persist_train_job(job_id, _train_jobs[job_id])
     return {"job_id": job_id, "status": _train_jobs[job_id]["status"]}
 
 
 @router.get("/api/train/status/{job_id}")
 async def train_job_status(job_id: str):
     """学習ジョブの進捗・結果を返す"""
-    job = _train_jobs.get(job_id)
+    job = _train_jobs.get(job_id) or load_train_job(job_id)
     if not job:
         return {
             "job_id": job_id,

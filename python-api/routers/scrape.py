@@ -34,7 +34,15 @@ from deps.auth import require_admin  # type: ignore
 from models import ScrapeRequest, ScrapeResponse, RescrapeResponse  # type: ignore
 from scraping.constants import SCRAPE_HEADERS  # type: ignore
 from scraping.fetch_pipeline import fetch_text  # type: ignore
-from scraping.jobs import _scrape_jobs, _JOBS_LOCK, _purge_old_jobs, _run_scrape_job, get_job, list_recent_jobs  # type: ignore
+from scraping.jobs import (  # type: ignore
+    _JOBS_LOCK,
+    _persist_job,
+    _purge_old_jobs,
+    _run_scrape_job,
+    _scrape_jobs,
+    get_job,
+    list_recent_jobs,
+)
 from scraping.race import scrape_race_full  # type: ignore
 from scraping.storage import _save_race_to_ultimate_db  # type: ignore
 
@@ -248,6 +256,7 @@ async def scrape_start(request: ScrapeRequest, _: dict = Depends(require_admin))
             "result": None,
             "error": None,
         }
+        _persist_job(job_id, _scrape_jobs[job_id])
     try:
         import threading
         def _bg() -> None:
@@ -278,6 +287,7 @@ async def scrape_start(request: ScrapeRequest, _: dict = Depends(require_admin))
         logger.error(f"スレッド起動失敗: {e}")
         _scrape_jobs[job_id]["status"] = "error"
         _scrape_jobs[job_id]["error"] = f"タスク起動失敗: {e}"
+        _persist_job(job_id, _scrape_jobs[job_id])
     return {
         "job_id": job_id,
         "status": _scrape_jobs[job_id]["status"],

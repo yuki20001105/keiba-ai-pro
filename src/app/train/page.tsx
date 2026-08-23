@@ -8,6 +8,9 @@ import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { authFetch } from '@/lib/auth-fetch'
 import { useJobPoller } from '@/hooks/useJobPoller'
 
+const TRAIN_UI_STATE_KEY = 'keiba-ai-pro:train-ui:v1'
+const TRAIN_POLL_TIMEOUT_MS = 24 * 60 * 60 * 1000
+
 export default function TrainPage() {
   const [loading, setLoading] = useState(false)
   const [target, setTarget] = useState<'win' | 'place3' | 'win_tie' | 'speed_deviation'>('win')
@@ -27,12 +30,14 @@ export default function TrainPage() {
   const [toast, setToast] = useState({ visible: false, message: '', type: 'success' as 'success' | 'error' })
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [showAdvanced, setShowAdvanced] = useState(false)
+  const [settingsHydrated, setSettingsHydrated] = useState(false)
 
-  const { status: jobStatus, progress: jobProgress, pct: jobPct } = useJobPoller({
+  const { progress: jobProgress, pct: jobPct } = useJobPoller({
     jobId,
     getStatusUrl: id => `/api/ml/train/status/${id}`,
     onCompleted: statusData => {
       setLoading(false)
+      setJobId(null)
       const result = statusData.result || {}
       setTrainResult({
         model_id: result.model_id,
@@ -44,13 +49,70 @@ export default function TrainPage() {
       showToast(`学習完了 — AUC: ${result.metrics?.auc?.toFixed(4) ?? '?'}`)
       loadModels()
     },
-    onError: msg => { setLoading(false); showToast(msg, 'error') },
+    onError: msg => { setLoading(false); setJobId(null); showToast(msg, 'error') },
+    maxMs: TRAIN_POLL_TIMEOUT_MS,
   })
 
   const showToast = (message: string, type: 'success' | 'error' = 'success') =>
     setToast({ visible: true, message, type })
 
-  useEffect(() => { loadModels() }, [])
+  useEffect(() => {
+    loadModels()
+    try {
+      const raw = localStorage.getItem(TRAIN_UI_STATE_KEY)
+      const saved = raw ? JSON.parse(raw) : null
+      if (saved && typeof saved === 'object') {
+        if (['win', 'place3', 'win_tie', 'speed_deviation'].includes(saved.target)) setTarget(saved.target)
+        if (['logistic_regression', 'lightgbm'].includes(saved.modelType)) setModelType(saved.modelType)
+        if (typeof saved.testSize === 'number') setTestSize(saved.testSize)
+        if (typeof saved.cvFolds === 'number') setCvFolds(saved.cvFolds)
+        if (typeof saved.useOptuna === 'boolean') setUseOptuna(saved.useOptuna)
+        if (typeof saved.optunaTrials === 'number') setOptunaTrials(saved.optunaTrials)
+        if (typeof saved.optunaTimeout === 'number') setOptunaTimeout(saved.optunaTimeout)
+        if (typeof saved.trainingDateFrom === 'string') setTrainingDateFrom(saved.trainingDateFrom)
+        if (typeof saved.trainingDateTo === 'string') setTrainingDateTo(saved.trainingDateTo)
+        if (typeof saved.showAdvanced === 'boolean') setShowAdvanced(saved.showAdvanced)
+        if (typeof saved.activeJobId === 'string' && saved.activeJobId) {
+          setJobId(saved.activeJobId)
+          setLoading(true)
+        }
+      }
+    } catch {
+      localStorage.removeItem(TRAIN_UI_STATE_KEY)
+    } finally {
+      setSettingsHydrated(true)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!settingsHydrated) return
+    localStorage.setItem(TRAIN_UI_STATE_KEY, JSON.stringify({
+      target,
+      modelType,
+      testSize,
+      cvFolds,
+      useOptuna,
+      optunaTrials,
+      optunaTimeout,
+      trainingDateFrom,
+      trainingDateTo,
+      showAdvanced,
+      activeJobId: jobId,
+    }))
+  }, [
+    settingsHydrated,
+    target,
+    modelType,
+    testSize,
+    cvFolds,
+    useOptuna,
+    optunaTrials,
+    optunaTimeout,
+    trainingDateFrom,
+    trainingDateTo,
+    showAdvanced,
+    jobId,
+  ])
 
   const loadModels = async () => {
     try {

@@ -1,12 +1,16 @@
 ﻿'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import Link from 'next/link'
 import { Logo } from '@/components/Logo'
 import { Toast } from '@/components/Toast'
 import { authFetch } from '@/lib/auth-fetch'
 import { useJobPoller } from '@/hooks/useJobPoller'
 import { useBatchScrape } from '@/hooks/useBatchScrape'
+
+const DATA_COLLECTION_SETTINGS_KEY = 'keiba-ai-pro:data-collection-ui:v1'
+const ACTIVE_DRY_RUN_JOB_KEY = 'keiba-ai-pro:active-dry-run-job:v1'
+const DRY_RUN_TIMEOUT_MS = 24 * 60 * 60 * 1000
 
 type ScrapeHealthStatus = 'healthy' | 'degraded' | 'unhealthy' | 'unknown'
 type LocalApiStatus = 'checking' | ScrapeHealthStatus
@@ -46,6 +50,38 @@ type ScrapeDryRunResult = {
     failure_threshold?: number
     cooldown_sec?: number
     scope?: string
+  }
+}
+
+type StoredDryRunJob = {
+  jobId: string
+  startedAt: number
+}
+
+function normalizeDryRunResult(resultPayload: any): ScrapeDryRunResult {
+  const fetchSummary = resultPayload?.fetch_summary || {}
+  const dryRun = fetchSummary?.dry_run || {}
+  return {
+    dry_run: {
+      total_target_count: Number(dryRun.total_target_count || 0),
+      unique_url_count: Number(dryRun.unique_url_count || 0),
+      estimated_request_count: Number(dryRun.estimated_request_count || 0),
+      cache_hit_count: Number(dryRun.cache_hit_count || 0),
+      cache_miss_count: Number(dryRun.cache_miss_count || 0),
+      resume_hit_count: Number(dryRun.resume_hit_count || 0),
+      skipped_count: Number(dryRun.skipped_count || 0),
+      db_existing_skip_count: Number(dryRun.db_existing_skip_count || 0),
+      db_existing_race_count: Number(dryRun.db_existing_race_count || 0),
+      db_existing_horse_count: Number(dryRun.db_existing_horse_count || 0),
+      db_existing_result_count: Number(dryRun.db_existing_result_count || 0),
+      db_existing_pedigree_count: Number(dryRun.db_existing_pedigree_count || 0),
+      new_fetch_required_count: Number(dryRun.new_fetch_required_count || 0),
+      already_covered_count: Number(dryRun.already_covered_count || 0),
+      estimated_runtime_sec: Number(dryRun.estimated_runtime_sec || 0),
+    },
+    rate_limit_policy: fetchSummary?.rate_limit_policy || {},
+    retry_backoff_policy: fetchSummary?.retry_backoff_policy || {},
+    circuit_breaker_policy: fetchSummary?.circuit_breaker_policy || {},
   }
 }
 
@@ -101,14 +137,21 @@ export default function DataCollectionPage() {
   const [dryRunResult, setDryRunResult] = useState<ScrapeDryRunResult | null>(null)
   const [dryRunExecuted, setDryRunExecuted] = useState(false)
   const [executeWarn, setExecuteWarn] = useState('')
+  const [settingsHydrated, setSettingsHydrated] = useState(false)
   const [fetchHistory, setFetchHistory] = useState<FetchSummaryHistoryItem[]>([])
   const [fetchHistoryLoading, setFetchHistoryLoading] = useState(false)
   const [toast, setToast] = useState({ visible: false, message: '', type: 'success' as 'success' | 'error' })
   const showToast = (message: string, type: 'success' | 'error' = 'success') =>
     setToast({ visible: true, message, type })
 
-  // バッチスクレイピング（月単位ループ + ポーリングをフックが担当）
-  const { loading: batchLoading, progress: batchProgress, result: batchResult, start: startBatchScrape } = useBatchScrape()
+  // 複数月を1つのバックエンドジョブとして実行し、画面更新後も再接続する
+  const {
+    loading: batchLoading,
+    progress: batchProgress,
+    result: batchResult,
+    jobId: batchJobId,
+    start: startBatchScrape,
+  } = useBatchScrape()
 
   // データ統計と表示
   const [dataStats, setDataStats] = useState({ totalRaces: 0, totalResults: 0, latestDate: '' })
@@ -144,6 +187,7 @@ export default function DataCollectionPage() {
   // ローカルAPI稼働チェック
   const [localApiStatus, setLocalApiStatus] = useState<LocalApiStatus>('checking')
   const [localApiReason, setLocalApiReason] = useState('')
+  const dryRunTrackingRef = useRef<string | null>(null)
 
   const statusMeta: Record<LocalApiStatus, { label: string; dotClass: string; textClass: string }> = {
     checking: { label: '確認中', dotClass: 'bg-[#555] animate-pulse', textClass: 'text-[#555]' },
@@ -187,10 +231,36 @@ export default function DataCollectionPage() {
   useEffect(() => {
     loadStats()
     checkLocalApi()
-    loadFetchSummaryHistory()
   }, [])
 
-  const loadFetchSummaryHistory = async () => {
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(DATA_COLLECTION_SETTINGS_KEY)
+      const saved = raw ? JSON.parse(raw) : null
+      if (saved && typeof saved === 'object') {
+        if (typeof saved.startPeriod === 'string') setStartPeriod(saved.startPeriod)
+        if (typeof saved.endPeriod === 'string') setEndPeriod(saved.endPeriod)
+        if (typeof saved.forceRescrape === 'boolean') setForceRescrape(saved.forceRescrape)
+        if (typeof saved.useOptimized === 'boolean') setUseOptimized(saved.useOptimized)
+      }
+    } catch {
+      localStorage.removeItem(DATA_COLLECTION_SETTINGS_KEY)
+    } finally {
+      setSettingsHydrated(true)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!settingsHydrated) return
+    localStorage.setItem(DATA_COLLECTION_SETTINGS_KEY, JSON.stringify({
+      startPeriod,
+      endPeriod,
+      forceRescrape,
+      useOptimized,
+    }))
+  }, [settingsHydrated, startPeriod, endPeriod, forceRescrape, useOptimized])
+
+  const loadFetchSummaryHistory = useCallback(async () => {
     setFetchHistoryLoading(true)
     try {
       const res = await authFetch('/api/scrape/history?limit=10')
@@ -203,7 +273,78 @@ export default function DataCollectionPage() {
     } finally {
       setFetchHistoryLoading(false)
     }
-  }
+  }, [])
+
+  useEffect(() => {
+    void loadFetchSummaryHistory()
+  }, [loadFetchSummaryHistory])
+
+  const pollDryRunJob = useCallback(async (stored: StoredDryRunJob) => {
+    if (dryRunTrackingRef.current === stored.jobId) return
+    dryRunTrackingRef.current = stored.jobId
+    setDryRunLoading(true)
+    setDryRunStartedAt(stored.startedAt)
+    setDryRunElapsedSeconds(Math.floor(Math.max(0, Date.now() - stored.startedAt) / 1000))
+    setDryRunError('')
+    setDryRunResultReady(false)
+    setDryRunResult(null)
+
+    let consecutiveFailures = 0
+    try {
+      while (Date.now() - stored.startedAt <= DRY_RUN_TIMEOUT_MS) {
+        const statusRes = await authFetch(`/api/scrape/status/${stored.jobId}`)
+        if (!statusRes.ok) {
+          consecutiveFailures += 1
+          if (consecutiveFailures >= 10) throw new Error(`Dry-runステータス取得失敗 (job_id: ${stored.jobId})`)
+          await new Promise(resolve => setTimeout(resolve, 3000))
+          continue
+        }
+
+        consecutiveFailures = 0
+        const statusData = await statusRes.json().catch(() => ({}))
+        if (statusData?.status === 'completed') {
+          const normalized = normalizeDryRunResult(statusData?.result)
+          localStorage.removeItem(ACTIVE_DRY_RUN_JOB_KEY)
+          setDryRunResult(normalized)
+          setDryRunResultReady(true)
+          setDryRunExecuted(true)
+          setToast({ visible: true, message: 'Dry-run完了（HTTPアクセスなし）', type: 'success' })
+          await loadFetchSummaryHistory()
+          return
+        }
+        if (statusData?.status === 'error' || statusData?.status === 'not_found') {
+          localStorage.removeItem(ACTIVE_DRY_RUN_JOB_KEY)
+          throw new Error(statusData?.error || `Dry-runジョブが見つかりません (job_id: ${stored.jobId})`)
+        }
+        await new Promise(resolve => setTimeout(resolve, 1000))
+      }
+      throw new Error('Dry-runが24時間以内に完了しませんでした。バックエンド状態を確認してください。')
+    } catch (error: any) {
+      localStorage.removeItem(ACTIVE_DRY_RUN_JOB_KEY)
+      setDryRunResult(null)
+      setDryRunResultReady(false)
+      setDryRunExecuted(false)
+      const message = typeof error?.message === 'string' ? error.message : 'Dry-run結果を取得できませんでした。'
+      setDryRunError(message)
+      setToast({ visible: true, message: `Dry-runエラー: ${message}`, type: 'error' })
+    } finally {
+      if (dryRunTrackingRef.current === stored.jobId) dryRunTrackingRef.current = null
+      setDryRunLoading(false)
+      setDryRunStartedAt(null)
+    }
+  }, [loadFetchSummaryHistory])
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(ACTIVE_DRY_RUN_JOB_KEY)
+      const saved = raw ? JSON.parse(raw) : null
+      if (saved && typeof saved.jobId === 'string' && typeof saved.startedAt === 'number') {
+        void pollDryRunJob(saved as StoredDryRunJob)
+      }
+    } catch {
+      localStorage.removeItem(ACTIVE_DRY_RUN_JOB_KEY)
+    }
+  }, [pollDryRunJob])
 
   const loadStats = async () => {
     try {
@@ -273,7 +414,7 @@ export default function DataCollectionPage() {
     }
 
     const _dryRunState = dryRunExecuted ? 'Dry-run実行済み' : 'Dry-run未実行（推奨）'
-    if (!confirm(`${startYear}年${startMonth}月 ～ ${endYear}年${endMonth}月（${totalMonths}ヶ月分）を月単位で順次取得します。\n中断するにはページをリロードしてください。\n\n${_dryRunState}\n続行しますか？`)) return
+    if (!confirm(`${startYear}年${startMonth}月 ～ ${endYear}年${endMonth}月（${totalMonths}ヶ月分）をバックエンドで一括管理します。\nページを更新しても処理は継続し、自動再接続します。\n\n${_dryRunState}\n続行しますか？`)) return
 
     try {
       const result = await startBatchScrape(startPeriod, endPeriod, forceRescrape)
@@ -327,16 +468,8 @@ export default function DataCollectionPage() {
   }
 
   const handleDryRun = async () => {
-    const dryRunTimeoutMessage = 'Dry-run結果を取得できませんでした。期間を短くするか、再実行してください。'
-
-    setDryRunLoading(true)
-    setDryRunStartedAt(Date.now())
-    setDryRunElapsedSeconds(0)
-    setDryRunError('')
-    setDryRunResultReady(false)
-    setDryRunResult(null)
-    setExecuteWarn('')
     try {
+      setExecuteWarn('')
       const { startDateStr, endDateStr } = periodToDateRange(startPeriod, endPeriod)
       const startRes = await authFetch('/api/scrape', {
         method: 'POST',
@@ -355,69 +488,21 @@ export default function DataCollectionPage() {
       }
 
       const { job_id } = await startRes.json()
-      let resultPayload: any = null
-      // Dry-run can take longer for wide month ranges because backend preloads calendar days.
-      // Keep polling until completion (up to ~90s) instead of falling back to zeroed defaults.
-      const maxPollCount = 90
-      for (let i = 0; i < maxPollCount; i++) {
-        await new Promise(resolve => setTimeout(resolve, 1000))
-        const statusRes = await authFetch(`/api/scrape/status/${job_id}`)
-        if (!statusRes.ok) continue
-        const statusData = await statusRes.json().catch(() => ({}))
-        if (statusData?.status === 'completed') {
-          resultPayload = statusData?.result
-          break
-        }
-        if (statusData?.status === 'error') {
-          throw new Error(statusData?.error || 'Dry-run failed')
-        }
-      }
-
-      if (!resultPayload) {
-        throw new Error(dryRunTimeoutMessage)
-      }
-
-      const fetchSummary = resultPayload?.fetch_summary || {}
-      const dryRun = fetchSummary?.dry_run || {}
-      const normalized: ScrapeDryRunResult = {
-        dry_run: {
-          total_target_count: Number(dryRun.total_target_count || 0),
-          unique_url_count: Number(dryRun.unique_url_count || 0),
-          estimated_request_count: Number(dryRun.estimated_request_count || 0),
-          cache_hit_count: Number(dryRun.cache_hit_count || 0),
-          cache_miss_count: Number(dryRun.cache_miss_count || 0),
-          resume_hit_count: Number(dryRun.resume_hit_count || 0),
-          skipped_count: Number(dryRun.skipped_count || 0),
-          db_existing_skip_count: Number(dryRun.db_existing_skip_count || 0),
-          db_existing_race_count: Number(dryRun.db_existing_race_count || 0),
-          db_existing_horse_count: Number(dryRun.db_existing_horse_count || 0),
-          db_existing_result_count: Number(dryRun.db_existing_result_count || 0),
-          db_existing_pedigree_count: Number(dryRun.db_existing_pedigree_count || 0),
-          new_fetch_required_count: Number(dryRun.new_fetch_required_count || 0),
-          already_covered_count: Number(dryRun.already_covered_count || 0),
-          estimated_runtime_sec: Number(dryRun.estimated_runtime_sec || 0),
-        },
-        rate_limit_policy: fetchSummary?.rate_limit_policy || {},
-        retry_backoff_policy: fetchSummary?.retry_backoff_policy || {},
-        circuit_breaker_policy: fetchSummary?.circuit_breaker_policy || {},
-      }
-      setDryRunResult(normalized)
-      setDryRunResultReady(true)
-      setDryRunExecuted(true)
-      showToast('Dry-run完了（HTTPアクセスなし）')
-      loadFetchSummaryHistory()
+      const stored: StoredDryRunJob = { jobId: String(job_id), startedAt: Date.now() }
+      localStorage.setItem(ACTIVE_DRY_RUN_JOB_KEY, JSON.stringify(stored))
+      await pollDryRunJob(stored)
     } catch (error: any) {
-      setDryRunResult(null)
-      setDryRunResultReady(false)
-      setDryRunExecuted(false)
-      const message = typeof error?.message === 'string' ? error.message : dryRunTimeoutMessage
+      const message = typeof error?.message === 'string' ? error.message : 'Dry-runを開始できませんでした。'
       setDryRunError(message)
-      showToast(`Dry-runエラー: ${error.message}`, 'error')
-    } finally {
-      setDryRunLoading(false)
-      setDryRunStartedAt(null)
+      showToast(`Dry-runエラー: ${message}`, 'error')
     }
   }
+
+  useEffect(() => {
+    if (!batchResult) return
+    void loadStats()
+    void loadFetchSummaryHistory()
+  }, [batchResult, loadFetchSummaryHistory])
 
   const handleStartProfiling = async () => {
     setProfilingJobId(null)
@@ -696,6 +781,7 @@ export default function DataCollectionPage() {
               <div className="w-full bg-[#1e1e1e] rounded-full h-1.5 overflow-hidden">
                 <div className="bg-white h-1.5 rounded-full transition-all duration-500" style={{ width: `${batchProgress.current}%` }} />
               </div>
+              {batchJobId && <div className="text-[10px] text-[#555]">job: {batchJobId}</div>}
             </div>
           )}
         </div>
