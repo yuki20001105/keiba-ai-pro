@@ -23,6 +23,93 @@ except ImportError:
     logger = logging.getLogger(__name__)
 
 
+def _find_result_table(soup: BeautifulSoup):
+    """Return only a recognized settled-result table variant."""
+    return soup.select_one("table.race_table_01, table.RaceTable01")
+
+
+def parse_current_result_snapshot(html: str, race_id: str) -> Optional[dict]:
+    """Parse the current netkeiba result page into settlement-only fields.
+
+    This deliberately ignores predictions, odds, and entry attributes.  It is
+    used only after an observation already exists and therefore returns the
+    minimum official facts needed by the append-only settlement ledger.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    table = soup.select_one("table.RaceTable01")
+    if table is None:
+        return None
+
+    horses: list[dict] = []
+    seen_numbers: set[int] = set()
+    for row in table.select("tr"):
+        cells = row.find_all("td")
+        if len(cells) < 3:
+            continue
+        finish_text = cells[0].get_text(strip=True)
+        number_text = cells[2].get_text(strip=True)
+        if not finish_text.isdigit() or not number_text.isdigit():
+            continue
+        finish = int(finish_text)
+        number = int(number_text)
+        if finish <= 0 or number <= 0 or number in seen_numbers:
+            return None
+        seen_numbers.add(number)
+        horses.append({"horse_number": number, "finish_position": finish})
+
+    if not horses:
+        return None
+
+    payouts: list[dict] = []
+    tansho = soup.select_one("table.Payout_Detail_Table tr.Tansho")
+    if tansho is not None:
+        combinations = [
+            span.get_text(strip=True)
+            for span in tansho.select("td.Result span")
+            if span.get_text(strip=True)
+        ]
+        payout_values = []
+        for span in tansho.select("td.Payout span"):
+            digits = re.sub(r"[^0-9]", "", span.get_text(strip=True))
+            if digits:
+                payout_values.append(int(digits))
+        if len(combinations) != len(payout_values):
+            return None
+        payouts = [
+            {"bet_type": "tansho", "combination": combination, "payout": payout}
+            for combination, payout in zip(combinations, payout_values)
+        ]
+
+    return {"race_id": race_id, "horses": horses, "payouts": payouts}
+
+
+async def scrape_current_race_result(
+    session,
+    race_id: str,
+    *,
+    force_refresh: bool = False,
+) -> Optional[dict]:
+    """Fetch the current result endpoint without consulting retrospective data."""
+    url = f"https://race.netkeiba.com/race/result.html?race_id={race_id}"
+    fetched, html = await fetch_text(
+        session,
+        url,
+        cache_ttl_sec=5 * 60,
+        resume_key=f"race:{race_id}:current-result",
+        min_interval_sec=1.0,
+        max_retries=3,
+        retry_statuses={429, 500, 503},
+        retry_base_sec=2.0,
+        retry_jitter_sec=0.6,
+        circuit_threshold=3,
+        circuit_cooldown_sec=120.0,
+        force_refresh=force_refresh,
+    )
+    if fetched.status != 200 or not html or is_cloudflare_block(fetched.body):
+        return None
+    return parse_current_result_snapshot(html, race_id)
+
+
 async def scrape_race_full(
     session,
     race_id: str,
@@ -247,7 +334,10 @@ async def scrape_race_full(
         course_direction = "直線"
 
     # ---- 結果テーブル ----
-    table = soup.find("table", class_="race_table_01")
+    # netkeiba serves both the legacy snake-case class and the newer
+    # CamelCase result table class. Keep this selector deliberately narrow so
+    # a schedule/entry table can never be mistaken for a settled result.
+    table = _find_result_table(soup)
     if not table:
         logger.warning(f"race_table_01 not found: {race_id} → 出馬表ページへフォールバック")
         return await _scrape_shutuba_fallback(
