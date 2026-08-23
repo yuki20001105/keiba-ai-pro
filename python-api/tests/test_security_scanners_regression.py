@@ -77,6 +77,10 @@ def _allowlist_dummy_service_role() -> str:
     return "".join(["e2e", "-dummy", "-service", "-role", "-key"])
 
 
+def _allowlist_ci_dummy_service_role() -> str:
+    return "".join(["ci", "-dummy", "-service", "-role", "-key"])
+
+
 def _skip_call_source() -> str:
     return "".join(["test", ".", "skip", "('demo', async () => {})"])
 
@@ -385,6 +389,22 @@ def test_secret_scanner_allowlist_only_line_passes(tmp_path: Path) -> None:
     test_file.parent.mkdir(parents=True, exist_ok=True)
     test_file.write_text(
         "const service_role_key = '" + _allowlist_dummy_service_role() + "'\n",
+        encoding="utf-8",
+    )
+
+    code, report = _run_scanner(SECRET_SCANNER, repo)
+    assert code == 0
+    assert report["secret_candidate_count"] == 0
+    assert report["excluded_count"] >= 1
+
+
+def test_secret_scanner_ci_allowlist_only_line_passes(tmp_path: Path) -> None:
+    repo = _init_temp_repo(tmp_path)
+
+    test_file = repo / "src" / "ci-dummy.ts"
+    test_file.parent.mkdir(parents=True, exist_ok=True)
+    test_file.write_text(
+        "const service_role_key = '" + _allowlist_ci_dummy_service_role() + "'\n",
         encoding="utf-8",
     )
 
