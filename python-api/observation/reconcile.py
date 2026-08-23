@@ -21,11 +21,21 @@ def _finish_order(data: dict[str, Any]) -> int | None:
     return None
 
 
-def reconcile_available_results(gateway: ObservationGateway) -> dict[str, int]:
+def reconcile_available_results(
+    gateway: ObservationGateway,
+    *,
+    source_environment: str | None = None,
+) -> dict[str, int]:
+    if source_environment not in {None, "staging", "production"}:
+        raise ObservationContractError("observation-environment-invalid")
     predictions = gateway.select(
         "phase3n_prediction_observations",
-        "observation_id,race_id,horse_id,horse_number,qualifying_bet,wager_amount,baseline_wager_amount",
+        "observation_id,race_id,horse_id,horse_number,qualifying_bet,wager_amount,baseline_wager_amount,source_environment",
     )
+    if source_environment is not None:
+        predictions = [
+            row for row in predictions if row.get("source_environment") == source_environment
+        ]
     results = gateway.select("phase3n_result_observation_events", "observation_id")
     settled_ids = {str(row["observation_id"]) for row in results}
     pending = [row for row in predictions if str(row["observation_id"]) not in settled_ids]
@@ -109,4 +119,100 @@ def reconcile_available_results(gateway: ObservationGateway) -> dict[str, int]:
         "inserted": inserted,
         "duplicates": duplicates,
         "skipped": skipped,
+    }
+
+
+def reconcile_result_snapshot(
+    gateway: ObservationGateway,
+    *,
+    race_id: str,
+    horse_rows: list[dict[str, Any]],
+    payout_rows: list[dict[str, Any]],
+    settled_at: datetime,
+    source_environment: str,
+) -> dict[str, int]:
+    """Append settlement events for one already-observed race.
+
+    The snapshot is an external result source only; it cannot create prediction
+    rows.  Every existing observation must have an official numeric finish, and
+    idempotent result RPCs remain the only database mutation.
+    """
+
+    if source_environment not in {"staging", "production"}:
+        raise ObservationContractError("observation-environment-invalid")
+    if settled_at.tzinfo is None:
+        raise ObservationContractError("settlement-timezone-required")
+    predictions = gateway.select(
+        "phase3n_prediction_observations",
+        "observation_id,race_id,horse_id,horse_number,qualifying_bet,wager_amount,baseline_wager_amount,source_environment",
+    )
+    predictions = [
+        row
+        for row in predictions
+        if str(row.get("race_id")) == str(race_id)
+        and row.get("source_environment") == source_environment
+    ]
+    if not predictions:
+        raise ObservationContractError("settlement-predictions-missing")
+    results = gateway.select("phase3n_result_observation_events", "observation_id")
+    settled_ids = {str(row["observation_id"]) for row in results}
+    pending = [row for row in predictions if str(row["observation_id"]) not in settled_ids]
+    if not pending:
+        return {"pending": 0, "inserted": 0, "duplicates": 0, "skipped": 0}
+
+    source_by_number: dict[int, dict[str, Any]] = {}
+    for row in horse_rows:
+        try:
+            number = int(row.get("horse_number") or row.get("horse_num") or 0)
+        except (TypeError, ValueError):
+            continue
+        if number > 0:
+            source_by_number[number] = row
+    finishes: dict[int, int] = {}
+    for prediction in pending:
+        number = int(prediction["horse_number"])
+        source = source_by_number.get(number)
+        finish = _finish_order(source or {})
+        if finish is None:
+            raise ObservationContractError("settlement-result-incomplete")
+        finishes[number] = finish
+
+    policy = load_staking_payout_policy()
+    wagering = any(
+        float(row.get("wager_amount") or 0.0) > 0
+        or float(row.get("baseline_wager_amount") or 0.0) > 0
+        for row in pending
+    )
+    if wagering and not policy.approved:
+        raise ObservationContractError("staking-policy-not-approved")
+
+    inserted = 0
+    duplicates = 0
+    for prediction in pending:
+        finish = finishes[int(prediction["horse_number"])]
+        bet_outcome, return_amount, baseline_return_amount = settled_returns(
+            prediction,
+            finish_order=finish,
+            payout_rows=payout_rows,
+            policy=policy,
+        )
+        payload = build_result_payload(
+            observation_id=str(prediction["observation_id"]),
+            settled_at=settled_at,
+            y_true=1 if finish == 1 else 0,
+            finish_order=finish,
+            bet_outcome=bet_outcome,
+            return_amount=return_amount,
+            baseline_return_amount=baseline_return_amount,
+        )
+        outcome = gateway.record_result(payload)["mutation_code"]
+        if outcome == "inserted":
+            inserted += 1
+        else:
+            duplicates += 1
+    return {
+        "pending": len(pending),
+        "inserted": inserted,
+        "duplicates": duplicates,
+        "skipped": 0,
     }
