@@ -1,11 +1,11 @@
 # Project Status and Roadmap
 
-> Status date: 2026-08-22
-> Evidence cutoff: hosted Staging, trusted evidence, Production credential rotation, and Production schema migration through 2026-08-22
-> Current branch at assessment: `codex/phase3n-exact-staging-evidence`, based on merged PR #28
-> Current runtime implementation checkpoint: `86a2d314a641160e852d3597396aadcd03e81347`, which is CI-green, Live on Render Staging, and verified against the same effective Phase 3N candidate SHA
-> Status: **overall 77.15%, reported as 77% (reasonable range: 75-80%), Production NOT_READY**
-> Limited Production observation readiness: **84.53%** when the model-business-value pillar is reported separately; the trusted system gate and Production database adoption pass, but the exact candidate has not been deployed to Production
+> Status date: 2026-08-23
+> Evidence cutoff: hosted Staging, signed trusted evidence, Production migration, observation-only deployment, and six-probe Production monitoring through 2026-08-23
+> Current branch at assessment: `codex/record-limited-production`, based on `origin/develop` after PR #40
+> Current Production runtime checkpoint: `6f7058136ec99f41a8848757750f49e0ac5ff7a9`, Live on Render and Ready on Vercel; the separately governed model candidate remains observational and unvalidated
+> Status: **overall 78.15%, reported as 78% (reasonable range: 76-81%); Limited Production OBSERVATION_ACTIVE; Model Business Validation NOT_READY**
+> Limited Production system-release readiness: **85.87%** when the deferred model-business-value pillar is reported separately. The system release gate is complete and observation collection may proceed, but this is not model validation or authorization for automatic betting
 > Candidate status: the merged exact-SHA `middle` regression succeeded for race `202604020812`: 15 horse predictions, including one qualifying virtual bet, are append-only in Supabase under `86a2d314...`; all 15 carry real non-final odds and the nonempty cache delete/rebuild exercise passes over the complete 60-row ledger. Earlier batches bound to `2d39111...` (30 rows) and `961a5be...` (15 rows) remain explicit audit history and are excluded from exact-candidate counts. Results are not settled, so formal progress remains 0/1,000 valid samples, 0/100 settled qualifying bets, and 0/90 elapsed settled days. The first cold-start/on-demand batch records P95 latency 46.343 seconds, so it is not evidence for the <=500 ms model-validation gate. The market-free OOF winner-meta AUC remains 0.7581 against the approved 0.85 gate; all generated replacement candidates remain research-only, unapproved, and undeployed
 
 This is the canonical handoff document for answering three questions:
@@ -16,13 +16,13 @@ This is the canonical handoff document for answering three questions:
 
 Do not infer readiness from code presence, a green synthetic test, or an old report. Use the evidence rules in this document.
 
-## Current Phase 3N checkpoint (2026-08-22)
+## Current Phase 3N checkpoint (2026-08-23)
 
 This section supersedes older point-in-time values below. Historical entries remain for auditability.
 
 | Boundary | Current evidence | Remaining exit condition |
 |---|---|---|
-| Release contract split | `limited-production-observation-v1` separates `system_release_ready` from `model_business_validated`. The existing full READY path remains intact. Limited mode requires exact trusted system evidence and forces `MODEL_RUNTIME_STATUS=observation`, automatic betting off, deployed activation/training off, prospective `middle` observations, and rollback readiness. PR #28 is merged, trusted producer v4 is locked, and protected run `31928529807` derives trusted system READY for exact SHA `86a2d314...` | Finish monitoring/alert ownership and execute the separately controlled observation-only Production release; business validation remains deferred |
+| Release contract split | `limited-production-observation-v1` separates `system_release_ready` from `model_business_validated`. Limited mode forces `MODEL_RUNTIME_STATUS=observation`, automatic betting off, deployed activation/training off, prospective `middle` observations, and rollback readiness. The contract, protected approvals, signed evidence, Production deploy, and monitoring gate now pass | Keep the runtime observation-only while collecting business-validation evidence; a later independent approval is required for `validated` or `active` |
 | Isolated Staging | Vercel, Render, and Supabase are isolated. Supabase preserves the original 19 rows and approved append-only ordinals 20-21; Render remains one Free instance and is Live at `86a2d314a641160e852d3597396aadcd03e81347`. The effective `PHASE3N_CANDIDATE_COMMIT_SHA` is also `86a2d314...`, was revealed and rechecked after save, and the same commit was redeployed | Preserve the deployed runtime identity and append-only history through trusted evidence collection |
 | Multi-instance HA/fencing | A fresh 21-migration Supabase Preview Branch and two Render Starter instances exercised the real `cache-rebuild` operation at exact candidate `86a2d314...`. Instance `fgmqt` was SIGKILLed while holding fence token 2; instance `skpvn` reclaimed token 3, rebuilt and verified the cache from four real Staging HA rows, applied one immutable effect, and rejected the stale token-2 apply. Render was then restored to its byte-identical pre-test environment, one Free instance, and healthy observation-only runtime; the Preview Branch was deleted. The sanitized report is `reports/phase3n_non_synthetic_ha_rollback_20260816.json` | Bind this non-synthetic exercise into the complete protected system-observation envelope and have the trusted producer independently verify it |
 | Observation collection | Race `202604020812` supplied a complete result-unknown `middle` snapshot with 15 real odds. Authenticated analyze returned 200 after the exact environment binding was corrected, and Supabase contains 15 horse predictions joined to merged exact SHA `86a2d314...`, including one qualifying virtual bet. The complete ledger has 60 rows: 15 current and 45 retained audit rows under the two prior SHAs. No synthetic, forecast, final-result, retrospective, or Production row was used. A later pre-result wake/analysis check remained complete (15 predictions, zero missing odds, 1,800 m): cold `/health` was 31.868 s, the first full analysis was 54.436 s, and six successful warm-cache calls measured P50 413 ms / P95 974 ms before the E2E account reached HTTP 429. The sanitized measurement is retained in `reports/phase3n_warm_latency_86a2d314.json` | Reconcile the race only after the authoritative result, then continue prospective collection to 90 settled days, 1,000 valid samples, and 100 settled qualifying bets. The six cache-hit samples are insufficient and do not isolate model inference, so the 500 ms prediction gate remains open |
@@ -32,14 +32,15 @@ This section supersedes older point-in-time values below. Historical entries rem
 | Staking/payout | Owner approval in issue #29 is durably bound to `phase3n-tansho-flat-v1`; exact-commit CI and Staging health/auth regression pass | Accumulate and settle real qualifying wagers under the approved policy |
 | Cache integrity | The authorized non-paid local runtime read all 60 append-only prediction rows from Supabase PostgreSQL, wrote and deleted the cache, rebuilt it from the database, and verified identical DB/cache SHA-256 `653ca2f8...7cbc7`, zero missing/duplicate/stale cache rows, and `database_unchanged=true`. The evidence is bound to exact candidate `86a2d314...` and saved at `reports/phase3n_cache_integrity_evidence.json`; Render Shell remains intentionally unused because Free does not support it | Keep PostgreSQL authoritative. The protected observation schema also requires ordered before/after capture timestamps, which the current cache report does not contain; perform one authorized rerun with an external start/end timestamp wrapper before B64 registration |
 | Repository gates | PR #28 merged as exact candidate `86a2d314...`; its candidate tree passed all 13 CI jobs and Vercel checks before merge. Render is Live at the same full SHA, authenticated health returned 200, unauthenticated protected access returned 401, authenticated analysis returned 200, and append-only observation insertion returned 15/0 inserted/duplicate | Preserve green exact-commit gates through trusted evidence and release workflow execution |
-| Trusted evidence | Protected run `31928529807` passed all five jobs on immutable producer `c8308a3...`. The sanitized observation binds exact candidate `86a2d314...`, fresh 21-migration proof, hosted Auth/RLS/IDOR, timestamped 75-row cache integrity, exact Vercel/Render/Supabase identities, non-synthetic HA/fencing/rollback, all saga/staging checks, and three distinct Environment approvals. GitHub-signed evidence and gate artifacts independently verify; the gate derives `trusted=true`, `l3_eligible=true`, and `production_ready=true` with no failure codes. Repository selectors now pin this run and producer SHA | Preserve the immutable run and selectors through the controlled release. `MODEL_EVALUATION_OBSERVATIONS_GZIP_B64` remains deferred to full business validation after the observation period |
-| Production legacy-schema adoption | Explicit owner approval `codex-user-instruction-2026-08-22-production-migration-approval` is durably bound to contract `27372764...89e8` and apply SQL `42249f1a...20a7`. After Production server-key rotation, legacy-key disablement, old-key HTTP 401 proof, Render maintenance suspension, physical-backup verification, and a read-only PASS preflight, the exact single transaction committed. Independent audit records 21 history rows bound only to `86a2d314...`, 24 preserved archive tables, 45 canonical public tables, zero public tables without RLS, zero direct anon table privileges, 19 policies, four Auth users, all 146 model Storage objects, and the Phase3N observation table. Render resumed with health 200; sanitized evidence is `reports/phase3n_production_credential_rotation_and_migration_20260822.json` | Keep the database canonical and legacy keys disabled. Production remains NOT_READY until safety variables are reviewed, exact candidate `86a2d314...` is deployed observation-only, monitoring/alert/rollback smoke passes, and the Limited Production release is recorded |
+| Trusted evidence | Protected run `32620978758` passed on immutable producer `7b2fe699...` after three Environment approvals. Its sanitized observation binds exact implementation SHA `10330d3...`, hosted Auth/RLS/IDOR, timestamped 75-row cache integrity, Vercel/Render/Supabase identities, non-synthetic HA/fencing/rollback, and the 21-migration proof. The GitHub provenance attestation and independent canonical verification pass with no failure codes | Preserve the immutable run, producer, and evidence selector. `MODEL_EVALUATION_OBSERVATIONS_GZIP_B64` remains deferred to full business validation after the observation period |
+| Production legacy-schema adoption | Explicit owner approval `codex-user-instruction-2026-08-22-production-migration-approval` is durably bound to contract `27372764...89e8` and apply SQL `42249f1a...20a7`. After Production server-key rotation, legacy-key disablement, old-key HTTP 401 proof, Render maintenance suspension, physical-backup verification, and a read-only PASS preflight, the exact single transaction committed. Independent audit records 21 history rows, 24 preserved archive tables, 45 canonical public tables, zero public tables without RLS, zero direct anon table privileges, 19 policies, four Auth users, all 146 model Storage objects, and the Phase3N observation table | Keep the database canonical, legacy keys disabled, and rollback restore point retained while observation collection proceeds |
+| Limited Production runtime | PR #42 promoted the provider-bound monitor to `main` at `6f7058136ec99f41a8848757750f49e0ac5ff7a9`. Vercel Production deployment `DHS6sXgXTUUG2FBD8bJvT1qWJhP1` is Ready and Render Production deployment `dep-da58hhqd0e5s73bf5b80` is Live at the same SHA. Both health endpoints return 200 with `app_env=production`, `MODEL_RUNTIME_STATUS=observation`, observation enabled in `limited-observation`, and automatic betting false. Main CI run `32621113060` passed. Monitor run `32621413778` passed frontend, backend, Supabase Auth, Supabase runtime, observation-failure, and Render exact-SHA probes with zero failures; the 15-minute schedule is enabled. The prior healthy Render deployment `dep-da57t6jbc2fs7384soog` at `83520c48428cce599fed2cbdf881b39c4116e3a8` remains the provider-bound rollback target | Collect only prospective pre-result `middle` observations. Keep automatic betting, training, activation, and model-business claims disabled until the full acceptance contract passes |
 
-The operational-proof pillar advances from 85% to 90% because Production credential rotation and the reviewed 21-migration legacy-schema adoption now pass with independent postconditions. It does not advance further because the controlled exact-candidate Production deployment, Production smoke/monitoring evidence, and model-business observation window remain open. The ML/business-value pillar remains 55% because the current evidence still fails AUC and ROI acceptance. The weighted calculation is:
+The operational-proof pillar advances from 90% to 95% because the controlled Production deployment, exact provider binding, observation-only health smoke, rollback target, six-probe monitor, and scheduled monitoring now pass. It does not advance to 100% because the prospective Production observation window and model-business validation remain open. The ML/business-value pillar remains 55% because the current evidence still fails AUC and ROI acceptance. The weighted calculation is:
 
-`78% * 30% + 55% * 25% + 88% * 25% + 90% * 20% = 77.15%`
+`78% * 30% + 55% * 25% + 88% * 25% + 95% * 20% = 78.15%`
 
-The release plan now has two explicit finish lines. Limited system release: finish monitoring/alert/rollback and critical operator procedures -> review/merge the exact tree -> update and independently review the trusted producer -> produce trusted system evidence -> authorize and deploy only `MODEL_RUNTIME_STATUS=observation` with automatic betting disabled -> pass Production smoke and rollback. Model validation continues after that release: settle prospective `middle` observations -> freeze the Inner-selected purchase policy -> apply it once to the untouched Outer stream -> pass 90 days/1,000 settled samples/100 qualifying bets plus AUC/ROI/DD/calibration/latency/freshness -> produce trusted model evidence -> move to `validated`; `active` and any automatic betting require a later independent approval. Neither retrospective replay, synthetic data, forecast odds, final-result odds, nor fabricated wagers may be registered as prospective evidence.
+The release plan has two explicit finish lines. The Limited system release is now complete in observation-only mode. Model validation continues after that release: settle prospective `middle` observations -> freeze the Inner-selected purchase policy -> apply it once to the untouched Outer stream -> pass 90 days/1,000 settled samples/100 qualifying bets plus AUC/ROI/DD/calibration/latency/freshness -> produce trusted model evidence -> move to `validated`; `active` and any automatic betting require a later independent approval. Neither retrospective replay, synthetic data, forecast odds, final-result odds, nor fabricated wagers may be registered as prospective evidence.
 
 ---
 
@@ -185,8 +186,8 @@ The overall percentage is a planning indicator, not a release authorization. It 
 | Product workflow completeness | 30% | 78% | 23.4% | 6 of 13 workflows are complete UI flows; 7 are partial; none are wholly missing |
 | ML and business-value proof | 25% | 55% | 13.8% | Strict training-only annual speed-deviation walk-forward records Spearman 0.8025 and calibrated winner AUC 0.8047, passing Brier/ECE/sample/bet checks, but still fails AUC, ROI (-23.23% vs +3%), maximum drawdown, and baseline ROI delta (-2.76 points vs +1); the old AUC 0.8865 is not current-artifact proof |
 | Repository safety and quality gates | 25% | 88% | 22.0% | PR #28 implementation commit `cbae079` passes Python 1,185 locally, zero-vulnerability audits, and all 13 exact-SHA CI jobs in run `31801904942` |
-| Staging and Production operational proof | 20% | 90% | 18.0% | Isolated providers, trusted evidence, credential rotation with old-key rejection, reviewed Production 21-migration adoption, Auth/RLS/IDOR, and maintenance recovery pass; controlled exact-candidate Production deployment/smoke and business observation remain open |
-| **Overall** | **100%** |  | **77.15% authoritative** | Report as 77%; the system evidence and Production database gates pass, while Production remains NOT_READY until the controlled observation-only deploy and smoke/monitoring gates complete |
+| Staging and Production operational proof | 20% | 95% | 19.0% | Isolated providers, trusted evidence, credential rotation with old-key rejection, 21-migration adoption, Auth/RLS/IDOR, HA/fencing, exact Production deployment, rollback target, observation-only smoke, and six-probe scheduled monitoring pass; the prospective business-observation window remains open |
+| **Overall** | **100%** |  | **78.15% authoritative** | Report as 78%; Limited Production is active in observation-only mode, while model business validation remains NOT_READY |
 
 Workflow scoring assigns 1.0 point to `complete`, 0.6 to `partial`, and 0 to `missing`. Thus $(6 + 7 \times 0.6) / 13 = 78.5\%$, conservatively reported as 78%. Other pillar scores are evidence-based assessments and must be revisited when their exit conditions change.
 
@@ -194,21 +195,20 @@ Workflow scoring assigns 1.0 point to `complete`, 0.6 to `partial`, and 0 to `mi
 
 - **Product implementation:** approximately 78%.
 - **Repository-level safety and quality:** approximately 88%.
-- **Real-environment readiness:** approximately 90%.
-- **Overall goal:** **77.15%, reported as 77%**, with a reasonable uncertainty range of **75-80%**.
+- **Real-environment readiness:** approximately 95%.
+- **Overall goal:** **78.15%, reported as 78%**, with a reasonable uncertainty range of **76-81%**.
 
-The score now counts the externally proven HA/fencing exercise, the first exact-SHA prospective observations, timestamped nonempty cache integrity, and successful signed trusted system run `31928529807`. It does not count unsettled predictions as valid business samples or an unexecuted Production deployment.
+The score now counts externally proven HA/fencing, exact-SHA prospective Staging observations, timestamped nonempty cache integrity, signed trusted run `32620978758`, the exact provider-bound Production deployment, rollback target, observation-only smoke, and a passing scheduled monitor. It does not count unsettled predictions as valid business samples or treat Limited Production as model validation.
 
 The revised policy also reports a separate Limited Production system-release
 indicator without the deferred ML/business-value pillar:
 
-`(78% * 30% + 88% * 25% + 90% * 20%) / 75% = 84.53%`
+`(78% * 30% + 88% * 25% + 95% * 20%) / 75% = 85.87%`
 
-This is the evidence-based current value, so the informal 85-90% estimate is
-not yet adopted. Monitoring/alerting, executable Production rollback, critical
-operator runbooks, trusted-producer parity, exact authorization, and Production
-smoke must pass before that system-only score can advance. The original 74.15%
-continues to measure the complete project through model business validation.
+This is the evidence-based current value. The Limited Production system gate is
+complete; the remaining 14.13 points are mostly operator-workflow polish and the
+ongoing observation operating record. The 78.15% overall value continues to
+measure the complete project through model business validation.
 
 ### 3.2 What is complete
 
@@ -227,17 +227,19 @@ continues to measure the complete project through model business validation.
 - Profiling, smoke suites, and some diagnostics still depend on scripts.
 - Operator quality/remediation flow remains fragmented.
 - Refresh and P0 repair execution remain intentionally disabled.
-- Operational saga and non-synthetic multi-instance Staging proof exist; Production monitoring, incident, and rollback execution remain open.
+- Operational saga, non-synthetic multi-instance Staging proof, Production monitoring, incident ownership, and provider-bound rollback are complete; the observation operating record remains open.
 - Historical model quality is encouraging and the business acceptance criteria are approved, but fresh current-commit evidence is incomplete.
 
 ### 3.4 What blocks each release class
 
-Limited Production observation remains blocked by:
+Limited Production observation is active. Its completed release gates are:
 
-1. Review/merge of the exact observation-release contract and runtime controls.
-2. Immutable trusted-producer update/re-review and a GitHub-signed system attestation for the exact candidate.
-3. Production monitoring/alerting, incident ownership, rollback rehearsal, environment binding, and final smoke evidence.
-4. Protected Production release approval. Provider deployment remains a separate explicit operation.
+1. Observation-release contract and runtime controls merged and CI-green.
+2. Immutable trusted-producer review and GitHub-signed system attestation successful.
+3. Production approval, exact provider deployment, observation-only health smoke, incident ownership, and provider-bound rollback established.
+4. Six fail-closed Production probes pass and the 15-minute monitor schedule is enabled.
+
+The next operational milestone is the first qualifying prospective Production `middle` observation and its later settlement; this is evidence collection, not a blocker to the already-active Limited Production system release.
 
 Model `validated`/`active` remains blocked by:
 
@@ -289,7 +291,7 @@ is satisfied.
 - Migration, execution unlock, and Production release approvals are separately recorded.
 - Promotion consumers independently verify workflow provenance and artifact attestation.
 - Production health, alerting, rollback, and incident ownership are documented and exercised.
-- The initial Production observation window completes without a release-blocking incident.
+- Limited Production starts fail-closed in observation-only mode. Its prospective operating record is monitored continuously and is promoted to model business validation evidence only after the separately approved sample, duration, quality, and performance gates pass.
 
 ---
 
@@ -429,6 +431,7 @@ For each status review:
 | 2026-08-16 | Production operational preflight | 76.15% authoritative / 76% reported; 83.20% system-release indicator | NOT_READY | Production Supabase was explicitly authorized and resumed without a DB write. Auth health, REST schema, and bounded Auth Admin reads return 200; the service-role claim binds `grfwkutcsavqicaimssn`. Migration history is empty and only 29 legacy REST paths exist, with all seven Phase3N observation/HA tables absent, so schema readiness fails closed. Authenticated Vercel review separated Production `keiba-ai-pro` (`prj_UcRc...`) from Staging `keiba-ai-pro-staging` (`prj_PRd5...`), found Production still on `69dd9e9...`, no native Hobby alerts, no E2E variables, an all-environments non-Sensitive legacy service-role key distinct from the Staging keys, and none of the required exact-SHA/contract/observation/betting/training/activation safety variables. The initial `/api/health` 503 completed at the route's four-second backend timeout; after Render warmed, three checks returned 200 in 734-1,194 ms, so cold-start-sensitive monitoring remains open. The gate also remains closed because old E2E password rejection, Production migration approval/application, Production Render ownership/runtime SHA, application-specific alerts, and a provider-bound healthy rollback SHA are unresolved. |
 | 2026-08-16 | Legacy Production schema adoption review | 76.15% authoritative / 76% reported; 83.20% system-release indicator | NOT_READY | Read-only Production catalog/count/digest checks bound 24 legacy public tables and the non-empty datasets (3 profiles, 4 purchases, 288 races, 9,588 results, 5,847 payouts, 72 race blobs, 719 result blobs, 73 model metadata rows, 1,805 pedigrees, and one archived-only legacy user). All checked parent/Auth/Storage links pass; the three double-encoded JSON datasets decode to objects and all result horse identities are complete and unique. A deterministic review bundle now archives legacy tables without deletion, builds the exact 21-migration canonical schema, converts/copies allowlisted rows, and checks archived digests and destination counts in one transaction. It is unconditionally blocked before the first change while `migration_apply_authorized=false`; the standalone preflight is repeatable-read/read-only. Production was not migrated, and the score remains unchanged pending review, disposable-clone execution, backup/restore evidence, and separate explicit migration approval. |
 | 2026-08-22 | Production credential rotation and 21-migration adoption | 77.15% authoritative / 77% reported; 84.53% system-release indicator | NOT_READY | A new Production Supabase server secret replaced the legacy service-role credential in Vercel Production, Render, and GitHub Actions. Vercel redeployed the same known runtime with the secret Production-scoped and Sensitive; Render redeployed `62748ce...`; legacy JWT API keys were disabled, the old server key returned 401, and the new secret, publishable Auth, Vercel health, and Render health returned 200. A temporary management token was deleted immediately. Under explicit approval, Render was suspended for maintenance, the latest physical backup and read-only source-digest preflight were verified, and apply SQL `42249f1a...20a7` committed as one transaction. Independent audit records 21 exact-candidate history rows, 24 archived legacy tables, 45 canonical public tables, zero missing RLS, zero anon table privileges, 19 policies, four Auth users, 146 model Storage objects, and the Phase3N observation table. Render resumed healthy. The exact Limited Production candidate is still undeployed, so Production remains NOT_READY. |
+| 2026-08-23 | Provider-bound Limited Production observation release | 78.15% authoritative / 78% reported; 85.87% system-release indicator | OBSERVATION_ACTIVE / MODEL_NOT_VALIDATED | Signed trusted run `32620978758` passed on immutable producer `7b2fe699...`. PR #42 promoted the provider-bound monitor to `main` SHA `6f705813...`; main CI run `32621113060` passed. Vercel Production is Ready and Render deployment `dep-da58hhqd0e5s73bf5b80` is Live at that SHA. Both health endpoints return 200 in `limited-observation` with automatic betting false. Monitor run `32621413778` passed all six frontend/backend/Supabase/observation/Render-exact-SHA probes with zero failures, and the 15-minute schedule is enabled. Prior healthy Render deployment `dep-da57t6jbc2fs7384soog` at `83520c4...` is the rollback target. This completes the Limited Production system release only; 90 days, 1,000 settled samples, 100 qualifying bets, AUC/ROI/DD/calibration/latency/freshness, trusted model evidence, and later activation approval remain open. |
 
 ---
 
