@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+import re
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -488,12 +489,45 @@ async def fetch_bytes(
             inflight.pop(normalized_url, None)
 
 
+def decode_html_body(body: bytes) -> str:
+    """Decode HTML using its declared charset with a safe Japanese fallback."""
+    if not body:
+        return ""
+
+    # Charset declarations are ASCII-compatible even when the document body is
+    # UTF-8, EUC-JP, or Shift_JIS. Limit the scan to the HTML head area.
+    head = body[:8192].decode("ascii", errors="ignore")
+    match = re.search(
+        r"charset\s*=\s*[\"']?\s*([a-zA-Z0-9._-]+)",
+        head,
+        flags=re.IGNORECASE,
+    )
+    declared = match.group(1).lower().replace("_", "-") if match else ""
+    aliases = {
+        "utf8": "utf-8",
+        "utf-8": "utf-8",
+        "euc-jp": "euc-jp",
+        "x-euc-jp": "euc-jp",
+        "shift-jis": "cp932",
+        "shiftjis": "cp932",
+        "sjis": "cp932",
+        "windows-31j": "cp932",
+        "cp932": "cp932",
+    }
+    if declared in aliases:
+        return body.decode(aliases[declared], errors="replace")
+
+    # Current race.netkeiba pages are UTF-8; legacy db.netkeiba pages are
+    # commonly EUC-JP. Strict UTF-8 first avoids silently producing mojibake.
+    try:
+        return body.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return body.decode("euc-jp", errors="replace")
+
+
 async def fetch_text(session, url: str, **kwargs: Any) -> tuple[FetchResult, str]:
     result = await fetch_bytes(session, url, **kwargs)
-    text = ""
-    if result.body:
-        text = result.body.decode("euc-jp", errors="replace")
-    return result, text
+    return result, decode_html_body(result.body)
 
 
 def get_fetch_metrics(reset: bool = False) -> dict[str, int]:
