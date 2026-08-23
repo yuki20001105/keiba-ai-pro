@@ -45,6 +45,12 @@ DELETED_PATTERNS: List[Tuple[str, re.Pattern[str]]] = [
 ]
 
 ALLOWLIST_EXACT: Dict[str, str] = {
+    # These authenticated UI suites only skip when the operator has not supplied
+    # E2E_PASSWORD. Release CI supplies it, so the checks execute there.
+    "e2e/data-collection-dry-run.spec.ts:test.skip(!E2E_PASSWORD, 'E2E_PASSWORD is required for auth-guarded routes')": "credential-presence guard; release CI executes the suite",
+    "e2e/data-collection-history.spec.ts:test.skip(!E2E_PASSWORD, 'E2E_PASSWORD is required for auth-guarded routes')": "credential-presence guard; release CI executes the suite",
+    "e2e/data-collection-p0-repair-plan.spec.ts:test.skip(!E2E_PASSWORD, 'E2E_PASSWORD is required for auth-guarded routes')": "credential-presence guard; release CI executes the suite",
+    "e2e/data-collection-refresh-plan.spec.ts:test.skip(!E2E_PASSWORD, 'E2E_PASSWORD is required for auth-guarded routes')": "credential-presence guard; release CI executes the suite",
     # The canonical Phase 3M chain gained one guarded forward migration; the
     # replacement assertion remains exact and the manifest-order gate is unchanged.
     "python-api/tests/test_phase3m_supabase_bootstrap_gate.py:assert len(manifest.migrations) == 11": "replaced by exact 19-migration assertion after adding guarded model approval, job, worker-lease, artifact, evaluation, execution-bundle, orphan-reconciliation, and dispatch-queue contracts",
