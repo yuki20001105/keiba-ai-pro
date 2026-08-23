@@ -39,6 +39,8 @@ def _env():
         "PRODUCTION_SUPABASE_URL": "https://project.supabase.co",
         "PRODUCTION_SUPABASE_SERVICE_KEY": "secret",
         "PRODUCTION_RENDER_SERVICE_ID": "srv-production",
+        "PRODUCTION_EXPECTED_DEPLOY_SHA": "1" * 40,
+        "PHASE3N_CANDIDATE_COMMIT_SHA": "2" * 40,
         "RENDER_API_KEY": "render-secret",
     }
 
@@ -60,7 +62,7 @@ def _opener(request, timeout):
     if "phase3n_observation_ingest_attempts" in url:
         return Response(200, [])
     if "api.render.com" in url:
-        return Response(200, [{"deploy": {"id": "dep-1", "status": "live", "commit": {"id": monitor.EXPECTED_SHA}}}])
+        return Response(200, [{"deploy": {"id": "dep-1", "status": "live", "commit": {"id": "1" * 40}}}])
     raise AssertionError(url)
 
 
@@ -96,5 +98,14 @@ def test_runtime_probe_rejects_active_or_automated_betting():
 
 def test_render_parser_accepts_wrapped_list_shape():
     assert monitor._find_render_deploy([
-        {"deploy": {"id": "dep-1", "status": "live", "commit": {"id": monitor.EXPECTED_SHA}}}
-    ]) == ("dep-1", monitor.EXPECTED_SHA, "live")
+        {"deploy": {"id": "dep-1", "status": "live", "commit": {"id": "1" * 40}}}
+    ]) == ("dep-1", "1" * 40, "live")
+
+
+def test_monitor_rejects_malformed_provider_binding_shas():
+    env = _env()
+    env["PRODUCTION_EXPECTED_DEPLOY_SHA"] = "not-a-sha"
+    report = monitor.run(env, opener=_opener)
+    assert report["success"] is False
+    assert report["failure_codes"] == ["invalid-config:PRODUCTION_EXPECTED_DEPLOY_SHA"]
+    assert report["probes"] == []
