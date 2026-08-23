@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "evidence_mode": "synthetic",
+  "environment": "ci-disposable",
+  "database_scope": "temporary-sqlite-model",
+  "network_mode": "none",
+  "synthetic": true,
+  "non_executable": true,
+  "success": true,
+  "production_ready": false,
+  "l3_eligible": false,
+  "tested_commit_sha": "1111111111111111111111111111111111111111",
+  "contract_sha256": "e9a9c2400d0c307d0a9601e92a5cb83dbf154cf3494c41ccf41370b7af0e1b15",
+  "observed_at": "2026-07-20T00:00:00Z",
+  "scenario_count": 14,
+  "effect_count": 0,
+  "scenario_checks": {
+    "failure_before_prepare": true,
+    "failure_after_prepare": true,
+    "reservation_rejected": true,
+    "reservation_expired": true,
+    "consume_rejected": true,
+    "consume_ambiguous": true,
+    "failure_after_consume_before_outbox_ack": true,
+    "dispatcher_crash_before_claim_commit": true,
+    "dispatcher_crash_after_claim": true,
+    "stale_fencing_token": true,
+    "duplicate_dispatcher_replay": true,
+    "compensation_interrupted_then_replayed": true,
+    "recovery_replayed_twice": true,
+    "concurrent_recovery": true
+  },
+  "invariant_checks": {
+    "stable_operation_job_binding": true,
+    "idempotent_prepare": true,
+    "consume_before_dispatch": true,
+    "deterministic_recovery": true,
+    "idempotent_compensation": true,
+    "lease_fencing": true,
+    "replay_deduplication": true,
+    "worker_dispatch_prohibited": true,
+    "zero_external_effects": true
+  },
+  "cleanup": {
+    "attempted": true,
+    "workspace_absent": true
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "schema": "phase3n-staging-latency-exercise",
+  "schema_version": 1,
+  "measured_at": "2026-08-15T18:11:14Z",
+  "environment": "staging",
+  "candidate_commit_sha": "86a2d314a641160e852d3597396aadcd03e81347",
+  "render_service_id": "srv-d9nj2e8ae00c739sau0g",
+  "race_id": "202604020812",
+  "input_quality": {
+    "real_race": true,
+    "pre_result": true,
+    "odds_status": "middle",
+    "prediction_count": 15,
+    "odds_missing_count": 0,
+    "distance_m": 1800
+  },
+  "cold_wake": {
+    "endpoint": "/health",
+    "http_status": 200,
+    "duration_ms": 31868
+  },
+  "warmup_full_analysis": {
+    "endpoint": "/api/analyze_race",
+    "http_status": 200,
+    "duration_ms": 54436
+  },
+  "warm_cached_api": {
+    "successful_sample_count": 6,
+    "successful_duration_ms": [974, 393, 413, 391, 587, 422],
+    "p50_ms": 413,
+    "p95_ms": 974,
+    "p99_ms": 974,
+    "min_ms": 391,
+    "max_ms": 974,
+    "next_http_status": 429,
+    "quota_limited": true
+  },
+  "acceptance": {
+    "threshold_ms": 500,
+    "prediction_latency_pass": false,
+    "sample_size_sufficient": false,
+    "reason": "The repeated calls measure authenticated warm cache response latency, not isolated model inference. The six successful samples have p95 974 ms and the next call was quota limited."
+  },
+  "secret_exposed": false,
+  "production_changed": false
+}

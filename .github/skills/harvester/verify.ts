@@ -9,8 +9,8 @@ import {
   apiGet, appGet,
   pass, fail, warn, skip, runCheck, requireAuth, buildResult, printResult, runIfMain,
   AUTH_TOKEN,
-} from '../_shared/verify-utils.ts'
-import type { Check, SkillVerifyResult } from '../_shared/verify-utils.ts'
+} from '../_shared/verify-utils'
+import type { Check, SkillVerifyResult } from '../_shared/verify-utils'
 
 export const SKILL   = 'harvester'
 export const AGENT   = 'Harvester（ハーベスター）'

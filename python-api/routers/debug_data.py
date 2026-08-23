@@ -19,6 +19,14 @@ from deps.auth import require_premium  # type: ignore
 router = APIRouter()
 
 
+def _ensure_non_production_debug_endpoints() -> None:
+    import os
+
+    env = (os.environ.get("APP_ENV") or "development").strip().lower()
+    if env == "production":
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
 def _load_raw_race(race_id: str) -> Dict[str, Any]:
     """races_ultimate + race_results_ultimate から生データを読み込む"""
     db_path = ULTIMATE_DB
@@ -158,6 +166,7 @@ async def debug_raw_race(
     current_user: dict = Depends(require_premium),
 ):
     """スクレイプ生データを返す（race_info + 馬エントリー全カラム）"""
+    _ensure_non_production_debug_endpoints()
     try:
         raw = _load_raw_race(race_id)
         # race_info のカラム一覧
@@ -188,6 +197,7 @@ async def debug_features(
     current_user: dict = Depends(require_premium),
 ):
     """特徴量エンジニアリング後の全カラム・値を返す"""
+    _ensure_non_production_debug_endpoints()
     try:
         import asyncio
         raw = _load_raw_race(race_id)

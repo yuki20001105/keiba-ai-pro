@@ -5,29 +5,44 @@ import { supabase } from '@/lib/supabase'
 
 interface AuthContextType {
   role: 'admin' | 'user' | null
+  subscriptionTier: 'free' | 'premium' | null
   isAdmin: boolean
+  isPremium: boolean
   loading: boolean
 }
 
-const AuthContext = createContext<AuthContextType>({ role: null, isAdmin: false, loading: true })
+const AuthContext = createContext<AuthContextType>({
+  role: null,
+  subscriptionTier: null,
+  isAdmin: false,
+  isPremium: false,
+  loading: true,
+})
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [role, setRole] = useState<'admin' | 'user' | null>(null)
+  const [subscriptionTier, setSubscriptionTier] = useState<'free' | 'premium' | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     const fetchRole = async () => {
       try {
         const { data: { user } } = await supabase.auth.getUser()
-        if (!user) { setRole(null); return }
+        if (!user) {
+          setRole(null)
+          setSubscriptionTier(null)
+          return
+        }
         const { data: profile } = await supabase
           .from('profiles')
-          .select('role')
+          .select('role, subscription_tier')
           .eq('id', user.id)
           .single()
         setRole(profile?.role ?? 'user')
+        setSubscriptionTier(profile?.subscription_tier ?? 'free')
       } catch {
         setRole('user')
+        setSubscriptionTier('free')
       } finally {
         setLoading(false)
       }
@@ -42,7 +57,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   return (
-    <AuthContext.Provider value={{ role, isAdmin: role === 'admin', loading }}>
+    <AuthContext.Provider
+      value={{
+        role,
+        subscriptionTier,
+        isAdmin: role === 'admin',
+        isPremium: role === 'admin' || subscriptionTier === 'premium',
+        loading,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   )

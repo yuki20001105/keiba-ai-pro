@@ -1,0 +1,148 @@
+{
+  "approvals": {
+    "execution_unlock": {
+      "actor_id": "github-user:178991637",
+      "approval_id": "gha-b3e3ed378410141bd180ff8472ae7a8b4f034cff190f5682c5250728bbf89ea1",
+      "approved_at": "2026-08-16T05:14:50Z",
+      "environment": "staging-execution-unlock",
+      "purpose": "staging-execution-unlock"
+    },
+    "production_release": {
+      "actor_id": "github-user:178991637",
+      "approval_id": "gha-89edacba890eae6d37533654fb1620e9bc0c6f517ed120cfeb197e6d55c6e152",
+      "approved_at": "2026-08-16T05:29:47Z",
+      "environment": "production-release",
+      "purpose": "production-release"
+    },
+    "staging_migration": {
+      "actor_id": "github-user:178991637",
+      "approval_id": "gha-e4ddbf37c989d54cc0fd306396557db772133f9dc34a999a34f0581ba83219ef",
+      "approved_at": "2026-08-16T05:14:31Z",
+      "environment": "staging-migration",
+      "purpose": "staging-migration"
+    }
+  },
+  "auth_rls_idor_smoke": {
+    "admin_login": true,
+    "admin_profile_access": true,
+    "anonymous_profile_denied": true,
+    "browser_privileged_rpc_denied": true,
+    "foreign_profile_denied": true,
+    "free_login": true,
+    "free_profile_isolation": true,
+    "premium_login": true,
+    "premium_profile_isolation": true,
+    "private_bucket_write_denied": true,
+    "role_escalation_denied": true
+  },
+  "database_cache_integrity": {
+    "cache_after_sha256": "8c3f2cb2954ccb9bcf931ce67932097c7cbc36f2ef66dcdb13ea7a5396e4b7e2",
+    "cache_before_sha256": "8c3f2cb2954ccb9bcf931ce67932097c7cbc36f2ef66dcdb13ea7a5396e4b7e2",
+    "cache_unchanged": true,
+    "captured_after_at": "2026-08-16T05:06:46.493Z",
+    "captured_before_at": "2026-08-16T05:06:43.275Z",
+    "database_after_sha256": "8c3f2cb2954ccb9bcf931ce67932097c7cbc36f2ef66dcdb13ea7a5396e4b7e2",
+    "database_before_sha256": "8c3f2cb2954ccb9bcf931ce67932097c7cbc36f2ef66dcdb13ea7a5396e4b7e2",
+    "database_unchanged": true
+  },
+  "evidence_schema": "phase3n-staging-evidence",
+  "multi_instance_crash_recovery": {
+    "crash_injected": true,
+    "duplicate_effect_count": 0,
+    "instance_count": 2,
+    "non_synthetic": true,
+    "orphaned_operation_count": 0,
+    "recovery_converged": true,
+    "stale_fence_rejection_count": 1,
+    "tested_operation_count": 1
+  },
+  "phase3m_bootstrap": {
+    "applied_commit_is_ancestor": true,
+    "applied_commit_sha": "86a2d314a641160e852d3597396aadcd03e81347",
+    "candidate_commit_sha": "86a2d314a641160e852d3597396aadcd03e81347",
+    "candidate_manifest_equivalent": true,
+    "chain_digest": "1a92dcb456887df6351bc0cc525c4f9f558a560755c2761e28e0a3f9284216d4",
+    "fingerprints_match": true,
+    "history_commit_match": true,
+    "history_count": 21,
+    "manifest_sha256": "99be317b411468f107ad8ff1351230966ec05624d72579be6834eee61af9e557",
+    "migration_count": 21,
+    "schema_fingerprint": "e55f38d366949c85ea7b714b229fb50b53f1264b705e73d2875245e9400962ca"
+  },
+  "provenance": {
+    "commit_sha": "86a2d314a641160e852d3597396aadcd03e81347",
+    "environment": "staging",
+    "evidence_id": "phase3n-0e20a02c8639c1f0dc70114a3ebb2bae81fa940408548b0817f544f9840e1106",
+    "expires_at": "2026-08-16T09:10:13.063Z",
+    "observed_at": "2026-08-16T05:10:13.063Z",
+    "repository": "yuki20001105/keiba-ai-pro",
+    "repository_id": "1132194164",
+    "run_attempt": 1,
+    "run_id": "31928529807",
+    "source_artifact_id": "9258587042",
+    "source_artifact_name": "phase3n-staging-observation-31928529807-1",
+    "source_artifact_sha256": "3f2a856ecfaca27c51deb81fdb00a12af78091a188f1ed4fa9838bf3303f840f",
+    "workflow_ref": "yuki20001105/keiba-ai-pro/.github/workflows/staging-evidence.yml@refs/heads/security/phase3n-trusted-producer-v4"
+  },
+  "provider_identities": {
+    "github": {
+      "environment_ids": {
+        "production-release": "18425632442",
+        "staging-execution-unlock": "18425631621",
+        "staging-migration": "18425630548"
+      },
+      "provider": "github",
+      "repository_id": "1132194164"
+    },
+    "render": {
+      "commit_sha": "86a2d314a641160e852d3597396aadcd03e81347",
+      "deployment_id": "dep-da0bn4nlk1mc73fk7llg",
+      "environment": "staging",
+      "provider": "render",
+      "service_id": "srv-d9nj2e8ae00c739sau0g"
+    },
+    "supabase": {
+      "environment": "staging",
+      "project_ref": "btegligclxkwzefikbzm",
+      "provider": "supabase"
+    },
+    "vercel": {
+      "commit_sha": "86a2d314a641160e852d3597396aadcd03e81347",
+      "deployment_id": "8byphR7PEbrWRcirDxmqYhy9Rzbc",
+      "environment": "staging",
+      "project_id": "prj_PRd5AxU90qDwj67idD8MlB8XE6Zs",
+      "provider": "vercel",
+      "team_id": "team_JH2S20AGrjXdHHTsFTy3eUd5"
+    }
+  },
+  "rollback_drill": {
+    "completed_at": "2026-08-15T19:18:43.000Z",
+    "drill_id": "phase3n-ha-86a2d314-20260816",
+    "non_synthetic": true,
+    "post_state_sha256": "fbaa6ef960253d6617c5312a3cbc66a8b24009ef533f9c99630b388316dd7610",
+    "pre_state_sha256": "fbaa6ef960253d6617c5312a3cbc66a8b24009ef533f9c99630b388316dd7610",
+    "rollback_completed": true,
+    "started_at": "2026-08-15T19:07:26.372Z",
+    "state_restored": true,
+    "unexpected_effect_count": 0
+  },
+  "saga_checks": {
+    "atomic_sqlite_job_saga_outbox": true,
+    "consume_before_worker_dispatch": true,
+    "durable_recovery": true,
+    "failure_injection_matrix": true,
+    "idempotent_compensation": true,
+    "idempotent_reserve_and_consume": true,
+    "lease_and_fencing": true,
+    "multi_instance_safety": true,
+    "stable_operation_and_job_binding": true
+  },
+  "schema_version": 2,
+  "staging_checks": {
+    "bounded_external_http_validation": true,
+    "non_synthetic_crash_recovery": true,
+    "review_ledger_migration_applied": true,
+    "trusted_evidence_producer": true,
+    "zero_db_mutation_proven": true
+  }
+}

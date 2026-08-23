@@ -1,0 +1,406 @@
+#!/usr/bin/env python3
+import json
+import os
+import re
+import subprocess
+from pathlib import Path
+from typing import Dict, List, Set, Tuple
+
+def _resolve_base_ref() -> str:
+    value = os.environ.get("SCANNER_BASE_REF", "origin/develop").strip() or "origin/develop"
+    proc = subprocess.run(
+        ["git", "check-ref-format", f"refs/remotes/{value}"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if proc.returncode != 0:
+        raise RuntimeError("SCANNER_BASE_REF must be a valid remote-tracking branch")
+    return value
+
+
+BASE_REF = _resolve_base_ref()
+
+PATTERNS: List[Tuple[str, re.Pattern[str]]] = [
+    ("test.skip", re.compile(r"\btest\.skip\s*\(")),
+    ("describe.skip", re.compile(r"\bdescribe\.skip\s*\(")),
+    ("it.skip", re.compile(r"\bit\.skip\s*\(")),
+    ("pytest.skip", re.compile(r"\bpytest\.skip\s*\(")),
+    ("pytest.mark.skip", re.compile(r"@pytest\.mark\.skip\b")),
+    ("pytest.mark.xfail", re.compile(r"@pytest\.mark\.xfail\b")),
+    ("xfail", re.compile(r"\bxfail\s*\(")),
+    ("assert_true", re.compile(r"\bassert\s+True\b")),
+    ("except_pass", re.compile(r"except\s+Exception\s*:\s*pass\b")),
+]
+
+TEST_CODE_PATH = re.compile(r"(^e2e/)|(^src/__tests__/)|(^python-api/tests/)|(_test\.py$)|(\.test\.[jt]sx?$)|(\.spec\.[jt]sx?$)")
+
+DELETED_PATTERNS: List[Tuple[str, re.Pattern[str]]] = [
+    ("deleted_js_test_call", re.compile(r"\b(?:test|it)\s*\(")),
+    ("deleted_py_test_function", re.compile(r"^\s*def\s+test_[A-Za-z0-9_]*\s*\(")),
+    ("deleted_expect", re.compile(r"\bexpect\s*\(")),
+    ("deleted_assert", re.compile(r"\bassert\b")),
+    ("deleted_pytest_raises", re.compile(r"\bpytest\.raises\s*\(")),
+]
+
+ALLOWLIST_EXACT: Dict[str, str] = {
+    # These authenticated UI suites only skip when the operator has not supplied
+    # E2E_PASSWORD. Release CI supplies it, so the checks execute there.
+    "e2e/data-collection-dry-run.spec.ts:test.skip(!E2E_PASSWORD, 'E2E_PASSWORD is required for auth-guarded routes')": "credential-presence guard; release CI executes the suite",
+    "e2e/data-collection-history.spec.ts:test.skip(!E2E_PASSWORD, 'E2E_PASSWORD is required for auth-guarded routes')": "credential-presence guard; release CI executes the suite",
+    "e2e/data-collection-p0-repair-plan.spec.ts:test.skip(!E2E_PASSWORD, 'E2E_PASSWORD is required for auth-guarded routes')": "credential-presence guard; release CI executes the suite",
+    "e2e/data-collection-refresh-plan.spec.ts:test.skip(!E2E_PASSWORD, 'E2E_PASSWORD is required for auth-guarded routes')": "credential-presence guard; release CI executes the suite",
+    # The canonical Phase 3M chain gained one guarded forward migration; the
+    # replacement assertion remains exact and the manifest-order gate is unchanged.
+    "python-api/tests/test_phase3m_supabase_bootstrap_gate.py:assert len(manifest.migrations) == 11": "replaced by exact 19-migration assertion after adding guarded model approval, job, worker-lease, artifact, evaluation, execution-bundle, orphan-reconciliation, and dispatch-queue contracts",
+    "python-api/tests/test_phase3m_supabase_bootstrap_gate.py:assert len(manifest.migrations) == 19": "replaced by exact 21-migration assertion after append-only shared outbox and immutable observation/HA contracts",
+    "python-api/tests/test_phase3m_supabase_upgrade_tool.py:assert len(candidate.migrations) == 19": "replaced by exact 21-migration assertion for the same append-only extension",
+    "python-api/tests/test_phase3m_supabase_upgrade_tool.py:assert sql.count(\"-- phase3m append migration \") == 8": "replaced by an exact 10-appended-migration assertion after adding ordinals 20 and 21",
+    "python-api/tests/test_phase3m_supabase_upgrade_tool.py:assert len(rows) == 19": "replaced by exact 21-row history assertion after append-only extension",
+    "python-api/tests/test_phase3m_supabase_upgrade_tool.py:assert {row[-1] for row in rows[11:]} == {current_commit}": "replaced by exact old/current/candidate history segment assertions for all 21 ordinals",
+    "python-api/tests/test_phase3j_saga_outbox_runtime_gate.py:assert len(jobs) == 11": "replaced by exact 12-job assertion after adding the release-blocking Phase3N HA contract job",
+    "python-api/tests/test_phase3j_saga_outbox_runtime_gate.py:assert len(all_jobs) == 12": "replaced by exact 13-job assertion after adding the release-blocking Phase3N HA contract job",
+    # The dependency gate moved from permissive ranges/no override to stricter
+    # exact patched versions plus explicit resolution checks in the same test.
+    "python-api/tests/test_phase3k_dependency_security_contract.py:assert package_json[\"dependencies\"][\"next\"] == \"^16.2.10\"": "replaced by exact Next.js 16.2.12 security pin assertion",
+    "python-api/tests/test_phase3k_dependency_security_contract.py:assert package_json[\"devDependencies\"][\"postcss\"] == \"^8.5.10\"": "replaced by exact PostCSS 8.5.25 security pin assertion",
+    "python-api/tests/test_phase3k_dependency_security_contract.py:assert \"overrides\" not in package_json": "replaced by exact safe PostCSS and sharp override assertion",
+    # Phase 3N replaces the in-memory thread start contract with a durable,
+    # fenced Saga/outbox contract. Equivalent and stronger assertions live in
+    # test_phase3n_operational_saga_runtime.py and the rewritten Phase 3E suite.
+    "python-api/tests/test_phase3e_scrape_job_security.py:def test_start_uses_full_uuid_binds_owner_and_persists_before_thread(": "replaced by durable Phase3N enqueue/owner binding tests",
+    "python-api/tests/test_phase3e_scrape_job_security.py:assert events == [\"persist\", \"thread-created\", \"thread-started\"]": "legacy thread ordering replaced by durable enqueue-before-dispatch checks",
+    "python-api/tests/test_phase3e_scrape_job_security.py:def test_start_fails_closed_before_thread_when_initial_persistence_fails(": "replaced by fail-closed durable store tests",
+    "python-api/tests/test_phase3e_scrape_job_security.py:assert thread_calls == []": "legacy thread bypass replaced by worker/outbox non-dispatch assertions",
+    "python-api/tests/test_phase3e_scrape_job_security.py:def test_start_rejects_another_active_job_for_the_same_owner_without_thread(": "replaced by one-active-owner durable store tests",
+    "python-api/tests/test_phase3e_scrape_job_security.py:assert jobs._persist_job(JOB_A, _job(OWNER_A, status=\"running\")) is True": "legacy persistence setup removed with in-memory start path",
+    "python-api/tests/test_phase3e_scrape_job_security.py:assert visible[\"status\"] == \"running\"": "status visibility now asserted through operational store responses",
+    "python-api/tests/test_phase3e_scrape_job_security.py:assert jobs._persist_job(JOB_A, _job(OWNER_A)) is True": "legacy persistence setup replaced by operational store fixture",
+    "python-api/tests/test_phase3e_scrape_job_security.py:assert jobs._persist_job(JOB_B, _job(OWNER_B)) is True": "legacy persistence setup replaced by operational store fixture",
+    # Phase 3L previously asserted an unconditional release tombstone. It is
+    # replaced by stricter immutable-producer, signed-attestation and exact-main
+    # authorization assertions in the same test module.
+    "python-api/tests/test_phase3l_deployment_safety.py:def test_ci_blocks_not_ready_pushes_to_main_and_release() -> None:": "superseded by exact trusted-attestation promotion contract",
+    "python-api/tests/test_phase3l_deployment_safety.py:assert len(blocking_steps) == 1": "superseded by immutable producer resolver assertions",
+    "python-api/tests/test_phase3l_deployment_safety.py:assert \"github.event_name == 'push'\" in condition": "superseded by promotion event and candidate binding assertions",
+    "python-api/tests/test_phase3l_deployment_safety.py:assert \"github.ref_name == 'main'\" in condition": "superseded by exact main merge correlation assertions",
+    "python-api/tests/test_phase3l_deployment_safety.py:assert \"github.ref_name == 'release'\" in condition": "release remains fail-closed in the new resolver assertions",
+    "python-api/tests/test_phase3l_deployment_safety.py:assert \"--require-ready\" in blocking[\"run\"]": "require-ready retained in trusted promotion assertions",
+    "python-api/tests/test_phase3l_deployment_safety.py:def test_release_workflow_cannot_deploy_or_publish_a_release() -> None:": "superseded by exact attested main authorization and no-provider-command test",
+    "python-api/tests/test_phase3l_deployment_safety.py:assert workflow[\"permissions\"] == {\"contents\": \"read\"}": "permissions assertion strengthened to include minimal actions read",
+    "python-api/tests/test_phase3l_deployment_safety.py:assert set(jobs) == {\"production-release-blocked\"}": "tombstone replaced by single environment-gated authorization job",
+    "python-api/tests/test_phase3l_deployment_safety.py:assert len(steps) == 1": "replacement authorization workflow has multiple independently asserted gates",
+    "python-api/tests/test_phase3l_deployment_safety.py:assert \"exit 1\" in steps[0][\"run\"]": "unconditional tombstone replaced by multiple fail-closed exact-context gates",
+    "python-api/tests/test_phase3l_deployment_safety.py:assert set(inputs) == {\"expected_commit\", \"trusted_producer_sha\", \"max_age_seconds\"}": "expanded by an exact evidence_scope input assertion whose only values preserve full validation or add the stricter automatic-betting-disabled limited-observation path",
+    # The immutable v1 producer cannot be updated. Its exact assertions are
+    # replaced by the same fail-closed assertions for the separately protected
+    # v2 producer; no producer-ref check is removed or relaxed.
+    "python-api/tests/test_phase3l_deployment_safety.py:assert '.head_branch == \"security/phase3n-trusted-producer-v1\"' in resolver[\"run\"]": "rotated to the exact immutable v2 producer assertion",
+    "python-api/tests/test_phase3n_staging_evidence_gate.py:assert \"refs/heads/security/phase3n-trusted-producer-v1\" in workflow": "rotated to the exact immutable v2 producer assertion",
+    # v2 remains immutable at its previously reviewed merge SHA. This change
+    # rotates every exact producer assertion to the separately protected v3
+    # branch that will be created only after this candidate reaches develop.
+    "python-api/tests/test_phase3l_deployment_safety.py:trusted_ref = \"refs/heads/security/phase3n-trusted-producer-v2\"": "rotated to the exact immutable v3 producer assertion",
+    "python-api/tests/test_phase3l_deployment_safety.py:assert '.head_branch == \"security/phase3n-trusted-producer-v2\"' in resolver[\"run\"]": "rotated to the exact immutable v3 producer assertion",
+    "python-api/tests/test_phase3l_deployment_safety.py:'.head_branch == \"security/phase3n-trusted-producer-v2\"',": "rotated to the exact immutable v3 producer assertion",
+    "python-api/tests/test_phase3n_staging_evidence_gate.py:assert \"refs/heads/security/phase3n-trusted-producer-v2\" in workflow": "rotated to the exact immutable v3 producer assertion",
+    # v3 is locked by a no-bypass update ruleset. The replacement assertions
+    # bind the same fail-closed producer checks to the separately reviewed v4.
+    "python-api/tests/test_phase3l_deployment_safety.py:assert '.head_branch == \"security/phase3n-trusted-producer-v3\"' in resolver[\"run\"]": "rotated to the exact protected v4 producer assertion without weakening the immutable v3 branch",
+    "python-api/tests/test_phase3n_staging_evidence_gate.py:assert \"refs/heads/security/phase3n-trusted-producer-v3\" in workflow": "rotated to the exact protected v4 producer assertion without weakening the immutable v3 branch",
+}
+
+
+def _run(cmd: List[str]) -> str:
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "command failed")
+    return proc.stdout
+
+
+def _git_has_changes() -> bool:
+    return bool(_run(["git", "status", "--porcelain"]).strip())
+
+
+def _git_status_porcelain_lines() -> List[str]:
+    out = _run(["git", "status", "--porcelain"])
+    return [line for line in out.splitlines() if line.strip()]
+
+
+def _tracked_diff_text() -> str:
+    return _run(["git", "diff", "--unified=0", BASE_REF, "--", "."])
+
+
+def _changed_files_from_base() -> List[str]:
+    out = _run(["git", "diff", "--name-only", BASE_REF, "--", "."])
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def _deleted_files() -> List[str]:
+    out = _run(["git", "diff", "--name-only", "--diff-filter=D", BASE_REF, "--", "."])
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def _untracked_files() -> List[str]:
+    out = _run(["git", "ls-files", "--others", "--exclude-standard"])
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def _collect_diff_lines(diff_text: str) -> Tuple[List[Tuple[str, int, str]], List[Tuple[str, int, str]]]:
+    added: List[Tuple[str, int, str]] = []
+    deleted: List[Tuple[str, int, str]] = []
+    current_file = ""
+    current_new_line = 0
+    current_old_line = 0
+    for raw in diff_text.splitlines():
+        if raw.startswith("diff --git "):
+            current_file = ""
+            current_new_line = 0
+            current_old_line = 0
+            continue
+        if raw.startswith("+++ b/"):
+            current_file = raw[6:]
+            continue
+        if raw.startswith("--- a/"):
+            continue
+        if raw.startswith("@@"):
+            m_new = re.search(r"\+(\d+)", raw)
+            m_old = re.search(r"-(\d+)", raw)
+            current_new_line = int(m_new.group(1)) if m_new else 0
+            current_old_line = int(m_old.group(1)) if m_old else 0
+            continue
+        if not current_file:
+            continue
+        if raw.startswith("+") and not raw.startswith("+++"):
+            added.append((current_file, current_new_line, raw[1:]))
+            current_new_line += 1
+        elif raw.startswith("-") and not raw.startswith("---"):
+            deleted.append((current_file, current_old_line, raw[1:]))
+            current_old_line += 1
+        else:
+            if not raw.startswith("\\"):
+                current_new_line += 1
+                current_old_line += 1
+    return added, deleted
+
+
+def _collect_untracked_lines(files: List[str]) -> List[Tuple[str, int, str]]:
+    out: List[Tuple[str, int, str]] = []
+    for file_path in files:
+        path = Path(file_path)
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        for idx, line in enumerate(text.splitlines(), start=1):
+            out.append((file_path, idx, line))
+    return out
+
+
+def _is_comment_or_doc(line: str) -> bool:
+    s = line.strip()
+    return (
+        not s
+        or s.startswith("//")
+        or s.startswith("#")
+        or s.startswith("*")
+        or s.startswith("/*")
+        or s.startswith("*/")
+        or s.startswith("-")
+    )
+
+
+def _is_allowlisted(file_path: str, line: str) -> Tuple[bool, str]:
+    key = f"{file_path}:{line.strip()}"
+    reason = ALLOWLIST_EXACT.get(key)
+    return (reason is not None, reason or "")
+
+
+def _coverage_error(has_changes: bool, scanned_file_count: int, scanned_line_count: int) -> str | None:
+    if has_changes and (scanned_file_count == 0 or scanned_line_count == 0):
+        return "fail-closed: changes exist but scanner input coverage is zero"
+    return None
+
+
+def _normalize_status_path(raw_path: str) -> str:
+    txt = raw_path.strip()
+    if " -> " in txt:
+        txt = txt.split(" -> ", 1)[1].strip()
+    return txt
+
+
+def _collect_test_scope_files(
+    changed_from_base: List[str],
+    status_lines: List[str],
+    deleted_files: List[str],
+    untracked_files: List[str],
+) -> Set[str]:
+    out: Set[str] = set()
+
+    for path in changed_from_base:
+        if TEST_CODE_PATH.search(path):
+            out.add(path)
+
+    for line in status_lines:
+        if len(line) < 4:
+            continue
+        path = _normalize_status_path(line[3:])
+        if path and TEST_CODE_PATH.search(path):
+            out.add(path)
+
+    for path in deleted_files:
+        if TEST_CODE_PATH.search(path):
+            out.add(path)
+
+    for path in untracked_files:
+        if TEST_CODE_PATH.search(path):
+            out.add(path)
+
+    return out
+
+
+def _coverage_error_for_test_scope(has_test_scope_changes: bool, scanned_line_count: int) -> str | None:
+    if has_test_scope_changes and scanned_line_count == 0:
+        return "fail-closed: test scope changes exist but scanner input coverage is zero"
+    return None
+
+
+def main() -> int:
+    has_changes = _git_has_changes()
+    status_lines = _git_status_porcelain_lines()
+    changed_from_base = _changed_files_from_base()
+    tracked_diff = _tracked_diff_text()
+    tracked_added, tracked_deleted = _collect_diff_lines(tracked_diff)
+    untracked_files = _untracked_files()
+    untracked_added = _collect_untracked_lines(untracked_files)
+    deleted_files = _deleted_files()
+    added = tracked_added + untracked_added
+    test_scope_files = _collect_test_scope_files(
+        changed_from_base,
+        status_lines,
+        deleted_files,
+        untracked_files,
+    )
+    has_test_scope_changes = len(test_scope_files) > 0
+
+    hits = []
+    exclusions = []
+    scanned_files: Set[str] = set()
+    scanned_added_test_code_lines = 0
+    scanned_deleted_test_code_lines = 0
+
+    for file_path in deleted_files:
+        if TEST_CODE_PATH.search(file_path):
+            hits.append({
+                "file": file_path,
+                "line": 1,
+                "kind": "deleted_test_file",
+                "snippet": "<file deleted>",
+            })
+
+    for file_path, line_no, line in added:
+        if not TEST_CODE_PATH.search(file_path):
+            continue
+        if _is_comment_or_doc(line):
+            continue
+        scanned_files.add(file_path)
+        scanned_added_test_code_lines += 1
+        for label, pattern in PATTERNS:
+            if pattern.search(line):
+                allow, reason = _is_allowlisted(file_path, line)
+                if allow:
+                    exclusions.append({
+                        "file": file_path,
+                        "line": line_no,
+                        "kind": label,
+                        "reason": reason,
+                    })
+                    break
+                hits.append({
+                    "file": file_path,
+                    "line": line_no,
+                    "kind": label,
+                    "snippet": line[:180],
+                })
+                break
+
+    for file_path, line_no, line in tracked_deleted:
+        if not TEST_CODE_PATH.search(file_path):
+            continue
+        if _is_comment_or_doc(line):
+            continue
+        scanned_files.add(file_path)
+        scanned_deleted_test_code_lines += 1
+        for label, pattern in DELETED_PATTERNS:
+            if pattern.search(line):
+                allow, reason = _is_allowlisted(file_path, line)
+                if allow:
+                    exclusions.append({
+                        "file": file_path,
+                        "line": line_no,
+                        "kind": label,
+                        "reason": reason,
+                    })
+                    break
+                hits.append({
+                    "file": file_path,
+                    "line": line_no,
+                    "kind": label,
+                    "snippet": line[:180],
+                })
+                break
+
+    scanned_line_count = scanned_added_test_code_lines + scanned_deleted_test_code_lines
+    coverage_error = _coverage_error_for_test_scope(
+        has_test_scope_changes=has_test_scope_changes,
+        scanned_line_count=scanned_line_count,
+    )
+
+    should_fail = len(hits) > 0 or coverage_error is not None
+
+    report = {
+        "base": BASE_REF,
+        "tracked_added_line_count": len(tracked_added),
+        "untracked_file_count": len(untracked_files),
+        "untracked_line_count": len(untracked_added),
+        "scanned_file_count": len(scanned_files),
+        "scanned_line_count": scanned_line_count,
+        "has_working_tree_changes": has_changes,
+        "has_test_scope_changes": has_test_scope_changes,
+        "test_scope_file_count": len(test_scope_files),
+        "scanned_added_test_code_lines": scanned_added_test_code_lines,
+        "scanned_deleted_test_code_lines": scanned_deleted_test_code_lines,
+        "coverage_error": coverage_error,
+        "allowlist_exact": ALLOWLIST_EXACT,
+        "exclusions": exclusions,
+        "weakening_count": len(hits),
+        "hits": hits,
+    }
+
+    out = Path("reports") / "test_weakening_scan.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    print(json.dumps({
+        "tracked_added_line_count": len(tracked_added),
+        "untracked_file_count": len(untracked_files),
+        "untracked_line_count": len(untracked_added),
+        "has_working_tree_changes": has_changes,
+        "has_test_scope_changes": has_test_scope_changes,
+        "test_scope_file_count": len(test_scope_files),
+        "scanned_added_test_code_lines": scanned_added_test_code_lines,
+        "scanned_deleted_test_code_lines": scanned_deleted_test_code_lines,
+        "scanned_file_count": len(scanned_files),
+        "scanned_line_count": scanned_line_count,
+        "coverage_error": coverage_error,
+        "weakening_count": len(hits),
+        "report": str(out),
+    }, ensure_ascii=False))
+    return 0 if not should_fail else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,316 @@
+# UI Workflow Completion Matrix (keiba-ai-pro)
+
+Updated: 2026-07-05
+Scope: UI (src/app) + Next API (src/app/api) + FastAPI router/script mapping inventory
+
+## 2026-08-02 WP2 delta: retrain approval eligibility
+
+- The workbench can now produce a strict dry-run approval payload bound to the actor, active model, normalized feature contract, immutable data-snapshot digest, code version, and exact deployed commit.
+- `POST /api/model-redesign/approval/assess` is Admin-only and rechecks schema, payload hash, approval chronology/expiry, distinct requester and approver, active model, feature contract, code revision, Production-write block, and isolated artifact policy.
+- The UI displays payload readiness, hashes, commit/model bindings, and blockers. Missing snapshot/commit or a canonical future field produces `preview-fail`.
+- Assessment is read-only and always reports `execution_performed=false`. The Admin workbench can create a pending request from the exact preview, load a shared approval ID, record an independent decision, let the original requester submit the approved job, and refresh job state through `evaluation-recorded`. Durable approval/job storage, service-only lease/fencing, immutable private-bucket artifact registration, and non-promoting accepted-report registration exist in the canonical bootstrap. Deployed worker dispatch/training/upload/evaluation, trusted attestation, candidate comparison, and active-model switching remain unimplemented, so workflows #6 and #9 remain partial.
+- The legacy `/api/models/[id]/activate` pointer mutation is now denied in every deployed/unknown environment and requires exact local/test opt-in at both Next and FastAPI layers. The `/train` activation control is disabled until the separate durable switch-approval flow exists.
+- The legacy `/api/ml/train/start` proxy and FastAPI `/api/train` writers are also denied in every deployed/unknown environment. FastAPI checks before job allocation and at the artifact-capable training boundary; the `/train` start control is disabled until an approval-bound durable job runner exists.
+- Direct model deletion is denied before local/Supabase mutation in every deployed/unknown environment and requires exact local/test opt-in at both layers. The `/train` delete control is disabled until a separate durable retirement approval exists.
+
+## 2026-08-02 WP2 delta: authenticated profiling viewer
+
+- `src/app/data-collection/profiling/[job_id]/page.tsx` now provides an Admin-only report viewer.
+- The viewer retrieves report HTML through `authFetch`, so the Bearer token reaches both the Next API and FastAPI Admin boundaries.
+- The former direct anchor to `/api/profiling/html/[job_id]` was removed because normal browser navigation cannot attach the required Authorization header.
+- Report HTML is isolated in a sandboxed iframe without `allow-same-origin`; an injected CSP denies connections, frames, forms, base URL changes, and all non-inline resources except local data/blob images and fonts.
+- Malformed Job IDs, 401/403 responses, non-HTML responses, empty/oversized reports, backend restart loss, loading, retry, and download states now have explicit UI behavior.
+- This closes the profiling report-viewer sub-gap. It does not make feature generation (#3) or advanced model evaluation (#6) complete.
+
+## 2026-08-02 WP2 delta: feature provenance visibility
+
+- `/feature-lab` now consumes the existing Premium/Admin `/api/features/catalog` contract.
+- Operators can inspect future-field exclusions, scraped-field count, engineered feature name/stage/type/enabled state, descriptions, excluded-column count, catalog version, and hash.
+- The view makes the INV-01 boundary explicit and remains read-only; it does not trigger feature generation, training, catalog mutation, scraping, or model activation.
+- Malformed catalog responses fail closed in the UI instead of being rendered as trusted feature provenance.
+- This advances workflow #3 from backend-only generation visibility to an operator-visible catalog. A dedicated standalone feature-generation job is still not implemented, so #3 remains `partial_ui`.
+
+## 0. 前提と判定ルール
+
+- 連携基盤 (UI -> Next API -> FastAPI) は完成前提。
+- 本ドキュメントは「業務がUIで完結するか」を判定する。
+- CLI/Notebookでのみ実行できる機能は UI 完成扱いにしない。
+- 本番 safety 制約:
+  - production/base table write は禁止
+  - NETKEIBA_RACE_WRITE_ENABLED=true を前提にしない
+  - ALLOW_STAGING_WRITE=true を前提にしない
+  - sandbox write-readback を通常UIに混在させない
+
+分類定義:
+
+- complete_ui: UIから入力 -> 実行 -> 結果確認まで完結
+- partial_ui: UIはあるが一部がCLI/Script依存、または成果物確認がUI外
+- api_only: APIはあるがUI呼び出しがない
+- script_only: Script/Notebookのみ可能
+- blocked: safety上または現フェーズ方針で本番不可
+- unknown: 実装確認不足
+
+---
+
+## 1. UI画面一覧 (実装存在)
+
+| 画面 | 主目的 | 主入力/操作 | 主な Next API |
+|---|---|---|---|
+| /home | ハブ/状態確認 | 4-step導線, API状態確認 | /api/health, /api/data-stats |
+| /data-collection | データ取得/プロファイリング | 期間(月), 強制再取得, 取得開始, API health, profiling開始, fetch summary履歴確認 | /api/scrape, /api/scrape/status/[jobId], /api/scrape/history, /api/scrape/health, /api/profiling, /api/profiling/status/[job_id], /api/races/recent, /api/races/[race_id]/horses |
+| /data-view (Premium) | データ検証/特徴量確認 | 日付, レース選択, raw/featuresタブ, 列フィルタ | /api/races/by-date, /api/debug/race/[race_id], /api/debug/race/[race_id]/features |
+| /feature-lab (Premium) | 特徴量分析 | target, importance_type, topN, summary/importance/coverageタブ | /api/features/summary, /api/features/importance, /api/features/coverage |
+| /train | モデル学習/モデル管理 | target, model_type, 学習期間, advanced設定, Optuna, 学習開始, activate/delete | /api/ml/train/start, /api/ml/train/status/[job_id], /api/models, /api/models/[id], /api/models/[id]/activate |
+| /predict-batch | 一括予測/購入/エクスポート | 日付, venue filter, model選択, 予測実行, odds refresh, 購入記録, JSON/CSV export | /api/races/by-date, /api/analyze-race, /api/realtime-odds/refresh, /api/realtime-odds/[race_id], /api/purchase, /api/export/bet-list |
+| /race-analysis | 単レース予測詳細/結果照合 | 日付, レース選択, モデル選択, predict/features/resultタブ | /api/races/by-date, /api/analyze-race, /api/models, /api/debug/race/[race_id]/features, /api/prediction-history/[race_id], /api/races/[race_id]/horses |
+| /prediction-history (Premium) | 予測分析/成績追跡 | 更新, レース一覧, race-analysisへの遷移 | /api/prediction-history |
+| /production-readiness (Premium/Admin) | 本番前 read-only チェック | 実行ボタン, pass/warn/fail表示, 結果要約JSON | /api/production-readiness |
+| /dashboard | 購入履歴/損益分析 | 結果入力(hit/miss,payout), delete, ソート | /api/purchase-history, /api/purchase/[id], /api/statistics, /api/data-stats |
+| /admin (AdminOnly) | 管理運用 | user role変更, stats確認 | Supabase profiles直接 + /api/data-stats |
+| /login | 認証 | login/signup タブ, email/password submit | Supabase Auth SDK 直接 |
+| / | ランディング | 遷移のみ | (直接API呼び出しなし) |
+
+---
+
+## 2. UI操作 -> Next API -> FastAPI/script マッピング
+
+| 業務操作 | UI | Next API | FastAPI endpoint / script | 備考 |
+|---|---|---|---|---|
+| 期間スクレイプ開始 | /data-collection | POST /api/scrape | POST /api/scrape/start (FastAPI scrape router) | 月単位ループ + job polling |
+| スクレイプ進捗監視 | /data-collection, /predict-batch hooks | GET /api/scrape/status/[jobId] | GET /api/scrape/status/{job_id} | useJobPoller |
+| fetch summary履歴確認 | /data-collection | GET /api/scrape/history | GET /api/scrape/history | read-only history (reload-safe) |
+| スクレイプhealth | /data-collection | GET /api/scrape/health | GET /api/scrape/health | read-only health |
+| 取得済み一覧/詳細 | /data-collection | GET /api/races/recent, GET /api/races/[race_id]/horses | GET /api/races/recent, GET /api/races/{race_id}/horses | 結果表示あり |
+| Profiling起動 | /data-collection | POST /api/profiling | POST /api/profiling/start | レポート閲覧UIは限定 |
+| Profiling進捗 | /data-collection | GET /api/profiling/status/[job_id] | GET /api/profiling/status/{job_id} | job statusのみ |
+| 学習開始 | /train | POST /api/ml/train/start | POST /api/train/start | local/test compatibility only; normal UI disabled pending approval-bound durable job |
+| 学習進捗 | /train | GET /api/ml/train/status/[job_id] | GET /api/train/status/{job_id} | progress表示あり |
+| モデル一覧/切替/削除 | /train | /api/models, /api/models/[id], /api/models/[id]/activate | /api/models, /api/models/{id}, /api/models/{id}/activate | read-only list/detail only; switch and delete disabled pending separate durable approvals |
+| 一括予測 | /predict-batch | POST /api/analyze-race | POST /api/analyze_race | CONCURRENCY=1 |
+| 単レース予測 | /race-analysis | POST /api/analyze-race | POST /api/analyze_race | cache + fallback表示 |
+| 予測結果照合 | /race-analysis | GET /api/prediction-history/[race_id] | GET /api/prediction-history/{race_id} | Premium |
+| 予測履歴分析 | /prediction-history | GET /api/prediction-history | GET /api/prediction-history | Premium |
+| 特徴量サマリ/重要度/coverage | /feature-lab | /api/features/summary, /importance, /coverage | 同名 FastAPI endpoints | Premium |
+| レースraw/features検証 | /data-view | /api/debug/race/[race_id], /features | GET /api/debug/race/{race_id}, /features | Premium |
+| 購入記録 | /predict-batch | POST /api/purchase | POST /api/purchase | 結果入力はdashboard |
+| 購入結果更新/削除 | /dashboard | PATCH/DELETE /api/purchase/[id] | PATCH/DELETE /api/purchase/{id} | UI完結 |
+| 損益統計 | /dashboard | GET /api/statistics | GET /api/statistics | UIグラフ表示 |
+| 本番前チェック実行 | /production-readiness | POST /api/production-readiness | health fetch + allowlist command 実行 (read-only) | write API は呼ばない |
+
+---
+
+## 3. 業務フロー完成度マトリクス (13フロー)
+
+| # | 業務フロー | UIあり | 実行可能 | 結果表示 | 分類 | complete/partial/missing | 本番利用 | 根拠メモ |
+|---|---|---|---|---|---|---|---|---|
+| 1 | データ取得 | yes | yes | yes | complete_ui | complete | OK (read/scrape運用) | /data-collection で期間指定+進捗+件数表示 |
+| 2 | データ検証 | yes | yes | yes | complete_ui | complete | OK | /data-view, /data-collection recent/details |
+| 3 | 特徴量生成 | yes | yes (予測/学習時に内部生成) | partial | partial_ui | partial | OK | 生成自体はbackend内部。専用「生成実行画面」はなし |
+| 4 | 特徴量分析 | yes | yes | yes | complete_ui | complete | OK (Premium) | /feature-lab summary/importance/coverage |
+| 5 | モデル学習 | yes | yes | yes | complete_ui | complete | 条件付きOK (権限制御前提) | /train start/status/result/models |
+| 6 | モデル評価 | yes | partial | partial | partial_ui | partial | 条件付きOK | AUC/logloss/履歴ROIは表示。高度評価(反復比較)はUI外 |
+| 7 | 予測 | yes | yes | yes | complete_ui | complete | OK | /predict-batch, /race-analysis |
+| 8 | 予測結果の分析 | yes | yes | yes | complete_ui | complete | OK (Premium含む) | /prediction-history + /race-analysis result tab + /dashboard |
+| 9 | モデル再設計・改善提案 | yes (MVP) | partial (read-only preview) | yes (preview) | partial_ui | partial | 条件付きOK | /model-redesign-workbench + /api/model-redesign/summary。専用smoke + E2Eでread-onlyガード回帰防止 |
+| 10 | Notionレポート出力 | yes | yes (Premium/Admin) | yes | partial_ui | partial | 条件付きOK | /notion-report + /api/notion-report で preview -> send。token未設定時は config-missing/warn |
+| 11 | 本番運用前チェック | yes | yes (read-only scope) | yes | partial_ui | partial | 条件付きOK | /production-readiness で health/smoke/flag/secret/git を集約 |
+| 12 | smoke / health check | partial | partial | partial | partial_ui | partial | 条件付きOK | /api/health, /api/scrape/health はUI可視。smoke suiteはscript |
+| 13 | 権限ガード | yes | yes | yes | partial_ui | partial | OK | AuthContext, AdminOnly, Premium制御はあるが一部backend依存 |
+
+要約判定:
+
+- complete: 1,2,4,5,7,8
+- partial: 3,6,9,10,11,12,13
+- missing: none
+
+補足:
+- #9 は read-only / preview 中心の MVP 実装済み。再学習実行と active model 切替は未実装で別フェーズ。
+- #9 の回帰防止として `scripts/smoke_model_redesign_workbench.py` と `e2e/model-redesign-workbench.spec.ts` を追加済み。
+- #9 の次フェーズ準備として、dry-run payload schema と approval record schema を design freeze 済み。
+- 仕様書: `docs/model-retrain-approval-design.md`, `docs/model-redesign-workbench.md`。
+
+---
+
+## 4. APIはあるがUIがない機能一覧 (api_only)
+
+Next API routeは存在するが、主要業務UI導線で未使用/非表示の機能:
+
+- /api/ai-correct
+- /api/ocr
+- /api/netkeiba/calendar
+- /api/netkeiba/race-list
+- /api/netkeiba/race
+- /api/backfill/nar-pedigree
+- /api/backfill/coat-color
+- /api/scrape/repair/[race_id]
+- /api/scrape/rescrape-incomplete
+- /api/features/catalog
+- /api/export/data
+- /api/export/db
+- /api/data/all (destructive utility)
+- /api/debug/race-ids
+- /api/analyze-races-batch (UIは /api/analyze-race を逐次呼び出し)
+
+注記:
+
+- /api/stripe/* は課金系内部導線であり、本業務13フローの対象外。
+
+---
+
+## 5. Script/Notebookでしかできない機能一覧 (script_only)
+
+- 反復最適化と改善提案生成 (実行系):
+   - python-api/training/optimizer.py
+   - 出力: docs/reports/iter_*_metrics.json (recommendations)
+   - MVP UI は read-only preview のみ（実行は未実装）
+- Notebook E2E監査:
+  - scripts/run_keiba_notebook_e2e.py
+- 本番前 smoke suite:
+  - scripts/run_keiba_smoke_suite.py
+  - scripts/smoke_*.py
+   - model redesign workbench smoke: scripts/smoke_model_redesign_workbench.py
+   - fetch summary history smoke: scripts/smoke_fetch_summary_history.py
+- compile/lint/build 一括品質ゲート運用 (CLI)
+- Notion向け出力処理:
+   - `/notion-report` + `/api/notion-report` で UI 導線あり
+   - reportType は allowlist 固定（任意ファイルパス指定なし）
+   - token は server-side env のみ（UI/レスポンスで実値非表示）
+
+---
+
+## 6. 本番利用OKの機能一覧
+
+- /predict-batch 一括予測 + 購入記録
+- /race-analysis 単レース予測 + (Premium)特徴量/結果照合
+- /feature-lab 特徴量分析 (Premium)
+- /data-view データ検証 (Premium)
+- /data-collection の read/scrape start/status/health/profiling start
+- /data-collection の fetch summary history 表示（read-only）
+- /dashboard 購入履歴更新と損益分析
+- /home の health/data stats 可視化
+- /admin (AdminOnly) のユーザー管理
+
+条件:
+
+- backend権限ガードを維持
+- write系の実データ書込ガード (production/staging lock) を無効化しない
+
+---
+
+## 7. 本番利用NGまたは通常UIから禁止すべき操作
+
+- /api/netkeiba/race/write の本番書込
+  - production は明示的 blocked
+  - staging でも strict guard + sandbox条件必須
+- /api/data/all (destructive admin utility)
+- sandbox write-readback 系運用を通常ユーザーUIに露出すること
+- 反復最適化/再設計を本番UIボタン化して即時実行すること (まずガード付き運用画面が必要)
+
+---
+
+## 8. UIに存在しないが必要な画面一覧
+
+優先度高:
+
+1. Notionレポート出力画面
+   - 目的: 学習/評価/予測分析結果をテンプレ化してexport
+2. モデル再設計ワークベンチ（実行フェーズ）
+   - 目的: 承認フロー付き再学習起動と反映制御
+優先度中:
+
+3. API-only運用機能のAdmin画面
+   - scrape repair/rescrape-incomplete/backfill/debug-race-ids
+4. Profiling結果ビュー画面
+   - /api/profiling/html/[job_id] をUIで参照
+
+---
+
+## 9. 次に実装すべきUI機能の優先順位
+
+1. P1: モデル再設計・改善提案 UI
+   - optimizer結果の可視化
+   - 採用/却下の意思決定フロー
+   - 再学習ジョブ連携
+   - 事前条件: dry-run payload hash と approval record 契約を破らない
+2. P2: Notionレポート出力 UI
+   - 出力対象/期間/テンプレ選択
+   - secretはserver-side envのみ
+3. P2: Profiling report viewer
+4. P3: API-only admin utilities の安全な集約 (role=admin + explicit confirm)
+
+---
+
+## 10. docs/frontend_ui_backend_contract.md への追記案
+
+提案セクション名:
+
+- "16. Workflow Completion Contract (UI Business Flows)"
+
+追記案本文:
+
+1. 業務フロー13項目に対して、各リリースで complete_ui / partial_ui / script_only を更新する。
+2. complete_ui の定義を固定する:
+   - 入力UIあり
+   - 実行トリガーあり
+   - loading表示あり
+   - 成功/失敗表示あり
+   - 権限不足時のUXがある
+3. script_only から complete_ui へ昇格する際は、以下を必須化:
+   - role guard (admin/premium)
+   - production write guard
+   - dry-run / preview / confirm
+   - audit log
+4. Notion/外部連携は token をfrontendに露出しない。
+5. 本番運用前チェックは read-only dashboard を原則とし、破壊操作を混在させない。
+
+---
+
+## 11. 現時点の正確な表現
+
+- UIとAPIの接続基盤は完成。
+- 予測/分析系UIは本番運用確認フェーズにある。
+- ただし、データ取得 -> 学習 -> 再設計 -> Notion出力までの全業務が UI 完結とはまだ断定できない。
+- 現在は、CLI/Notebook依存の業務 (再設計, Notion出力) が残っている。
+
+## 12. Approval Boundary Freeze (2026-07-06)
+
+対象:
+- モデル再設計ワークベンチ (#9)
+
+固定した境界:
+- 承認対象は `retrain_dry_run` payload の正規化ハッシュ
+- 承認レコードは retrain 実行権限と期限を保持
+- active model pointer 切替は retrain 承認と分離（別 Admin 承認）
+
+この段階で未実装のまま維持:
+- actual retrain runtime
+- approved job submit runtime
+- active model switch runtime
+
+参照:
+- `docs/model-retrain-approval-design.md`
+- `docs/model-redesign-workbench.md`
+
+## 13. P0実装更新 (2026-07-05)
+
+- 本番前チェック画面 `/production-readiness` を追加。
+- Next API `/api/production-readiness` を追加。
+- チェック対象:
+   - Frontend build
+   - FastAPI health
+   - scrape health
+   - analyze_race smoke
+   - smoke suite summary
+   - secret scan (Notion token prefix)
+   - git status 注意
+   - write flag (`NETKEIBA_RACE_WRITE_ENABLED=false`, `ALLOW_STAGING_WRITE=false`)
+   - APP_ENV safety
+   - sandbox write-readback 別管理確認
+   - production/base table write 禁止確認
+- 実行は allowlist command のみ。write系 endpoint は呼ばない。
+
+## 12. 検証実行メモ (今回コミット範囲外)
+
+- 認証トークン未設定時の smoke 401/403 は `auth-required` として warn 扱い。
+- `KEIBA_AUTH_BEARER_TOKEN` 設定時は認証必須 smoke を通常の pass/fail で評価する。
+- 失敗詳細は reports 側の生成物に記録されるが、本コミットには含めない。

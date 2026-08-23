@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback } from 'react'
 import Link from 'next/link'
 import { Logo } from '@/components/Logo'
 import { authFetch } from '@/lib/auth-fetch'
+import { useAuth } from '@/contexts/AuthContext'
+import { PremiumRequiredNotice } from '@/components/PremiumRequiredNotice'
 
 type Summary = {
   version: string
@@ -15,6 +17,58 @@ type Summary = {
   engineered_disabled: number
   unnecessary_columns_count: number
   by_stage: Record<string, { total: number; enabled: number; disabled: number }>
+}
+
+type CatalogField = {
+  name: string
+  description?: string
+  stage?: string
+  type?: string
+  enabled?: boolean
+}
+
+type CatalogResult = {
+  version: string
+  hash: string
+  data: {
+    future_fields?: string[]
+    scraped_fields?: Record<string, CatalogField[]>
+    engineered_features?: CatalogField[]
+    unnecessary_columns?: Array<{ name: string; reason?: string }>
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isBoundedString(value: unknown, maxLength: number): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= maxLength
+}
+
+function isCatalogField(value: unknown): value is CatalogField {
+  if (!isRecord(value) || !isBoundedString(value.name, 128)) return false
+  if (value.description !== undefined && typeof value.description !== 'string') return false
+  if (typeof value.description === 'string' && value.description.length > 1000) return false
+  if (value.stage !== undefined && !isBoundedString(value.stage, 128)) return false
+  if (value.type !== undefined && !isBoundedString(value.type, 64)) return false
+  return value.enabled === undefined || typeof value.enabled === 'boolean'
+}
+
+function parseCatalogResult(value: unknown): CatalogResult | null {
+  if (!isRecord(value) || !isBoundedString(value.version, 32) || !isBoundedString(value.hash, 128)) return null
+  if (!isRecord(value.data)) return null
+  const data = value.data
+  if (!Array.isArray(data.future_fields) || !data.future_fields.every(item => isBoundedString(item, 128))) return null
+  if (!isRecord(data.scraped_fields)) return null
+  if (!Object.values(data.scraped_fields).every(items => Array.isArray(items) && items.every(isCatalogField))) return null
+  if (!Array.isArray(data.engineered_features) || !data.engineered_features.every(isCatalogField)) return null
+  if (!Array.isArray(data.unnecessary_columns) || !data.unnecessary_columns.every(item => (
+    isRecord(item)
+    && isBoundedString(item.name, 128)
+    && (item.reason === undefined || (typeof item.reason === 'string' && item.reason.length <= 1000))
+  ))) return null
+  return value as unknown as CatalogResult
 }
 
 type ImportanceFeature = {
@@ -48,35 +102,82 @@ const TARGETS = ['win', 'place3', 'speed_deviation'] as const
 type Target = (typeof TARGETS)[number]
 
 export default function FeatureLabPage() {
-  const [tab, setTab] = useState<'summary' | 'importance' | 'coverage'>('summary')
+  const { isPremium, loading: authLoading } = useAuth()
+  const [tab, setTab] = useState<'summary' | 'catalog' | 'importance' | 'coverage'>('summary')
   const [target, setTarget] = useState<Target>('win')
   const [importanceType, setImportanceType] = useState<'gain' | 'split'>('gain')
   const [topN, setTopN] = useState(30)
 
   const [summary, setSummary] = useState<Summary | null>(null)
+  const [catalog, setCatalog] = useState<CatalogResult | null>(null)
   const [importance, setImportance] = useState<ImportanceResult | null>(null)
   const [coverage, setCoverage] = useState<CoverageResult | null>(null)
 
   const [loadingSummary, setLoadingSummary] = useState(false)
+  const [loadingCatalog, setLoadingCatalog] = useState(false)
   const [loadingImportance, setLoadingImportance] = useState(false)
   const [loadingCoverage, setLoadingCoverage] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const fetchSummary = useCallback(async () => {
+    if (!isPremium) {
+      setError('この機能は Premium または Admin のみ利用できます。')
+      return
+    }
+
     setLoadingSummary(true)
     setError(null)
     try {
       const res = await authFetch('/api/features/summary', { signal: AbortSignal.timeout(30000) })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      if (!res.ok) {
+        const authMsg = res.status === 401 || res.status === 403
+          ? '権限不足: Premium または Admin が必要です。'
+          : null
+        throw new Error(authMsg || `HTTP ${res.status}`)
+      }
       setSummary(await res.json())
     } catch (e) {
       setError(e instanceof Error ? e.message : 'エラー')
     } finally {
       setLoadingSummary(false)
     }
-  }, [])
+  }, [isPremium])
+
+  const fetchCatalog = useCallback(async () => {
+    if (!isPremium) {
+      setError('特徴量カタログは Premium または Admin のみ利用できます。')
+      return
+    }
+
+    setLoadingCatalog(true)
+    setError(null)
+    try {
+      const res = await authFetch('/api/features/catalog', { signal: AbortSignal.timeout(30000) })
+      if (!res.ok) {
+        const detail = await res.json().catch(() => ({}))
+        const authMessage = res.status === 401 || res.status === 403
+          ? '権限不足: Premium または Admin が必要です。'
+          : null
+        throw new Error(authMessage || detail.detail || `HTTP ${res.status}`)
+      }
+      const parsed = parseCatalogResult(await res.json())
+      if (!parsed) {
+        throw new Error('特徴量カタログの応答形式が不正です。')
+      }
+      setCatalog(parsed)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '特徴量カタログの取得に失敗しました。')
+    } finally {
+      setLoadingCatalog(false)
+    }
+  }, [isPremium])
 
   const fetchImportance = useCallback(async () => {
+    if (!isPremium) {
+      setError('この機能は Premium または Admin のみ利用できます。')
+      return
+    }
+
     setLoadingImportance(true)
     setError(null)
     try {
@@ -84,7 +185,10 @@ export default function FeatureLabPage() {
       const res = await authFetch(url, { signal: AbortSignal.timeout(30000) })
       if (!res.ok) {
         const d = await res.json().catch(() => ({}))
-        throw new Error(d.detail || `HTTP ${res.status}`)
+        const authMsg = res.status === 401 || res.status === 403
+          ? '権限不足: Premium または Admin が必要です。'
+          : null
+        throw new Error(authMsg || d.detail || `HTTP ${res.status}`)
       }
       setImportance(await res.json())
     } catch (e) {
@@ -92,16 +196,24 @@ export default function FeatureLabPage() {
     } finally {
       setLoadingImportance(false)
     }
-  }, [target, topN, importanceType])
+  }, [isPremium, target, topN, importanceType])
 
   const fetchCoverage = useCallback(async () => {
+    if (!isPremium) {
+      setError('この機能は Premium または Admin のみ利用できます。')
+      return
+    }
+
     setLoadingCoverage(true)
     setError(null)
     try {
       const res = await authFetch(`/api/features/coverage?target=${target}`, { signal: AbortSignal.timeout(30000) })
       if (!res.ok) {
         const d = await res.json().catch(() => ({}))
-        throw new Error(d.detail || `HTTP ${res.status}`)
+        const authMsg = res.status === 401 || res.status === 403
+          ? '権限不足: Premium または Admin が必要です。'
+          : null
+        throw new Error(authMsg || d.detail || `HTTP ${res.status}`)
       }
       setCoverage(await res.json())
     } catch (e) {
@@ -109,15 +221,19 @@ export default function FeatureLabPage() {
     } finally {
       setLoadingCoverage(false)
     }
-  }, [target])
+  }, [isPremium, target])
 
   // 初回ロード
-  useEffect(() => { fetchSummary() }, [fetchSummary])
+  useEffect(() => {
+    if (!authLoading) fetchSummary()
+  }, [authLoading, fetchSummary])
 
   useEffect(() => {
+    if (!isPremium) return
+    if (tab === 'catalog') fetchCatalog()
     if (tab === 'importance') fetchImportance()
     if (tab === 'coverage') fetchCoverage()
-  }, [tab, fetchImportance, fetchCoverage])
+  }, [isPremium, tab, fetchCatalog, fetchImportance, fetchCoverage])
 
   const maxImp = importance?.features[0]?.importance ?? 1
 
@@ -133,22 +249,33 @@ export default function FeatureLabPage() {
             学習
           </Link>
           <span className="text-sm text-[#888]">特徴量ラボ</span>
+          <span className="text-[10px] px-2 py-0.5 rounded border border-yellow-600/40 bg-yellow-500/20 text-yellow-400">
+            Premium 専用
+          </span>
         </div>
       </header>
 
       <main className="max-w-5xl mx-auto px-6 py-8 space-y-6">
+        {!authLoading && !isPremium && (
+          <PremiumRequiredNotice
+            title="特徴量ラボは Premium 専用です"
+            message="権限不足時は API を呼び出しません。Premium へアップグレードするか Admin 権限で利用してください。"
+          />
+        )}
+
         {/* ターゲット選択 */}
         <div className="flex items-center gap-3 flex-wrap">
           <span className="text-xs text-[#666]">ターゲット:</span>
           {TARGETS.map(t => (
             <button
               key={t}
+              disabled={!isPremium}
               onClick={() => setTarget(t)}
               className={`px-3 py-1.5 rounded text-xs transition-colors ${
                 target === t
                   ? 'bg-white text-black font-medium'
                   : 'bg-[#1a1a1a] text-[#888] hover:text-white border border-[#2a2a2a]'
-              }`}
+              } disabled:opacity-40 disabled:cursor-not-allowed`}
             >
               {t}
             </button>
@@ -157,16 +284,28 @@ export default function FeatureLabPage() {
 
         {/* タブ */}
         <div className="flex gap-1 border-b border-[#1e1e1e]">
+          <button
+            disabled={!isPremium}
+            onClick={() => setTab('catalog')}
+            className={`px-4 py-2.5 text-xs transition-colors border-b-2 ${
+              tab === 'catalog'
+                ? 'border-white text-white'
+                : 'border-transparent text-[#555] hover:text-[#888]'
+            } disabled:opacity-40 disabled:cursor-not-allowed`}
+          >
+            特徴量カタログ
+          </button>
           {([['summary', 'サマリー'], ['importance', '重要度'], ['coverage', 'カバレッジ']] as const).map(
             ([key, label]) => (
               <button
                 key={key}
+                disabled={!isPremium}
                 onClick={() => setTab(key)}
                 className={`px-4 py-2.5 text-xs transition-colors border-b-2 ${
                   tab === key
                     ? 'border-white text-white'
                     : 'border-transparent text-[#555] hover:text-[#888]'
-                }`}
+                } disabled:opacity-40 disabled:cursor-not-allowed`}
               >
                 {label}
               </button>
@@ -178,6 +317,87 @@ export default function FeatureLabPage() {
           <div className="bg-red-900/20 border border-red-800 rounded-lg px-4 py-3 text-sm text-red-300">
             {error}
           </div>
+        )}
+
+        {tab === 'catalog' && (
+          loadingCatalog ? (
+            <div className="text-sm text-[#555] py-8 text-center">特徴量カタログを読み込み中...</div>
+          ) : catalog ? (
+            <div className="space-y-4" data-testid="feature-catalog-panel">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {[
+                  { label: '未来情報（学習・推論から除外）', value: catalog.data.future_fields?.length ?? 0, color: 'text-red-400' },
+                  { label: '収集フィールド', value: Object.values(catalog.data.scraped_fields ?? {}).flat().length, color: 'text-blue-400' },
+                  { label: '生成特徴量', value: catalog.data.engineered_features?.length ?? 0, color: 'text-green-400' },
+                  { label: '除外カラム', value: catalog.data.unnecessary_columns?.length ?? 0, color: 'text-yellow-400' },
+                ].map(card => (
+                  <div key={card.label} className="bg-[#111] border border-[#1e1e1e] rounded-lg px-4 py-3">
+                    <div className="text-xs text-[#666] mb-1">{card.label}</div>
+                    <div className={`text-lg font-mono font-medium ${card.color}`}>{card.value}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="bg-[#111] border border-red-900/40 rounded-lg overflow-hidden">
+                <div className="px-5 py-3 border-b border-red-900/30">
+                  <div className="text-xs font-medium text-red-300">未来情報ブロックリスト</div>
+                  <div className="text-[11px] text-[#7f6666] mt-1">INV-01: 学習・推論の入力には使用しません。</div>
+                </div>
+                <div className="px-5 py-4 flex flex-wrap gap-2">
+                  {(catalog.data.future_fields ?? []).map(name => (
+                    <span key={name} className="px-2 py-1 rounded border border-red-900/40 bg-red-950/20 text-xs font-mono text-red-300">
+                      {name}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              <div className="bg-[#111] border border-[#1e1e1e] rounded-lg overflow-hidden">
+                <div className="px-5 py-3 border-b border-[#1e1e1e] flex items-center justify-between gap-4">
+                  <div>
+                    <div className="text-xs font-medium text-[#aaa]">生成特徴量とステージ</div>
+                    <div className="text-[11px] text-[#555] mt-1">現在のカタログを読み取り専用で表示します。</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={fetchCatalog}
+                    disabled={loadingCatalog || !isPremium}
+                    className="px-3 py-1.5 text-xs bg-[#1a1a1a] border border-[#2a2a2a] rounded hover:border-[#444] disabled:opacity-40"
+                  >
+                    再読込
+                  </button>
+                </div>
+                <div className="overflow-x-auto max-h-[480px] overflow-y-auto">
+                  <table className="w-full text-xs">
+                    <thead className="sticky top-0 bg-[#111]">
+                      <tr className="border-b border-[#1a1a1a]">
+                        <th className="px-5 py-2.5 text-left text-[#555] font-normal">特徴量</th>
+                        <th className="px-5 py-2.5 text-left text-[#555] font-normal">ステージ</th>
+                        <th className="px-5 py-2.5 text-left text-[#555] font-normal">型</th>
+                        <th className="px-5 py-2.5 text-left text-[#555] font-normal">状態</th>
+                        <th className="px-5 py-2.5 text-left text-[#555] font-normal">説明</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(catalog.data.engineered_features ?? []).map(feature => (
+                        <tr key={feature.name} className="border-b border-[#151515] align-top">
+                          <td className="px-5 py-2 font-mono text-[#ccc]">{feature.name}</td>
+                          <td className="px-5 py-2 font-mono text-[#888]">{feature.stage || '-'}</td>
+                          <td className="px-5 py-2 font-mono text-[#888]">{feature.type || '-'}</td>
+                          <td className={`px-5 py-2 ${feature.enabled === false ? 'text-[#777]' : 'text-green-400'}`}>
+                            {feature.enabled === false ? 'disabled' : 'enabled'}
+                          </td>
+                          <td className="px-5 py-2 text-[#777] max-w-md">{feature.description || '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="text-xs text-[#444] font-mono">v{catalog.version} · {catalog.hash.slice(0, 12)}</div>
+            </div>
+          ) : null
         )}
 
         {/* ── サマリータブ ── */}
@@ -274,7 +494,7 @@ export default function FeatureLabPage() {
               </div>
               <button
                 onClick={fetchImportance}
-                disabled={loadingImportance}
+                disabled={loadingImportance || !isPremium}
                 className="px-3 py-1 text-xs bg-[#1a1a1a] border border-[#2a2a2a] rounded hover:border-[#444] disabled:opacity-40 transition-colors"
               >
                 {loadingImportance ? '取得中…' : '更新'}

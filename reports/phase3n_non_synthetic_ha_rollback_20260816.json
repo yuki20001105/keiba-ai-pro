@@ -1,0 +1,92 @@
+{
+  "schema": "phase3n-non-synthetic-ha-rollback-exercise",
+  "schema_version": 1,
+  "success": true,
+  "non_synthetic": true,
+  "source_environment": "staging",
+  "production_changed": false,
+  "candidate_commit_sha": "86a2d314a641160e852d3597396aadcd03e81347",
+  "supabase": {
+    "preview_branch_name": "phase3n-ha-86a2d314-20260816",
+    "preview_project_ref": "dccxftpqgophfjdgafls",
+    "created_at": "2026-08-15T18:29:29.3272509Z",
+    "deleted_at": "2026-08-15T19:22:39.7009067Z",
+    "deleted": true,
+    "lifetime_seconds": 3190.374,
+    "migration_count": 21,
+    "all_migrations_exact_sha": true,
+    "manifest_sha256": "99be317b411468f107ad8ff1351230966ec05624d72579be6834eee61af9e557",
+    "chain_digest": "1a92dcb456887df6351bc0cc525c4f9f558a560755c2761e28e0a3f9284216d4",
+    "rendered_bundle_sha256": "65ce8b1cf6252adce718207909acfb2cf435cc3600c65a4c96b72d812a479994"
+  },
+  "render": {
+    "service_id": "srv-d9nj2e8ae00c739sau0g",
+    "service_url": "https://keiba-ai-api-staging-yuki.onrender.com",
+    "starter_started_at": "2026-08-15T18:55:30.0348016Z",
+    "two_instances_started_at": "2026-08-15T18:59:14.3136399Z",
+    "two_instances_ended_at": "2026-08-15T19:07:26.3725915Z",
+    "two_instance_duration_seconds": 492.059,
+    "two_instance_limit_seconds": 3600,
+    "two_instance_limit_respected": true,
+    "starter_deploy_id": "dep-da0bcbtbedkc73aco9s0",
+    "rollback_deploy_id": "dep-da0bn4nlk1mc73fk7llg",
+    "rollback_instance_type": "free",
+    "rollback_instance_count": 1,
+    "rollback_deploy_live": true,
+    "rollback_deploy_exact_sha": true,
+    "instances": [
+      "fgmqt",
+      "skpvn"
+    ]
+  },
+  "ha": {
+    "job_id": "8efd6480-76c0-41af-a36e-35b4abfb9a7e",
+    "job_kind": "cache-rebuild",
+    "job_state": "completed",
+    "attempt_count": 3,
+    "initial_worker": "render-fgmqt",
+    "failed_worker_fencing_token": 2,
+    "takeover_worker": "render-skpvn",
+    "accepted_fencing_token": 3,
+    "effect_id": "ed014fb9-6154-456c-8ee8-5b4f83977852",
+    "effect_count": 1,
+    "unexpected_effect_count": 0,
+    "source_table": "phase3n_ha_events",
+    "source_row_count_at_rebuild": 4,
+    "cache_digest_sha256": "a72ab42dc19b0466d2abef476ed009d4ab11e8cac9a330a64d232f1c7b2c6e44",
+    "readback_digest_match": true,
+    "stale_fence_rejected": true,
+    "event_sequence": [
+      "enqueued:0",
+      "claimed:1:render-fgmqt",
+      "reclaimed:2:render-fgmqt",
+      "reclaimed:3:render-skpvn",
+      "effect-applied:3:render-skpvn",
+      "stale-fence-rejected:2:render-fgmqt"
+    ],
+    "actual_sigkill": true,
+    "killed_process": "uvicorn",
+    "process_id_before": 62,
+    "process_id_after": 42,
+    "failed_instance_recovered": true
+  },
+  "rollback": {
+    "started_after_ha_success": true,
+    "pre_state_digest_sha256": "fbaa6ef960253d6617c5312a3cbc66a8b24009ef533f9c99630b388316dd7610",
+    "post_state_digest_sha256": "fbaa6ef960253d6617c5312a3cbc66a8b24009ef533f9c99630b388316dd7610",
+    "state_digest_match": true,
+    "supabase_url_restored": true,
+    "supabase_service_key_restored": true,
+    "staging_project_ref_restored": true,
+    "state_restored": true,
+    "rollback_completed": true
+  },
+  "post_rollback_smoke": {
+    "health_status": "ok",
+    "app_env": "staging",
+    "model_runtime_status": "observation",
+    "observation_enabled": true,
+    "observation_release_mode": "limited-observation",
+    "automated_betting_enabled": false
+  }
+}

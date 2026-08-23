@@ -190,10 +190,14 @@ the system shall 以下のパスのみ認証を免除する:
 
 ## 6. モデル規約（Model Conventions）
 
-- 保存形式: `model_win_lightgbm_{start}_{end}_ultimate.joblib`
-- 最新モデルは `models/` ディレクトリ内のファイル名の降順で決定
+- 保存形式: `model_win_lightgbm_{start}_{end}_ultimate.joblib` または `model_*.joblib`
+- 既定モデル選択順序（predict / analyze_race 共通）:
+  1. リクエスト `model_id`（明示指定）
+  2. `python-api/models/.active_model.json` の `model_id`（存在確認付き）
+  3. `python-api/models` の最新ローカルモデル（後方互換フォールバック）
+- `.active_model.json` は運用上の既定モデルポインタであり、モデル契約の正本は joblib bundle の `feature_columns` / `pipeline_config` とする
 - AUC 目標: 0.85 以上
-- 特徴量数: 87 カラム固定（ultimate モード）
+- 特徴量数: モデルごとの `feature_columns` を正本とし、推論時に同順序で照合する
 
 ---
 
@@ -205,3 +209,4 @@ the system shall 以下のパスのみ認証を免除する:
 | `docs/specs/scraping.md` | データ取得・スクレイピング |
 | `docs/specs/predict.md` | 予測・analyze_race エンドポイント |
 | `docs/specs/ui.md` | UI / predict-batch ページ |
+| `docs/specs/model-redesign-workbench.md` | モデル再設計ワークベンチ（提案→承認→再学習→反映ガード） |

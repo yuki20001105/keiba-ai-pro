@@ -34,6 +34,31 @@
       }
     },
     {
+      "label": "Build Next.js (Production Safe)",
+      "type": "shell",
+      "command": "npm",
+      "args": ["run", "build"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "servers"
+      }
+    },
+    {
+      "label": "Prepare Next.js (Production Safe)",
+      "dependsOn": ["Kill Port 3000", "Build Next.js (Production Safe)"],
+      "dependsOrder": "sequence",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "silent",
+        "panel": "shared"
+      }
+    },
+    {
       "label": "Start FastAPI",
       "type": "shell",
       "command": "${workspaceFolder}/python-api/.venv/Scripts/python.exe",

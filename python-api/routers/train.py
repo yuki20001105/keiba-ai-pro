@@ -7,6 +7,7 @@ GET  /api/train/status/{job_id}
 from __future__ import annotations
 
 import asyncio
+import os
 import traceback
 import uuid
 from datetime import datetime
@@ -30,6 +31,10 @@ from models import TrainRequest, TrainResponse  # type: ignore
 from keiba_ai.constants import FUTURE_FIELDS  # type: ignore
 from keiba_ai.feature_catalog import FeatureCatalog  # type: ignore
 from scraping.jobs import _purge_old_jobs, _MAX_JOBS  # type: ignore
+from training.approved_execution import (  # type: ignore
+    ApprovedExecutionError,
+    ApprovedTrainingExecution,
+)
 
 router = APIRouter()
 
@@ -50,6 +55,22 @@ class BCWrap:
 
 # ジョブストア（インメモリ）
 _train_jobs: dict = {}
+_LOCAL_ENVIRONMENTS = frozenset({"local", "development", "dev", "test", "ci"})
+
+
+def _require_legacy_model_training_allowed() -> None:
+    """Keep direct artifact writers behind explicit local/test compatibility."""
+
+    environment = (os.environ.get("APP_ENV") or "").strip().lower()
+    enabled = (os.environ.get("MODEL_TRAINING_LOCAL_ENABLED") or "").strip().lower() == "true"
+    if environment not in _LOCAL_ENVIRONMENTS or not enabled:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "model training requires an approval-bound durable job; "
+                "legacy direct training is available only by explicit local/test opt-in"
+            ),
+        )
 
 
 def _extract_ym_from_df(df: "pd.DataFrame") -> list:  # noqa: F821
@@ -111,8 +132,33 @@ def _get_date8_to(df: "pd.DataFrame") -> str:  # noqa: F821
 # レース後確定フィールド（keiba_ai.constants.FUTURE_FIELDS を参照）
 
 
-async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None) -> TrainResponse:
+async def _do_train(
+    request: TrainRequest,
+    current_user: dict,
+    progress_cb=None,
+    approved_execution: ApprovedTrainingExecution | None = None,
+) -> TrainResponse:
     """モデル学習内部実装（progress_cb は任意のコールバック = (msg: str, pct: int | None) -> None）"""
+    if approved_execution is None:
+        _require_legacy_model_training_allowed()
+    else:
+        try:
+            approved_execution.validate_request(
+                target=request.target,
+                model_type=request.model_type,
+                force_sync=request.force_sync,
+                test_size=request.test_size,
+                cv_folds=request.cv_folds,
+                use_optuna=request.use_optuna,
+                training_date_from=request.training_date_from,
+                training_date_to=request.training_date_to,
+            )
+            approved_execution.verify_snapshot()
+        except ApprovedExecutionError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="approved training contract mismatch",
+            ) from exc
     if progress_cb is None:
         def progress_cb(msg: str, pct: int = None): pass  # noqa: F811
     try:
@@ -147,12 +193,16 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
         print("=" * 70 + "\n")
 
         # 常に ultimate DB を使用（87特徴量モード固定）
-        db_path = ULTIMATE_DB
+        db_path = (
+            ULTIMATE_DB
+            if approved_execution is None
+            else approved_execution.snapshot_path
+        )
 
         progress_cb("データベース接続中...", 3)
 
         # Supabase → SQLite 同期（ブロッキング呼び出しを to_thread で分離）
-        if SUPABASE_DATA_ENABLED and get_supabase_client():
+        if approved_execution is None and SUPABASE_DATA_ENABLED and get_supabase_client():
             from app_config import sync_supabase_to_sqlite  # type: ignore
             if request.force_sync:
                 logger.info("Supabase からデータを同期中...")
@@ -239,17 +289,111 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
             try:
                 print("\n=== LightGBM最適化モード ===")
                 progress_cb("特徴量選択・最適化中...", 28)
-                df_optimized, optimizer, categorical_features = prepare_for_lightgbm_ultimate(
-                    df, target_col=request.target, is_training=True
-                )
                 exclude_cols = [
                     request.target, "race_id", "horse_id", "jockey_id",
                     "trainer_id", "owner_id", "finish_position",
                 ]
-                X = df_optimized.drop([c for c in exclude_cols if c in df_optimized.columns], axis=1)
-                obj_cols = X.select_dtypes(include=["object"]).columns.tolist()
-                if obj_cols:
-                    X = X.drop(columns=obj_cols)
+                if approved_execution is not None:
+                    if "race_date" not in df.columns:
+                        raise ApprovedExecutionError("approved-period-column-unavailable")
+                    approved_dates = pd.to_datetime(
+                        df["race_date"].astype(str).str.strip(),
+                        format="%Y%m%d",
+                        errors="coerce",
+                    )
+                    train_mask = approved_dates.between(
+                        pd.Timestamp(approved_execution.train_period_start),
+                        pd.Timestamp(approved_execution.train_period_end),
+                    )
+                    validation_mask = approved_dates.between(
+                        pd.Timestamp(approved_execution.validation_period_start),
+                        pd.Timestamp(approved_execution.validation_period_end),
+                    )
+                    if int(train_mask.sum()) < 200 or int(validation_mask.sum()) < 50:
+                        raise ApprovedExecutionError("approved-period-observations-insufficient")
+                    df_train_source = df.loc[train_mask].copy()
+                    df_validation_source = df.loc[validation_mask].copy()
+                    y_train_source = y.loc[train_mask].reset_index(drop=True)
+                    y_validation_source = y.loc[validation_mask].reset_index(drop=True)
+                    if y_train_source.nunique() < 2 or y_validation_source.nunique() < 2:
+                        raise ApprovedExecutionError("approved-period-target-classes-insufficient")
+
+                    df_train_optimized, optimizer, categorical_features = (
+                        prepare_for_lightgbm_ultimate(
+                            df_train_source,
+                            target_col=request.target,
+                            is_training=True,
+                        )
+                    )
+                    df_validation_optimized, _, _ = prepare_for_lightgbm_ultimate(
+                        df_validation_source,
+                        target_col=request.target,
+                        is_training=False,
+                        optimizer=optimizer,
+                    )
+                    X_train_source = df_train_optimized.drop(
+                        [c for c in exclude_cols if c in df_train_optimized.columns],
+                        axis=1,
+                    )
+                    X_validation_source = df_validation_optimized.drop(
+                        [c for c in exclude_cols if c in df_validation_optimized.columns],
+                        axis=1,
+                    )
+                    train_objects = X_train_source.select_dtypes(include=["object"]).columns.tolist()
+                    validation_objects = X_validation_source.select_dtypes(
+                        include=["object"]
+                    ).columns.tolist()
+                    if train_objects:
+                        X_train_source = X_train_source.drop(columns=train_objects)
+                    if validation_objects:
+                        X_validation_source = X_validation_source.drop(columns=validation_objects)
+                    try:
+                        approved_columns = approved_execution.select_feature_columns(
+                            X_train_source.columns.tolist(),
+                            future_fields=FUTURE_FIELDS,
+                        )
+                        approved_execution.select_feature_columns(
+                            X_validation_source.columns.tolist(),
+                            future_fields=FUTURE_FIELDS,
+                        )
+                    except ApprovedExecutionError as exc:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="approved training contract mismatch",
+                        ) from exc
+                    X_train_source = X_train_source.loc[:, list(approved_columns)]
+                    X_validation_source = X_validation_source.loc[:, list(approved_columns)]
+                    categorical_features = [
+                        feature for feature in categorical_features if feature in approved_columns
+                    ]
+                    approved_train_count = len(X_train_source)
+                    X = pd.concat(
+                        [X_train_source, X_validation_source],
+                        ignore_index=True,
+                    )
+                    y = pd.concat(
+                        [y_train_source, y_validation_source],
+                        ignore_index=True,
+                    )
+                    df = pd.concat(
+                        [df_train_source, df_validation_source],
+                        ignore_index=True,
+                    )
+                    df_optimized = pd.concat(
+                        [df_train_optimized, df_validation_optimized],
+                        ignore_index=True,
+                    )
+                else:
+                    df_optimized, optimizer, categorical_features = prepare_for_lightgbm_ultimate(
+                        df, target_col=request.target, is_training=True
+                    )
+                    X = df_optimized.drop(
+                        [c for c in exclude_cols if c in df_optimized.columns],
+                        axis=1,
+                    )
+                    obj_cols = X.select_dtypes(include=["object"]).columns.tolist()
+                    if obj_cols:
+                        X = X.drop(columns=obj_cols)
                 feature_count = len(X.columns)
                 _all_feature_columns = X.columns.tolist()
 
@@ -280,8 +424,18 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
                         # df のインデックスを同期（race_date が時系列分割に使用される）
                         df = df.reset_index(drop=True).loc[_pre_valid].reset_index(drop=True)
 
-                _time_split = False
-                if "race_date" in df.columns:
+                _time_split = approved_execution is not None
+                if approved_execution is not None:
+                    X_train = X.iloc[:approved_train_count]
+                    X_test = X.iloc[approved_train_count:]
+                    y_train = y.iloc[:approved_train_count]
+                    y_test = y.iloc[approved_train_count:]
+                    logger.info(
+                        "Approved out-of-time split: train=%s validation=%s",
+                        len(X_train),
+                        len(X_test),
+                    )
+                elif "race_date" in df.columns:
                     _dates = pd.to_datetime(
                         df["race_date"].reset_index(drop=True).astype(str).str[:8],
                         format="%Y%m%d", errors="coerce",
@@ -578,7 +732,10 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
         progress_cb("確率キャリブレーション中...", 88)
         calibrator = None
         logloss_calibrated = logloss
-        if request.target not in ("speed_deviation", "rank"):
+        if (
+            approved_execution is None
+            and request.target not in ("speed_deviation", "rank")
+        ):
             try:
                 from sklearn.isotonic import IsotonicRegression as _IR
                 _ir = _IR(out_of_bounds="clip")
@@ -608,7 +765,12 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
         saved_at = datetime.now().strftime("%Y%m%d_%H%M")
         model_id = f"{date_from_8}_{date_to_8}_{saved_at}"
         model_filename = f"model_{request.target}_{request.model_type}_{model_id}.joblib"
-        model_path = MODELS_DIR / model_filename
+        if approved_execution is None:
+            model_directory = MODELS_DIR
+            model_directory.mkdir(parents=True, exist_ok=True)
+        else:
+            model_directory = approved_execution.prepare_artifact_directory()
+        model_path = model_directory / model_filename
 
         bundle = {
             "model": model,
@@ -644,6 +806,23 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
             "training_date_from": _get_actual_date_from(df, request.training_date_from),
             "training_date_to": _get_actual_date_to(df, request.training_date_to),
         }
+        if approved_execution is not None:
+            bundle["approved_execution"] = {
+                "job_id": approved_execution.job_id,
+                "approved_payload_hash": approved_execution.approved_payload_hash,
+                "data_snapshot_sha256": approved_execution.data_snapshot_sha256,
+                "feature_contract_sha256": approved_execution.feature_contract_sha256,
+                "candidate_commit_sha": approved_execution.candidate_commit_sha,
+                "active_model_id": approved_execution.active_model_id,
+                "train_period": {
+                    "start": approved_execution.train_period_start,
+                    "end": approved_execution.train_period_end,
+                },
+                "validation_period": {
+                    "start": approved_execution.validation_period_start,
+                    "end": approved_execution.validation_period_end,
+                },
+            }
         # LambdaRank はランカー固有フラグを保存
         if request.target == "rank" and locals().get("_is_ranker_model"):
             bundle["_is_ranker"] = True
@@ -652,7 +831,7 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
         # カタログをモデルの特徴量で自動同期（新規特徴量を auto_synced ステージに追記）
         try:
             _catalog_path = Path(__file__).parent.parent.parent / "keiba" / "feature_catalog.yaml"
-            if _catalog_path.exists():
+            if approved_execution is None and _catalog_path.exists():
                 _cat = FeatureCatalog.load(_catalog_path)
                 _new = _cat.sync_with_model_features(bundle.get("feature_columns", []))
                 if _new:
@@ -662,7 +841,7 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
             logger.warning(f"feature_catalog 同期スキップ: {_e}")
 
         # Supabase へモデルアップロード（ブロッキング I/O を to_thread で分離）
-        if SUPABASE_DATA_ENABLED and get_supabase_client():
+        if approved_execution is None and SUPABASE_DATA_ENABLED and get_supabase_client():
             from app_config import upload_model_to_supabase  # type: ignore
             await asyncio.to_thread(
                 upload_model_to_supabase,
@@ -708,6 +887,11 @@ async def _do_train(request: TrainRequest, current_user: dict, progress_cb=None)
 
     except HTTPException:
         raise
+    except ApprovedExecutionError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="approved training contract mismatch",
+        ) from exc
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"学習中にエラーが発生: {str(e)}")
@@ -722,7 +906,7 @@ async def train_model(request: TrainRequest, current_user: dict = Depends(requir
 # ── 非同期ジョブ管理 ──────────────────────────────────────
 
 
-async def _run_train_job(job_id: str, request: TrainRequest) -> None:
+async def _run_train_job(job_id: str, request: TrainRequest, current_user: dict) -> None:
     job = _train_jobs[job_id]
     job["status"] = "running"
     job["pct"] = 0
@@ -733,7 +917,7 @@ async def _run_train_job(job_id: str, request: TrainRequest) -> None:
             job["pct"] = pct
 
     try:
-        train_result = await _do_train(request, {"user_id": "background-job"}, progress_cb=_cb)
+        train_result = await _do_train(request, current_user, progress_cb=_cb)
         job["status"] = "completed"
         job["result"] = train_result.dict()
         job["progress"] = "完了"
@@ -750,8 +934,9 @@ async def _run_train_job(job_id: str, request: TrainRequest) -> None:
 
 
 @router.post("/api/train/start")
-async def train_start(request: TrainRequest):
+async def train_start(request: TrainRequest, current_user: dict = Depends(require_premium)):
     """非同期学習ジョブを起動してすぐに job_id を返す"""
+    _require_legacy_model_training_allowed()
     _purge_old_jobs(_train_jobs)
     job_id = str(uuid.uuid4())
     _train_jobs[job_id] = {"status": "queued", "progress": "キュー待ち", "pct": 0, "result": None, "error": None}
@@ -759,7 +944,7 @@ async def train_start(request: TrainRequest):
         import threading
         def _bg() -> None:
             # 別スレッドで独立した event loop を持つことでメインループをブロックしない
-            asyncio.run(_run_train_job(job_id, request))
+            asyncio.run(_run_train_job(job_id, request, current_user))
         threading.Thread(target=_bg, daemon=True, name=f"train-{job_id}").start()
     except Exception as e:
         _train_jobs[job_id]["status"] = "error"

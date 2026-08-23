@@ -14,10 +14,11 @@ import sqlite3
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from app_config import CONFIG_PATH, SUPABASE_ENABLED, get_supabase_client, logger  # type: ignore
+from deps.auth import require_admin  # type: ignore
 from models import PurchaseHistoryRequest, PurchaseHistoryResponse  # type: ignore
 
 router = APIRouter()
@@ -52,6 +53,31 @@ def _tracking_db_path():
 def _get_user_id(req: Request) -> Optional[str]:
     """JWT ミドルウェアがセットした user_id を取得"""
     return getattr(req.state, "user_id", None)
+
+
+def _require_user_id(req: Request) -> str:
+    user_id = _get_user_id(req)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="認証が必要です")
+    return user_id
+
+
+def _ensure_tracking_user_column(con: sqlite3.Connection) -> None:
+    """SQLite フォールバックの purchase_history に user_id 列を追加する。"""
+    cur = con.cursor()
+    cur.execute(_TRACKING_DDL)
+    cur.execute("PRAGMA table_info(purchase_history)")
+    cols = {row[1] for row in cur.fetchall()}
+    if "user_id" not in cols:
+        cur.execute("ALTER TABLE purchase_history ADD COLUMN user_id TEXT")
+        con.commit()
+
+
+def _count_legacy_orphans(con: sqlite3.Connection) -> int:
+    cur = con.cursor()
+    cur.execute("SELECT COUNT(*) FROM purchase_history WHERE user_id IS NULL OR user_id = ''")
+    row = cur.fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
 
 
 # ── Supabase helpers ─────────────────────────────────────────────────
@@ -132,7 +158,7 @@ class UpdatePurchaseResultRequest(BaseModel):
 async def update_purchase_result(purchase_id: str, body: UpdatePurchaseResultRequest, req: Request):
     """購入結果更新（実際の払戻金・的中フラグ）"""
     try:
-        user_id = _get_user_id(req)
+        user_id = _require_user_id(req)
 
         if SUPABASE_ENABLED and get_supabase_client() and user_id:
             client = get_supabase_client()
@@ -159,8 +185,9 @@ async def update_purchase_result(purchase_id: str, body: UpdatePurchaseResultReq
             except ValueError:
                 raise HTTPException(status_code=400, detail="無効なID形式です")
             con = sqlite3.connect(str(path))
+            _ensure_tracking_user_column(con)
             cursor = con.cursor()
-            cursor.execute("SELECT total_cost FROM purchase_history WHERE id = ?", (int_id,))
+            cursor.execute("SELECT total_cost FROM purchase_history WHERE id = ? AND user_id = ?", (int_id, user_id))
             row = cursor.fetchone()
             if not row:
                 con.close()
@@ -168,8 +195,8 @@ async def update_purchase_result(purchase_id: str, body: UpdatePurchaseResultReq
             total_cost = row[0] or 0
             rr = round(body.actual_return / total_cost * 100, 1) if total_cost > 0 else 0
             cursor.execute(
-                "UPDATE purchase_history SET actual_return = ?, is_hit = ?, recovery_rate = ? WHERE id = ?",
-                (body.actual_return, 1 if body.is_hit else 0, rr, int_id),
+                "UPDATE purchase_history SET actual_return = ?, is_hit = ?, recovery_rate = ? WHERE id = ? AND user_id = ?",
+                (body.actual_return, 1 if body.is_hit else 0, rr, int_id, user_id),
             )
             con.commit()
             con.close()
@@ -185,7 +212,7 @@ async def update_purchase_result(purchase_id: str, body: UpdatePurchaseResultReq
 async def delete_purchase(purchase_id: str, req: Request):
     """購入履歴削除エンドポイント"""
     try:
-        user_id = _get_user_id(req)
+        user_id = _require_user_id(req)
 
         if SUPABASE_ENABLED and get_supabase_client() and user_id:
             client = get_supabase_client()
@@ -208,12 +235,13 @@ async def delete_purchase(purchase_id: str, req: Request):
             except ValueError:
                 raise HTTPException(status_code=400, detail="無効なID形式です")
             con = sqlite3.connect(str(path))
+            _ensure_tracking_user_column(con)
             cursor = con.cursor()
-            cursor.execute("SELECT id FROM purchase_history WHERE id = ?", (int_id,))
+            cursor.execute("SELECT id FROM purchase_history WHERE id = ? AND user_id = ?", (int_id, user_id))
             if not cursor.fetchone():
                 con.close()
                 raise HTTPException(status_code=404, detail="購入記録が見つかりません")
-            cursor.execute("DELETE FROM purchase_history WHERE id = ?", (int_id,))
+            cursor.execute("DELETE FROM purchase_history WHERE id = ? AND user_id = ?", (int_id, user_id))
             con.commit()
             con.close()
 
@@ -232,7 +260,7 @@ async def save_purchase_history(request: PurchaseHistoryRequest, req: Request):
         month = datetime.now().month
         season = "春" if 3 <= month <= 5 else "夏" if 6 <= month <= 8 else "秋" if 9 <= month <= 11 else "冬"
         combinations_str = ",".join(request.combinations)
-        user_id = _get_user_id(req)
+        user_id = _require_user_id(req)
 
         if SUPABASE_ENABLED and get_supabase_client() and user_id:
             data = {
@@ -257,18 +285,18 @@ async def save_purchase_history(request: PurchaseHistoryRequest, req: Request):
             path = _tracking_db_path()
             path.parent.mkdir(parents=True, exist_ok=True)
             con = sqlite3.connect(str(path))
+            _ensure_tracking_user_column(con)
             cursor = con.cursor()
-            cursor.execute(_TRACKING_DDL)
             cursor.execute(
                 """
                 INSERT INTO purchase_history (
-                    race_id, purchase_date, season, venue, bet_type, combinations,
+                    user_id, race_id, purchase_date, season, venue, bet_type, combinations,
                     strategy_type, purchase_count, unit_price, total_cost,
                     expected_value, expected_return
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    request.race_id, purchase_date, season, request.venue,
+                    user_id, request.race_id, purchase_date, season, request.venue,
                     request.bet_type, combinations_str,
                     request.strategy_type, request.purchase_count,
                     request.unit_price, request.total_cost,
@@ -293,7 +321,7 @@ async def save_purchase_history(request: PurchaseHistoryRequest, req: Request):
 async def get_purchase_history(req: Request, limit: int = 50):
     """購入履歴取得エンドポイント（Supabase / SQLite 自動選択）"""
     try:
-        user_id = _get_user_id(req)
+        user_id = _require_user_id(req)
 
         if SUPABASE_ENABLED and get_supabase_client() and user_id:
             history = _get_history_supabase(user_id, limit)
@@ -303,6 +331,7 @@ async def get_purchase_history(req: Request, limit: int = 50):
             if not path.exists():
                 return {"success": True, "history": [], "count": 0, "message": "購入履歴がまだありません"}
             con = sqlite3.connect(str(path))
+            _ensure_tracking_user_column(con)
             cursor = con.cursor()
             cursor.execute(
                 """
@@ -310,9 +339,9 @@ async def get_purchase_history(req: Request, limit: int = 50):
                        strategy_type, purchase_count, unit_price, total_cost,
                        expected_value, expected_return, actual_return,
                        is_hit, recovery_rate, created_at
-                FROM purchase_history ORDER BY created_at DESC LIMIT ?
+                FROM purchase_history WHERE user_id = ? ORDER BY created_at DESC LIMIT ?
                 """,
-                (limit,),
+                (user_id, limit),
             )
             rows = cursor.fetchall()
             con.close()
@@ -352,7 +381,7 @@ async def get_purchase_history(req: Request, limit: int = 50):
 async def get_statistics(req: Request):
     """統計サマリー取得エンドポイント（Supabase / SQLite 自動選択）"""
     try:
-        user_id = _get_user_id(req)
+        user_id = _require_user_id(req)
 
         if SUPABASE_ENABLED and get_supabase_client() and user_id:
             stats = _get_stats_supabase(user_id)
@@ -364,14 +393,17 @@ async def get_statistics(req: Request):
             return {"success": True, "statistics": {}, "message": "統計データがまだありません"}
 
         con = sqlite3.connect(str(path))
+        _ensure_tracking_user_column(con)
         cursor = con.cursor()
-
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT bet_type, COUNT(*) as count,
                    SUM(total_cost) as total_cost, SUM(actual_return) as total_return,
                    SUM(is_hit) as hit_count
-            FROM purchase_history GROUP BY bet_type
-        """)
+            FROM purchase_history WHERE user_id = ? GROUP BY bet_type
+            """,
+            (user_id,),
+        )
         bet_type_stats = [
             {
                 "bet_type": r[0], "count": r[1], "total_cost": r[2], "total_return": r[3],
@@ -381,11 +413,14 @@ async def get_statistics(req: Request):
             for r in cursor.fetchall()
         ]
 
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT season, COUNT(*) as count,
                    SUM(total_cost) as total_cost, SUM(actual_return) as total_return
-            FROM purchase_history GROUP BY season
-        """)
+            FROM purchase_history WHERE user_id = ? GROUP BY season
+            """,
+            (user_id,),
+        )
         season_stats = [
             {
                 "season": r[0], "count": r[1], "total_cost": r[2], "total_return": r[3],
@@ -399,3 +434,26 @@ async def get_statistics(req: Request):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"統計の取得に失敗: {str(e)}")
+
+
+@router.get("/api/purchase/diagnostics/legacy-orphans")
+async def get_legacy_orphan_diagnostics(_: dict = Depends(require_admin)):
+    """
+    SQLite フォールバックにおける legacy orphan 行（user_id NULL/空）件数を返す。
+
+    方針:
+    - 既存 NULL 行は通常ユーザーへ割り当てない
+    - 通常ユーザーの一覧/更新/削除対象からは不可視
+    - 管理者向けに監査・移行対象として件数のみ公開
+    """
+    path = _tracking_db_path()
+    if not path.exists():
+        return {"success": True, "store": "SQLite", "legacy_orphan_count": 0}
+
+    con = sqlite3.connect(str(path))
+    try:
+        _ensure_tracking_user_column(con)
+        orphan_count = _count_legacy_orphans(con)
+        return {"success": True, "store": "SQLite", "legacy_orphan_count": orphan_count}
+    finally:
+        con.close()

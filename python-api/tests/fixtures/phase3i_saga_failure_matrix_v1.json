@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "contract_mode": "synthetic_non_executable",
+  "scenarios": [
+    "failure_before_prepare",
+    "failure_after_prepare",
+    "reservation_rejected",
+    "reservation_expired",
+    "consume_rejected",
+    "consume_ambiguous",
+    "failure_after_consume_before_outbox_ack",
+    "dispatcher_crash_before_claim_commit",
+    "dispatcher_crash_after_claim",
+    "stale_fencing_token",
+    "duplicate_dispatcher_replay",
+    "compensation_interrupted_then_replayed",
+    "recovery_replayed_twice",
+    "concurrent_recovery"
+  ],
+  "invariants": [
+    "stable_operation_job_binding",
+    "idempotent_prepare",
+    "consume_before_dispatch",
+    "deterministic_recovery",
+    "idempotent_compensation",
+    "lease_fencing",
+    "replay_deduplication",
+    "worker_dispatch_prohibited",
+    "zero_external_effects"
+  ],
+  "terminal_states": [
+    "succeeded",
+    "compensated",
+    "failed_terminal",
+    "manual_intervention"
+  ],
+  "forbidden_effects": [
+    "consume_rpc",
+    "external_database_write",
+    "lock_release",
+    "network_call",
+    "reservation_rpc",
+    "scrape_dispatch"
+  ]
+}

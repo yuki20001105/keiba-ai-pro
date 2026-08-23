@@ -31,6 +31,14 @@ from scraping.constants import SCRAPE_HEADERS  # type: ignore
 router = APIRouter()
 
 
+def _ensure_non_production_for_test_endpoints() -> None:
+    import os
+
+    env = (os.environ.get("APP_ENV") or "development").strip().lower()
+    if env == "production":
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
 @router.get("/")
 async def root():
     """ヘルスチェック"""
@@ -44,6 +52,7 @@ async def root():
 @router.get("/api/debug")
 async def debug_info():
     """Supabase接続状態のデバッグ情報"""
+    _ensure_non_production_for_test_endpoints()
     import os
 
     supabase_url = os.environ.get("SUPABASE_URL", "")
@@ -73,6 +82,7 @@ async def debug_info():
 @router.post("/api/test-optuna-request")
 async def test_optuna_request(request: TrainRequest):
     """Optunaリクエストのテスト用エンドポイント"""
+    _ensure_non_production_for_test_endpoints()
     return {
         "received": {
             "target": request.target,
@@ -187,6 +197,7 @@ async def get_data_stats(ultimate: bool = False):
 @router.get("/api/test/task")
 async def scrape_start_debug():
     """GETテスト: asyncio.create_taskと1秒待機してstatusをconfirmedに変えるタスクを発火テスト"""
+    _ensure_non_production_for_test_endpoints()
     test_id = "test_" + str(uuid.uuid4())[:4]
     _scrape_jobs[test_id] = {"status": "queued", "progress": {}, "result": None, "error": None}
 
@@ -201,6 +212,7 @@ async def scrape_start_debug():
 @router.get("/api/test/connectivity")
 async def test_connectivity():
     """netkeiba疎通確認・Supabase書き込みテスト"""
+    _ensure_non_production_for_test_endpoints()
     result = {}
 
     try:

@@ -11,8 +11,10 @@ from typing import Optional
 
 from bs4 import BeautifulSoup
 
-from scraping.constants import HTML_STRAINER, VENUE_MAP, SCRAPE_PROXY_URL, is_cloudflare_block
+from scraping.constants import HTML_STRAINER, VENUE_MAP, is_cloudflare_block
+from scraping.fetch_pipeline import fetch_text
 from scraping.horse import scrape_horse_detail
+from scraping.odds import fetch_tansho_odds_api
 
 try:
     from app_config import logger  # type: ignore
@@ -22,7 +24,11 @@ except ImportError:
 
 
 async def scrape_race_full(
-    session, race_id: str, date_hint: str = "", quick_mode: bool = False
+    session,
+    race_id: str,
+    date_hint: str = "",
+    quick_mode: bool = False,
+    force_refresh: bool = False,
 ) -> Optional[dict]:
     """
     単一レースの完全データを netkeiba.com から取得。
@@ -33,42 +39,34 @@ async def scrape_race_full(
     _quick_mode = quick_mode
 
     url = f"https://db.netkeiba.com/race/{race_id}/"
-    html: str | None = None
-    # ── リトライ付きフェッチ（最大3回、指数バックオフ） ──
-    for _attempt in range(3):
-        try:
-            if _attempt > 0:
-                await asyncio.sleep(2.0 ** _attempt)
-            _get_kwargs: dict = {}
-            if SCRAPE_PROXY_URL:
-                _get_kwargs["proxy"] = SCRAPE_PROXY_URL
-            async with session.get(url, **_get_kwargs) as resp:
-                if resp.status == 429:
-                    logger.warning(f"429 Too Many Requests: {url} (試行{_attempt+1}/3)")
-                    await asyncio.sleep(10.0 + _attempt * 5.0)
-                    continue
-                if resp.status != 200:
-                    logger.warning(f"HTTP {resp.status}: {url}")
-                    return None
-                content = await resp.read()
-                if is_cloudflare_block(content):
-                    logger.error(
-                        f"Cloudflare ブロック検知 ({len(content)}B): {url} — "
-                        f"SCRAPE_PROXY_URL 環境変数でプロキシを設定してください"
-                    )
-                    return None
-                raw = content.decode("euc-jp", errors="replace")
-                if "\ufffd" in raw[:500]:
-                    logger.debug(f"EUC-JP 変換警告 (先頭500文字に置換文字あり): {race_id}")
-                html = raw
-                break
-        except asyncio.TimeoutError:
-            logger.warning(f"タイムアウト {race_id} 試行{_attempt+1}/3")
-        except Exception as e:
-            logger.error(f"取得エラー {race_id} 試行{_attempt+1}/3: {e}")
-    if html is None:
-        logger.error(f"最大リトライ到達、取得失敗: {race_id}")
+    _fetch, html = await fetch_text(
+        session,
+        url,
+        cache_ttl_sec=12 * 60 * 60,
+        resume_key=f"race:{race_id}:result",
+        min_interval_sec=1.0,
+        max_retries=3,
+        retry_statuses={429, 500, 503},
+        retry_base_sec=2.0,
+        retry_jitter_sec=0.6,
+        circuit_threshold=3,
+        circuit_cooldown_sec=120.0,
+        force_refresh=force_refresh,
+    )
+    if _fetch.status != 200:
+        logger.warning(f"HTTP {_fetch.status}: {url}")
         return None
+    if is_cloudflare_block(_fetch.body):
+        logger.error(
+            f"Cloudflare ブロック検知 ({len(_fetch.body)}B): {url} — "
+            f"SCRAPE_PROXY_URL 環境変数でプロキシを設定してください"
+        )
+        return None
+    if not html:
+        logger.error(f"空レスポンス: {race_id}")
+        return None
+    if "\ufffd" in html[:500]:
+        logger.debug(f"EUC-JP 変換警告 (先頭500文字に置換文字あり): {race_id}")
 
     soup = BeautifulSoup(html, "lxml", parse_only=HTML_STRAINER)
     _smalltxt_p = soup.find("p", class_="smalltxt")
@@ -252,7 +250,12 @@ async def scrape_race_full(
     table = soup.find("table", class_="race_table_01")
     if not table:
         logger.warning(f"race_table_01 not found: {race_id} → 出馬表ページへフォールバック")
-        return await _scrape_shutuba_fallback(session, race_id, date_hint)
+        return await _scrape_shutuba_fallback(
+            session,
+            race_id,
+            date_hint,
+            force_refresh=force_refresh,
+        )
 
     all_rows = table.find_all("tr")
     if not all_rows:
@@ -706,24 +709,33 @@ def _build_race_result(race_id, race_name, venue, date_str, post_time, race_clas
 
 
 async def _scrape_shutuba_fallback(
-    session, race_id: str, date_hint: str = ""
+    session,
+    race_id: str,
+    date_hint: str = "",
+    *,
+    force_refresh: bool = False,
 ) -> Optional[dict]:
     """
     db.netkeiba.com に結果がない（当日・未来レース）場合に
     race.netkeiba.com/race/shutuba.html から出走馬情報を取得する。
     """
-    import httpx
-
     shutuba_url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
-    try:
-        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as hx:
-            resp = await hx.get(shutuba_url)
-        if resp.status_code != 200:
-            logger.warning(f"shutuba HTTP {resp.status_code}: {race_id}")
-            return None
-        html = resp.content.decode("euc-jp", errors="replace")
-    except Exception as e:
-        logger.error(f"shutuba 取得エラー {race_id}: {e}")
+    _fetch, html = await fetch_text(
+        session,
+        shutuba_url,
+        cache_ttl_sec=6 * 60 * 60,
+        resume_key=f"race:{race_id}:shutuba",
+        min_interval_sec=1.0,
+        max_retries=3,
+        retry_statuses={429, 500, 503},
+        retry_base_sec=2.0,
+        retry_jitter_sec=0.6,
+        circuit_threshold=3,
+        circuit_cooldown_sec=120.0,
+        force_refresh=force_refresh,
+    )
+    if _fetch.status != 200:
+        logger.warning(f"shutuba HTTP {_fetch.status}: {race_id}")
         return None
 
     soup = BeautifulSoup(html, "lxml")
@@ -912,10 +924,53 @@ async def _scrape_shutuba_fallback(
         logger.warning(f"shutuba: 出走馬なし {race_id}")
         return None
 
+    # The visible odds cells are populated by JavaScript.  Query the same JSON
+    # endpoint used by the page and accept only actual market/result statuses;
+    # forecast (yoso) odds must never enter point-in-time evidence.
+    live_odds, live_popularity, _odds_status = await fetch_tansho_odds_api(session, race_id)
+    if live_odds:
+        for horse in horses:
+            try:
+                horse_number = int(horse.get("horse_number"))
+            except (TypeError, ValueError):
+                continue
+            if horse_number in live_odds:
+                horse["odds"] = live_odds[horse_number]
+            if horse_number in live_popularity:
+                horse["popularity"] = live_popularity[horse_number]
+
+    # The shutuba table contains only the current entry card. The active
+    # pre-race model also consumes prior-race and pedigree fields, all of which
+    # are available before post time on the horse detail pages. Enrich the
+    # coherent snapshot before it is atomically persisted so inference never
+    # depends on a later, result-page-only refresh.
+    async def _fetch_shutuba_detail(horse: dict) -> None:
+        horse_id = str(horse.get("horse_id") or "")
+        if not horse_id:
+            return
+        detail = await scrape_horse_detail(
+            session,
+            horse_id,
+            str(horse.get("horse_url") or ""),
+            quick_mode=True,
+        )
+        horse.update(detail)
+
+    for chunk_start in range(0, len(horses), 4):
+        chunk = horses[chunk_start : chunk_start + 4]
+        await asyncio.gather(*(_fetch_shutuba_detail(horse) for horse in chunk))
+        if chunk_start + 4 < len(horses):
+            await asyncio.sleep(1.0)
+
+    for horse in horses:
+        horse["odds_status"] = _odds_status
+
     logger.info(f"[shutuba] {race_id}: {len(horses)}頭取得 ({race_name} @ {venue} {distance}m)")
-    return _build_race_result(
+    snapshot = _build_race_result(
         race_id, race_name, venue, date_str, post_time, race_class,
         kai, day, course_direction, distance, track_type, weather,
         field_condition, len(horses), [], [], horses,
         (distance == 0)
     )
+    snapshot["race_info"]["odds_status"] = _odds_status
+    return snapshot

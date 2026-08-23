@@ -569,12 +569,30 @@ Kelly % = (p × odds - 1) / (odds - 1)
 ### データ収集画面 (`/data-collection`)
 
 ```
-1. ローカルFastAPI稼働チェック → GET /api/scrape/status/__health_check__
+1. ローカルFastAPI稼働チェック → GET /api/scrape/health
 2. 期間指定入力 (開始年月〜終了年月)
 3. [データ取得開始] → POST /api/scrape (ジョブ開始)
    → GET /api/scrape/status/{job_id} ポーリング (3秒間隔)
 4. 取得済みデータ確認 → GET /api/races/recent?limit=50 (1回だけ)
 5. 詳細表示 → GET /api/races/{race_id}/horses (ML推論なし・軽量)
+```
+
+### 本番前チェック画面 (`/production-readiness`)
+
+```
+1. Premium/Admin 権限で [本番前チェックを実行]
+2. POST /api/production-readiness
+3. read-only checks を順次実行
+  - Frontend build
+  - FastAPI health / scrape health
+  - analyze_race smoke / smoke suite summary
+  - secret scan (Notion token prefix)
+  - git status 注意
+  - write flag / APP_ENV safety
+4. pass / warn / fail / unknown をカード表示
+  - 認証トークン未設定時の 401/403 は auth-required (warn) として表示
+  - KEIBA_AUTH_BEARER_TOKEN 設定時は認証必須 smoke を通常の pass/fail で評価
+5. write API は呼ばない（sandbox write-readback は別管理）
 ```
 
 ### 学習画面 (`/train`)
@@ -722,8 +740,81 @@ Notebook E2E audit
   ↓
 Analyze Race API smoke
   ↓
+Race-list proxy smoke
+  ↓
+Race preflight smoke
+  ↓
+Race dry-run smoke
+  ↓
+Payload contract diff
+  ↓
+Write guard smoke
+  ↓
 Notion output
 ```
+
+### 検証・本番 runbook
+
+**検証時に実行するコマンド**
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+npm run lint
+npm run build
+python -m compileall -q python-api scripts
+python scripts/run_keiba_smoke_suite.py
+python scripts/smoke_analyze_race_api.py
+python scripts/smoke_notion_report_api.py
+python scripts/run_keiba_notebook_e2e.py --mode audit
+git grep -n -I "<notion-token-prefix>"
+git status --short
+```
+
+認証必須 endpoint を厳密評価する場合:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+$env:KEIBA_AUTH_BEARER_TOKEN="<bearer-token>"
+python scripts/run_keiba_smoke_suite.py
+python scripts/smoke_analyze_race_api.py
+```
+
+注意:
+- `KEIBA_AUTH_BEARER_TOKEN` の値はログや JSON summary に出力しない
+- トークン未設定時の 401/403 は auth-required として warn 分類
+
+**UI での本番前チェック手順**
+
+```
+1. /production-readiness を開く
+2. [本番前チェックを実行] を押す
+3. fail/warn があるカードの summary を確認
+4. write flag が false であることを確認
+5. sandbox write-readback は別管理であることを確認
+```
+
+**本番運用ルール**
+
+- `NETKEIBA_RACE_WRITE_ENABLED=false`
+- `ALLOW_STAGING_WRITE=false`
+- `APP_ENV=production`
+- production/base table write は禁止
+- sandbox write は本番で実行しない
+- default smoke / default suite では write を実行しない
+- UI / 予測 / analyze_race / health check / read-only API のみ本番利用可
+
+**P1-16 sandbox runtime 確認コマンド**
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python scripts/smoke_netkeiba_race_write_guard.py --expect-sandbox-precheck
+python scripts/smoke_netkeiba_race_write_guard.py --expect-sandbox-write-readback
+```
+
+注意:
+- P1-16 sandbox write-readback actual pass は upstream ready 後の別管理
+- production/base table write はこの手順に含めない
+- DB / reports JSON / metadata は Git 管理対象に含めない
 
 **1) Notebook E2E audit**
 
@@ -745,18 +836,470 @@ cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
 python-api\.venv\Scripts\python.exe scripts\smoke_analyze_race_api.py
 ```
 
-**3) Notion output**
+**3) Race-list proxy smoke**
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_list_proxy.py
+```
+
+**4) Race preflight smoke (contract-only mode)**
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_preflight.py
+```
+
+判定ルール（preflight）:
+- ready: PASS
+- degraded: WARN
+- unavailable: WARN (環境によってはSKIP相当)
+- contract error: FAIL
+
+strict モード（non-ready も fail）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_preflight.py --fail-on-nonready
+```
+
+**5) Race dry-run smoke (contract-only mode)**
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_dry_run.py
+```
+
+判定ルール（dry-run）:
+- ready: PASS
+- degraded: WARN
+- unavailable: WARN (環境によってはSKIP相当)
+- invalid: WARN
+- contract error: FAIL
+
+strict モード（non-ready も fail）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_dry_run.py --fail-on-nonready
+```
+
+**6) Payload contract diff**
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\compare_netkeiba_race_payload_contract.py
+```
+
+判定ルール（payload diff）:
+- pass: contracts-compatible
+- warn: contract-diff-detected / dry-run non-ready
+- fail: contract-error only
+
+**7) Write guard smoke**
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_write_guard.py
+```
+
+判定ルール（write guard）:
+- pass: default disabled (write_performed=false)
+- warn: blocked / guarded-noop / invalid
+- fail: contract-error
+
+P1-12 writer-stub 契約（enabled 時）:
+- guarded-stub でも write_performed は常に false
+- table whitelist: races / race_results / race_payouts
+- row limit: races<=1, race_results<=30, race_payouts<=100
+- idempotency key と payload hash をレスポンスで確認
+- audit payload preview をレスポンスで確認（永続保存はしない）
+
+P1-13 sandbox write（明示実行時のみ）:
+- `sandbox_write=true` + `target_mode=sandbox` 指定時のみ sandbox write 候補
+- 対象は sandbox table 限定（本体テーブルへの write 禁止）
+- production では常に blocked
+- sandbox table 未存在時は stopped（warn）
+
+P1-14 sandbox precheck（read-only）:
+- `GET /api/netkeiba/race/sandbox/precheck` で sandbox readiness を確認
+- 対象テーブル:
+  - `sandbox_netkeiba_races`
+  - `sandbox_netkeiba_race_results`
+  - `sandbox_netkeiba_race_payouts`
+- 確認内容:
+  - table existence
+  - required column existence (`race_id`, `data|payload`)
+  - type compatibility
+  - row-limit support metadata
+  - base table references が無いこと
+- precheck は常に `write_performed=false`
+- sandbox table 未存在は stopped/warn（hard fail ではない）
+
+P1-14.5 sandbox DDL / migration plan（手動適用のみ）:
+- DDLファイル: `docs/migrations/netkeiba_sandbox_tables.sql`
+- 対象は sandbox table のみ（本番テーブルは変更しない）
+- 自動適用処理は追加しない
+
+手動適用（SQLite, 例）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe -c "import sqlite3,pathlib; db=pathlib.Path('keiba/data/keiba_ultimate.db'); sql=pathlib.Path('docs/migrations/netkeiba_sandbox_tables.sql').read_text(encoding='utf-8'); con=sqlite3.connect(str(db)); con.executescript(sql); con.commit(); con.close(); print('applied:', db)"
+```
+
+rollback / drop（手動）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe -c "import sqlite3,pathlib; db=pathlib.Path('keiba/data/keiba_ultimate.db'); con=sqlite3.connect(str(db)); con.executescript('BEGIN; DROP TABLE IF EXISTS sandbox_netkeiba_race_payouts; DROP TABLE IF EXISTS sandbox_netkeiba_race_results; DROP TABLE IF EXISTS sandbox_netkeiba_races; COMMIT;'); con.close(); print('dropped sandbox tables from:', db)"
+```
+
+precheck ready 条件（P1-15 着手ゲート）:
+- 3 sandbox table がすべて存在
+- 必須カラムが揃っている
+- 型互換チェックが通る
+- base table reference 検知がない
+- `status=ready` になるまで write/readback には進まない
+
+P1-15 実施結果（手動DDL適用後の ready 確認）:
+- `docs/migrations/netkeiba_sandbox_tables.sql` を手動適用
+- FastAPI 再起動後に precheck smoke を実行
+- `python scripts/smoke_netkeiba_race_write_guard.py --expect-sandbox-precheck`
+  - 結果: `verdict=pass` / `verdict_reason=sandbox-precheck-ready`
+- このフェーズでは sandbox write/readback は実施していない
+- default suite は引き続き write 非実行
+
+P1-16 実施内容（sandbox write 後 readback 検証）:
+- sandbox write 成功直後に sandbox table 限定で readback 検証を実施
+- readback 対象:
+  - `sandbox_netkeiba_races`
+  - `sandbox_netkeiba_race_results`
+  - `sandbox_netkeiba_race_payouts`
+- readback 検証キー: `race_id + idempotency_key`
+- 検証項目:
+  - `records_written` と readback count 一致
+  - target table が sandbox 限定
+  - `idempotency_key` 一致
+  - `payload_hash` 一致
+  - `audit_payload` 存在
+- 不一致時は `status=sandbox-readback-mismatch`
+
+禁止事項（継続）:
+- production write は禁止
+- base table (`races`, `race_results`, `race_payouts`) への write/readback は禁止
+- default smoke/default suite で write 実行しない
+- sandbox write/readback は明示オプション時のみ
+
+feature flag ON の限定検証（永続化しない）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro\python-api
+$env:NETKEIBA_RACE_WRITE_ENABLED = "true"
+$env:ALLOW_STAGING_WRITE = "true"
+$env:APP_ENV = "staging"
+..\.venv\Scripts\python.exe main.py
+```
+
+別ターミナルで enabled-mode smoke:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_write_guard.py --expect-enabled
+```
+
+enabled-mode では次を追加確認:
+- guarded-stub 契約が成立
+- row-limit 超過ケースが blocked
+- audit/idempotency の必須フィールドが存在
+
+enabled-mode 付き suite（任意）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\run_keiba_smoke_suite.py --verify-write-guard-enabled
+```
+
+flag-only blocked 確認（任意）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro\python-api
+$env:NETKEIBA_RACE_WRITE_ENABLED = "true"
+$env:ALLOW_STAGING_WRITE = "false"
+$env:APP_ENV = "development"
+..\.venv\Scripts\python.exe main.py
+```
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_write_guard.py --expect-flag-only
+```
+
+production 強制ブロック確認（任意）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro\python-api
+$env:NETKEIBA_RACE_WRITE_ENABLED = "true"
+$env:ALLOW_STAGING_WRITE = "true"
+$env:APP_ENV = "production"
+..\.venv\Scripts\python.exe main.py
+```
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_write_guard.py --expect-production-block
+```
+
+staging lock 不足ブロック確認（任意）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro\python-api
+$env:NETKEIBA_RACE_WRITE_ENABLED = "true"
+$env:ALLOW_STAGING_WRITE = "false"
+$env:APP_ENV = "staging"
+..\.venv\Scripts\python.exe main.py
+```
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_write_guard.py --expect-staging-lock-missing
+```
+
+suite optional:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\run_keiba_smoke_suite.py --verify-write-guard-flag-only --verify-write-guard-production-block --verify-write-guard-staging-lock-missing
+```
+
+sandbox write smoke（明示実行時のみ）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro\python-api
+$env:NETKEIBA_RACE_WRITE_ENABLED = "true"
+$env:ALLOW_STAGING_WRITE = "true"
+$env:APP_ENV = "staging"
+..\.venv\Scripts\python.exe main.py
+```
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_write_guard.py --expect-sandbox-write
+```
+
+注意:
+- この smoke は default 実行には含めない
+- sandbox table が未作成の場合は stopped/warn が正常
+
+sandbox write + readback smoke（明示実行時のみ）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_write_guard.py --expect-sandbox-write-readback
+```
+
+注意:
+- この smoke は default 実行には含めない
+- precheck 未ready時は stopped/warn が正常
+- readback 不一致時は `sandbox-readback-mismatch` を返す
+
+sandbox precheck smoke（read-only, 明示実行時のみ）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_netkeiba_race_write_guard.py --expect-sandbox-precheck
+```
+
+suite optional（precheck + sandbox write を明示実行）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\run_keiba_smoke_suite.py --verify-write-guard-sandbox-precheck --verify-write-guard-sandbox-write
+```
+
+suite optional（sandbox write + readback を明示実行）:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\run_keiba_smoke_suite.py --verify-write-guard-sandbox-write-readback
+```
+
+**8) Notion output**
 
 ```powershell
 cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
 python-api\.venv\Scripts\python.exe scripts\upload_to_notion.py
 ```
 
+**8.5) Notion output (Premium/Admin UI)**
+
+```
+1. /notion-report を開く
+2. レポート種別を選択
+3. [preview 生成] で内容確認
+4. [Notion へ送信] で送信
+```
+
+UI の安全条件:
+- `NOTION_TOKEN` / `NOTION_PARENT_PAGE_ID` は server-side env のみで利用
+- token 実値は画面・レスポンス・ログに出力しない
+- 非 Premium/Admin は API 直叩きでも `403`
+- 任意ファイルパス指定は不可（reportType allowlist のみ）
+
+**8.6) Model Redesign Workbench (MVP / read-only)**
+
+```
+1. /model-redesign-workbench を開く
+2. active model summary / metrics / feature warnings / 改善提案 preview を確認
+3. 必要に応じて /notion-report へ遷移して共有
+```
+
+MVP 制約:
+- 再学習実行は未実装（disabled）
+- active model 切替は未実装（disabled）
+- production/base table write は行わない
+- `.active_model.json` は自動変更しない
+- `.joblib` 作成/上書きは行わない
+
+**統合実行（Smoke Suite）**
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\run_keiba_smoke_suite.py
+```
+
+**Notion output UI/API smoke**
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_notion_report_api.py
+```
+
+補足:
+- `KEIBA_AUTH_BEARER_TOKEN` 未設定時は `auth-required` として warn
+- `KEIBA_AUTH_BEARER_TOKEN_NONPREMIUM` を設定すると non-Premium/Admin の 403 検証を実施
+- send は `sent` または `config-missing/warn` を許容
+
+**Model redesign workbench smoke**
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_model_redesign_workbench.py
+```
+
+補足:
+- `KEIBA_AUTH_BEARER_TOKEN` 未設定時は `auth-required` として warn
+- `KEIBA_AUTH_BEARER_TOKEN_NONPREMIUM` 未設定時の non-Premium 403 検証は warn 扱い
+- path系入力 (`filePath`, `reportPath`, `modelPath`, `path`, `sourcePath`) は拒否されることを検証
+- retrain / active model switch action は `not-implemented` または `disabled` を検証
+
+**Fetch summary history smoke**
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\smoke_fetch_summary_history.py
+```
+
+補足:
+- `KEIBA_AUTH_BEARER_TOKEN` 未設定時は `auth-required` として warn
+- `limit` パラメータの適用、secret非露出、read-only（scrape_jobs row count不変）を検証
+- 空履歴は `warn` 扱いで fail にはしない
+
+**Scrape speed benchmark (small + 10y estimate)**
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python scripts\benchmark_scrape_speed.py --preset small
+python scripts\benchmark_scrape_speed.py --preset estimate-10y
+```
+
+補足:
+- 10年分の実取得は実行しない（10年は dry-run 推定のみ）
+- live 計測は 1日/7日まで（`--max-live-days` 既定 7）
+- rate limit / backoff / Retry-After / circuit breaker は `fetch_pipeline` の既存実装を使用
+- 出力: `reports/scrape_benchmark_summary.json`
+- `reports/*.json` など生成物はコミットしない
+
+strict preflight で統合実行する場合:
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+python-api\.venv\Scripts\python.exe scripts\run_keiba_smoke_suite.py --strict-preflight
+```
+
+**UI連携 最終確認**
+
+```powershell
+cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
+npm run lint
+npm run build
+python scripts/run_keiba_smoke_suite.py
+git grep -n -I "secret-prefix-check"
+git status --short
+```
+
+確認方針:
+- UI画面 / Next API / FastAPI の連携は完成扱い
+- P1-16 sandbox write-readback runtime actual pass は別管理
+- default UI/API 動線で危険な write は走らない
+- DB / reports JSON / metadata は Git 管理対象に含めない
+
 ### 生成物の保存先
 
 - Notebook実行済みファイル: `reports/e2e_notebooks/`
 - Notebook E2E結果JSON: `reports/keiba_notebook_e2e_result.json`
+- Analyze Race smoke結果JSON: `reports/analyze_race_smoke_result.json`
+- Race-list proxy smoke結果JSON: `reports/netkeiba_race_list_proxy_smoke_result.json`
+- Race preflight smoke結果JSON: `reports/netkeiba_race_preflight_smoke_result.json`
+- Race dry-run smoke結果JSON: `reports/netkeiba_race_dry_run_smoke_result.json`
+- Payload contract diff結果JSON: `reports/netkeiba_race_payload_contract_diff.json`
+- Write guard smoke結果JSON: `reports/netkeiba_race_write_guard_smoke_result.json`
+- Write guard enabled検証結果JSON: `reports/netkeiba_race_write_guard_enabled_smoke_result.json`
+- Write guard flag-only検証結果JSON: `reports/netkeiba_race_write_guard_flag_only_smoke_result.json`
+- Write guard production検証結果JSON: `reports/netkeiba_race_write_guard_production_smoke_result.json`
+- Write guard staging lock検証結果JSON: `reports/netkeiba_race_write_guard_staging_lock_smoke_result.json`
+- Write guard sandbox precheck検証結果JSON: `reports/netkeiba_race_write_guard_sandbox_precheck_smoke_result.json`
+- Write guard sandbox write検証結果JSON: `reports/netkeiba_race_write_guard_sandbox_write_smoke_result.json`
+- Write guard sandbox write-readback検証結果JSON: `reports/netkeiba_race_write_guard_sandbox_write_readback_smoke_result.json`
+- Smoke suite結果JSON: `reports/keiba_smoke_suite_result.json`
+- Notion output UI/API smoke結果JSON: `reports/notion_report_smoke_result.json`
+- Fetch summary history smoke結果JSON: `reports/fetch_summary_history_smoke_result.json`
 - 監査ログ（任意）: `reports/e2e_logs/`
+
+### モデル再設計ワークベンチ仕様
+
+- 仕様書: `docs/specs/model-redesign-workbench.md`
+- 範囲: 画面、API、ジョブ管理、提案→承認→再学習フロー、本番反映ガード
+- 現状: 仕様確定済み（実装は別フェーズ）
+
+### 再学習承認設計（design freeze）
+
+- 設計書: `docs/model-retrain-approval-design.md`
+- 補助ノート: `docs/model-redesign-workbench.md`
+- 型の足場: `src/lib/model-retrain-approval-types.ts`
+- 目的:
+  - dry-run payload を承認対象として固定
+  - approval record を固定
+  - 実行可能条件（hash一致、期限内、同一active model/feature contract/code version）を固定
+- この段階で未実装のまま維持:
+  - actual retrain
+  - `.joblib` create/overwrite
+  - `.active_model.json` 更新
+  - active model switch
+  - production/base table write
+
+ロードマップ（次フェーズ）:
+1. approval create/status API の実装
+2. submit_approved_retrain の実装（staging/sandbox 制約）
+3. job status UI の実装
+4. result comparison UI の実装
+5. active model switch request（別 Admin approval）
+
+### type-only scaffolding
+
+- `retrain_dry_run` / approval / job submit の契約は型で固定済み
+- ただし runtime 実装は dry-run preview まで
+- next phase で approval-create / approved job submit を追加する際の基礎として使う
 
 ---
 

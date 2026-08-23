@@ -8,8 +8,8 @@
 import {
   apiGet,
   pass, fail, warn, skip, runCheck, requireAuth, buildResult, printResult, runIfMain,
-} from '../_shared/verify-utils.ts'
-import type { Check, SkillVerifyResult } from '../_shared/verify-utils.ts'
+} from '../_shared/verify-utils'
+import type { Check, SkillVerifyResult } from '../_shared/verify-utils'
 
 export const SKILL       = 'trainer'
 export const AGENT       = 'Trainer（トレーナー）'

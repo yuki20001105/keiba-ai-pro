@@ -9,7 +9,10 @@ GET    /api/models/active
 from __future__ import annotations
 
 import joblib
-from fastapi import APIRouter, HTTPException
+import os
+from fastapi import APIRouter, Depends, HTTPException
+
+from deps.auth import require_admin  # type: ignore
 
 from app_config import (  # type: ignore
     SUPABASE_DATA_ENABLED,
@@ -23,6 +26,22 @@ from app_config import (  # type: ignore
 )
 
 router = APIRouter()
+_LOCAL_ENVIRONMENTS = frozenset({"local", "development", "dev", "test", "ci"})
+
+
+def _require_legacy_model_deletion_allowed() -> None:
+    """Keep direct artifact deletion behind explicit local/test compatibility."""
+
+    environment = (os.environ.get("APP_ENV") or "").strip().lower()
+    enabled = (os.environ.get("MODEL_DELETION_LOCAL_ENABLED") or "").strip().lower() == "true"
+    if environment not in _LOCAL_ENVIRONMENTS or not enabled:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "model deletion requires a separate durable retirement approval; "
+                "legacy deletion is available only by explicit local/test opt-in"
+            ),
+        )
 
 
 @router.get("/api/models")
@@ -94,8 +113,9 @@ async def list_models(ultimate: bool | None = None):
 
 
 @router.delete("/api/models/{model_id}")
-async def delete_model(model_id: str):
+async def delete_model(model_id: str, _: dict = Depends(require_admin)):
     """保存済みモデルを削除"""
+    _require_legacy_model_deletion_allowed()
     try:
         deleted = []
         if SUPABASE_DATA_ENABLED and get_supabase_client():
@@ -181,8 +201,21 @@ async def get_active_model():
 
 
 @router.put("/api/models/{model_id}/activate")
-async def activate_model(model_id: str):
+async def activate_model(model_id: str, _: dict = Depends(require_admin)):
     """指定したモデルをアクティブにする（予測に使用するモデルを切り替える）"""
+    environment = (os.environ.get("APP_ENV") or "").strip().lower()
+    local_environments = {"local", "development", "dev", "test", "ci"}
+    legacy_opt_in = (
+        os.environ.get("MODEL_ACTIVATION_LOCAL_ENABLED") or ""
+    ).strip().lower() == "true"
+    if environment not in local_environments or not legacy_opt_in:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "active model switch requires a separate durable approval; "
+                "legacy activation is available only by explicit local/test opt-in"
+            ),
+        )
     model_path = MODELS_DIR / f"{model_id}.joblib"
     if not model_path.exists():
         # 部分一致でも探す
