@@ -23,7 +23,7 @@ test.describe('データ取得 Dry-run UI', () => {
     )
   })
 
-  test('Dry-run中は見積もり生成中を表示し、完了後に結果カードを表示する', async ({ page }) => {
+  test('Dry-runボタンと結果カードを表示できる', async ({ page }) => {
     await page.route('/api/scrape', async route => {
       if (route.request().method() !== 'POST') {
         return route.continue()
@@ -109,6 +109,9 @@ test.describe('データ取得 Dry-run UI', () => {
     await expect(page.getByText('HTTPキャッシュ / resume でスキップ')).toBeVisible()
     await expect(page.getByText('推定HTTPリクエスト')).toBeVisible()
     await expect(page.getByText('推定実行時間')).toBeVisible()
+    const estReqCard = page.locator('div').filter({ hasText: 'estimated request count' }).first()
+    await expect(estReqCard).toBeVisible()
+    await expect(estReqCard).toContainText('8')
     await expect(page.locator('div').filter({ hasText: 'estimated request count: 8' }).first()).toBeVisible()
     await expect(page.locator('div').filter({ hasText: 'DB existing skip count: 14' }).first()).toBeVisible()
     await expect(page.locator('div').filter({ hasText: 'new fetch required count: 8' }).first()).toBeVisible()
