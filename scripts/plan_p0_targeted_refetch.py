@@ -22,6 +22,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_AUDIT_INPUT = ROOT_DIR / "reports" / "scrape_missingness_audit.json"
 DEFAULT_P0_PLAN_INPUT = ROOT_DIR / "reports" / "p0_scrape_repair_plan.json"
 DEFAULT_CACHE_DIAG_INPUT = ROOT_DIR / "reports" / "p0_cache_coverage_diagnosis.json"
+DEFAULT_SOURCE_EMPTY_DIAG_INPUT = ROOT_DIR / "reports" / "source_empty_result_cells_diagnosis.json"
 DEFAULT_OUTPUT = ROOT_DIR / "reports" / "p0_targeted_refetch_plan.json"
 DEFAULT_DB_PATH = ROOT_DIR / "keiba" / "data" / "keiba_ultimate.db"
 DEFAULT_CACHE_DB = ROOT_DIR / "keiba" / "data" / "fetch_cache.db"
@@ -71,6 +72,7 @@ class Candidate:
     priority: str
     source: str
     recommended_next_action: str
+    classification: str = "refetch-required"
     cache_status: str = "missing"
     raw_key: str = ""
 
@@ -287,7 +289,13 @@ def _load_result_missing_candidates(conn: sqlite3.Connection, target: str) -> li
         hid = str(_pick(payload, "horse_id") or "").strip() or None
 
         missing_specs: list[tuple[str, str, str]] = []
-        if _is_missing(_pick(payload, "finish_position", "finish")):
+        miss_finish = _is_missing(_pick(payload, "finish_position", "finish"))
+        miss_time = _is_missing(_pick(payload, "result_time", "finish_time", "time"))
+        miss_margin = _is_missing(_pick(payload, "margin"))
+        has_row_identity = bool(hid or _pick(payload, "horse_number", "horse_no"))
+        has_row_context = bool(_pick(payload, "horse_name") or _pick(payload, "frame_number", "bracket_number", "bracket") or _pick(payload, "horse_number", "horse_no"))
+
+        if miss_finish:
             missing_specs.append(("finish_position", "true-missing", "P0"))
         if _is_missing(_pick(payload, "horse_name")):
             missing_specs.append(("horse_name", "true-missing", "P1"))
@@ -305,17 +313,36 @@ def _load_result_missing_candidates(conn: sqlite3.Connection, target: str) -> li
             url = _make_url(url_type, rid, hid)
             if not url:
                 continue
+
+            classification = "refetch-required"
+            reason_out = reason
+            next_action = "targeted refetch dry-run"
+
+            if column in RESULT_COLUMNS and miss_finish and miss_time and miss_margin and has_row_identity and has_row_context:
+                classification = "source-empty-result-cells"
+                reason_out = "source-empty-result-cells"
+                next_action = "source review / domain review"
+            elif column in RESULT_COLUMNS and not has_row_identity:
+                classification = "result-source-missing"
+                reason_out = "result-source-missing"
+                next_action = "manual review target row mapping"
+            elif column in RESULT_COLUMNS and not rid:
+                classification = "manual-review"
+                reason_out = "manual-review"
+                next_action = "manual review race_id / source key"
+
             out.append(
                 Candidate(
                     url=url,
                     url_type=url_type,
                     race_id=rid,
                     horse_id=hid,
-                    reason=reason,
+                    reason=reason_out,
                     column=column,
                     priority=priority,
                     source="db",
-                    recommended_next_action="targeted refetch dry-run",
+                    recommended_next_action=next_action,
+                    classification=classification,
                     raw_key=f"{rid}:{hid or ''}:{column}",
                 )
             )
@@ -411,7 +438,13 @@ def _sample_item(candidate: Candidate) -> dict[str, Any]:
     }
 
 
-def _recommended_next_actions(unique_url_count: int, counts: dict[str, int], target: str, cache_available_rate: float) -> list[str]:
+def _recommended_next_actions(
+    unique_url_count: int,
+    counts: dict[str, int],
+    target: str,
+    cache_available_rate: float,
+    source_empty_diag: dict[str, Any] | None,
+) -> list[str]:
     out: list[str] = []
     if unique_url_count <= 10:
         out.append("unique_url_count が小さいので targeted refetch small live validation を次に検討")
@@ -420,6 +453,10 @@ def _recommended_next_actions(unique_url_count: int, counts: dict[str, int], tar
 
     if counts.get("finish_position", 0) > 0:
         out.append("finish_position 中心なので result page refetch を優先")
+    if counts.get("source_empty_result_cells", 0) > 0:
+        out.append("source-empty-result-cells は refetch から分離し source/domain review を優先")
+    if counts.get("result_source_missing", 0) > 0:
+        out.append("result-source-missing は URL/row key の manual-review を先に実施")
     if counts.get("race_without_horse_data", 0) > 0:
         out.append("race_without_horse_data は race detail/result page のどちらが必要かを再確認")
     if counts.get("pedigree", 0) > 0:
@@ -428,6 +465,21 @@ def _recommended_next_actions(unique_url_count: int, counts: dict[str, int], tar
         out.append("cache_available 対象は refetch に混ぜず reparse 側へ残す")
     if target == "race":
         out.append("race target は race detail URL のみを使い、schema-review 系は除外済み")
+
+    if isinstance(source_empty_diag, dict):
+        breakdown = source_empty_diag.get("classification_breakdown") if isinstance(source_empty_diag.get("classification_breakdown"), list) else []
+        diag_counts = {str(x.get("classification") or ""): int(x.get("count") or 0) for x in breakdown if isinstance(x, dict)}
+        domain_allowed_count = int(source_empty_diag.get("domain_allowed_count") or 0)
+        if domain_allowed_count > 0:
+            out.append("source-empty の domain-allowed 系は refetch 対象に含めない")
+        if diag_counts.get("cache-missing", 0) > 0:
+            out.append("cache-missing は alternate-page-required と分離し targeted refetch dry-run / small live validation 候補")
+        if diag_counts.get("source-result-missing", 0) > 0:
+            out.append("source-result-missing は source/domain review を優先")
+        if diag_counts.get("alternate-page-required", 0) > 0:
+            out.append("alternate-page-required は URL生成/ページ種別の見直し候補（cache-missing とは別扱い）")
+        if diag_counts.get("wrong-target-row", 0) > 0:
+            out.append("wrong-target-row は horse_id / horse_number matching 修正候補")
     return out
 
 
@@ -436,6 +488,7 @@ def main() -> int:
     parser.add_argument("--input-audit", default=str(DEFAULT_AUDIT_INPUT), help="Path to scrape_missingness_audit.json")
     parser.add_argument("--input-p0-plan", default=str(DEFAULT_P0_PLAN_INPUT), help="Path to p0_scrape_repair_plan.json")
     parser.add_argument("--input-cache-diagnosis", default=str(DEFAULT_CACHE_DIAG_INPUT), help="Path to p0_cache_coverage_diagnosis.json")
+    parser.add_argument("--input-source-empty-diagnosis", default=str(DEFAULT_SOURCE_EMPTY_DIAG_INPUT), help="Path to source_empty_result_cells_diagnosis.json")
     parser.add_argument("--target", choices=["all", "race", "horse", "result", "pedigree", "odds"], default="all")
     parser.add_argument("--max-targets", type=int, default=10, help="Maximum sample URLs per URL type")
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT), help="Output JSON path")
@@ -447,6 +500,8 @@ def main() -> int:
     audit = _load_json(Path(args.input_audit), label="input-audit")
     p0_plan = _load_json(Path(args.input_p0_plan), label="input-p0-plan")
     cache_diag = _load_json(Path(args.input_cache_diagnosis), label="input-cache-diagnosis")
+    source_empty_diag_path = Path(args.input_source_empty_diagnosis)
+    source_empty_diag = _load_json(source_empty_diag_path, label="input-source-empty-diagnosis") if source_empty_diag_path.exists() else None
 
     audit_counts = _read_audit_counts(audit)
     exclusion_counts = _build_exclusion_counts(p0_plan)
@@ -469,8 +524,23 @@ def main() -> int:
         raw_refetch_candidate_count = 0
         reparse_candidate_count = 0
         excluded_cache_available_count = 0
+        classification_breakdown: Counter[str] = Counter()
+        excluded_source_empty_result_cells_count = 0
+        excluded_manual_review_count = 0
+        excluded_result_source_missing_count = 0
 
         for candidate in raw_candidates:
+            classification_breakdown[candidate.classification] += 1
+            if candidate.classification == "source-empty-result-cells":
+                excluded_source_empty_result_cells_count += 1
+                continue
+            if candidate.classification == "manual-review":
+                excluded_manual_review_count += 1
+                continue
+            if candidate.classification == "result-source-missing":
+                excluded_result_source_missing_count += 1
+                continue
+
             candidate.cache_status = _maybe_cache_status(candidate, cache_conn, ped_conn)
             if candidate.cache_status == "available":
                 excluded_cache_available_count += 1
@@ -514,6 +584,7 @@ def main() -> int:
             "input_audit": str(args.input_audit),
             "input_p0_plan": str(args.input_p0_plan),
             "input_cache_diagnosis": str(args.input_cache_diagnosis),
+            "input_source_empty_diagnosis": str(args.input_source_empty_diagnosis),
             "target": args.target,
             "verdict": "warn" if unique_url_count > 0 else "pass",
             "verdict_reason": "targeted-refetch-dry-run",
@@ -530,7 +601,13 @@ def main() -> int:
             "excluded_domain_allowed_count": exclusion_counts["domain"],
             "excluded_metadata_repair_count": exclusion_counts["metadata"],
             "excluded_cache_available_count": excluded_cache_available_count,
+            "excluded_source_empty_result_cells_count": excluded_source_empty_result_cells_count,
+            "excluded_manual_review_count": excluded_manual_review_count,
+            "excluded_result_source_missing_count": excluded_result_source_missing_count,
             "reparse_candidate_count": reparse_candidate_count,
+            "classification_breakdown": [
+                {"classification": k, "count": int(v)} for k, v in sorted(classification_breakdown.items(), key=lambda kv: kv[1], reverse=True)
+            ],
             "estimated_http_request_count": estimated_http_request_count,
             "estimated_runtime_seconds": estimated_runtime_seconds,
             "rate_limit_policy": "sequential read-only URL enumeration; one request per URL only after explicit execution approval; no parallelism",
@@ -545,9 +622,11 @@ def main() -> int:
             "sample_urls": sample_urls,
             "recommended_next_actions": _recommended_next_actions(unique_url_count, {
                 "finish_position": sum(1 for c in unique_candidates if c.column == "finish_position"),
+                "source_empty_result_cells": excluded_source_empty_result_cells_count,
+                "result_source_missing": excluded_result_source_missing_count,
                 "race_without_horse_data": sum(1 for c in unique_candidates if c.reason == "consistency:race_without_horse_data"),
                 "pedigree": pedigree_url_count,
-            }, args.target, cache_available_rate),
+            }, args.target, cache_available_rate, source_empty_diag),
         }
 
         if cache_diag_sampled:

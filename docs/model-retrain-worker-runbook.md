@@ -1,6 +1,6 @@
 # Model Retrain Worker Runbook
 
-Updated: 2026-08-02  
+Updated: 2026-08-02
 Status: repository-ready procedure; not yet executed against hosted Staging
 
 ## Purpose and boundary

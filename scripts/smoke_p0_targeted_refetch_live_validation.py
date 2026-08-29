@@ -196,12 +196,48 @@ def _fixture_fetch_responses() -> dict[str, Any]:
     </table>
     </body></html>
     """
+    race_source_empty = """
+    <html><body>
+    <p class='smalltxt'>2026年1月1日 東京 1回1日目</p>
+    <table class='race_table_01'>
+    <tr><th>着順</th><th>枠番</th><th>馬番</th><th>馬名</th><th>性齢</th><th>斤量</th><th>騎手</th><th>タイム</th><th>着差</th></tr>
+    <tr><td></td><td>1</td><td>1</td><td><a href='/horse/result/2021100001/'>Alpha</a></td><td>牡3</td><td>56.0</td><td>J1</td><td></td><td></td></tr>
+    </table>
+    </body></html>
+    """
+    race_parser_missed = """
+    <html><body>
+    <p class='smalltxt'>2026年1月1日 東京 1回1日目</p>
+    <table class='race_table_01'>
+    <tr><th>順位</th><th>着 順</th><th>枠番</th><th>馬番</th><th>馬名</th><th>性齢</th><th>斤量</th><th>騎手</th><th>タイム</th><th>着 差</th></tr>
+    <tr><td></td><td>2</td><td>1</td><td>2</td><td><a href='/horse/result/2021100002/'>Beta</a></td><td>牡3</td><td>56.0</td><td>J2</td><td>1:35.0</td><td>0.5</td></tr>
+    </table>
+    </body></html>
+    """
+    race_target_not_found = """
+    <html><body>
+    <p class='smalltxt'>2026年1月1日 東京 1回1日目</p>
+    <table class='race_table_01'>
+    <tr><th>着順</th><th>枠番</th><th>馬番</th><th>馬名</th><th>性齢</th><th>斤量</th><th>騎手</th><th>タイム</th><th>着差</th></tr>
+    <tr><td>3</td><td>1</td><td>3</td><td><a href='/horse/result/9999999999/'>Other</a></td><td>牡3</td><td>56.0</td><td>J3</td><td>1:35.5</td><td>1.0</td></tr>
+    </table>
+    </body></html>
+    """
+    race_no_table = """
+    <html><body>
+    <p class='smalltxt'>2026年1月1日 東京 1回1日目</p>
+    <div class='content'>result table missing but page body is intentionally long for diagnosis path</div>
+    <div>no race_table_01 here; this should trigger table-structure-changed classification</div>
+    </body></html>
+    """
     race_short = "<html>short</html>"
     return {
         "responses": {
-            "https://db.netkeiba.com/race/202601010101/": {"status": 200, "body": race_ok, "source": "network", "attempts": 1},
-            "https://db.netkeiba.com/race/202601010102/": {"status": 200, "body": race_short, "source": "network", "attempts": 1},
+            "https://db.netkeiba.com/race/202601010101/": {"status": 200, "body": race_source_empty, "source": "network", "attempts": 1},
+            "https://db.netkeiba.com/race/202601010102/": {"status": 200, "body": race_parser_missed, "source": "network", "attempts": 1},
             "https://db.netkeiba.com/race/202601010103/": {"status": 503, "body": "", "source": "network", "attempts": 2, "backoff_observed": True},
+            "https://db.netkeiba.com/race/202601010108/": {"status": 200, "body": race_target_not_found, "source": "network", "attempts": 1},
+            "https://db.netkeiba.com/race/202601010109/": {"status": 200, "body": race_no_table, "source": "network", "attempts": 1},
             "*": {"status": 200, "body": race_ok, "source": "network", "attempts": 1},
         }
     }
@@ -270,6 +306,8 @@ def main() -> int:
 
     detail = payload.get("_detail") if isinstance(payload.get("_detail"), dict) else {}
     sample_results = detail.get("sample_results") if isinstance(detail.get("sample_results"), list) else []
+    actions = [str(x.get("action") or "") for x in sample_results if isinstance(x, dict)]
+    diagnoses = [str(x.get("diagnosis") or "") for x in sample_results if isinstance(x, dict)]
 
     checks = {
         "max_urls_capped_to_10": int(detail.get("max_urls_applied") or 0) == 10,
@@ -280,6 +318,16 @@ def main() -> int:
         "http_error_detected": int(detail.get("http_error_count") or 0) > 0,
         "parse_failed_detected": int(detail.get("parse_failed_count") or 0) > 0,
         "would_fix_detected": int(detail.get("would_fix_count") or 0) > 0,
+        "source_empty_result_cells_classified": "source-empty-result-cells" in actions,
+        "parser_missed_classified": "parser-missed" in actions,
+        "target_row_not_found_classified": "target-row-not-found" in actions,
+        "table_structure_changed_classified": "table-structure-changed" in actions,
+        "source_empty_not_no_downgrade_skip": not any(
+            str(x.get("action") or "") == "no-downgrade-skip" and bool(x.get("source_empty_result_cells"))
+            for x in sample_results
+            if isinstance(x, dict)
+        ),
+        "diagnosis_fields_present": bool(diagnoses),
         "safety_flags_present": bool(detail.get("safety_flags", {}).get("no_db_write")) and bool(detail.get("safety_flags", {}).get("no_upsert")),
         "db_write_zero": bool(cache_before == cache_after),
         "sample_results_present": bool(sample_results),

@@ -18,6 +18,7 @@ from typing import Any
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_AUDIT_INPUT = ROOT_DIR / "reports" / "scrape_missingness_audit.json"
 DEFAULT_REFRESH_INPUT = ROOT_DIR / "reports" / "scrape_refresh_plan.json"
+DEFAULT_SOURCE_EMPTY_DIAG_INPUT = ROOT_DIR / "reports" / "source_empty_result_cells_diagnosis.json"
 DEFAULT_OUTPUT = ROOT_DIR / "reports" / "p0_scrape_repair_plan.json"
 DEFAULT_AVG_SEC_PER_REQ = 1.2
 
@@ -113,6 +114,10 @@ def _action_hint(action: str) -> str:
         return "reparse-cache-first"
     if action == "refetch-required":
         return "refetch-required"
+    if action == "source-empty-result-cells":
+        return "source-review-domain-review"
+    if action == "result-source-missing":
+        return "result-source-missing-review"
     if action == "repair-from-existing-metadata":
         return "repair-from-existing-metadata"
     if action == "schema-review":
@@ -147,6 +152,8 @@ def _is_p0_candidate(item: dict[str, Any]) -> bool:
         return check_name in P0_SCOPE_CHECKS
     if reason in ("derived-field-candidate", "alias-candidate") and col == "race_number":
         return True
+    if reason == "source-empty-result-cells" and col == "finish_position":
+        return True
     return False
 
 
@@ -179,6 +186,9 @@ def _choose_action(
     if reason in ("derived-field-candidate", "alias-candidate"):
         return "schema-review", "schema/derived-candidate"
 
+    if reason == "source-empty-result-cells":
+        return "source-empty-result-cells", "result-row-empty-cells"
+
     if reason.startswith("consistency:"):
         check_name = reason.split(":", 1)[1]
         if check_name == "race_without_horse_data":
@@ -201,14 +211,20 @@ def _choose_action(
         return "manual-review", "identifier-missing"
 
     if column == "finish_position" and reason == "true-missing":
+        dec_reason = str(dec.get("reason") or "")
+        if "source-empty-result-cells" in dec_reason:
+            return "source-empty-result-cells", "from-refresh-decision-source-empty"
         if dec_action == "reparse-cache" or has_cache_hint:
             return "reparse-cache", "result-cache-reparse-priority"
-        return "refetch-required", "result-cache-missing-refetch"
+        return "result-source-missing", "result-cache-missing-refetch"
 
     if column in ("result_time", "margin") and reason == "true-missing":
+        dec_reason = str(dec.get("reason") or "")
+        if "source-empty-result-cells" in dec_reason:
+            return "source-empty-result-cells", "from-refresh-decision-source-empty"
         if dec_action == "reparse-cache" or has_cache_hint:
             return "reparse-cache", "result-cache-reparse-priority"
-        return "refetch-required", "result-cache-missing-refetch"
+        return "result-source-missing", "result-cache-missing-refetch"
 
     if column in ("horse_name", "frame_number", "horse_number") and reason == "true-missing":
         if dec_action == "reparse-cache":
@@ -225,12 +241,18 @@ def _choose_action(
     return "manual-review", "unmapped-case"
 
 
-def _recommended_actions(records: list[TargetRecord]) -> list[str]:
+def _recommended_actions(records: list[TargetRecord], source_empty_diag: dict[str, Any] | None = None) -> list[str]:
     actions = {r.action for r in records}
     out: list[str] = []
     if any(r.column == "finish_position" and r.reason == "true-missing" for r in records):
         out.append("finish_position true missing は result page の reparse-cache を優先")
-        out.append("cacheがなければ refetch-required")
+        out.append("cacheがなければ targeted refetch dry-run 候補")
+    if any(r.action == "source-empty-result-cells" for r in records):
+        out.append("result row があり finish/time/margin が空の場合は source review / domain review を優先")
+        out.append("source-empty-result-cells は targeted refetch execution 候補から分離")
+    if any(r.action == "result-source-missing" for r in records):
+        out.append("result-source-missing は URL/page種別/対象キーの妥当性を先に確認")
+        out.append("cache不在だけでは即時 refetch-required にしない")
     if any(r.reason == "consistency:race_without_horse_data" for r in records):
         out.append("race_without_horse_data は race_id単位で refetch候補")
     if any(r.column == "race_number" and r.action == "schema-review" for r in records):
@@ -241,6 +263,21 @@ def _recommended_actions(records: list[TargetRecord]) -> list[str]:
         out.append("identifier missing や consistency failure は manual-review で隔離確認")
     if "repair-from-existing-metadata" in actions:
         out.append("race_date/venue は races metadata から補完可能なら先に修復")
+
+    if isinstance(source_empty_diag, dict):
+        breakdown = source_empty_diag.get("classification_breakdown") if isinstance(source_empty_diag.get("classification_breakdown"), list) else []
+        diag_counts = {str(x.get("classification") or ""): int(x.get("count") or 0) for x in breakdown if isinstance(x, dict)}
+        domain_allowed_count = int(source_empty_diag.get("domain_allowed_count") or 0)
+        if domain_allowed_count > 0:
+            out.append("source-empty domain-allowed 系は repair/refetch 対象から除外")
+        if diag_counts.get("cache-missing", 0) > 0:
+            out.append("cache-missing は alternate-page-required と分離し targeted refetch dry-run / small live validation 候補")
+        if diag_counts.get("source-result-missing", 0) > 0:
+            out.append("source-result-missing は source/domain review を優先")
+        if diag_counts.get("alternate-page-required", 0) > 0:
+            out.append("alternate-page-required は URL生成規則の見直し候補（cache-missing とは別扱い）")
+        if diag_counts.get("wrong-target-row", 0) > 0:
+            out.append("wrong-target-row は horse_id/horse_number 紐付け修正候補")
     return out
 
 
@@ -284,7 +321,12 @@ def _build_samples(records: list[TargetRecord], max_per_group: int = 10) -> list
     return out
 
 
-def _build_plan(audit: dict[str, Any], refresh: dict[str, Any], target: str) -> dict[str, Any]:
+def _build_plan(
+    audit: dict[str, Any],
+    refresh: dict[str, Any],
+    target: str,
+    source_empty_diag: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     refresh_decisions = _build_refresh_decision_map(refresh)
     breakdown = audit.get("repair_reason_breakdown") if isinstance(audit.get("repair_reason_breakdown"), list) else []
 
@@ -366,7 +408,7 @@ def _build_plan(audit: dict[str, Any], refresh: dict[str, Any], target: str) -> 
         "estimated_http_request_count": estimated_http_request_count,
         "estimated_runtime_seconds": estimated_runtime_seconds,
         "sample_targets": _build_samples(records, max_per_group=10),
-        "recommended_next_actions": _recommended_actions(records),
+        "recommended_next_actions": _recommended_actions(records, source_empty_diag),
         "safeguards": {
             "read_only": True,
             "no_db_write": True,
@@ -381,6 +423,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Build read-only P0 scrape repair planning from report artifacts")
     p.add_argument("--input-audit", default=str(DEFAULT_AUDIT_INPUT), help="Path to scrape_missingness_audit.json")
     p.add_argument("--input-refresh-plan", default=str(DEFAULT_REFRESH_INPUT), help="Path to scrape_refresh_plan.json")
+    p.add_argument("--input-source-empty-diagnosis", default=str(DEFAULT_SOURCE_EMPTY_DIAG_INPUT), help="Path to source_empty_result_cells_diagnosis.json")
     p.add_argument("--target", choices=["all", "race", "horse", "result", "pedigree", "odds"], default="all")
     p.add_argument("--output", default=str(DEFAULT_OUTPUT), help="Output JSON path")
     return p
@@ -391,12 +434,15 @@ def main() -> int:
 
     audit = _load_json(Path(args.input_audit), label="input-audit")
     refresh = _load_json(Path(args.input_refresh_plan), label="input-refresh-plan")
+    source_empty_diag_path = Path(args.input_source_empty_diagnosis)
+    source_empty_diag = _load_json(source_empty_diag_path, label="input-source-empty-diagnosis") if source_empty_diag_path.exists() else None
 
-    plan = _build_plan(audit=audit, refresh=refresh, target=str(args.target))
+    plan = _build_plan(audit=audit, refresh=refresh, target=str(args.target), source_empty_diag=source_empty_diag)
     payload = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "input_audit": str(args.input_audit),
         "input_refresh_plan": str(args.input_refresh_plan),
+        "input_source_empty_diagnosis": str(args.input_source_empty_diagnosis),
         **plan,
     }
 

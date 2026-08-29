@@ -1,0 +1,529 @@
+{
+  "schema_version": 1,
+  "validation": "live_one_day_empty_state",
+  "date": "20250105",
+  "scope": "JRA venue codes 01-10",
+  "source_url": "",
+  "race_id_expectation_source": "immutable_validation_manifest",
+  "source_attempts": [
+    {
+      "url": "https://db.netkeiba.com/race/list/20250105/",
+      "http_status": 400,
+      "source": "network",
+      "parsed_race_count": 0
+    },
+    {
+      "url": "https://race.netkeiba.com/top/race_list_sub.html?kaisai_date=20250105",
+      "http_status": 400,
+      "source": "network",
+      "parsed_race_count": 0
+    },
+    {
+      "url": "https://db.sp.netkeiba.com/race/list/20250105/",
+      "http_status": 200,
+      "source": "network",
+      "parsed_race_count": 1
+    }
+  ],
+  "source_fetched_at_utc": "2026-08-29T11:54:59+00:00",
+  "empty_state": {
+    "race_db": true,
+    "http_cache": true,
+    "resume_ledger": true,
+    "pedigree_cache": true,
+    "application_databases_touched": false
+  },
+  "race_list_http_status": 200,
+  "race_list_source": "network",
+  "all_source_race_count": 0,
+  "expected_jra_race_ids": [
+    "202506010101",
+    "202506010102",
+    "202506010103",
+    "202506010104",
+    "202506010105",
+    "202506010106",
+    "202506010107",
+    "202506010108",
+    "202506010109",
+    "202506010110",
+    "202506010111",
+    "202506010112",
+    "202507010101",
+    "202507010102",
+    "202507010103",
+    "202507010104",
+    "202507010105",
+    "202507010106",
+    "202507010107",
+    "202507010108",
+    "202507010109",
+    "202507010110",
+    "202507010111",
+    "202507010112"
+  ],
+  "race_results": [
+    {
+      "race_id": "202506010101",
+      "horse_count": 16,
+      "lifecycle": "settled",
+      "required_errors": [],
+      "field_states": {
+        "odds": "available",
+        "popularity": "available",
+        "horse_weight": "available",
+        "finish_position": "available",
+        "finish_time": "available",
+        "pedigree": "available"
+      },
+      "stored": true,
+      "pass": true
+    },
+    {
+      "race_id": "202506010102",
+      "horse_count": 16,
+      "lifecycle": "settled",
+      "required_errors": [],
+      "field_states": {
+        "odds": "available",
+        "popularity": "available",
+        "horse_weight": "available",
+        "finish_position": "available",
+        "finish_time": "available",
+        "pedigree": "available"
+      },
+      "stored": true,
+      "pass": true
+    },
+    {
+      "race_id": "202506010103",
+      "horse_count": 16,
+      "lifecycle": "settled",
+      "required_errors": [],
+      "field_states": {
+        "odds": "available",
+        "popularity": "available",
+        "horse_weight": "available",
+        "finish_position": "available",
+        "finish_time": "available",
+        "pedigree": "available"
+      },
+      "stored": true,
+      "pass": true
+    },
+    {
+      "race_id": "202506010104",
+      "horse_count": 16,
+      "lifecycle": "settled",
+      "required_errors": [],
+      "field_states": {
+        "odds": "available",
+        "popularity": "available",
+        "horse_weight": "available",
+        "finish_position": "available",
+        "finish_time": "available",
+        "pedigree": "available"
+      },
+      "stored": true,
+      "pass": true
+    },
+    {
+      "race_id": "202506010105",
+      "horse_count": 16,
+      "lifecycle": "settled",
+      "required_errors": [],
+      "field_states": {
+        "odds": "available",
+        "popularity": "available",
+        "horse_weight": "available",
+        "finish_position": "available",
+        "finish_time": "available",
+        "pedigree": "available"
+      },
+      "stored": true,
+      "pass": true
+    },
+    {
+      "race_id": "202506010106",
+      "horse_count": 18,
+      "lifecycle": "settled",
+      "required_errors": [],
+      "field_states": {
+        "odds": "available_with_domain_exceptions",
+        "popularity": "available_with_domain_exceptions",
+        "horse_weight": "available_with_domain_exceptions",
+        "finish_position": "available",
+        "finish_time": "available_with_domain_exceptions",
+        "pedigree": "available"
+      },
+      "stored": true,
+      "pass": true
+    },
+    {
+      "race_id": "202506010107",
+      "horse_count": 16,
+      "lifecycle": "settled",
+      "required_errors": [],
+      "field_states": {
+        "odds": "available",
+        "popularity": "available",
+        "horse_weight": "available",
+        "finish_position": "available",
+        "finish_time": "available",
+        "pedigree": "available"
+      },
+      "stored": true,
+      "pass": true
+    },
+    {
+      "race_id": "202506010108",
+      "horse_count": 16,
+      "lifecycle": "settled",
+      "required_errors": [],
+      "field_states": {
+        "odds": "available",
+        "popularity": "available",
+        "horse_weight": "available",
+        "finish_position": "available",
+        "finish_time": "available",
+        "pedigree": "available"
+      },
+      "stored": true,
+      "pass": true
+    },
+    {
+      "race_id": "202506010109",
+      "horse_count": 16,
+      "lifecycle": "settled",
+      "required_errors": [],
+      "field_states": {
+        "odds": "available",
+        "popularity": "available",
+        "horse_weight": "available",
+        "finish_position": "available",
+        "finish_time": "available",
+        "pedigree": "available"
+      },
+      "stored": true,
+      "pass": true
+    },
+    {
+      "race_id": "202506010110",
+      "horse_count": 15,
+      "lifecycle": "settled",
+      "required_errors": [],
+      "field_states": {
+        "odds": "available",
+        "popularity": "available",
+        "horse_weight": "available",
+        "finish_position": "available",
+        "finish_time": "available",
+        "pedigree": "available"
+      },
+      "stored": true,
+      "pass": true
+    },
+    {
+      "race_id": "202506010111",
+      "horse_count": 18,
+      "lifecycle": "settled",
+      "required_errors": [],
+      "field_states": {
+        "odds": "available",
+        "popularity": "available",
+        "horse_weight": "available",
+        "finish_position": "available",
+        "finish_time": "available",
+        "pedigree": "available"
+      },
+      "stored": true,
+      "pass": true
+    },
+    {
+      "race_id": "202506010112",
+      "horse_count": 16,
+      "lifecycle": "settled",
+      "required_errors": [],
+      "field_states": {
+        "odds": "available",
+        "popularity": "available",
+        "horse_weight": "available",
+        "finish_position": "available",
+        "finish_time": "available",
+        "pedigree": "available"
+      },
+      "stored": true,
+      "pass": true
+    },
+    {
+      "race_id": "202507010101",
+      "horse_count": 16,
+      "lifecycle": "settled",
+      "required_errors": [],
+      "field_states": {
+        "odds": "available",
+        "popularity": "available",
+        "horse_weight": "available",
+        "finish_position": "available",
+        "finish_time": "available",
+        "pedigree": "available"
+      },
+      "stored": true,
+      "pass": true
+    },
+    {
+      "race_id": "202507010102",
+      "horse_count": 16,
+      "lifecycle": "settled",
+      "required_errors": [],
+      "field_states": {
+        "odds": "available",
+        "popularity": "available",
+        "horse_weight": "available",
+        "finish_position": "available",
+        "finish_time": "available",
+        "pedigree": "available"
+      },
+      "stored": true,
+      "pass": true
+    },
+    {
+      "race_id": "202507010103",
+      "horse_count": 16,
+      "lifecycle": "settled",
+      "required_errors": [],
+      "field_states": {
+        "odds": "available",
+        "popularity": "available",
+        "horse_weight": "available",
+        "finish_position": "available",
+        "finish_time": "available",
+        "pedigree": "available"
+      },
+      "stored": true,
+      "pass": true
+    },
+    {
+      "race_id": "202507010104",
+      "horse_count": 16,
+      "lifecycle": "settled",
+      "required_errors": [],
+      "field_states": {
+        "odds": "available",
+        "popularity": "available",
+        "horse_weight": "available",
+        "finish_position": "available",
+        "finish_time": "available",
+        "pedigree": "available"
+      },
+      "stored": true,
+      "pass": true
+    },
+    {
+      "race_id": "202507010105",
+      "horse_count": 18,
+      "lifecycle": "settled",
+      "required_errors": [],
+      "field_states": {
+        "odds": "available",
+        "popularity": "available",
+        "horse_weight": "available",
+        "finish_position": "available",
+        "finish_time": "available",
+        "pedigree": "available"
+      },
+      "stored": true,
+      "pass": true
+    },
+    {
+      "race_id": "202507010106",
+      "horse_count": 16,
+      "lifecycle": "settled",
+      "required_errors": [],
+      "field_states": {
+        "odds": "available",
+        "popularity": "available",
+        "horse_weight": "available",
+        "finish_position": "available",
+        "finish_time": "available",
+        "pedigree": "available"
+      },
+      "stored": true,
+      "pass": true
+    },
+    {
+      "race_id": "202507010107",
+      "horse_count": 9,
+      "lifecycle": "settled",
+      "required_errors": [],
+      "field_states": {
+        "odds": "available",
+        "popularity": "available",
+        "horse_weight": "available",
+        "finish_position": "available",
+        "finish_time": "available",
+        "pedigree": "available"
+      },
+      "stored": true,
+      "pass": true
+    },
+    {
+      "race_id": "202507010108",
+      "horse_count": 16,
+      "lifecycle": "settled",
+      "required_errors": [],
+      "field_states": {
+        "odds": "available",
+        "popularity": "available",
+        "horse_weight": "available",
+        "finish_position": "available",
+        "finish_time": "available",
+        "pedigree": "available"
+      },
+      "stored": true,
+      "pass": true
+    },
+    {
+      "race_id": "202507010109",
+      "horse_count": 11,
+      "lifecycle": "settled",
+      "required_errors": [],
+      "field_states": {
+        "odds": "available_with_domain_exceptions",
+        "popularity": "available_with_domain_exceptions",
+        "horse_weight": "available_with_domain_exceptions",
+        "finish_position": "available",
+        "finish_time": "available_with_domain_exceptions",
+        "pedigree": "available"
+      },
+      "stored": true,
+      "pass": true
+    },
+    {
+      "race_id": "202507010110",
+      "horse_count": 16,
+      "lifecycle": "settled",
+      "required_errors": [],
+      "field_states": {
+        "odds": "available",
+        "popularity": "available",
+        "horse_weight": "available",
+        "finish_position": "available",
+        "finish_time": "available",
+        "pedigree": "available"
+      },
+      "stored": true,
+      "pass": true
+    },
+    {
+      "race_id": "202507010111",
+      "horse_count": 16,
+      "lifecycle": "settled",
+      "required_errors": [],
+      "field_states": {
+        "odds": "available",
+        "popularity": "available",
+        "horse_weight": "available",
+        "finish_position": "available",
+        "finish_time": "available",
+        "pedigree": "available"
+      },
+      "stored": true,
+      "pass": true
+    },
+    {
+      "race_id": "202507010112",
+      "horse_count": 16,
+      "lifecycle": "settled",
+      "required_errors": [],
+      "field_states": {
+        "odds": "available",
+        "popularity": "available",
+        "horse_weight": "available",
+        "finish_position": "available",
+        "finish_time": "available",
+        "pedigree": "available"
+      },
+      "stored": true,
+      "pass": true
+    }
+  ],
+  "date_audit": {
+    "race_date": "20250105",
+    "status": "complete",
+    "expected_race_count": 24,
+    "saved_race_count": 24,
+    "complete_race_count": 24,
+    "missing_race_ids": [],
+    "quarantined_race_ids": []
+  },
+  "acquisition_quality": {
+    "target_date_count": 1,
+    "audited_date_count": 1,
+    "complete_date_count": 1,
+    "incomplete_date_count": 0,
+    "incomplete_dates": [],
+    "missing_race_count": 0,
+    "quarantined_race_count": 0,
+    "repair_queue": [],
+    "quality_complete": true
+  },
+  "database": {
+    "quick_check": "ok",
+    "counts": {
+      "races": 24,
+      "horses": 377,
+      "returns": 288,
+      "scraped_dates": 1
+    },
+    "saved_race_ids": [
+      "202506010101",
+      "202506010102",
+      "202506010103",
+      "202506010104",
+      "202506010105",
+      "202506010106",
+      "202506010107",
+      "202506010108",
+      "202506010109",
+      "202506010110",
+      "202506010111",
+      "202506010112",
+      "202507010101",
+      "202507010102",
+      "202507010103",
+      "202507010104",
+      "202507010105",
+      "202507010106",
+      "202507010107",
+      "202507010108",
+      "202507010109",
+      "202507010110",
+      "202507010111",
+      "202507010112"
+    ],
+    "date_ledger": {
+      "race_count": 24,
+      "no_race": 0
+    }
+  },
+  "fetch_metrics": {
+    "network_requests": 1182,
+    "cache_hits": 0,
+    "resume_hits": 0,
+    "dedup_waits": 0,
+    "dry_run_skips": 0,
+    "retry_count": 0,
+    "backoff_count": 0,
+    "circuit_open_count": 0,
+    "status_429": 0,
+    "status_403": 0,
+    "status_500": 0,
+    "status_503": 0,
+    "timeout_count": 0
+  },
+  "database_sha256": "22caa47348fef592519068c103d15438ede4685f2501596aa90384fe18e5a672",
+  "elapsed_seconds": 416.281,
+  "failures": [],
+  "passed": true
+}

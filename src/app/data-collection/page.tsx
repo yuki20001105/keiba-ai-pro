@@ -35,6 +35,9 @@ import {
   type ScrapeUncertaintyReviewRecord,
 } from '@/lib/scrape-uncertainty-review-server'
 
+const ACTIVE_DRY_RUN_JOB_KEY = 'keiba-ai-pro:active-dry-run-job:v1'
+const DRY_RUN_TIMEOUT_MS = 24 * 60 * 60 * 1000
+
 type ScrapeHealthStatus = 'healthy' | 'degraded' | 'unhealthy' | 'unknown'
 type LocalApiStatus = 'checking' | ScrapeHealthStatus
 
@@ -46,6 +49,13 @@ type ScrapeDryRunSummary = {
   cache_miss_count: number
   resume_hit_count: number
   skipped_count: number
+  db_existing_skip_count: number
+  db_existing_race_count: number
+  db_existing_horse_count: number
+  db_existing_result_count: number
+  db_existing_pedigree_count: number
+  new_fetch_required_count: number
+  already_covered_count: number
   estimated_runtime_sec: number
 }
 
@@ -69,6 +79,11 @@ type ScrapeDryRunResult = {
   }
 }
 
+type StoredDryRunJob = {
+  jobId: string
+  startedAt: number
+}
+
 type FetchSummaryHistoryItem = {
   job_id: string
   status: string
@@ -86,6 +101,9 @@ type FetchSummaryHistoryItem = {
       cache_hit_count?: number
       cache_miss_count?: number
       resume_hit_count?: number
+      db_existing_skip_count?: number
+      new_fetch_required_count?: number
+      already_covered_count?: number
       estimated_runtime_sec?: number
     }
     metrics?: {
@@ -179,6 +197,13 @@ function normalizeDryRunResult(resultPayload: any): ScrapeDryRunResult {
       cache_miss_count: parseStrictNumber(dryRun.cache_miss_count, 'cache_miss_count', true),
       resume_hit_count: parseStrictNumber(dryRun.resume_hit_count, 'resume_hit_count', true),
       skipped_count: parseStrictNumber(dryRun.skipped_count, 'skipped_count', true),
+      db_existing_skip_count: parseStrictNumber(dryRun.db_existing_skip_count, 'db_existing_skip_count', true),
+      db_existing_race_count: parseStrictNumber(dryRun.db_existing_race_count, 'db_existing_race_count', true),
+      db_existing_horse_count: parseStrictNumber(dryRun.db_existing_horse_count, 'db_existing_horse_count', true),
+      db_existing_result_count: parseStrictNumber(dryRun.db_existing_result_count, 'db_existing_result_count', true),
+      db_existing_pedigree_count: parseStrictNumber(dryRun.db_existing_pedigree_count, 'db_existing_pedigree_count', true),
+      new_fetch_required_count: parseStrictNumber(dryRun.new_fetch_required_count, 'new_fetch_required_count', true),
+      already_covered_count: parseStrictNumber(dryRun.already_covered_count, 'already_covered_count', true),
       estimated_runtime_sec: parseStrictNumber(dryRun.estimated_runtime_sec, 'estimated_runtime_sec', false),
     },
     rate_limit_policy: fetchSummary?.rate_limit_policy || {},
@@ -202,6 +227,10 @@ export default function DataCollectionPage() {
   )
   const [forceRescrape, setForceRescrape] = useState(false)
   const [dryRunLoading, setDryRunLoading] = useState(false)
+  const [dryRunStartedAt, setDryRunStartedAt] = useState<number | null>(null)
+  const [dryRunElapsedSeconds, setDryRunElapsedSeconds] = useState(0)
+  const [dryRunError, setDryRunError] = useState('')
+  const [dryRunResultReady, setDryRunResultReady] = useState(false)
   const [dryRunResult, setDryRunResult] = useState<ScrapeDryRunResult | null>(null)
   const [dryRunExecuted, setDryRunExecuted] = useState(false)
   const [dryRunPendingMessage, setDryRunPendingMessage] = useState('')
@@ -304,6 +333,7 @@ export default function DataCollectionPage() {
   // ローカルAPI稼働チェック
   const [localApiStatus, setLocalApiStatus] = useState<LocalApiStatus>('checking')
   const [localApiReason, setLocalApiReason] = useState('')
+  const dryRunTrackingRef = useRef<string | null>(null)
 
   const statusMeta: Record<LocalApiStatus, { label: string; dotClass: string; textClass: string }> = {
     checking: { label: '確認中', dotClass: 'bg-[#555] animate-pulse', textClass: 'text-[#555]' },
@@ -598,7 +628,6 @@ export default function DataCollectionPage() {
   useEffect(() => {
     loadStats()
     checkLocalApi()
-    loadFetchSummaryHistory()
   }, [])
 
   useEffect(() => {
@@ -751,7 +780,7 @@ export default function DataCollectionPage() {
     }
   }, [activeJobId, transientUncertaintyKind, persistUncertaintyLock])
 
-  const loadFetchSummaryHistory = async () => {
+  const loadFetchSummaryHistory = useCallback(async () => {
     setFetchHistoryLoading(true)
     try {
       const res = await authFetch('/api/scrape/history?limit=10')
@@ -764,7 +793,78 @@ export default function DataCollectionPage() {
     } finally {
       setFetchHistoryLoading(false)
     }
-  }
+  }, [])
+
+  useEffect(() => {
+    void loadFetchSummaryHistory()
+  }, [loadFetchSummaryHistory])
+
+  const pollDryRunJob = useCallback(async (stored: StoredDryRunJob) => {
+    if (dryRunTrackingRef.current === stored.jobId) return
+    dryRunTrackingRef.current = stored.jobId
+    setDryRunLoading(true)
+    setDryRunStartedAt(stored.startedAt)
+    setDryRunElapsedSeconds(Math.floor(Math.max(0, Date.now() - stored.startedAt) / 1000))
+    setDryRunError('')
+    setDryRunResultReady(false)
+    setDryRunResult(null)
+
+    let consecutiveFailures = 0
+    try {
+      while (Date.now() - stored.startedAt <= DRY_RUN_TIMEOUT_MS) {
+        const statusRes = await authFetch(`/api/scrape/status/${stored.jobId}`)
+        if (!statusRes.ok) {
+          consecutiveFailures += 1
+          if (consecutiveFailures >= 10) throw new Error(`Dry-runステータス取得失敗 (job_id: ${stored.jobId})`)
+          await new Promise(resolve => setTimeout(resolve, 3000))
+          continue
+        }
+
+        consecutiveFailures = 0
+        const statusData = await statusRes.json().catch(() => ({}))
+        if (statusData?.status === 'completed') {
+          const normalized = normalizeDryRunResult(statusData?.result)
+          localStorage.removeItem(ACTIVE_DRY_RUN_JOB_KEY)
+          setDryRunResult(normalized)
+          setDryRunResultReady(true)
+          setDryRunExecuted(true)
+          setToast({ visible: true, message: 'Dry-run完了（HTTPアクセスなし）', type: 'success' })
+          await loadFetchSummaryHistory()
+          return
+        }
+        if (statusData?.status === 'error' || statusData?.status === 'not_found') {
+          localStorage.removeItem(ACTIVE_DRY_RUN_JOB_KEY)
+          throw new Error(statusData?.error || `Dry-runジョブが見つかりません (job_id: ${stored.jobId})`)
+        }
+        await new Promise(resolve => setTimeout(resolve, 1000))
+      }
+      throw new Error('Dry-runが24時間以内に完了しませんでした。バックエンド状態を確認してください。')
+    } catch (error: any) {
+      localStorage.removeItem(ACTIVE_DRY_RUN_JOB_KEY)
+      setDryRunResult(null)
+      setDryRunResultReady(false)
+      setDryRunExecuted(false)
+      const message = typeof error?.message === 'string' ? error.message : 'Dry-run結果を取得できませんでした。'
+      setDryRunError(message)
+      setToast({ visible: true, message: `Dry-runエラー: ${message}`, type: 'error' })
+    } finally {
+      if (dryRunTrackingRef.current === stored.jobId) dryRunTrackingRef.current = null
+      setDryRunLoading(false)
+      setDryRunStartedAt(null)
+    }
+  }, [loadFetchSummaryHistory])
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(ACTIVE_DRY_RUN_JOB_KEY)
+      const saved = raw ? JSON.parse(raw) : null
+      if (saved && typeof saved.jobId === 'string' && typeof saved.startedAt === 'number') {
+        void pollDryRunJob(saved as StoredDryRunJob)
+      }
+    } catch {
+      localStorage.removeItem(ACTIVE_DRY_RUN_JOB_KEY)
+    }
+  }, [pollDryRunJob])
 
   const loadStats = async () => {
     try {
@@ -945,6 +1045,33 @@ export default function DataCollectionPage() {
     return { startDateStr, endDateStr }
   }
 
+  const periodMonthSpan = (startPeriodValue: string, endPeriodValue: string) => {
+    const [startYearStr, startMonthStr] = startPeriodValue.split('-')
+    const [endYearStr, endMonthStr] = endPeriodValue.split('-')
+    const sy = parseInt(startYearStr, 10)
+    const sm = parseInt(startMonthStr, 10)
+    const ey = parseInt(endYearStr, 10)
+    const em = parseInt(endMonthStr, 10)
+    if (!Number.isFinite(sy) || !Number.isFinite(sm) || !Number.isFinite(ey) || !Number.isFinite(em)) return 0
+    return Math.max(0, (ey - sy) * 12 + (em - sm) + 1)
+  }
+
+  const formatMaybeNumber = (value: unknown): string => {
+    if (value == null) return '-'
+    if (typeof value === 'number') {
+      return Number.isFinite(value) ? String(value) : '-'
+    }
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? String(parsed) : '-'
+  }
+
+  const formatMaybeSeconds = (value: unknown): string => {
+    if (value == null) return '-'
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed)) return '-'
+    return `${Math.ceil(parsed)} sec`
+  }
+
   const handleDryRun = async () => {
     const validation = validatePeriodRange(startPeriod, endPeriod)
     if (!validation.ok) {
@@ -961,6 +1088,7 @@ export default function DataCollectionPage() {
     setDryRunPendingMessage('')
     setDryRunErrorMessage('')
     try {
+      setExecuteWarn('')
       const { startDateStr, endDateStr } = periodToDateRange(startPeriod, endPeriod)
       const startRes = await authFetch('/api/scrape', {
         method: 'POST',
@@ -1024,6 +1152,12 @@ export default function DataCollectionPage() {
     }
   }
 
+  useEffect(() => {
+    if (!batchResult) return
+    void loadStats()
+    void loadFetchSummaryHistory()
+  }, [batchResult, loadFetchSummaryHistory])
+
   const handleStartProfiling = async () => {
     if (!isAdmin) {
       showToast('特徴量プロファイリングはAdmin専用です。', 'error')
@@ -1076,7 +1210,7 @@ export default function DataCollectionPage() {
           <div className="flex items-center gap-2 px-3 py-1.5 bg-[#111] border border-[#1e1e1e] rounded-full">
             <span className={`w-1.5 h-1.5 rounded-full ${statusMeta[localApiStatus].dotClass}`} />
             <span className={`text-xs font-medium ${statusMeta[localApiStatus].textClass}`}>
-              ローカルAPI {statusMeta[localApiStatus].label}
+              バックエンドAPI {statusMeta[localApiStatus].label}
             </span>
             <button onClick={checkLocalApi} className="text-[#444] hover:text-[#888] transition-colors ml-1">
               <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1095,7 +1229,11 @@ export default function DataCollectionPage() {
             <span className="w-1.5 h-1.5 rounded-full bg-[#f87171] shrink-0" />
             <div className="flex-1 min-w-0">
               <p className="text-xs text-[#f87171]">スクレイプ API の状態を確認できません</p>
-              <p className="text-xs text-[#555] mt-0.5">VS Code タスク「Start FastAPI」を実行するか、<code className="text-[#7dd3fc] font-mono">cd python-api; python main.py</code> を実行してください</p>
+              <p className="text-xs text-[#555] mt-0.5">
+                Production利用時は管理者へ連絡してください。ローカル利用時はリポジトリ直下の
+                <code className="text-[#7dd3fc] font-mono mx-1">start-keiba-ai-pro.bat</code>
+                を実行してください。
+              </p>
               {localApiReason && <p className="text-xs text-[#666] mt-1">reason: {localApiReason}</p>}
             </div>
           </div>
@@ -1359,22 +1497,86 @@ export default function DataCollectionPage() {
             </div>
           )}
 
-          {dryRunResult && (
+          {dryRunLoading && (
+            <div className="rounded-lg border border-[#1e1e1e] bg-[#0a0a0a] p-4 space-y-2">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-medium text-[#9db4cc]">Dry-run 実行中</h3>
+                <span className="text-[11px] text-[#6b7280]">経過秒: {dryRunElapsedSeconds} sec</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-medium text-white">見積もり生成中</h3>
+              </div>
+              <div className="text-xs text-[#9db4cc]">
+                HTTPアクセスは実行していません
+              </div>
+              {periodMonthSpan(startPeriod, endPeriod) >= 6 && (
+                <div className="text-xs text-[#facc15]">
+                  長期間の場合、月次カレンダー確認により数十秒かかる場合があります
+                </div>
+              )}
+            </div>
+          )}
+
+          {!dryRunLoading && dryRunError && (
+            <div className="rounded border border-[#5b1e1e] bg-[#1f0d0d] px-3 py-2 text-xs text-[#fca5a5]">
+              {dryRunError}
+            </div>
+          )}
+
+          {!dryRunLoading && dryRunResultReady && dryRunResult && (
             <div className="rounded-lg border border-[#1e1e1e] bg-[#0a0a0a] p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-xs font-medium text-white">Dry-run 結果（実取得なし）</h3>
                 <span className="text-[11px] text-[#6b7280]">HTTPアクセスしないプレビュー</span>
               </div>
 
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">total target count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.total_target_count}</div></div>
-                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">unique URL count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.unique_url_count}</div></div>
-                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">estimated request count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.estimated_request_count}</div></div>
-                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">cache hit count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.cache_hit_count}</div></div>
-                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">cache miss count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.cache_miss_count}</div></div>
-                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">resume hit count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.resume_hit_count}</div></div>
-                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">skipped count</div><div className="text-sm text-white font-medium">{dryRunResult.dry_run.skipped_count}</div></div>
-                <div className="rounded border border-[#1e1e1e] p-2"><div className="text-[10px] text-[#666]">estimated runtime</div><div className="text-sm text-white font-medium">{Math.ceil(dryRunResult.dry_run.estimated_runtime_sec)} sec</div></div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">
+                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3 space-y-2">
+                  <div className="text-[#7dd3fc]">取得対象</div>
+                  <div className="text-[#aaa]">total target count: <span className="text-white">{dryRunResult.dry_run.total_target_count}</span></div>
+                  <div className="text-[#aaa]">unique URL count: <span className="text-white">{dryRunResult.dry_run.unique_url_count}</span></div>
+                </div>
+
+                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3 space-y-2">
+                  <div className="text-[#7dd3fc]">新規取得が必要</div>
+                  <div className="text-[#aaa]">new fetch required count: <span className="text-white">{dryRunResult.dry_run.new_fetch_required_count}</span></div>
+                  <div className="text-[#aaa]">estimated request count: <span className="text-white">{dryRunResult.dry_run.estimated_request_count}</span></div>
+                  <div className="text-[#aaa]">cache miss count: <span className="text-white">{dryRunResult.dry_run.cache_miss_count}</span></div>
+                </div>
+
+                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3 space-y-2">
+                  <div className="text-[#7dd3fc]">既存DBでカバー済み</div>
+                  <div className="text-[#aaa]">already covered count: <span className="text-white">{dryRunResult.dry_run.already_covered_count}</span></div>
+                  <div className="text-[#aaa]">DB existing skip count: <span className="text-white">{dryRunResult.dry_run.db_existing_skip_count}</span></div>
+                  <div className="text-[#aaa]">DB existing race count: <span className="text-white">{dryRunResult.dry_run.db_existing_race_count}</span></div>
+                  <div className="text-[#aaa]">DB existing horse count: <span className="text-white">{dryRunResult.dry_run.db_existing_horse_count}</span></div>
+                  <div className="text-[#aaa]">DB existing result count: <span className="text-white">{dryRunResult.dry_run.db_existing_result_count}</span></div>
+                  <div className="text-[#aaa]">DB existing pedigree count: <span className="text-white">{dryRunResult.dry_run.db_existing_pedigree_count}</span></div>
+                </div>
+
+                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3 space-y-2">
+                  <div className="text-[#7dd3fc]">HTTPキャッシュ / resume でスキップ</div>
+                  <div className="text-[#aaa]">cache hit count: <span className="text-white">{dryRunResult.dry_run.cache_hit_count}</span></div>
+                  <div className="text-[#aaa]">resume hit count: <span className="text-white">{dryRunResult.dry_run.resume_hit_count}</span></div>
+                  <div className="text-[#aaa]">skipped count: <span className="text-white">{dryRunResult.dry_run.skipped_count}</span></div>
+                </div>
+
+                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3 space-y-2">
+                  <div className="text-[#7dd3fc]">推定HTTPリクエスト</div>
+                  <div className="text-[#aaa]">estimated request count: <span className="text-white">{dryRunResult.dry_run.estimated_request_count}</span></div>
+                </div>
+
+                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3 space-y-2">
+                  <div className="text-[#7dd3fc]">推定実行時間</div>
+                  <div className="text-[#aaa]">estimated runtime: <span className="text-white">{Math.ceil(dryRunResult.dry_run.estimated_runtime_sec)} sec</span></div>
+                </div>
+              </div>
+
+              <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] px-3 py-2 text-xs text-[#9db4cc] space-y-1">
+                <div>DB existing skip count は、既にDBに保存済みのため再取得不要と判定された件数です。</div>
+                <div>cache hit はHTTPキャッシュで再取得不要と判定された件数です。</div>
+                <div>resume hit は過去に成功済みのURLとして再実行をスキップできる件数です。</div>
+                <div>new fetch required は今回新たに取得が必要と推定される件数です。</div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-[11px]">
@@ -1527,12 +1729,15 @@ export default function DataCollectionPage() {
                       <span className="text-[11px] text-[#666]">updated: {item.updated_at || '-'}</span>
                     </div>
                     {mode === 'dry-run' ? (
-                      <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-[11px]">
-                        <div className="text-[#aaa]">est req: <span className="text-white">{dry.estimated_request_count ?? '-'}</span></div>
-                        <div className="text-[#aaa]">cache hit: <span className="text-white">{dry.cache_hit_count ?? '-'}</span></div>
-                        <div className="text-[#aaa]">cache miss: <span className="text-white">{dry.cache_miss_count ?? '-'}</span></div>
-                        <div className="text-[#aaa]">resume hit: <span className="text-white">{dry.resume_hit_count ?? '-'}</span></div>
-                        <div className="text-[#aaa]">est runtime: <span className="text-white">{Math.ceil(Number(dry.estimated_runtime_sec || 0))} sec</span></div>
+                      <div className="grid grid-cols-2 md:grid-cols-6 gap-2 text-[11px]">
+                        <div className="text-[#aaa]">est req: <span className="text-white">{formatMaybeNumber(dry.estimated_request_count)}</span></div>
+                        <div className="text-[#aaa]">new fetch: <span className="text-white">{formatMaybeNumber(dry.new_fetch_required_count)}</span></div>
+                        <div className="text-[#aaa]">already covered: <span className="text-white">{formatMaybeNumber(dry.already_covered_count)}</span></div>
+                        <div className="text-[#aaa]">cache hit: <span className="text-white">{formatMaybeNumber(dry.cache_hit_count)}</span></div>
+                        <div className="text-[#aaa]">cache miss: <span className="text-white">{formatMaybeNumber(dry.cache_miss_count)}</span></div>
+                        <div className="text-[#aaa]">resume hit: <span className="text-white">{formatMaybeNumber(dry.resume_hit_count)}</span></div>
+                        <div className="text-[#aaa]">db existing: <span className="text-white">{formatMaybeNumber(dry.db_existing_skip_count)}</span></div>
+                        <div className="text-[#aaa]">est runtime: <span className="text-white">{formatMaybeSeconds(dry.estimated_runtime_sec)}</span></div>
                       </div>
                     ) : (
                       <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-[11px]">

@@ -123,6 +123,172 @@ def load_ultimate_training_frame_cached(
         df.attrs["stage_profile"] = stage_profile
     return df
 
+
+def _prediction_selector_values(df: pd.DataFrame, column: str) -> list[str]:
+    if column not in df.columns:
+        return []
+    values = {
+        str(value).strip()
+        for value in df[column].dropna().tolist()
+        if str(value).strip() not in {"", "None", "nan", "<NA>"}
+    }
+    return sorted(values)
+
+
+def _distance_band_bounds(value: object) -> tuple[int, int] | None:
+    try:
+        distance = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    if distance <= 0:
+        return None
+    if distance < 1400:
+        return 0, 1399
+    if distance < 1800:
+        return 1400, 1799
+    if distance < 2200:
+        return 1800, 2199
+    if distance < 2800:
+        return 2200, 2799
+    return 2800, 99999
+
+
+def load_prediction_history_frame(
+    db_path: Path,
+    current_df: pd.DataFrame,
+    *,
+    excluded_race_ids: set[str] | None = None,
+) -> pd.DataFrame:
+    """Load only history that can affect the current prediction features.
+
+    The feature pipeline needs complete histories for the current horses,
+    jockeys, trainers and bloodlines, plus all rows in the current gate-bias
+    course groups.  Other rows cannot contribute to a feature merged onto the
+    current race and are deliberately left in SQLite.  Selecting the required
+    JSON fields in SQL avoids materializing the roughly 100-column training
+    frame and its large intermediate copies in the API process.
+    """
+    if not isinstance(db_path, Path):
+        db_path = Path(db_path)
+    if current_df.empty or not db_path.exists():
+        return pd.DataFrame()
+
+    selector_columns = ("horse_id", "jockey_id", "trainer_id", "sire", "damsire")
+    selectors = {
+        column: _prediction_selector_values(current_df, column)
+        for column in selector_columns
+    }
+    conditions: list[str] = []
+    parameters: list[object] = []
+    for column, values in selectors.items():
+        if not values:
+            continue
+        placeholders = ",".join("?" for _ in values)
+        conditions.append(f"json_extract(rr.data, '$.{column}') IN ({placeholders})")
+        parameters.extend(values)
+
+    surface_column = "surface" if "surface" in current_df.columns else "track_type"
+    gate_groups: set[tuple[str, str, int, int]] = set()
+    if "venue" in current_df.columns and surface_column in current_df.columns:
+        for _, row in current_df.iterrows():
+            venue = row.get("venue")
+            surface = row.get(surface_column)
+            bounds = _distance_band_bounds(row.get("distance"))
+            if (
+                bounds is not None
+                and pd.notna(venue)
+                and pd.notna(surface)
+                and str(venue).strip()
+                and str(surface).strip()
+            ):
+                gate_groups.add((str(venue), str(surface), bounds[0], bounds[1]))
+    for venue, surface, lower, upper in sorted(gate_groups):
+        conditions.append(
+            "(json_extract(ru.data, '$.venue')=? "
+            "AND json_extract(ru.data, '$.track_type')=? "
+            "AND CAST(json_extract(ru.data, '$.distance') AS INTEGER) BETWEEN ? AND ?)"
+        )
+        parameters.extend((venue, surface, lower, upper))
+
+    if not conditions:
+        return pd.DataFrame()
+
+    excluded = sorted({str(value) for value in (excluded_race_ids or set()) if value})
+    exclusion_sql = ""
+    exclusion_parameters: list[object] = []
+    if excluded:
+        exclusion_sql = f"AND rr.race_id NOT IN ({','.join('?' for _ in excluded)})"
+        exclusion_parameters.extend(excluded)
+
+    with sqlite3.connect(str(db_path)) as conn:
+        has_returns = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='return_tables_ultimate'"
+        ).fetchone() is not None
+        payout_cte = ""
+        payout_join = ""
+        payout_select = "NULL AS tansho_payout"
+        query_parameters: list[object] = []
+        if has_returns:
+            payout_cte = (
+                "WITH tansho AS ("
+                "SELECT race_id, MIN(payout) AS tansho_payout "
+                "FROM return_tables_ultimate WHERE bet_type=? GROUP BY race_id) "
+            )
+            payout_join = "LEFT JOIN tansho tp ON tp.race_id=rr.race_id"
+            payout_select = "tp.tansho_payout AS tansho_payout"
+            query_parameters.append("単勝")
+
+        query = f"""
+            {payout_cte}
+            SELECT
+                rr.race_id AS race_id,
+                json_extract(rr.data, '$.horse_id') AS horse_id,
+                json_extract(rr.data, '$.jockey_id') AS jockey_id,
+                json_extract(rr.data, '$.trainer_id') AS trainer_id,
+                json_extract(rr.data, '$.sire') AS sire,
+                json_extract(rr.data, '$.damsire') AS damsire,
+                json_extract(rr.data, '$.bracket_number') AS bracket_number,
+                COALESCE(
+                    json_extract(rr.data, '$.finish'),
+                    json_extract(rr.data, '$.finish_position')
+                ) AS finish,
+                COALESCE(
+                    json_extract(rr.data, '$.last_3f_time'),
+                    json_extract(rr.data, '$.last_3f')
+                ) AS last_3f_time,
+                json_extract(rr.data, '$.last_3f_rank') AS last_3f_rank,
+                json_extract(rr.data, '$.running_style_num') AS running_style_num,
+                json_extract(rr.data, '$.speed_deviation') AS speed_deviation,
+                json_extract(ru.data, '$.date') AS race_date,
+                json_extract(ru.data, '$.venue') AS venue,
+                CAST(json_extract(ru.data, '$.distance') AS INTEGER) AS distance,
+                json_extract(ru.data, '$.track_type') AS surface,
+                {payout_select}
+            FROM race_results_ultimate rr
+            JOIN races_ultimate ru ON ru.race_id=rr.race_id
+            {payout_join}
+            WHERE ({' OR '.join(conditions)})
+            {exclusion_sql}
+        """
+        query_parameters.extend(parameters)
+        query_parameters.extend(exclusion_parameters)
+        history = pd.read_sql_query(query, conn, params=query_parameters)
+
+    for column in (
+        "bracket_number",
+        "finish",
+        "last_3f_time",
+        "last_3f_rank",
+        "running_style_num",
+        "speed_deviation",
+        "distance",
+        "tansho_payout",
+    ):
+        if column in history.columns:
+            history[column] = pd.to_numeric(history[column], errors="coerce", downcast="float")
+    return history
+
 def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
     """
     race_results_ultimateテーブルからUltimate版データを読み込む

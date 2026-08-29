@@ -13,7 +13,7 @@ REPORTS_DIR = ROOT_DIR / "reports"
 PLAN_SCRIPT = ROOT_DIR / "scripts" / "plan_p0_scrape_repair.py"
 
 
-def _run_plan(audit_path: Path, refresh_path: Path, output_path: Path) -> tuple[int, dict[str, Any]]:
+def _run_plan(audit_path: Path, refresh_path: Path, source_empty_diag_path: Path, output_path: Path) -> tuple[int, dict[str, Any]]:
     proc = subprocess.run(
         [
             sys.executable,
@@ -22,6 +22,8 @@ def _run_plan(audit_path: Path, refresh_path: Path, output_path: Path) -> tuple[
             str(audit_path),
             "--input-refresh-plan",
             str(refresh_path),
+            "--input-source-empty-diagnosis",
+            str(source_empty_diag_path),
             "--target",
             "all",
             "--output",
@@ -86,6 +88,14 @@ def _make_audit_fixture() -> dict[str, Any]:
                 "priority": "Domain allowed",
                 "example_keys": ["202601010401:2021100401"],
             },
+            {
+                "reason": "source-empty-result-cells",
+                "column": "finish_position",
+                "required_level": "required_if_result",
+                "count": 1,
+                "priority": "P0",
+                "example_keys": ["202601010501:2021100501"],
+            },
         ]
     }
 
@@ -123,6 +133,19 @@ def _make_refresh_fixture() -> dict[str, Any]:
     }
 
 
+def _make_source_empty_diag_fixture() -> dict[str, Any]:
+    return {
+        "checked_count": 4,
+        "domain_allowed_count": 2,
+        "classification_breakdown": [
+            {"classification": "domain-allowed-canceled", "count": 1},
+            {"classification": "alternate-page-required", "count": 1},
+            {"classification": "wrong-target-row", "count": 1},
+            {"classification": "source-result-missing", "count": 1},
+        ],
+    }
+
+
 def _has_sample_with(plan: dict[str, Any], *, reason: str, action: str, column: str) -> bool:
     for item in plan.get("sample_targets", []) if isinstance(plan.get("sample_targets"), list) else []:
         if not isinstance(item, dict):
@@ -141,12 +164,19 @@ def main() -> int:
         tmp = Path(td)
         audit_path = tmp / "audit.json"
         refresh_path = tmp / "refresh.json"
+        source_empty_diag_path = tmp / "source_empty_diag.json"
         plan_out = tmp / "p0_plan.json"
 
         audit_path.write_text(json.dumps(_make_audit_fixture(), ensure_ascii=False, indent=2), encoding="utf-8")
         refresh_path.write_text(json.dumps(_make_refresh_fixture(), ensure_ascii=False, indent=2), encoding="utf-8")
+        source_empty_diag_path.write_text(json.dumps(_make_source_empty_diag_fixture(), ensure_ascii=False, indent=2), encoding="utf-8")
 
-        rc, payload = _run_plan(audit_path=audit_path, refresh_path=refresh_path, output_path=plan_out)
+        rc, payload = _run_plan(
+            audit_path=audit_path,
+            refresh_path=refresh_path,
+            source_empty_diag_path=source_empty_diag_path,
+            output_path=plan_out,
+        )
 
     detail = payload.get("_detail") if isinstance(payload.get("_detail"), dict) else {}
     action_breakdown = detail.get("p0_action_breakdown") if isinstance(detail.get("p0_action_breakdown"), list) else []
@@ -163,6 +193,22 @@ def main() -> int:
                 reason="consistency:race_without_horse_data",
                 action="refetch-required",
                 column="(check)",
+            )
+        ),
+        "source_empty_result_cells_classified": bool(
+            _has_sample_with(
+                detail,
+                reason="source-empty-result-cells",
+                action="source-empty-result-cells",
+                column="finish_position",
+            )
+        ),
+        "source_empty_result_cells_not_refetch_required": bool(
+            not _has_sample_with(
+                detail,
+                reason="source-empty-result-cells",
+                action="refetch-required",
+                column="finish_position",
             )
         ),
         "race_number_derived_schema_review": bool(

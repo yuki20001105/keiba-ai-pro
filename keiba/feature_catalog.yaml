@@ -840,6 +840,151 @@ engineered_features:
   type: numeric
   enabled: true
   description: weight_diff (学習時に自動検出)
+- name: time_index
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: time_index (学習時に自動検出)
+- name: prev3_race_finish
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: prev3_race_finish (学習時に自動検出)
+- name: prev3_race_time
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: prev3_race_time (学習時に自動検出)
+- name: prev3_race_weight
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: prev3_race_weight (学習時に自動検出)
+- name: prev3_race_distance
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: prev3_race_distance (学習時に自動検出)
+- name: prev4_race_finish
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: prev4_race_finish (学習時に自動検出)
+- name: prev4_race_time
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: prev4_race_time (学習時に自動検出)
+- name: prev4_race_weight
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: prev4_race_weight (学習時に自動検出)
+- name: prev4_race_distance
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: prev4_race_distance (学習時に自動検出)
+- name: prev5_race_finish
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: prev5_race_finish (学習時に自動検出)
+- name: prev5_race_time
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: prev5_race_time (学習時に自動検出)
+- name: prev5_race_weight
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: prev5_race_weight (学習時に自動検出)
+- name: prev5_race_distance
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: prev5_race_distance (学習時に自動検出)
+- name: holding_just_time_sec
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_just_time_sec (学習時に自動検出)
+- name: holding_just_l3f
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_just_l3f (学習時に自動検出)
+- name: holding_just_finish
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_just_finish (学習時に自動検出)
+- name: holding_just_babasa
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_just_babasa (学習時に自動検出)
+- name: holding_middle_time_sec
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_middle_time_sec (学習時に自動検出)
+- name: holding_middle_l3f
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_middle_l3f (学習時に自動検出)
+- name: holding_middle_finish
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_middle_finish (学習時に自動検出)
+- name: holding_middle_babasa
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_middle_babasa (学習時に自動検出)
+- name: holding_short_time_sec
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_short_time_sec (学習時に自動検出)
+- name: holding_short_l3f
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_short_l3f (学習時に自動検出)
+- name: holding_short_finish
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_short_finish (学習時に自動検出)
+- name: holding_short_babasa
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_short_babasa (学習時に自動検出)
+- name: holding_long_time_sec
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_long_time_sec (学習時に自動検出)
+- name: holding_long_l3f
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_long_l3f (学習時に自動検出)
+- name: holding_long_finish
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_long_finish (学習時に自動検出)
+- name: holding_long_babasa
+  stage: auto_synced
+  type: numeric
+  enabled: true
+  description: holding_long_babasa (学習時に自動検出)
 unnecessary_columns:
 - name: post_time
   reason: 発走時刻URI

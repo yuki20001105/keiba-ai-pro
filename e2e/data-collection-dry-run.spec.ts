@@ -35,8 +35,13 @@ test.describe('データ取得 Dry-run UI', () => {
       return route.fulfill({ status: 200, json: { job_id: 'exec-job-001', status: 'queued' } })
     })
 
-    await page.route('/api/scrape/status/dry-run-job-001**', route =>
-      route.fulfill({
+    let pollCount = 0
+    await page.route('/api/scrape/status/dry-run-job-001**', route => {
+      pollCount += 1
+      if (pollCount === 1) {
+        return route.fulfill({ status: 200, json: { status: 'running', progress: 'planning' } })
+      }
+      return route.fulfill({
         status: 200,
         json: {
           status: 'completed',
@@ -52,6 +57,13 @@ test.describe('データ取得 Dry-run UI', () => {
                 cache_miss_count: 10,
                 resume_hit_count: 2,
                 skipped_count: 12,
+                db_existing_skip_count: 14,
+                db_existing_race_count: 7,
+                db_existing_horse_count: 96,
+                db_existing_result_count: 7,
+                db_existing_pedigree_count: 94,
+                new_fetch_required_count: 8,
+                already_covered_count: 26,
                 estimated_runtime_sec: 8,
               },
               rate_limit_policy: {
@@ -71,7 +83,7 @@ test.describe('データ取得 Dry-run UI', () => {
           },
         },
       })
-    )
+    })
 
     await page.goto('/data-collection')
 
@@ -80,11 +92,53 @@ test.describe('データ取得 Dry-run UI', () => {
 
     await page.getByRole('button', { name: 'Dry-run' }).click()
 
+    await expect(page.getByText('Dry-run 実行中')).toBeVisible()
+    await expect(page.getByText('見積もり生成中')).toBeVisible()
+    await expect(page.getByText('HTTPアクセスは実行していません')).toBeVisible()
+    await expect(page.getByText(/経過秒:\s*\d+\s*sec/)).toBeVisible()
+    await expect(page.getByText('Dry-run 結果（実取得なし）')).not.toBeVisible()
+    await expect(page.getByRole('button', { name: '取得開始' })).toBeDisabled()
+    await expect(page.locator('input[type="month"]').first()).toBeDisabled()
+    await expect(page.locator('input[type="month"]').nth(1)).toBeDisabled()
+    await expect(page.locator('input[type="checkbox"]').first()).toBeDisabled()
+
     await expect(page.getByText('Dry-run 結果（実取得なし）')).toBeVisible()
+    await expect(page.getByText('取得対象')).toBeVisible()
+    await expect(page.getByText('新規取得が必要')).toBeVisible()
+    await expect(page.getByText('既存DBでカバー済み')).toBeVisible()
+    await expect(page.getByText('HTTPキャッシュ / resume でスキップ')).toBeVisible()
+    await expect(page.getByText('推定HTTPリクエスト')).toBeVisible()
+    await expect(page.getByText('推定実行時間')).toBeVisible()
     const estReqCard = page.locator('div').filter({ hasText: 'estimated request count' }).first()
     await expect(estReqCard).toBeVisible()
     await expect(estReqCard).toContainText('8')
+    await expect(page.locator('div').filter({ hasText: 'estimated request count: 8' }).first()).toBeVisible()
+    await expect(page.locator('div').filter({ hasText: 'DB existing skip count: 14' }).first()).toBeVisible()
+    await expect(page.locator('div').filter({ hasText: 'new fetch required count: 8' }).first()).toBeVisible()
+    await expect(page.locator('div').filter({ hasText: 'already covered count: 26' }).first()).toBeVisible()
+    await expect(page.getByText('cache hit はHTTPキャッシュで再取得不要と判定された件数です。')).toBeVisible()
+    await expect(page.getByText('resume hit は過去に成功済みのURLとして再実行をスキップできる件数です。')).toBeVisible()
     await expect(page.getByText('rate limit policy')).toBeVisible()
+  })
+
+  test('Dry-runエラー時に0件ではなくエラーメッセージを表示する', async ({ page }) => {
+    await page.route('/api/scrape', async route => {
+      if (route.request().method() !== 'POST') {
+        return route.continue()
+      }
+      return route.fulfill({
+        status: 500,
+        json: { detail: 'Dry-run結果を取得できませんでした。期間を短くするか、再実行してください。' },
+      })
+    })
+
+    await page.goto('/data-collection')
+    await page.getByRole('button', { name: 'Dry-run' }).click()
+
+    await expect(
+      page.getByText('Dry-run結果を取得できませんでした。期間を短くするか、再実行してください。', { exact: true })
+    ).toBeVisible()
+    await expect(page.getByText('Dry-run 結果（実取得なし）')).not.toBeVisible()
   })
 
   test('Dry-run未実行で本実行するとwarnが表示される', async ({ page }) => {

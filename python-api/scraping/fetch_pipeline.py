@@ -498,6 +498,16 @@ async def fetch_bytes(
                 attempts=1,
             )
 
+    # A resume row proves that a previous request completed, but it does not
+    # contain the response body.  Returning an empty body here used to make
+    # parsers report missing tables after a successful prior fetch.  Count the
+    # resume marker for observability, then continue to a real fetch whenever
+    # no usable cached body exists.
+    if resume_key and not force_refresh:
+        resume_row = await asyncio.to_thread(_read_resume, resume_key)
+        if resume_row and str(resume_row.get("status")) == "success":
+            _metrics_inc("resume_hits", 1)
+
     if dry_run:
         _metrics_inc("dry_run_skips", 1)
         return FetchResult(
@@ -640,6 +650,11 @@ def _decode_text_body(body: bytes) -> str:
         except (LookupError, UnicodeDecodeError):
             continue
     return body.decode("utf-8", errors="replace")
+
+
+def decode_html_body(body: bytes) -> str:
+    """Public compatibility wrapper for charset-aware HTML decoding."""
+    return _decode_text_body(body)
 
 
 async def fetch_text(session, url: str, **kwargs: Any) -> tuple[FetchResult, str]:

@@ -6,6 +6,7 @@ POST /api/analyze_race
 from __future__ import annotations
 
 import json
+import gc
 import os
 import traceback
 from pathlib import Path
@@ -34,6 +35,10 @@ from models import (  # type: ignore
     BatchAnalyzeRequest,
 )
 from keiba_ai.constants import FUTURE_FIELDS  # type: ignore
+from routers.predict_data_refresh import (  # type: ignore
+    merge_fresh_pre_race_data,
+    race_metadata_invalid,
+)
 from services.race_snapshot import (  # type: ignore
     fetch_fresh_race_snapshot,
     save_valid_race_snapshot,
@@ -118,27 +123,28 @@ def _save_prediction_log(
 _ANALYZE_CACHE: dict[str, tuple[float, dict]] = {}
 _ANALYZE_CACHE_TTL = 300  # 5分
 _ANALYZE_CACHE_MAX = 200  # 最大エントリ数（超過時に最古から削除）
-# DB 全履歴キャッシュ（add_derived_features の full_history_df 用）
-# analyze_race / predict ごとに全 DB を再ロードするコストを削減（TTL=10分）
-_HISTORY_CACHE: "tuple[float, 'pd.DataFrame'] | None" = None
-_HISTORY_CACHE_TTL = 600  # 10分
-
-
-def _load_hist_cached() -> "pd.DataFrame":
-    """DB 全履歴 DataFrame をキャッシュ付きで返す（TTL=10分）
-
-    race_results_ultimate の全データを読み込んで DataFrame として返す。
-    10 分以内に再呼び出された場合はキャッシュを利用する。
-    """
-    global _HISTORY_CACHE
+def _load_prediction_history(
+    current_df: "pd.DataFrame", excluded_race_ids: set[str]
+) -> "pd.DataFrame":
+    """Load a request-scoped history frame without retaining the full DB."""
     try:
-        from keiba_ai.db_ultimate_loader import load_ultimate_training_frame as _ltf  # type: ignore
-        if _HISTORY_CACHE is not None and (_time.time() - _HISTORY_CACHE[0]) < _HISTORY_CACHE_TTL:
-            return _HISTORY_CACHE[1]
-        _df = _ltf(ULTIMATE_DB)
-        _HISTORY_CACHE = (_time.time(), _df)
-        return _df
-    except Exception:
+        from keiba_ai.db_ultimate_loader import load_prediction_history_frame  # type: ignore
+
+        history = load_prediction_history_frame(
+            ULTIMATE_DB,
+            current_df,
+            excluded_race_ids=excluded_race_ids,
+        )
+        memory_mb = float(history.memory_usage(index=True, deep=True).sum()) / (1024 ** 2)
+        logger.info(
+            "prediction history scoped load: rows=%s columns=%s memory_mb=%.1f",
+            len(history),
+            len(history.columns),
+            memory_mb,
+        )
+        return history
+    except Exception as exc:
+        logger.warning(f"prediction history scoped load failed: {exc}")
         import pandas as _pd
         return _pd.DataFrame()
 # レース後確定フィールド（keiba_ai.constants.FUTURE_FIELDS を参照）
@@ -420,19 +426,25 @@ async def predict(request: PredictRequest, http_req: Request):
         if "race_id" not in df.columns:
             df["race_id"] = "202500000000"
 
-        # [INV-01] 全履歴キャッシュ（expanding window 用、対象レースを除外）
-        # NOTE: _load_hist_cached / build_features は CPU 集中型の同期処理のため
+        # [INV-01] request-scoped history (expanding window, target excluded)
+        # NOTE: history SQL / build_features are synchronous CPU-bound work.
         #       asyncio.to_thread でスレッドプールに移し、イベントループをブロックしない
         try:
-            _hist_df = await asyncio.to_thread(_load_hist_cached)
-            if 'race_id' in _hist_df.columns:
-                _hist_df = _hist_df[~_hist_df['race_id'].isin(set(df['race_id'].dropna()))]
-            _full_hist = pd.concat([_hist_df, df], ignore_index=True)
+            _target_race_ids = {str(value) for value in df['race_id'].dropna()}
+            _hist_df = await asyncio.to_thread(
+                _load_prediction_history, df, _target_race_ids
+            )
+            _full_hist = pd.concat([_hist_df, df], ignore_index=True, copy=False)
         except Exception:
             _full_hist = df
 
         # ModelPredictor で特徴量構築（不足時は HTTP 500）
         X = await asyncio.to_thread(predictor.build_features, df, _full_hist)
+        if '_hist_df' in locals():
+            del _hist_df
+        if _full_hist is not df:
+            del _full_hist
+        gc.collect()
 
         # ModelPredictor でスコア計算（ターゲット種別に応じて自動選択）
         p_raw, p_norm = predictor.predict_scores(X)
@@ -704,6 +716,16 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
                 if _c in df_pred.columns:
                     df_pred[_c] = pd.to_numeric(df_pred[_c], errors="coerce")
 
+            # Point-in-time history requires the actual calendar date.  Race
+            # metadata stores it as ``date`` while the feature contract uses
+            # ``race_date``.
+            if "race_date" not in df_pred.columns:
+                df_pred["race_date"] = race_info.get("date")
+            else:
+                df_pred["race_date"] = df_pred["race_date"].fillna(
+                    race_info.get("date")
+                )
+
             # [fix] DB保存時にodds=Noneだった出馬表データを再スクレイプして最新オッズを補完
             # 過去レース・当日レース(race_date <= today)はdb.netkeiba.com結果ページから確定オッズを取得
             # 未来レースはshutubaページから暫定オッズを取得
@@ -712,7 +734,8 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
                 or df_pred["odds"].isna().all()
                 or (df_pred["odds"].fillna(0) == 0).all()  # 全馬 0.0 もオッズ未取得扱い
             )
-            if _odds_missing:
+            _metadata_invalid = race_metadata_invalid(df_pred)
+            if _odds_missing or _metadata_invalid:
                 try:
                     import aiohttp as _aiohttp2
                     from scraping.constants import get_random_headers as _get_rh  # type: ignore
@@ -724,6 +747,11 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
                             race_info.get("date", ""),
                         )
                     if _fresh and _fresh.get("horses"):
+                        _fresh_changed = merge_fresh_pre_race_data(
+                            df_pred,
+                            race_info,
+                            _fresh,
+                        )
                         _odds_map = {
                             h["horse_number"]: h.get("odds")
                             for h in _fresh["horses"]
@@ -751,6 +779,16 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
                             logger.info(f"[analyze] {request.race_id}: fresh snapshotでodds補完完了 ({len(_odds_map)}頭)")
                         else:
                             logger.info(f"[analyze] {request.race_id}: shutuba再スクレイプ完了だがoddはまだ未公開")
+                        if _fresh_changed:
+                            # Persist the same complete pre-race snapshot used
+                            # by this request. This prevents a later request
+                            # from reloading an old distance=0 record.
+                            try:
+                                _srtud(_fresh, ULTIMATE_DB, overwrite=True)
+                            except Exception as _save_error:
+                                logger.warning(
+                                    f"[analyze] {request.race_id}: fresh race snapshot save failed: {_save_error}"
+                                )
                 except Exception as _roe:
                     logger.warning(f"[analyze] {request.race_id}: odds再スクレイプ失敗 → NaNのまま続行: {_roe}")
 
@@ -840,18 +878,16 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
             except Exception as _qe_a:
                 logger.warning(f"[Quality Gate /analyze] スキップ: {_qe_a}")
 
-            # [INV-01] full_history_df には対象レースの行を含めない（expanding window に確定結果が混入しないよう）
-            # NOTE: _load_hist_cached / build_features は CPU 集中型の同期処理のため
+            # [INV-01] Load only history groups that can affect this race.
+            # The target race itself is excluded in SQL.
             #       asyncio.to_thread でスレッドプールに移し、イベントループをブロックしない
             try:
-                _hist_df2 = await asyncio.to_thread(_load_hist_cached)
-                # 対象レースの確定結果が expanding stats に混入しないよう hist から除外する（INV-01）
-                if 'race_id' in _hist_df2.columns:
-                    _hist_df2 = _hist_df2[_hist_df2['race_id'] != request.race_id]
-                # FutureWarning 回避: 全列が NaN の列を concat 前に除外
-                _df_pred_for_concat = df_pred.loc[:, ~df_pred.isna().all()]
-                _hist_df2_for_concat = _hist_df2.loc[:, ~_hist_df2.isna().all()]
-                _full_hist2 = pd.concat([_hist_df2_for_concat, _df_pred_for_concat], ignore_index=True)
+                _hist_df2 = await asyncio.to_thread(
+                    _load_prediction_history, df_pred, {request.race_id}
+                )
+                _full_hist2 = pd.concat(
+                    [_hist_df2, df_pred], ignore_index=True, copy=False
+                )
             except Exception:
                 _full_hist2 = df_pred
 
@@ -886,6 +922,12 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
                         )
             except Exception as _p3e:
                 logger.warning(f"[analyze] place3モデルロード失敗: {_p3e}")
+
+            if '_hist_df2' in locals():
+                del _hist_df2
+            if _full_hist2 is not df_pred:
+                del _full_hist2
+            gc.collect()
 
             # ── アンサンブルスコア（win/speed + place3 の加重平均）──────────────
             # _place3_norm を使用（正規化済み分布で win_probs と整合）
