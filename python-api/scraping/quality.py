@@ -344,6 +344,16 @@ def record_date_expectation(db_path: Path, race_date: str, race_ids: Iterable[st
                 now,
             ),
         )
+        if expected:
+            # A newly resolved authoritative list supersedes an earlier
+            # transient HTTP/parse failure for the same date.
+            conn.execute(
+                "UPDATE scrape_repair_queue SET status='completed', last_error=NULL, "
+                "updated_at=? WHERE entity_type='date' AND entity_id=? "
+                "AND repair_kind='race_list'",
+                (now, race_date),
+            )
+
 
 def queue_repair(
     db_path: Path,

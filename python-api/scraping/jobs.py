@@ -17,7 +17,6 @@ from typing import Callable
 
 import aiohttp
 import httpx
-from bs4 import BeautifulSoup
 
 from scraping.constants import SCRAPE_HEADERS, SCRAPE_PROXY_URL, get_random_headers
 from scraping.fetch_pipeline import (
@@ -27,6 +26,7 @@ from scraping.fetch_pipeline import (
     write_fetch_summary,
 )
 from scraping.race import scrape_race_full
+from scraping.race_list import fetch_race_ids
 from scraping.quality import (
     classify_race_quality,
     completed_quality_dates,
@@ -1007,105 +1007,32 @@ async def _run_scrape_job(
                     continue
 
                 _day_races_before = counter["races"]  # この日の保存開始前レース数を記録
-                race_ids: list[str] = []  # try ブロック外で初期化（except後にも参照可能）
+                race_ids: list[str] = []  # available after the per-date try/except
                 expected_race_ids: list[str] = []
                 list_failure_reason: str | None = None
                 list_source_status = "not_requested"
                 try:
                     await asyncio.sleep(_pre_sleep)  # レース一覧リクエスト間のインターバル
 
-                    # ① db.netkeiba.com（過去レース結果ページ）から race ID を取得
-                    race_ids = []
-                    _list_result, _list_html = await fetch_text(
-                        session,
-                        list_url,
-                        cache_ttl_sec=12 * 60 * 60,
-                        resume_key=f"job:{job_id}:date:{date}:list",
-                        min_interval_sec=1.0,
-                        max_retries=3,
-                        retry_statuses={429, 500, 503},
-                        retry_base_sec=2.0,
-                        retry_jitter_sec=0.6,
-                        circuit_threshold=3,
-                        circuit_cooldown_sec=120.0,
-                    )
-                    if _list_result.status == 200:
-                        list_source_status = "http_200"
-                        race_ids = list(dict.fromkeys(re.findall(r"/race/(\d{12})/", _list_html)))
+                    # Resolve the authoritative date list through the shared
+                    # fail-closed path.  It tries the desktop endpoints first,
+                    # then scans every page of the JRA-only mobile month index;
+                    # therefore an HTTP 400 can no longer be mistaken for an
+                    # empty/non-racing date.
+                    try:
+                        race_ids, race_list_source = await fetch_race_ids(date)
+                        list_source_status = f"ok:{race_list_source}"
                         if not race_ids:
-                            list_failure_reason = "race_list_parse_empty"
-                    elif _list_result.status == 400:
-                        list_source_status = "http_400"
-                        list_failure_reason = "race_list_http_400"
-                        if list_failure_reason:
-                            logger.info(f"{date}: db.netkeiba.com HTTP 400 → 未開催または削除済み日付")
-                    else:
-                        logger.warning(f"{date}: db.netkeiba.com HTTP {_list_result.status}")
-
-                    # ② 0件のとき → race.netkeiba.com（race_list_sub）へフォールバック
-                    if _list_result.status not in (200, 400):
-                        list_source_status = f"http_{_list_result.status}"
-                        list_failure_reason = f"race_list_http_{_list_result.status}"
-
-                    if not race_ids:
-                        shutuba_url = (
-                            f"https://race.netkeiba.com/top/race_list_sub.html"
-                            f"?kaisai_date={date}"
-                        )
-                        try:
-                            _sub_result, html2 = await fetch_text(
-                                session,
-                                shutuba_url,
-                                cache_ttl_sec=6 * 60 * 60,
-                                resume_key=f"job:{job_id}:date:{date}:sub",
-                                min_interval_sec=1.0,
-                                max_retries=3,
-                                retry_statuses={429, 500, 503},
-                                retry_base_sec=2.0,
-                                retry_jitter_sec=0.6,
-                                circuit_threshold=3,
-                                circuit_cooldown_sec=120.0,
+                            list_failure_reason = (
+                                "race_list_verified_empty"
+                                if race_list_source.endswith(":verified-empty")
+                                else "race_list_empty"
                             )
-                            if _sub_result.status == 200:
-                                list_source_status = "http_200_fallback"
-                                # Content-Type の charset が空なので EUC-JP で明示的にデコード
-                                soup2 = BeautifulSoup(html2, "lxml")
-                                found_ids: list[str] = []
-                                for a in soup2.find_all("a", href=True):
-                                    m = re.search(r"race_id=(\d{12})", a["href"])
-                                    if m:
-                                        found_ids.append(m.group(1))
-                                race_ids = list(dict.fromkeys(found_ids))
-                                logger.info(
-                                    f"{date}: race.netkeiba.com から {len(race_ids)} レースID検出"
-                                    f" (race_list_sub, HTML {len(html2)}chars)"
-                                )
-                                if not race_ids:
-                                    list_failure_reason = "race_list_fallback_parse_empty"
-                                    logger.warning(
-                                        f"{date}: race_list_sub.html HTMLサンプル(EUC-JP): "
-                                        f"{html2[:300]!r}"
-                                    )
-                            else:
-                                logger.warning(
-                                    f"{date}: レース一覧 HTTP {_sub_result.status} (db/race 両方失敗) → スキップ"
-                                )
-                                job["progress"] = {
-                                    "done": i + 1,
-                                    "total": total,
-                                    "message": f"{i+1}/{total}日処理済み / {counter['races']}レース保存 (HTTP {_sub_result.status}スキップ)",
-                                    "saved_races": counter["races"],
-                                    "saved_horses": counter["horses"],
-                                }
-                                list_source_status = f"http_{_sub_result.status}_fallback"
-                                list_failure_reason = f"race_list_fallback_http_{_sub_result.status}"
-                                if _sub_result.status in (403, 429, 503):
-                                    logger.warning(f"{date}: HTTP {_sub_result.status} → 60秒待機（IPブロック回避）")
-                                    await asyncio.sleep(60.0)
-                        except Exception as _fe:
-                            list_source_status = "fallback_exception"
-                            list_failure_reason = "race_list_fallback_exception"
-                            logger.warning(f"{date}: race.netkeiba.com 取得失敗: {_fe}")
+                    except Exception as _list_error:
+                        race_ids = []
+                        list_source_status = "exception"
+                        list_failure_reason = "race_list_unavailable"
+                        logger.warning(f"{date}: authoritative race-list failed: {_list_error}")
 
                     logger.info(f"{date}: {len(race_ids)}レースID検出")
                     # Freeze the authoritative race list before exclusions.

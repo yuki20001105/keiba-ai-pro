@@ -224,6 +224,27 @@ def test_repeated_race_list_failure_excludes_date_but_keeps_audit_row(tmp_path: 
     assert status == "excluded"
 
 
+def test_successful_date_expectation_closes_prior_race_list_repair(tmp_path: Path) -> None:
+    db_path = tmp_path / "ultimate.db"
+    race_date = "20250105"
+    record_date_failure(
+        db_path,
+        race_date=race_date,
+        reason="race_list_http_400",
+        source_status="http_400",
+    )
+
+    record_date_expectation(db_path, race_date, ["202506010101"])
+
+    with sqlite3.connect(str(db_path)) as conn:
+        repair = conn.execute(
+            "SELECT status, last_error FROM scrape_repair_queue "
+            "WHERE entity_type='date' AND entity_id=? AND repair_kind='race_list'",
+            (race_date,),
+        ).fetchone()
+    assert repair == ("completed", None)
+
+
 def test_post_job_audit_queues_only_missing_races(tmp_path: Path) -> None:
     db_path = tmp_path / "ultimate.db"
     expected = ["202001010101", "202001010102"]
