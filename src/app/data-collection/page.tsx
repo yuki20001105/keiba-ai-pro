@@ -541,7 +541,7 @@ export default function DataCollectionPage() {
           <div className="flex items-center gap-2 px-3 py-1.5 bg-[#111] border border-[#1e1e1e] rounded-full">
             <span className={`w-1.5 h-1.5 rounded-full ${statusMeta[localApiStatus].dotClass}`} />
             <span className={`text-xs font-medium ${statusMeta[localApiStatus].textClass}`}>
-              ローカルAPI {statusMeta[localApiStatus].label}
+              バックエンドAPI {statusMeta[localApiStatus].label}
             </span>
             <button onClick={checkLocalApi} className="text-[#444] hover:text-[#888] transition-colors ml-1">
               <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -560,7 +560,11 @@ export default function DataCollectionPage() {
             <span className="w-1.5 h-1.5 rounded-full bg-[#f87171] shrink-0" />
             <div className="flex-1 min-w-0">
               <p className="text-xs text-[#f87171]">スクレイプ API の状態を確認できません</p>
-              <p className="text-xs text-[#555] mt-0.5">VS Code タスク「Start FastAPI」を実行するか、<code className="text-[#7dd3fc] font-mono">cd python-api; python main.py</code> を実行してください</p>
+              <p className="text-xs text-[#555] mt-0.5">
+                Production利用時は管理者へ連絡してください。ローカル利用時はリポジトリ直下の
+                <code className="text-[#7dd3fc] font-mono mx-1">start-keiba-ai-pro.bat</code>
+                を実行してください。
+              </p>
               {localApiReason && <p className="text-xs text-[#666] mt-1">reason: {localApiReason}</p>}
             </div>
           </div>

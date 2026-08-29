@@ -6,10 +6,14 @@ from __future__ import annotations
 import asyncio
 import gc
 import json
+import os
 import re
 import sqlite3
 import threading
+import time
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 import aiohttp
 import httpx
@@ -23,10 +27,24 @@ from scraping.fetch_pipeline import (
     write_fetch_summary,
 )
 from scraping.race import scrape_race_full
+from scraping.quality import (
+    classify_race_quality,
+    completed_quality_dates,
+    excluded_standard_dates,
+    excluded_standard_race_ids,
+    hydrate_quality_from_existing_data,
+    init_acquisition_quality_db,
+    record_date_expectation,
+    record_date_failure,
+    record_race_failure,
+    record_race_quality,
+    run_date_repair_audit,
+    summarize_acquisition_quality,
+)
 from scraping.storage import (
+    _get_scraped_dates_sqlite,
     _init_sqlite_db,
     _save_race_sqlite_only,
-    _get_scraped_dates_sqlite,
     _save_scraped_date_sqlite,
 )
 
@@ -42,6 +60,15 @@ except ImportError:
 # ============================================================
 _JOBS_DB_PATH: Path = Path(__file__).parent.parent.parent / "keiba" / "data" / "scrape_jobs.db"
 _PEDIGREE_DB_PATH: Path = Path(__file__).parent.parent.parent / "keiba" / "data" / "pedigree_cache.db"
+
+try:
+    import psutil  # type: ignore
+except ImportError:  # pragma: no cover - requirements-lock includes psutil
+    psutil = None
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _init_jobs_db() -> None:
@@ -60,6 +87,17 @@ def _init_jobs_db() -> None:
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(scrape_jobs)")}
+        migrations = {
+            "request_json": "TEXT DEFAULT '{}'",
+            "heartbeat_at": "TEXT",
+            "resume_count": "INTEGER NOT NULL DEFAULT 0",
+            "worker_pid": "INTEGER",
+            "last_checkpoint": "TEXT",
+        }
+        for column, definition in migrations.items():
+            if column not in existing_columns:
+                conn.execute(f"ALTER TABLE scrape_jobs ADD COLUMN {column} {definition}")
         conn.commit()
         conn.close()
     except Exception as e:
@@ -69,17 +107,35 @@ def _init_jobs_db() -> None:
 def _persist_job(job_id: str, job: dict) -> None:
     """ジョブ状態を SQLite に永続化する（失敗は握り潰す）"""
     try:
-        conn = sqlite3.connect(str(_JOBS_DB_PATH))
+        conn = sqlite3.connect(str(_JOBS_DB_PATH), timeout=30)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("""
-            INSERT OR REPLACE INTO scrape_jobs (job_id, status, progress, result, error, updated_at)
-            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO scrape_jobs (
+                job_id, status, progress, result, error, request_json,
+                heartbeat_at, resume_count, worker_pid, last_checkpoint, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(job_id) DO UPDATE SET
+                status = excluded.status,
+                progress = excluded.progress,
+                result = excluded.result,
+                error = excluded.error,
+                request_json = excluded.request_json,
+                heartbeat_at = excluded.heartbeat_at,
+                resume_count = excluded.resume_count,
+                worker_pid = excluded.worker_pid,
+                last_checkpoint = excluded.last_checkpoint,
+                updated_at = CURRENT_TIMESTAMP
         """, (
             job_id,
             job.get("status", "unknown"),
             json.dumps(job.get("progress", {}), ensure_ascii=False),
             json.dumps(job.get("result"), ensure_ascii=False),
             json.dumps(job.get("error"), ensure_ascii=False),
+            json.dumps(job.get("request", {}), ensure_ascii=False),
+            job.get("heartbeat_at"),
+            int(job.get("resume_count", 0) or 0),
+            job.get("worker_pid"),
+            (job.get("progress") or {}).get("last_completed_date"),
         ))
         conn.commit()
         conn.close()
@@ -92,7 +148,10 @@ def _load_job_from_db(job_id: str) -> dict | None:
     try:
         conn = sqlite3.connect(str(_JOBS_DB_PATH))
         row = conn.execute(
-            "SELECT status, progress, result, error FROM scrape_jobs WHERE job_id = ?", (job_id,)
+            """SELECT status, progress, result, error, request_json,
+                      heartbeat_at, resume_count, worker_pid
+               FROM scrape_jobs WHERE job_id = ?""",
+            (job_id,),
         ).fetchone()
         conn.close()
         if row:
@@ -101,6 +160,10 @@ def _load_job_from_db(job_id: str) -> dict | None:
                 "progress": json.loads(row[1] or "{}"),
                 "result": json.loads(row[2] or "null"),
                 "error": json.loads(row[3] or "null"),
+                "request": json.loads(row[4] or "{}"),
+                "heartbeat_at": row[5],
+                "resume_count": int(row[6] or 0),
+                "worker_pid": row[7],
             }
     except Exception:
         pass
@@ -130,7 +193,6 @@ def mark_interrupted_scrape_jobs(db_path: Path = _JOBS_DB_PATH) -> int:
 
 
 _init_jobs_db()
-mark_interrupted_scrape_jobs()
 
 
 # ============================================================
@@ -165,7 +227,9 @@ async def _fetch_race_days_for_month(year: int, month: int, timeout_sec: float =
 
 
 async def _build_race_dates_from_calendar(
-    start_date: str, end_date: str
+    start_date: str,
+    end_date: str,
+    heartbeat: Callable[[], None] | None = None,
 ) -> list[str] | None:
     """開始〜終了日の範囲内でカレンダーから実際の開催日だけを収集する。
 
@@ -203,6 +267,8 @@ async def _build_race_dates_from_calendar(
             # 取得失敗 → 全日フォールバック
             return None
         all_dates.extend(days)
+        if heartbeat is not None:
+            heartbeat()
         await asyncio.sleep(1.0)  # カレンダーリクエスト間インターバル
 
     # 指定範囲でフィルタ
@@ -223,6 +289,249 @@ _MAX_JOBS = 50
 # RLock（再入可能ロック）を使用: scrape_start が _JOBS_LOCK を保持したまま
 # _purge_old_jobs を呼び出すとデッドロックする問題を防ぐ
 _JOBS_LOCK = threading.RLock()
+_WORKERS_LOCK = threading.RLock()
+_ACTIVE_WORKERS: set[str] = set()
+_SUPERVISOR_STOP = threading.Event()
+_SUPERVISOR_THREAD: threading.Thread | None = None
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return max(0, int(os.environ.get(name, str(default))))
+    except (TypeError, ValueError):
+        return default
+
+
+def get_scrape_resource_snapshot() -> dict:
+    """Return low-cost process/system metrics used by the long-running guard."""
+    snapshot = {
+        "process_rss_mb": None,
+        "system_available_mb": None,
+        "process_rss_limit_mb": _env_int("SCRAPE_MAX_PROCESS_RSS_MB", 8192),
+        "system_available_min_mb": _env_int("SCRAPE_MIN_AVAILABLE_MB", 1024),
+    }
+    if psutil is None:
+        snapshot["guard_available"] = False
+        return snapshot
+    try:
+        snapshot["process_rss_mb"] = round(psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024, 1)
+        snapshot["system_available_mb"] = round(psutil.virtual_memory().available / 1024 / 1024, 1)
+        snapshot["guard_available"] = True
+    except Exception as exc:  # pragma: no cover - platform failure
+        snapshot["guard_available"] = False
+        snapshot["guard_error"] = str(exc)
+    return snapshot
+
+
+def _resource_capacity_available(snapshot: dict | None = None) -> bool:
+    current = snapshot or get_scrape_resource_snapshot()
+    if not current.get("guard_available"):
+        return True
+    rss = current.get("process_rss_mb")
+    available = current.get("system_available_mb")
+    rss_limit = current.get("process_rss_limit_mb")
+    available_min = current.get("system_available_min_mb")
+    return not (
+        (rss_limit and rss is not None and rss >= rss_limit)
+        or (available_min and available is not None and available <= available_min)
+    )
+
+
+def _checkpoint_job(job_id: str, job: dict, *, force: bool = False) -> None:
+    """Persist a heartbeat without writing SQLite on every small progress mutation."""
+    now = time.monotonic()
+    last = float(job.get("_last_checkpoint_monotonic", 0.0) or 0.0)
+    if not force and now - last < _env_int("SCRAPE_HEARTBEAT_INTERVAL_SEC", 10):
+        return
+    job["heartbeat_at"] = _utc_now()
+    job["worker_pid"] = os.getpid()
+    job["resource"] = get_scrape_resource_snapshot()
+    job["_last_checkpoint_monotonic"] = now
+    _persist_job(job_id, job)
+
+
+async def _wait_for_resource_capacity(job_id: str, job: dict) -> None:
+    """Pause safely under memory pressure and continue when capacity returns."""
+    wait_started = time.monotonic()
+    max_wait = _env_int("SCRAPE_RESOURCE_MAX_WAIT_SEC", 0)
+    poll_sec = max(5, _env_int("SCRAPE_RESOURCE_POLL_SEC", 30))
+    while True:
+        snapshot = get_scrape_resource_snapshot()
+        if _resource_capacity_available(snapshot):
+            if job.get("status") == "waiting_resources":
+                job["status"] = "running"
+                job["error"] = None
+                _checkpoint_job(job_id, job, force=True)
+            return
+        job["status"] = "waiting_resources"
+        job["error"] = None
+        progress = job.setdefault("progress", {})
+        progress["message"] = (
+            "Resource guard paused scraping; it will resume automatically "
+            f"(rss={snapshot.get('process_rss_mb')} MB, "
+            f"available={snapshot.get('system_available_mb')} MB)."
+        )
+        _checkpoint_job(job_id, job, force=True)
+        if max_wait and time.monotonic() - wait_started >= max_wait:
+            raise RuntimeError("Resource pressure did not recover before SCRAPE_RESOURCE_MAX_WAIT_SEC")
+        await asyncio.sleep(poll_sec)
+
+
+def start_scrape_job_worker(job_id: str, request: dict | None = None) -> bool:
+    """Start exactly one daemon worker for a durable scrape job."""
+    job = _scrape_jobs.get(job_id) or _load_job_from_db(job_id)
+    if not job:
+        return False
+    request_data = dict(request or job.get("request") or {})
+    if not request_data.get("start_date") or not request_data.get("end_date"):
+        job["status"] = "error"
+        job["error"] = "This legacy job has no persisted date range and cannot be resumed safely."
+        _scrape_jobs[job_id] = job
+        _checkpoint_job(job_id, job, force=True)
+        return False
+
+    with _WORKERS_LOCK:
+        if job_id in _ACTIVE_WORKERS:
+            return False
+        _ACTIVE_WORKERS.add(job_id)
+
+    job["request"] = request_data
+    _scrape_jobs[job_id] = job
+
+    def _worker() -> None:
+        if os.name == "nt":
+            loop = asyncio.SelectorEventLoop()
+        else:
+            loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(
+                _run_scrape_job(
+                    job_id,
+                    str(request_data["start_date"]),
+                    str(request_data["end_date"]),
+                    bool(request_data.get("force_rescrape", False)),
+                    bool(request_data.get("dry_run", False)),
+                )
+            )
+        finally:
+            loop.close()
+            with _WORKERS_LOCK:
+                _ACTIVE_WORKERS.discard(job_id)
+
+    threading.Thread(target=_worker, daemon=True, name=f"scrape-{job_id}").start()
+    return True
+
+
+def resume_interrupted_scrape_jobs() -> int:
+    """Recover durable queued/running jobs after a FastAPI restart."""
+    _init_jobs_db()
+    statuses = ("queued", "running", "recovering", "waiting_resources", "paused_resource")
+    placeholders = ",".join("?" for _ in statuses)
+    try:
+        with sqlite3.connect(str(_JOBS_DB_PATH), timeout=30) as conn:
+            rows = conn.execute(
+                f"SELECT job_id FROM scrape_jobs WHERE status IN ({placeholders}) ORDER BY created_at",
+                statuses,
+            ).fetchall()
+    except Exception as exc:
+        logger.warning(f"Failed to inspect recoverable scrape jobs: {exc}")
+        return 0
+
+    resumed = 0
+    for (job_id,) in rows:
+        with _WORKERS_LOCK:
+            if str(job_id) in _ACTIVE_WORKERS:
+                continue
+        job = _load_job_from_db(str(job_id))
+        request_data = (job or {}).get("request") or {}
+        if not job or not request_data.get("start_date") or not request_data.get("end_date"):
+            if job:
+                job["status"] = "error"
+                job["error"] = "Backend restarted, but this legacy job has no persisted request to resume."
+                _scrape_jobs[str(job_id)] = job
+                _checkpoint_job(str(job_id), job, force=True)
+            continue
+        job["status"] = "recovering"
+        job["error"] = None
+        job["resume_count"] = int(job.get("resume_count", 0) or 0) + 1
+        job["heartbeat_at"] = _utc_now()
+        _scrape_jobs[str(job_id)] = job
+        _persist_job(str(job_id), job)
+        if start_scrape_job_worker(str(job_id), request_data):
+            resumed += 1
+    return resumed
+
+
+def get_scrape_runtime_health() -> dict:
+    """Expose enough evidence to tell whether long-running work is alive or stale."""
+    stale_after = _env_int("SCRAPE_STALE_HEARTBEAT_SEC", 180)
+    now = datetime.now(timezone.utc)
+    stale_jobs: list[str] = []
+    recoverable_jobs = 0
+    try:
+        with sqlite3.connect(str(_JOBS_DB_PATH), timeout=10) as conn:
+            rows = conn.execute(
+                """SELECT job_id, status, heartbeat_at FROM scrape_jobs
+                   WHERE status IN ('queued','running','recovering','waiting_resources','paused_resource')"""
+            ).fetchall()
+        recoverable_jobs = len(rows)
+        for job_id, status, heartbeat in rows:
+            if status == "queued" and not heartbeat:
+                continue
+            try:
+                observed = datetime.fromisoformat(str(heartbeat).replace("Z", "+00:00"))
+                if (now - observed).total_seconds() > stale_after:
+                    stale_jobs.append(str(job_id))
+            except (TypeError, ValueError):
+                stale_jobs.append(str(job_id))
+    except Exception as exc:
+        return {"database_ok": False, "database_error": str(exc)}
+
+    with _WORKERS_LOCK:
+        active_workers = sorted(_ACTIVE_WORKERS)
+    resource = get_scrape_resource_snapshot()
+    return {
+        "database_ok": True,
+        "auto_resume_enabled": True,
+        "active_workers": active_workers,
+        "active_worker_count": len(active_workers),
+        "recoverable_job_count": recoverable_jobs,
+        "stale_job_ids": stale_jobs,
+        "stale_after_sec": stale_after,
+        "resource_capacity_available": _resource_capacity_available(resource),
+        "resource": resource,
+    }
+
+
+def start_scrape_supervisor() -> int:
+    """Resume interrupted jobs now and keep a lightweight recovery supervisor alive."""
+    global _SUPERVISOR_THREAD
+    resumed = resume_interrupted_scrape_jobs()
+    with _WORKERS_LOCK:
+        if _SUPERVISOR_THREAD and _SUPERVISOR_THREAD.is_alive():
+            return resumed
+        _SUPERVISOR_STOP.clear()
+
+        def _supervise() -> None:
+            interval = max(15, _env_int("SCRAPE_SUPERVISOR_INTERVAL_SEC", 60))
+            while not _SUPERVISOR_STOP.wait(interval):
+                resume_interrupted_scrape_jobs()
+
+        _SUPERVISOR_THREAD = threading.Thread(
+            target=_supervise, daemon=True, name="scrape-supervisor"
+        )
+        _SUPERVISOR_THREAD.start()
+    return resumed
+
+
+def stop_scrape_supervisor() -> None:
+    global _SUPERVISOR_THREAD
+    _SUPERVISOR_STOP.set()
+    thread = _SUPERVISOR_THREAD
+    if thread and thread.is_alive() and thread is not threading.current_thread():
+        thread.join(timeout=2)
+    _SUPERVISOR_THREAD = None
 
 
 def _purge_old_jobs(store: dict, max_keep: int = _MAX_JOBS) -> None:
@@ -249,7 +558,8 @@ def list_recent_jobs(limit: int = 20) -> list[dict]:
         conn = sqlite3.connect(str(_JOBS_DB_PATH))
         rows = conn.execute(
             """
-            SELECT job_id, status, progress, result, error, created_at, updated_at
+            SELECT job_id, status, progress, result, error, created_at, updated_at,
+                   request_json, heartbeat_at, resume_count, worker_pid
             FROM scrape_jobs
             ORDER BY datetime(updated_at) DESC
             LIMIT ?
@@ -270,6 +580,7 @@ def list_recent_jobs(limit: int = 20) -> list[dict]:
             error = json.loads(row[4] or "null")
             created_at = row[5]
             updated_at = row[6]
+            request_data = json.loads(row[7] or "{}")
             fetch_summary = (result or {}).get("fetch_summary") if isinstance(result, dict) else None
             history.append(
                 {
@@ -281,6 +592,10 @@ def list_recent_jobs(limit: int = 20) -> list[dict]:
                     "created_at": created_at,
                     "updated_at": updated_at,
                     "fetch_summary": fetch_summary,
+                    "request": request_data,
+                    "heartbeat_at": row[8],
+                    "resume_count": int(row[9] or 0),
+                    "worker_pid": row[10],
                 }
             )
         except Exception:
@@ -440,9 +755,13 @@ async def _run_scrape_job(
 
         job = _scrape_jobs[job_id]
         job["status"] = "running"
+        job["error"] = None
+        job["worker_pid"] = os.getpid()
+        _checkpoint_job(job_id, job, force=True)
 
         ULTIMATE_DB = Path(__file__).parent.parent.parent / "keiba" / "data" / "keiba_ultimate.db"
         _init_sqlite_db(ULTIMATE_DB)
+        init_acquisition_quality_db(ULTIMATE_DB)
 
         start_time = _time.time()
 
@@ -470,11 +789,19 @@ async def _run_scrape_job(
         from datetime import date as _date_cls
         _oldest = min(dates)
         _oldest_days_ago = (_date_cls.today() - _date_cls(int(_oldest[:4]), int(_oldest[4:6]), int(_oldest[6:8]))).days
-        if _oldest_days_ago > 30 and not force_rescrape:
+        calendar_filter_applied = False
+        # A dry-run is a zero-HTTP planning operation. Calendar HTTP filtering
+        # belongs to execution and must not make the preview mutate cache/state.
+        if _oldest_days_ago > 30 and not force_rescrape and not dry_run:
             job["progress"] = {"done": 0, "total": len(dates), "message": "カレンダー取得中..."}
             logger.info(f"カレンダー取得開始: {start_date}〜{end_date} ({len(dates)}日 → 開催日のみに絞り込み)")
-            _calendar_dates = await _build_race_dates_from_calendar(start_date, end_date)
+            _calendar_dates = await _build_race_dates_from_calendar(
+                start_date,
+                end_date,
+                heartbeat=lambda: _checkpoint_job(job_id, job, force=True),
+            )
             if _calendar_dates is not None:
+                calendar_filter_applied = True
                 _original_count = len(dates)
                 dates = sorted(set(dates) & set(_calendar_dates))
                 logger.info(f"カレンダー絞り込み完了: {_original_count}日 → {len(dates)}日（開催日のみ）")
@@ -482,7 +809,17 @@ async def _run_scrape_job(
                 logger.warning("カレンダー取得失敗 → 全日付で処理（フォールバック）")
 
         total = len(dates)
-        job["progress"] = {"done": 0, "total": total, "message": f"0/{total}日処理済み"}
+        previous_progress = job.get("progress") if isinstance(job.get("progress"), dict) else {}
+        completed_dates = set(previous_progress.get("completed_dates") or [])
+        job["progress"] = {
+            "done": sum(1 for date in dates if date in completed_dates),
+            "total": total,
+            "message": f"0/{total}日処理済み",
+            "completed_dates": sorted(completed_dates),
+            "saved_races": int(previous_progress.get("saved_races", 0) or 0),
+            "saved_horses": int(previous_progress.get("saved_horses", 0) or 0),
+        }
+        _checkpoint_job(job_id, job, force=True)
 
         if dry_run:
             dry_urls: list[str] = []
@@ -514,7 +851,18 @@ async def _run_scrape_job(
                 dry_resume_keys.append(f"job:{job_id}:date:{d}:sub")
 
             plan = estimate_fetch_plan(dry_urls, resume_keys=dry_resume_keys)
-            db_existing = _estimate_db_existing_coverage(ULTIMATE_DB, dates, min_races=_MIN_RACES_PER_DAY)
+            if force_rescrape:
+                db_existing = {
+                    "db_existing_skip_count": 0,
+                    "db_existing_race_count": 0,
+                    "db_existing_horse_count": 0,
+                    "db_existing_result_count": 0,
+                    "db_existing_pedigree_count": 0,
+                }
+            else:
+                db_existing = _estimate_db_existing_coverage(
+                    ULTIMATE_DB, dates, min_races=_MIN_RACES_PER_DAY
+                )
             cache_hits = int(plan.get("cache_hits", 0))
             resume_hits = int(plan.get("resume_hits", 0))
             unique_urls = int(plan.get("unique_urls", 0))
@@ -533,6 +881,8 @@ async def _run_scrape_job(
                 "start_date": start_date,
                 "end_date": end_date,
                 "total_dates": total,
+                "force_rescrape": bool(force_rescrape),
+                "calendar_filter_applied": calendar_filter_applied,
                 "dry_run": {
                     "total_target_count": total_target_count,
                     "unique_url_count": unique_urls,
@@ -571,10 +921,11 @@ async def _run_scrape_job(
 
         # ── ② 前処理B: 取得済み日付を SQLite から読み込み（レジューム）──
         scraped_dates: set = set()
+        excluded_dates: set[str] = set()
         if not force_rescrape:
             try:
                 _local_scraped = await asyncio.to_thread(
-                    _get_scraped_dates_sqlite, ULTIMATE_DB, _MIN_RACES_PER_DAY
+                    completed_quality_dates, ULTIMATE_DB
                 )
                 scraped_dates.update(_local_scraped)
                 if _local_scraped:
@@ -583,9 +934,14 @@ async def _run_scrape_job(
             except Exception as _e:
                 logger.warning(f"SQLite取得済み確認失敗: {_e}")
 
+            excluded_dates = await asyncio.to_thread(excluded_standard_dates, ULTIMATE_DB)
+
         timeout = aiohttp.ClientTimeout(total=25, connect=8)
         connector = aiohttp.TCPConnector(limit=5, limit_per_host=3)
-        counter = {"races": 0, "horses": 0}
+        counter = {
+            "races": int(job["progress"].get("saved_races", 0) or 0),
+            "horses": int(job["progress"].get("saved_horses", 0) or 0),
+        }
         counter_lock = asyncio.Lock()
 
         # プロキシ設定（環境変数 SCRAPE_PROXY_URL で指定）
@@ -602,8 +958,30 @@ async def _run_scrape_job(
             headers=_session_headers, timeout=timeout, connector=connector, **_session_kwargs
         ) as session:
             for i, date in enumerate(dates):
+                await _wait_for_resource_capacity(job_id, job)
                 list_url = f"https://db.netkeiba.com/race/list/{date}/"
                 errors: list = []
+
+                if date in completed_dates:
+                    job["progress"].update({
+                        "done": i + 1,
+                        "total": total,
+                        "message": f"{i+1}/{total} dates processed (resumed checkpoint)",
+                    })
+                    _checkpoint_job(job_id, job, force=True)
+                    continue
+
+                if date in excluded_dates:
+                    failed_dates = set(job["progress"].get("failed_dates") or [])
+                    failed_dates.add(date)
+                    job["progress"].update({
+                        "done": i + 1,
+                        "total": total,
+                        "message": f"{i+1}/{total} dates processed ({date} quarantined)",
+                        "failed_dates": sorted(failed_dates),
+                    })
+                    _checkpoint_job(job_id, job, force=True)
+                    continue
 
                 # 過去30日以内か判定（インターバル・フォールバック制御用）
                 _days_ago = (_date_cls.today() - _date_cls(int(date[:4]), int(date[4:6]), int(date[6:8]))).days
@@ -621,11 +999,18 @@ async def _run_scrape_job(
                         "message": f"{i+1}/{total}日処理済み / {counter['races']}レース保存 (スキップ含む)",
                         "saved_races": counter["races"],
                         "saved_horses": counter["horses"],
+                        "completed_dates": sorted(completed_dates | {date}),
+                        "last_completed_date": date,
                     }
+                    completed_dates.add(date)
+                    _checkpoint_job(job_id, job, force=True)
                     continue
 
                 _day_races_before = counter["races"]  # この日の保存開始前レース数を記録
                 race_ids: list[str] = []  # try ブロック外で初期化（except後にも参照可能）
+                expected_race_ids: list[str] = []
+                list_failure_reason: str | None = None
+                list_source_status = "not_requested"
                 try:
                     await asyncio.sleep(_pre_sleep)  # レース一覧リクエスト間のインターバル
 
@@ -645,16 +1030,24 @@ async def _run_scrape_job(
                         circuit_cooldown_sec=120.0,
                     )
                     if _list_result.status == 200:
+                        list_source_status = "http_200"
                         race_ids = list(dict.fromkeys(re.findall(r"/race/(\d{12})/", _list_html)))
+                        if not race_ids:
+                            list_failure_reason = "race_list_parse_empty"
                     elif _list_result.status == 400:
+                        list_source_status = "http_400"
+                        list_failure_reason = "race_list_http_400"
+                        if list_failure_reason:
                             logger.info(f"{date}: db.netkeiba.com HTTP 400 → 未開催または削除済み日付")
                     else:
                         logger.warning(f"{date}: db.netkeiba.com HTTP {_list_result.status}")
 
                     # ② 0件のとき → race.netkeiba.com（race_list_sub）へフォールバック
-                    #    当日・直近未来レースはこちらにしか載っていない
-                    #    ※ 過去日付（30日超）には 400 を返すため使用しない
-                    if not race_ids and _is_recent:
+                    if _list_result.status not in (200, 400):
+                        list_source_status = f"http_{_list_result.status}"
+                        list_failure_reason = f"race_list_http_{_list_result.status}"
+
+                    if not race_ids:
                         shutuba_url = (
                             f"https://race.netkeiba.com/top/race_list_sub.html"
                             f"?kaisai_date={date}"
@@ -674,6 +1067,7 @@ async def _run_scrape_job(
                                 circuit_cooldown_sec=120.0,
                             )
                             if _sub_result.status == 200:
+                                list_source_status = "http_200_fallback"
                                 # Content-Type の charset が空なので EUC-JP で明示的にデコード
                                 soup2 = BeautifulSoup(html2, "lxml")
                                 found_ids: list[str] = []
@@ -687,6 +1081,7 @@ async def _run_scrape_job(
                                     f" (race_list_sub, HTML {len(html2)}chars)"
                                 )
                                 if not race_ids:
+                                    list_failure_reason = "race_list_fallback_parse_empty"
                                     logger.warning(
                                         f"{date}: race_list_sub.html HTMLサンプル(EUC-JP): "
                                         f"{html2[:300]!r}"
@@ -702,31 +1097,102 @@ async def _run_scrape_job(
                                     "saved_races": counter["races"],
                                     "saved_horses": counter["horses"],
                                 }
+                                list_source_status = f"http_{_sub_result.status}_fallback"
+                                list_failure_reason = f"race_list_fallback_http_{_sub_result.status}"
                                 if _sub_result.status in (403, 429, 503):
                                     logger.warning(f"{date}: HTTP {_sub_result.status} → 60秒待機（IPブロック回避）")
                                     await asyncio.sleep(60.0)
-                                continue
                         except Exception as _fe:
+                            list_source_status = "fallback_exception"
+                            list_failure_reason = "race_list_fallback_exception"
                             logger.warning(f"{date}: race.netkeiba.com 取得失敗: {_fe}")
 
                     logger.info(f"{date}: {len(race_ids)}レースID検出")
+                    # Freeze the authoritative race list before exclusions.
+                    # Quarantined races remain visible to the date audit, so a
+                    # partial day can never become a silent success.
+                    if not race_ids:
+                        await asyncio.to_thread(
+                            record_date_failure,
+                            ULTIMATE_DB,
+                            race_date=date,
+                            reason=list_failure_reason or "race_list_empty",
+                            source_status=list_source_status,
+                        )
+                        errors.append(f"{date}: {list_failure_reason or 'race_list_empty'}")
+
+                    expected_race_ids = list(race_ids)
+                    await asyncio.to_thread(
+                        record_date_expectation, ULTIMATE_DB, date, expected_race_ids
+                    )
+                    existing_audit = await asyncio.to_thread(
+                        hydrate_quality_from_existing_data,
+                        ULTIMATE_DB,
+                        date,
+                        expected_race_ids,
+                    )
+                    missing_or_incomplete = set(existing_audit["missing_race_ids"])
+                    race_ids = [rid for rid in expected_race_ids if rid in missing_or_incomplete]
+                    if expected_race_ids and not race_ids:
+                        logger.info(
+                            f"{date}: all {len(expected_race_ids)} expected races already "
+                            "pass settled quality; detail fetch skipped"
+                        )
+                    excluded_ids = await asyncio.to_thread(
+                        excluded_standard_race_ids, ULTIMATE_DB
+                    )
+                    if excluded_ids:
+                        race_ids = [rid for rid in race_ids if rid not in excluded_ids]
+                        excluded_today = sorted(set(expected_race_ids) & excluded_ids)
+                        if excluded_today:
+                            logger.warning(
+                                f"{date}: {len(excluded_today)} quarantined races excluded "
+                                f"from standard scrape: {excluded_today[:5]}"
+                            )
 
                     async def _fetch_and_save(race_id, _date=date, _day_idx=i):
                         try:
                             race_data = await scrape_race_full(
-                                session, race_id, date_hint=_date, quick_mode=True
+                                session,
+                                race_id,
+                                date_hint=_date,
+                                quick_mode=True,
+                                force_refresh=True,
                             )
                             if race_data and race_data.get("horses"):
+                                quality = classify_race_quality(race_data)
+                                if not quality.valid_for_storage:
+                                    reason = "quality:" + ",".join(quality.required_errors)
+                                    await asyncio.to_thread(
+                                        record_race_failure,
+                                        ULTIMATE_DB,
+                                        race_date=_date,
+                                        race_id=race_id,
+                                        reason=reason,
+                                        source_status="http_200",
+                                    )
+                                    errors.append(f"{race_id}: {reason}")
+                                    logger.warning(f"quality gate rejected {race_id}: {reason}")
+                                    del race_data
+                                    return
                                 n_horses = len(race_data["horses"])
                                 saved = await asyncio.to_thread(
                                     _save_race_sqlite_only, race_data, ULTIMATE_DB
                                 )
-                                del race_data
                                 if saved:
+                                    await asyncio.to_thread(
+                                        record_race_quality,
+                                        ULTIMATE_DB,
+                                        race_date=_date,
+                                        race_id=race_id,
+                                        report=quality,
+                                        source_status="http_200",
+                                        race_data=race_data,
+                                    )
                                     async with counter_lock:
                                         counter["races"] += 1
                                         counter["horses"] += n_horses
-                                        job["progress"] = {
+                                        job["progress"].update({
                                             "done": _day_idx,
                                             "total": total,
                                             "message": (
@@ -735,20 +1201,49 @@ async def _run_scrape_job(
                                             ),
                                             "saved_races": counter["races"],
                                             "saved_horses": counter["horses"],
-                                        }
+                                        })
                                     logger.info(f"保存完了: {race_id} ({n_horses}頭)")
                                 else:
+                                    await asyncio.to_thread(
+                                        record_race_failure,
+                                        ULTIMATE_DB,
+                                        race_date=_date,
+                                        race_id=race_id,
+                                        reason="sqlite_save_failed",
+                                        source_status="http_200",
+                                    )
+                                    errors.append(f"{race_id}: sqlite_save_failed")
                                     logger.warning(f"SQLite保存失敗: {race_id}")
+                                del race_data
                             else:
+                                await asyncio.to_thread(
+                                    record_race_failure,
+                                    ULTIMATE_DB,
+                                    race_date=_date,
+                                    race_id=race_id,
+                                    reason="parse_or_source_empty",
+                                    source_status="source_unclassified",
+                                )
+                                errors.append(f"{race_id}: parse_or_source_empty")
                                 logger.warning(f"レースデータなし/出走馬なし: {race_id}")
                         except Exception as exc:
                             err_msg = f"{race_id}: {exc}"
                             errors.append(err_msg)
+                            await asyncio.to_thread(
+                                record_race_failure,
+                                ULTIMATE_DB,
+                                race_date=_date,
+                                race_id=race_id,
+                                reason="exception:" + str(exc)[:300],
+                                source_status="exception",
+                            )
                             logger.error(f"_fetch_and_save 失敗 {err_msg}")
 
                     for ci in range(0, len(race_ids), 1):
+                        await _wait_for_resource_capacity(job_id, job)
                         chunk = race_ids[ci : ci + 1]
                         await asyncio.gather(*[_fetch_and_save(r) for r in chunk])
+                        _checkpoint_job(job_id, job)
                         if ci + 1 < len(race_ids):
                             await asyncio.sleep(_inter_race_sleep)  # レース間インターバル
                         gc.collect()
@@ -756,28 +1251,49 @@ async def _run_scrape_job(
                         logger.warning(f"エラー一覧: {errors[:5]}")
 
                 except Exception as e:
+                    errors.append(f"{date}: {e}")
                     logger.error(f"ジョブ {job_id} {date} エラー: {e}")
 
-                job["progress"] = {
+                job["progress"].update({
                     "done": i + 1,
                     "total": total,
                     "message": f"{i+1}/{total}日処理済み / {counter['races']}レース保存 (errors:{len(errors)})",
                     "saved_races": counter["races"],
                     "saved_horses": counter["horses"],
                     "last_errors": errors[-3:] if errors else [],
-                }
-                # この日の取得結果をSQLiteに記録（次回再開時にスキップ可能にする）
-                # ⚠️ race_ids 数（URL候補）ではなく実際に DB 保存したレース数を使う
-                #    Cloudflare ブロック等で保存 0 件の場合に誤スキップを防ぐ
+                })
+                # A date is complete only when every expected race has a
+                # settled, structurally valid record.  Partial and quarantined
+                # races remain in the repair ledger and are never hidden by a
+                # fixed minimum-race threshold.
                 try:
-                    _day_saved = counter["races"] - _day_races_before
-                    await asyncio.to_thread(
-                        _save_scraped_date_sqlite, ULTIMATE_DB, date, _day_saved
+                    date_audit = await asyncio.to_thread(
+                        run_date_repair_audit,
+                        ULTIMATE_DB,
+                        date,
+                        expected_race_ids,
                     )
-                except Exception:
-                    pass
+                    day_complete = date_audit["status"] == "complete"
+                    if day_complete:
+                        await asyncio.to_thread(
+                            _save_scraped_date_sqlite,
+                            ULTIMATE_DB,
+                            date,
+                            date_audit["expected_race_count"],
+                        )
+                        completed_dates.add(date)
+                        job["progress"]["completed_dates"] = sorted(completed_dates)
+                        job["progress"]["last_completed_date"] = date
+                    else:
+                        failed_dates = set(job["progress"].get("failed_dates") or [])
+                        failed_dates.add(date)
+                        job["progress"]["failed_dates"] = sorted(failed_dates)
+                        job["progress"]["last_date_audit"] = date_audit
+                except Exception as audit_exc:
+                    errors.append(f"{date}: date audit failed: {audit_exc}")
+                    logger.error(f"{date}: date completeness audit failed: {audit_exc}")
                 # 進捗を SQLite に永続化（Render スピンダウン対策）
-                _persist_job(job_id, job)
+                _checkpoint_job(job_id, job, force=True)
                 # 日付間インターバル（最終日以外）
                 if i < total - 1:
                     await asyncio.sleep(_post_sleep)
@@ -785,6 +1301,9 @@ async def _run_scrape_job(
         saved_races = counter["races"]
         saved_horses = counter["horses"]
         elapsed = _time.time() - start_time
+        quality_audit = await asyncio.to_thread(
+            summarize_acquisition_quality, ULTIMATE_DB, dates
+        )
         fetch_summary = {
             "job_id": job_id,
             "mode": "execute",
@@ -793,6 +1312,7 @@ async def _run_scrape_job(
             "saved_races": saved_races,
             "saved_horses": saved_horses,
             "elapsed_time_sec": elapsed,
+            "quality_audit": quality_audit,
             "metrics": get_fetch_metrics(reset=True),
             "rate_limit_policy": {
                 "min_interval_sec": 1.0,
@@ -814,19 +1334,28 @@ async def _run_scrape_job(
         with _JOBS_LOCK:
             job["status"] = "completed"
             job["result"] = {
-                "success": True,
+                "success": bool(quality_audit["quality_complete"]),
                 "races_collected": saved_races,
                 "saved_horses": saved_horses,
                 "elapsed_time": elapsed,
-                "message": f"{saved_races}レース・{saved_horses}頭のデータを収集しました",
+                "message": (
+                    f"{saved_races}レース・{saved_horses}頭のデータを収集しました"
+                    if quality_audit["quality_complete"]
+                    else (
+                        f"収集は完了しましたが、{quality_audit['incomplete_date_count']}日を"
+                        "修復キューへ登録しました"
+                    )
+                ),
                 "fetch_summary": fetch_summary,
                 "fetch_summary_path": str(report_path),
             }
-        _persist_job(job_id, job)
+        _checkpoint_job(job_id, job, force=True)
     except Exception as e:
         logger.error(f"スクレイピングジョブ失敗 {job_id}: {e}")
         with _JOBS_LOCK:
             if job_id in _scrape_jobs:
                 _scrape_jobs[job_id]["status"] = "error"
                 _scrape_jobs[job_id]["error"] = str(e)
-        _persist_job(job_id, _scrape_jobs.get(job_id, {}))
+        failed_job = _scrape_jobs.get(job_id, {})
+        if failed_job:
+            _checkpoint_job(job_id, failed_job, force=True)

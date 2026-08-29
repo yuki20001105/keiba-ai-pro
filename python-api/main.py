@@ -63,6 +63,11 @@ from routers import (  # type: ignore
     train,
 )
 from scheduler import start_scheduler, stop_scheduler  # type: ignore
+from scraping.jobs import (  # type: ignore
+    get_scrape_runtime_health,
+    start_scrape_supervisor,
+    stop_scrape_supervisor,
+)
 
 # ── Rate Limiter（インメモリ・Redis不要） ──────────────────────────────
 limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
@@ -71,7 +76,9 @@ limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     start_scheduler()
+    start_scrape_supervisor()
     yield
+    stop_scrape_supervisor()
     stop_scheduler()
 
 
@@ -118,7 +125,23 @@ app.include_router(prediction_history.router)
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    runtime = get_scrape_runtime_health()
+    healthy = (
+        bool(runtime.get("database_ok"))
+        and not (runtime.get("stale_job_ids") or [])
+        and runtime.get("resource_capacity_available", True)
+    )
+    return {
+        "status": "ok" if healthy else "degraded",
+        "long_running_jobs": {
+            "auto_resume_enabled": runtime.get("auto_resume_enabled", False),
+            "active_worker_count": runtime.get("active_worker_count", 0),
+            "recoverable_job_count": runtime.get("recoverable_job_count", 0),
+            "stale_job_count": len(runtime.get("stale_job_ids") or []),
+            "resource_capacity_available": runtime.get("resource_capacity_available", True),
+            "resource": runtime.get("resource", {}),
+        },
+    }
 
 
 if __name__ == "__main__":

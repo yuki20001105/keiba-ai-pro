@@ -10,6 +10,8 @@ import yaml
 import pandas as pd
 import numpy as np
 
+from .point_in_time_history import add_point_in_time_horse_history_features
+
 
 # ===========================================================================
 # 脚質分類ユーティリティ（動画: コーナー通過順位 → 逃げ/先行/差し/追込）
@@ -1026,7 +1028,7 @@ def _feh_entity_career(
     return df, h
 
 
-def _feh_recent_form(
+def _feh_recent_form_legacy(
     df: pd.DataFrame, h: pd.DataFrame
 ) -> tuple:
     """馬の近走（past3/5/10）平均着順・勝率の rolling 統計を付与する。"""
@@ -1063,6 +1065,15 @@ def _feh_recent_form(
         on=['horse_id', 'race_id'], how='left')
 
     return df, h
+
+
+def _feh_recent_form(
+    df: pd.DataFrame, h: pd.DataFrame
+) -> tuple:
+    """Build horse recent-form windows with an exact point-in-time boundary."""
+    # Provider race IDs are not a reliable chronology.  Exact dates reject
+    # same-day/future results by construction.
+    return add_point_in_time_horse_history_features(df, h), h
 
 
 def _feh_entity_recent30(

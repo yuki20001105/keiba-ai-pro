@@ -92,7 +92,9 @@ export function useBatchScrape() {
         const statusRes = await authFetch(`/api/scrape/status/${stored.jobId}`)
         if (!statusRes.ok) {
           consecutiveFailures += 1
-          if (consecutiveFailures >= 10) throw new Error(`ステータス取得失敗 (job_id: ${stored.jobId})`)
+          // The backend owns the durable job. Keep reconnecting for up to five
+          // minutes so a FastAPI restart does not make the browser abandon it.
+          if (consecutiveFailures >= 100) throw new Error(`ステータス取得失敗 (job_id: ${stored.jobId})`)
           await delay(3000)
           continue
         }
@@ -119,10 +121,16 @@ export function useBatchScrape() {
             : `残り約${remainingSeconds}秒`
           : ''
 
+        const durableStatusMessage = status.status === 'recovering'
+          ? 'バックエンド再起動後のジョブへ自動再接続しています...'
+          : status.status === 'waiting_resources'
+            ? 'メモリ空き容量を待機中です。ジョブは自動再開されます。'
+            : backendProgress.message
+
         setProgress({
           current,
           total: 100,
-          message: backendProgress.message || `バックエンドジョブ ${stored.jobId} を実行中...`,
+          message: durableStatusMessage || `バックエンドジョブ ${stored.jobId} を実行中...`,
           eta,
         })
 

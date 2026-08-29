@@ -179,6 +179,22 @@ def _parse_blood_table(blood_table, result: dict) -> None:
                 break
 
 
+def _find_pedigree_table(soup: "BeautifulSoup"):
+    table = soup.find("table", class_="blood_table")
+    if table is not None:
+        return table
+    # Mobile pedigree pages omit the desktop class but retain the canonical
+    # 32-row five-generation layout (5 cells in rows 0 and 16).
+    for candidate in soup.find_all("table"):
+        rows = candidate.find_all("tr")
+        if len(rows) >= 32:
+            first_cells = rows[0].find_all("td")
+            middle_cells = rows[len(rows) // 2].find_all("td")
+            if len(first_cells) >= 5 and len(middle_cells) >= 5:
+                return candidate
+    return None
+
+
 # ---------------------------------------------------------------------------
 # 馬詳細スクレイピング（メイン関数）
 # ---------------------------------------------------------------------------
@@ -330,6 +346,21 @@ async def scrape_horse_detail(
                 circuit_threshold=3,
                 circuit_cooldown_sec=120.0,
             )
+            if _fetch.status == 400 and "db.netkeiba.com" in u:
+                mobile_url = u.replace("db.netkeiba.com", "db.sp.netkeiba.com", 1)
+                _fetch, text = await fetch_text(
+                    session,
+                    mobile_url,
+                    cache_ttl_sec=7 * 24 * 60 * 60,
+                    resume_key=f"horse:{horse_id}:{mobile_url}",
+                    min_interval_sec=1.0,
+                    max_retries=3,
+                    retry_statuses={429, 500, 503},
+                    retry_base_sec=2.0,
+                    retry_jitter_sec=0.6,
+                    circuit_threshold=3,
+                    circuit_cooldown_sec=120.0,
+                )
             if _fetch.status != 200:
                 return None
             return text
@@ -447,7 +478,7 @@ async def scrape_horse_detail(
             if _pre_ped_html:
                 ped_soup = BeautifulSoup(_pre_ped_html, "lxml", parse_only=HTML_STRAINER)
                 del _pre_ped_html
-                blood_table = ped_soup.find("table", class_="blood_table")
+                blood_table = _find_pedigree_table(ped_soup)
                 if blood_table:
                     _parse_blood_table(blood_table, result)
                     if result.get("sire"):
@@ -471,7 +502,7 @@ async def scrape_horse_detail(
                     )
                     if _ped_fetch2.status == 200:
                         ped_soup = BeautifulSoup(ped_html_retry, "lxml", parse_only=HTML_STRAINER)
-                        blood_table = ped_soup.find("table", class_="blood_table")
+                        blood_table = _find_pedigree_table(ped_soup)
                         if blood_table:
                             _parse_blood_table(blood_table, result)
                             logger.debug(f"ped リトライ成功: {horse_id} sire={result.get('sire')}")

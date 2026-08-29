@@ -14,6 +14,7 @@ from bs4 import BeautifulSoup
 from scraping.constants import HTML_STRAINER, VENUE_MAP, is_cloudflare_block
 from scraping.fetch_pipeline import fetch_text
 from scraping.horse import scrape_horse_detail
+from scraping.mobile_race import parse_mobile_race
 
 try:
     from app_config import logger  # type: ignore
@@ -23,13 +24,18 @@ except ImportError:
 
 
 async def scrape_race_full(
-    session, race_id: str, date_hint: str = "", quick_mode: bool = False
+    session,
+    race_id: str,
+    date_hint: str = "",
+    quick_mode: bool = False,
+    force_refresh: bool = False,
 ) -> Optional[dict]:
     """
     単一レースの完全データを netkeiba.com から取得。
     race_results_ultimate / races_ultimate 形式で返す。
     date_hint: YYYYMMDD 形式の日付（リストページから判明した場合に渡す）
     quick_mode: True=毛色SPフォールバックをスキップして高速化（バックフィルAPIで後処理）
+    force_refresh: incomplete lifecycle repair時は古いentry/middleキャッシュを使用しない
     """
     _quick_mode = quick_mode
 
@@ -38,6 +44,7 @@ async def scrape_race_full(
         session,
         url,
         cache_ttl_sec=12 * 60 * 60,
+        force_refresh=force_refresh,
         resume_key=f"race:{race_id}:result",
         min_interval_sec=1.0,
         max_retries=3,
@@ -47,6 +54,25 @@ async def scrape_race_full(
         circuit_threshold=3,
         circuit_cooldown_sec=120.0,
     )
+    mobile_source = False
+    if _fetch.status == 400:
+        mobile_url = f"https://db.sp.netkeiba.com/race/{race_id}/"
+        _fetch, html = await fetch_text(
+            session,
+            mobile_url,
+            cache_ttl_sec=12 * 60 * 60,
+            force_refresh=force_refresh,
+            resume_key=f"race:{race_id}:result-mobile-db",
+            min_interval_sec=1.0,
+            max_retries=3,
+            retry_statuses={429, 500, 503},
+            retry_base_sec=2.0,
+            retry_jitter_sec=0.6,
+            circuit_threshold=3,
+            circuit_cooldown_sec=120.0,
+        )
+        url = mobile_url
+        mobile_source = _fetch.status == 200
     if _fetch.status != 200:
         logger.warning(f"HTTP {_fetch.status}: {url}")
         return None
@@ -59,6 +85,15 @@ async def scrape_race_full(
     if not html:
         logger.error(f"空レスポンス: {race_id}")
         return None
+    if mobile_source:
+        return await parse_mobile_race(
+            session,
+            race_id,
+            html,
+            date_hint=date_hint,
+            quick_mode=_quick_mode,
+            horse_detail_fetcher=scrape_horse_detail,
+        )
     if "\ufffd" in html[:500]:
         logger.debug(f"EUC-JP 変換警告 (先頭500文字に置換文字あり): {race_id}")
 

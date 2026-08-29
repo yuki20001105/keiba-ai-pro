@@ -38,12 +38,14 @@ from scraping.jobs import (  # type: ignore
     _JOBS_LOCK,
     _persist_job,
     _purge_old_jobs,
-    _run_scrape_job,
     _scrape_jobs,
     get_job,
+    get_scrape_runtime_health,
     list_recent_jobs,
+    start_scrape_job_worker,
 )
 from scraping.race import scrape_race_full  # type: ignore
+from scraping.race_list import fetch_race_ids  # type: ignore
 from scraping.storage import _save_race_to_ultimate_db  # type: ignore
 
 router = APIRouter()
@@ -255,33 +257,21 @@ async def scrape_start(request: ScrapeRequest, _: dict = Depends(require_admin))
             "progress": {"done": 0, "total": 0, "message": "開始待ち"},
             "result": None,
             "error": None,
+            "request": {
+                "start_date": request.start_date,
+                "end_date": request.end_date,
+                "force_rescrape": request.force_rescrape,
+                "dry_run": request.dry_run,
+            },
+            "heartbeat_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+            "resume_count": 0,
+            "worker_pid": os.getpid(),
         }
         _persist_job(job_id, _scrape_jobs[job_id])
     try:
-        import threading
-        def _bg() -> None:
-            # Windows の ProactorEventLoop(IOCP) が main loop と干渉しないよう
-            # スレッド内では SelectorEventLoop を明示的に使用する
-            import asyncio
-            import sys
-            if sys.platform == "win32":
-                loop = asyncio.SelectorEventLoop()
-            else:
-                loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                loop.run_until_complete(
-                    _run_scrape_job(
-                        job_id,
-                        request.start_date,
-                        request.end_date,
-                        request.force_rescrape,
-                        request.dry_run,
-                    )
-                )
-            finally:
-                loop.close()
-        threading.Thread(target=_bg, daemon=True, name=f"scrape-{job_id}").start()
+        started = start_scrape_job_worker(job_id, _scrape_jobs[job_id]["request"])
+        if not started:
+            raise RuntimeError("scrape worker was not started")
         logger.info(f"ジョブ {job_id} をスレッドでスケジュール済み")
     except Exception as e:
         logger.error(f"スレッド起動失敗: {e}")
@@ -313,6 +303,9 @@ async def scrape_status(job_id: str):
         "progress": job["progress"],
         "result": job.get("result"),
         "error": job.get("error"),
+        "heartbeat_at": job.get("heartbeat_at"),
+        "resume_count": int(job.get("resume_count", 0) or 0),
+        "worker_pid": job.get("worker_pid"),
     }
 
 
@@ -334,34 +327,13 @@ async def netkeiba_race_list(date: str):
         raise HTTPException(status_code=400, detail="date は YYYY-MM-DD または YYYYMMDD 形式で指定してください")
 
     try:
-        timeout = aiohttp.ClientTimeout(total=20)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(
-                f"{_SCRAPE_SERVICE_URL}/scrape/race_list",
-                headers={"Content-Type": "application/json"},
-                json={"kaisai_date": date_str},
-            ) as resp:
-                body_text = await resp.text()
-                if resp.status >= 400:
-                    return JSONResponse(
-                        status_code=502,
-                        content={
-                            "success": False,
-                            "error": "scrape service returned error",
-                            "status_code": resp.status,
-                            "detail": body_text[:500],
-                        },
-                    )
-        data = json.loads(body_text) if body_text else {}
-        races = data.get("races") if isinstance(data, dict) else []
-        if not isinstance(races, list):
-            races = []
+        races, source = await fetch_race_ids(date_str)
         return {
             "success": True,
             "date": date_str,
             "raceIds": races,
             "count": len(races),
-            "source": "fastapi_proxy",
+            "source": source,
         }
     except HTTPException:
         raise
@@ -370,7 +342,7 @@ async def netkeiba_race_list(date: str):
             status_code=503,
             content={
                 "success": False,
-                "error": "failed to fetch race list from scrape service",
+                "error": "failed to fetch race list",
                 "detail": str(e),
             },
         )
@@ -1525,14 +1497,19 @@ async def scrape_health() -> dict:
     """スクレイプ系サービスのヘルスチェック（read-only, 契約固定）。"""
     timestamp = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
     try:
+        runtime = get_scrape_runtime_health()
         with _JOBS_LOCK:
             _purge_old_jobs(_scrape_jobs)
             statuses = [str(j.get("status", "unknown")) for j in _scrape_jobs.values()]
 
-        active_jobs = sum(1 for s in statuses if s in {"queued", "running"})
+        active_jobs = sum(
+            1 for s in statuses if s in {"queued", "running", "recovering", "waiting_resources"}
+        )
         error_jobs = sum(1 for s in statuses if s == "error")
+        stale_jobs = runtime.get("stale_job_ids") or []
+        database_ok = bool(runtime.get("database_ok"))
 
-        if error_jobs > 0:
+        if error_jobs > 0 or stale_jobs or not database_ok:
             return {
                 "success": True,
                 "status": "degraded",
@@ -1543,6 +1520,7 @@ async def scrape_health() -> dict:
                     "active_jobs": active_jobs,
                     "error_jobs": error_jobs,
                     "total_jobs": len(statuses),
+                    "runtime": runtime,
                 },
             }
 
@@ -1555,6 +1533,7 @@ async def scrape_health() -> dict:
                 "active_jobs": active_jobs,
                 "error_jobs": error_jobs,
                 "total_jobs": len(statuses),
+                "runtime": runtime,
             },
         }
     except Exception as e:
