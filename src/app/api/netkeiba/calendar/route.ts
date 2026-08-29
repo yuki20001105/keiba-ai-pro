@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import * as cheerio from 'cheerio'
+import { verifyRequestAuth } from '@/lib/server-auth'
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
 const BASE_URL = 'https://race.netkeiba.com'
@@ -25,6 +26,11 @@ async function waitForRateLimit() {
  */
 export async function GET(request: NextRequest) {
   try {
+    const authz = await verifyRequestAuth(request, { requireAdmin: true })
+    if (!authz.ok) {
+      return NextResponse.json({ detail: authz.detail }, { status: authz.status })
+    }
+
     const { searchParams } = new URL(request.url)
     const year = searchParams.get('year')
     const month = searchParams.get('month')
@@ -114,6 +120,11 @@ export async function GET(request: NextRequest) {
  */
 export async function POST(request: NextRequest) {
   try {
+    const authz = await verifyRequestAuth(request, { requireAdmin: true })
+    if (!authz.ok) {
+      return NextResponse.json({ detail: authz.detail }, { status: authz.status })
+    }
+
     const { date } = await request.json()
 
     if (!date) {

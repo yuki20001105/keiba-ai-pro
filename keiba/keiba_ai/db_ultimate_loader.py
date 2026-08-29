@@ -328,6 +328,50 @@ def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
     # race_results_ultimate から全データ取得（イテレータでメモリ消費を削減）
     cursor.execute("SELECT race_id, data FROM race_results_ultimate")
     rows = cursor.fetchall()  # NOTE: 10万行超の場合は cursor.fetchmany() に切り替えの余地あり
+
+    # Keep provenance sidecars physically separate and append-only.  Complete
+    # licensed races outrank complete JRA-official result races, which outrank
+    # overlapping legacy scraper races.  Replacement happens by whole race so
+    # provider-specific horse identifiers cannot create duplicate runners.
+    sidecar_records = []
+    cursor.execute(
+        "SELECT name FROM sqlite_master "
+        "WHERE type='table' AND name='official_history_entries'"
+    )
+    if cursor.fetchone():
+        cursor.execute(
+            "SELECT race_id, horse_id, payload_json FROM official_history_entries "
+            "ORDER BY race_date, race_id, horse_id"
+        )
+        official_records = cursor.fetchall()
+        sidecar_records.extend(official_records)
+        print(f"  official_history_entries: {len(official_records)} records loaded")
+
+    cursor.execute(
+        "SELECT name FROM sqlite_master "
+        "WHERE type='table' AND name='licensed_history_entries'"
+    )
+    if cursor.fetchone():
+        cursor.execute(
+            "SELECT race_id, horse_id, payload_json FROM licensed_history_entries "
+            "ORDER BY race_date, race_id, horse_id"
+        )
+        licensed_records = cursor.fetchall()
+        licensed_race_ids = {str(race_id) for race_id, _, _ in licensed_records}
+        sidecar_records = [
+            record for record in sidecar_records if str(record[0]) not in licensed_race_ids
+        ] + licensed_records
+        print(f"  licensed_history_entries: {len(licensed_records)} records loaded")
+
+    if sidecar_records:
+        canonical_race_ids = {str(race_id) for race_id, _, _ in sidecar_records}
+        rows = [
+            (race_id, payload_json)
+            for race_id, payload_json in rows
+            if str(race_id) not in canonical_race_ids
+        ] + [
+            (race_id, payload_json) for race_id, _, payload_json in sidecar_records
+        ]
     
     # races_ultimate から distance/track_type/date/num_horses を取得（イテレータで处理）
     race_meta = {}
@@ -512,8 +556,23 @@ def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
     for old_name, new_name in column_mapping.items():
         if old_name in df.columns and new_name not in df.columns:
             df[new_name] = df[old_name]
-        elif old_name in df.columns and new_name in df.columns and df[new_name].isna().all():
-            df[new_name] = df[old_name]
+        elif old_name in df.columns and new_name in df.columns:
+            # Scraper generations overlap in the same append-only database.  A
+            # canonical column can therefore be populated for older rows while
+            # newer rows only carry its legacy/source alias (for example,
+            # ``finish`` versus ``finish_position``).  Checking ``isna().all()``
+            # left those newer rows unlabeled as soon as any historical row had
+            # the canonical value.  Coalesce row by row so mixed-generation
+            # history remains usable without overwriting canonical values.
+            _missing_canonical = (
+                df[new_name].isna()
+                | df[new_name].astype(str).str.strip().isin(["", "None", "nan"])
+            )
+            if _missing_canonical.any():
+                replacement = df.loc[_missing_canonical, old_name]
+                if pd.api.types.is_numeric_dtype(df[new_name].dtype):
+                    replacement = pd.to_numeric(replacement, errors="coerce")
+                df.loc[_missing_canonical, new_name] = replacement
     
     # jockey_id / trainer_id / horse_id: URLからIDを抽出、なければ名前を使用
     # ※ 地方馬・騎手は B プレフィックス付きID（例: B0060, B201600118）のため
@@ -607,7 +666,15 @@ def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
             return np.nan
     
     if 'time' in df.columns:
-        df['time_seconds'] = df['time'].apply(parse_time)
+        parsed_legacy_time = df['time'].apply(parse_time)
+        if 'time_seconds' not in df.columns:
+            df['time_seconds'] = parsed_legacy_time
+        else:
+            # Canonical sidecars already store a numeric time_seconds value.
+            # Mixed-generation databases also expose the legacy ``time``
+            # column, but its nulls must never erase canonical outcomes.
+            canonical_time = pd.to_numeric(df['time_seconds'], errors='coerce')
+            df['time_seconds'] = canonical_time.fillna(parsed_legacy_time)
     
     # ===== sex_age のパース（"牡6" → sex="牡", age=6 で補完） =====
     if 'sex_age' in df.columns:

@@ -15,6 +15,7 @@ from scraping.constants import HTML_STRAINER, VENUE_MAP, is_cloudflare_block
 from scraping.fetch_pipeline import fetch_text
 from scraping.horse import scrape_horse_detail
 from scraping.mobile_race import parse_mobile_race
+from scraping.odds import fetch_tansho_odds_api
 
 try:
     from app_config import logger  # type: ignore
@@ -279,7 +280,12 @@ async def scrape_race_full(
     table = soup.find("table", class_="race_table_01")
     if not table:
         logger.warning(f"race_table_01 not found: {race_id} → 出馬表ページへフォールバック")
-        return await _scrape_shutuba_fallback(session, race_id, date_hint)
+        return await _scrape_shutuba_fallback(
+            session,
+            race_id,
+            date_hint,
+            force_refresh=force_refresh,
+        )
 
     all_rows = table.find_all("tr")
     if not all_rows:
@@ -733,7 +739,11 @@ def _build_race_result(race_id, race_name, venue, date_str, post_time, race_clas
 
 
 async def _scrape_shutuba_fallback(
-    session, race_id: str, date_hint: str = ""
+    session,
+    race_id: str,
+    date_hint: str = "",
+    *,
+    force_refresh: bool = False,
 ) -> Optional[dict]:
     """
     db.netkeiba.com に結果がない（当日・未来レース）場合に
@@ -752,6 +762,7 @@ async def _scrape_shutuba_fallback(
         retry_jitter_sec=0.6,
         circuit_threshold=3,
         circuit_cooldown_sec=120.0,
+        force_refresh=force_refresh,
     )
     if _fetch.status != 200:
         logger.warning(f"shutuba HTTP {_fetch.status}: {race_id}")
@@ -943,10 +954,53 @@ async def _scrape_shutuba_fallback(
         logger.warning(f"shutuba: 出走馬なし {race_id}")
         return None
 
+    # The visible odds cells are populated by JavaScript.  Query the same JSON
+    # endpoint used by the page and accept only actual market/result statuses;
+    # forecast (yoso) odds must never enter point-in-time evidence.
+    live_odds, live_popularity, _odds_status = await fetch_tansho_odds_api(session, race_id)
+    if live_odds:
+        for horse in horses:
+            try:
+                horse_number = int(horse.get("horse_number"))
+            except (TypeError, ValueError):
+                continue
+            if horse_number in live_odds:
+                horse["odds"] = live_odds[horse_number]
+            if horse_number in live_popularity:
+                horse["popularity"] = live_popularity[horse_number]
+
+    # The shutuba table contains only the current entry card. The active
+    # pre-race model also consumes prior-race and pedigree fields, all of which
+    # are available before post time on the horse detail pages. Enrich the
+    # coherent snapshot before it is atomically persisted so inference never
+    # depends on a later, result-page-only refresh.
+    async def _fetch_shutuba_detail(horse: dict) -> None:
+        horse_id = str(horse.get("horse_id") or "")
+        if not horse_id:
+            return
+        detail = await scrape_horse_detail(
+            session,
+            horse_id,
+            str(horse.get("horse_url") or ""),
+            quick_mode=True,
+        )
+        horse.update(detail)
+
+    for chunk_start in range(0, len(horses), 4):
+        chunk = horses[chunk_start : chunk_start + 4]
+        await asyncio.gather(*(_fetch_shutuba_detail(horse) for horse in chunk))
+        if chunk_start + 4 < len(horses):
+            await asyncio.sleep(1.0)
+
+    for horse in horses:
+        horse["odds_status"] = _odds_status
+
     logger.info(f"[shutuba] {race_id}: {len(horses)}頭取得 ({race_name} @ {venue} {distance}m)")
-    return _build_race_result(
+    snapshot = _build_race_result(
         race_id, race_name, venue, date_str, post_time, race_class,
         kai, day, course_direction, distance, track_type, weather,
         field_condition, len(horses), [], [], horses,
         (distance == 0)
     )
+    snapshot["race_info"]["odds_status"] = _odds_status
+    return snapshot

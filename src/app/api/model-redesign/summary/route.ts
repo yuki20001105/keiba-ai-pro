@@ -1,12 +1,19 @@
 import { NextResponse } from 'next/server'
 import fs from 'fs'
 import path from 'path'
+import { randomUUID } from 'node:crypto'
 import { createClient } from '@supabase/supabase-js'
 import type {
+  RetrainDryRunPayload,
   RetrainDryRunPreview,
   RetrainDryRunRequest,
   RetrainDryRunSafetyCheck,
 } from '@/lib/model-retrain-approval-types'
+import {
+  canonicalRetrainPayloadHash,
+  computeFeatureContractHash,
+  parseRetrainDryRunPayload,
+} from '@/lib/model-retrain-approval-contract'
 
 export const runtime = 'nodejs'
 export const maxDuration = 120
@@ -16,7 +23,9 @@ type UiState = 'pass' | 'warn' | 'fail'
 type AuthzResult = {
   ok: boolean
   status: 200 | 401 | 403 | 503
-  error?: string
+  detail?: string
+  actorId?: string
+  isAdmin?: boolean
 }
 
 type NumericMetric = {
@@ -33,6 +42,11 @@ const ACTIVE_MODEL_PATH = path.join(MODELS_DIR, '.active_model.json')
 const FEATURE_ANALYSIS_PATH = path.join(PROJECT_ROOT, 'docs', 'reports', 'feature_analysis.json')
 const ROI_REPORT_PATH = path.join(PROJECT_ROOT, 'reports', 'roi_report.csv')
 const DOCS_REPORTS_DIR = path.join(PROJECT_ROOT, 'docs', 'reports')
+const FEATURE_CATALOG_PATH = path.join(PROJECT_ROOT, 'keiba', 'feature_catalog.yaml')
+const PACKAGE_PATH = path.join(PROJECT_ROOT, 'package.json')
+const DIGEST_RE = /^[0-9a-f]{64}$/
+const COMMIT_RE = /^[0-9a-f]{40}$/
+const IDENTIFIER_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/
 
 function readJson(filePath: string): Record<string, unknown> | null {
   try {
@@ -107,17 +121,17 @@ async function authorizePremiumOrAdmin(request: Request): Promise<AuthzResult> {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || ''
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
   if (!supabaseUrl || !supabaseAnonKey) {
-    return { ok: false, status: 503, error: 'Supabase設定が不足しています' }
+    return { ok: false, status: 503, detail: 'Supabase設定が不足しています' }
   }
 
   const authHeader = request.headers.get('Authorization') || ''
   if (!authHeader.startsWith('Bearer ')) {
-    return { ok: false, status: 401, error: '認証が必要です' }
+    return { ok: false, status: 401, detail: '認証が必要です' }
   }
 
   const token = authHeader.slice('Bearer '.length).trim()
   if (!token) {
-    return { ok: false, status: 401, error: '認証が必要です' }
+    return { ok: false, status: 401, detail: '認証が必要です' }
   }
 
   const supabase = createClient(supabaseUrl, supabaseAnonKey, {
@@ -128,7 +142,7 @@ async function authorizePremiumOrAdmin(request: Request): Promise<AuthzResult> {
 
   const { data: userData, error: userError } = await supabase.auth.getUser()
   if (userError || !userData.user) {
-    return { ok: false, status: 401, error: '認証が必要です' }
+    return { ok: false, status: 401, detail: '認証が必要です' }
   }
 
   const { data: profile, error: profileError } = await supabase
@@ -138,7 +152,7 @@ async function authorizePremiumOrAdmin(request: Request): Promise<AuthzResult> {
     .single()
 
   if (profileError || !profile) {
-    return { ok: false, status: 403, error: '権限がありません' }
+    return { ok: false, status: 403, detail: '権限がありません' }
   }
 
   const role = String((profile as Record<string, unknown>).role || '').toLowerCase()
@@ -146,10 +160,10 @@ async function authorizePremiumOrAdmin(request: Request): Promise<AuthzResult> {
   const isAdmin = role === 'admin'
   const isPremium = isAdmin || tier === 'premium'
   if (!isPremium) {
-    return { ok: false, status: 403, error: '権限がありません' }
+    return { ok: false, status: 403, detail: '権限がありません' }
   }
 
-  return { ok: true, status: 200 }
+  return { ok: true, status: 200, actorId: userData.user.id, isAdmin }
 }
 
 function toMetric(value: number | null, missingNote: string): NumericMetric {
@@ -172,7 +186,9 @@ function sanitizePeriod(value: unknown): RetrainDryRunPreview['train_period'] | 
 
 function toStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return []
-  return value.filter((x): x is string => typeof x === 'string' && x.trim().length > 0).map((x) => x.trim())
+  return [...new Set(
+    value.filter((x): x is string => typeof x === 'string' && x.trim().length > 0).map((x) => x.trim()),
+  )]
 }
 
 function parseDateTokens(text: string): string[] {
@@ -262,10 +278,147 @@ function buildDryRunPreview(payload: DryRunPayload): RetrainDryRunPreview {
   }
 }
 
+function loadFutureFields(): Set<string> | null {
+  try {
+    const raw = fs.readFileSync(FEATURE_CATALOG_PATH, 'utf8')
+    if (Buffer.byteLength(raw, 'utf8') > 2 * 1024 * 1024) return null
+    const section = raw.match(/^future_fields:\s*\r?\n([\s\S]*?)^scraped_fields:/m)?.[1]
+    if (!section) return null
+    const fields = section
+      .split(/\r?\n/)
+      .map(line => line.match(/^\s*-\s+([A-Za-z0-9_]+)\s*$/)?.[1] || '')
+      .filter(Boolean)
+    return fields.length > 0 ? new Set(fields) : null
+  } catch {
+    return null
+  }
+}
+
+function currentCodeVersion(): string {
+  const packageJson = readJson(PACKAGE_PATH)
+  return typeof packageJson?.version === 'string' && IDENTIFIER_RE.test(packageJson.version)
+    ? packageJson.version
+    : 'version-unavailable'
+}
+
+function currentCommit(): string {
+  const value = (
+    process.env.APP_COMMIT_SHA
+    || process.env.VERCEL_GIT_COMMIT_SHA
+    || process.env.GITHUB_SHA
+    || ''
+  ).trim().toLowerCase()
+  return COMMIT_RE.test(value) ? value : '0'.repeat(40)
+}
+
+function buildDryRunPayload(
+  request: DryRunPayload,
+  preview: RetrainDryRunPreview,
+  authz: AuthzResult,
+  generatedAt: string,
+): RetrainDryRunPayload | null {
+  const activeModelJson = readJson(ACTIVE_MODEL_PATH)
+  const activeModelId = typeof activeModelJson?.model_id === 'string'
+    && IDENTIFIER_RE.test(activeModelJson.model_id)
+    ? activeModelJson.model_id
+    : null
+  const selectedFeatures = toStringArray(preview.selected_features)
+  const removedFeatures = toStringArray(preview.removed_features)
+    .filter(feature => selectedFeatures.includes(feature))
+  const featureContractHash = computeFeatureContractHash({
+    target: preview.target,
+    model_type: preview.model_type,
+    selected_features: selectedFeatures,
+    removed_features: removedFeatures,
+  })
+  const suppliedSnapshot = typeof request.data_snapshot_id === 'string'
+    ? request.data_snapshot_id.trim().toLowerCase()
+    : ''
+  const snapshotBound = DIGEST_RE.test(suppliedSnapshot) && suppliedSnapshot !== '0'.repeat(64)
+  const dataSnapshotId = snapshotBound ? suppliedSnapshot : '0'.repeat(64)
+  const commit = currentCommit()
+  const commitBound = commit !== '0'.repeat(40)
+  const futureFields = loadFutureFields()
+  const futureFieldsExcluded = futureFields !== null
+    && selectedFeatures.every(feature => !futureFields.has(feature))
+  const outOfTimeSplit = preview.train_period.end !== null
+    && preview.validation_period.start !== null
+    && preview.train_period.end < preview.validation_period.start
+  const safetyChecks: RetrainDryRunPayload['safety_checks'] = [
+    {
+      key: 'future_field_exclusion',
+      status: futureFieldsExcluded ? 'pass' : 'fail',
+      note: futureFieldsExcluded ? 'canonical feature catalog blocklist checked' : 'future field blocklist unavailable or matched',
+    },
+    {
+      key: 'out_of_time_split',
+      status: outOfTimeSplit ? 'pass' : 'fail',
+      note: outOfTimeSplit ? 'validation starts after training ends' : 'non-overlapping periods are required',
+    },
+    {
+      key: 'active_model_immutable',
+      status: activeModelId ? 'pass' : 'fail',
+      note: activeModelId ? 'payload is bound to the current active model' : 'active model is unavailable',
+    },
+    { key: 'production_write_blocked', status: 'pass', note: 'this route performs no training or base write' },
+    { key: 'path_input_rejected', status: 'pass', note: 'caller-controlled path keys are rejected' },
+    {
+      key: 'data_snapshot_bound',
+      status: snapshotBound ? 'pass' : 'fail',
+      note: snapshotBound ? 'immutable data snapshot digest supplied' : 'data snapshot digest is required',
+    },
+    {
+      key: 'candidate_commit_bound',
+      status: commitBound ? 'pass' : 'fail',
+      note: commitBound ? 'server deployment commit supplied' : 'server deployment commit is unavailable',
+    },
+  ]
+  const state = safetyChecks.some(check => check.status === 'fail')
+    ? 'preview-fail'
+    : safetyChecks.some(check => check.status === 'warn')
+      ? 'preview-warn'
+      : 'preview-ready'
+  const sourceModelId = typeof request.source_model_id === 'string'
+    && IDENTIFIER_RE.test(request.source_model_id)
+    ? request.source_model_id
+    : activeModelId
+  if (!authz.actorId || !featureContractHash) return null
+  return parseRetrainDryRunPayload({
+    dry_run_id: randomUUID(),
+    generated_at: generatedAt,
+    target: preview.target,
+    model_type: preview.model_type,
+    train_period: preview.train_period,
+    validation_period: preview.validation_period,
+    feature_count: selectedFeatures.length - removedFeatures.length,
+    selected_features: selectedFeatures,
+    removed_features: removedFeatures,
+    expected_outputs: [
+      'model-artifact',
+      'model-metadata',
+      'acceptance-observations',
+      'evaluation-report',
+      'comparison-report',
+    ],
+    estimated_runtime: preview.estimated_runtime,
+    safety_checks: safetyChecks,
+    source_model_id: sourceModelId,
+    active_model_id: activeModelId,
+    feature_contract_hash: featureContractHash,
+    data_snapshot_id: dataSnapshotId,
+    code_version: currentCodeVersion(),
+    git_commit: commit,
+    created_by: authz.actorId,
+    state,
+    warnings: safetyChecks.filter(check => check.status !== 'pass').map(check => check.key),
+    notes: ['assessment only; no retrain or active-model switch was executed'],
+  })
+}
+
 export async function GET(request: Request) {
   const authz = await authorizePremiumOrAdmin(request)
   if (!authz.ok) {
-    return NextResponse.json({ success: false, error: authz.error || 'authorization failed' }, { status: authz.status })
+    return NextResponse.json({ success: false, detail: authz.detail || 'authorization failed' }, { status: authz.status })
   }
 
   const searchParams = new URL(request.url).searchParams
@@ -420,7 +573,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const authz = await authorizePremiumOrAdmin(request)
   if (!authz.ok) {
-    return NextResponse.json({ success: false, error: authz.error || 'authorization failed' }, { status: authz.status })
+    return NextResponse.json({ success: false, detail: authz.detail || 'authorization failed' }, { status: authz.status })
   }
 
   const searchParams = new URL(request.url).searchParams
@@ -456,15 +609,29 @@ export async function POST(request: Request) {
   const action = String(payload.action || '')
   if (action === 'retrain_dry_run') {
     const preview: RetrainDryRunPreview = buildDryRunPreview(payload)
+    const generatedAt = new Date().toISOString()
+    const approvalPayload = buildDryRunPayload(payload, preview, authz, generatedAt)
+    const approvalPayloadHash = approvalPayload ? canonicalRetrainPayloadHash(approvalPayload) : null
+    const futureFields = loadFutureFields()
+    const approvalPayloadBlockers = approvalPayload?.warnings || [
+      ...(futureFields && preview.selected_features.some(feature => futureFields.has(feature))
+        ? ['future_field_exclusion']
+        : []),
+      'approval_payload_invalid',
+    ]
     return NextResponse.json({
       success: true,
-      state: 'pass',
+      state: approvalPayload?.state === 'preview-ready' ? 'pass' : 'fail',
       code: 'dry-run-preview',
       action,
-      generated_at: new Date().toISOString(),
+      generated_at: generatedAt,
       dry_run_preview: preview,
+      dry_run_payload: approvalPayload,
+      approved_payload_hash: approvalPayloadHash,
+      approval_payload_blockers: approvalPayloadBlockers,
       guard: {
         read_only_mode: true,
+        approval_payload_ready: approvalPayload?.state === 'preview-ready' && approvalPayloadHash !== null,
         retrain_execution: 'disabled',
         active_model_switch: 'not-implemented',
         production_write: false,

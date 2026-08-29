@@ -196,21 +196,50 @@ def save_race_to_supabase(race_data: dict) -> bool:
 
         # ── 4. blob テーブル（sync_supabase_to_sqlite の互换維持）─────────
         try:
+            # Keep JSONB values as objects. JSON-encoded strings create a mixed
+            # corpus that cannot satisfy the Phase 3M storage contract.
             client.table("races_ultimate").upsert({
                 "race_id": race_id,
-                "data": json.dumps(race_info, ensure_ascii=False),
+                "data": race_info,
             }).execute()
             client.table("race_results_ultimate").delete().eq("race_id", race_id).execute()
-            blob_rows = [
-                {"race_id": race_id, "data": json.dumps(h, ensure_ascii=False)}
-                for h in horses
-            ]
+            blob_rows = []
+            for horse in horses:
+                horse_number = str(
+                    horse.get("horse_number") or horse.get("horse_num") or ""
+                ).strip()
+                if not horse_number:
+                    raise ValueError("horse_number is required for blob persistence")
+                blob_rows.append({
+                    "race_id": race_id,
+                    "horse_number": horse_number,
+                    "data": horse,
+                })
             if blob_rows:
                 client.table("race_results_ultimate").insert(blob_rows).execute()
         except Exception as blob_err:
-            logger.warning(f"blob テーブル書き込み失敗（非致命的）: {blob_err}")
+            logger.error(f"blob テーブル書き込み失敗: {blob_err}")
+            return False
 
         logger.info(f"Supabase 正規化保存完了: {race_id} ({len(horses)}頭)")
+        # Reconcile immediately after the authoritative Staging result and
+        # payout rows are stored. This removes the need for a separate
+        # long-lived scheduler credential; append-only RPC idempotency makes a
+        # retry safe. Invalid enabled configuration fails closed.
+        observation_switch = os.environ.get("PHASE3N_OBSERVATION_ENABLED", "").strip().lower()
+        if observation_switch not in {"", "false", "0", "no", "off"}:
+            from observation.reconcile import reconcile_available_results
+            from observation.service import ObservationConfig, ObservationGateway
+
+            observation_config = ObservationConfig.from_env()
+            observation_summary = reconcile_available_results(ObservationGateway(client))
+            logger.info(
+                "[phase3n-observation] result reconciliation: pending=%s inserted=%s duplicate=%s skipped=%s",
+                observation_summary["pending"],
+                observation_summary["inserted"],
+                observation_summary["duplicates"],
+                observation_summary["skipped"],
+            )
         return True
 
     except Exception as e:
@@ -359,7 +388,7 @@ def upload_model_to_supabase(model_path: Path, model_id: str, metadata: dict) ->
             "model_id": model_id,
             "user_id": user_id,
             "storage_path": storage_path,
-            "metadata": json.dumps(metadata, ensure_ascii=False)
+            "metadata": metadata
         }).execute()
 
         logger.info(f"モデルを Supabase Storage にアップロード: {storage_path}")
@@ -408,7 +437,13 @@ def list_models_from_supabase() -> list:
         res = client.table("model_metadata").select("*").order("created_at", desc=True).execute()
         models = []
         for row in res.data:
-            meta = json.loads(row.get("metadata", "{}"))
+            raw_metadata = row.get("metadata") or {}
+            if isinstance(raw_metadata, dict):
+                meta = dict(raw_metadata)
+            elif isinstance(raw_metadata, str):
+                meta = json.loads(raw_metadata)
+            else:
+                raise TypeError("model metadata must be a JSON object")
             meta["model_id"] = row["model_id"]
             models.append(meta)
         return models

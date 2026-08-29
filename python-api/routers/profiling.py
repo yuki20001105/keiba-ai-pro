@@ -10,10 +10,11 @@ import threading
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse
 
 from app_config import SUPABASE_ENABLED, ULTIMATE_DB, get_supabase_client, logger  # type: ignore
+from deps.auth import require_admin  # type: ignore
 
 router = APIRouter()
 
@@ -97,7 +98,7 @@ def _run_profiling_sync(job_id: str, use_optimized: bool) -> None:
 
 
 @router.post("/api/profiling/start")
-async def start_profiling(use_optimized: bool = True):
+async def start_profiling(use_optimized: bool = True, _: dict = Depends(require_admin)):
     """ydata-profiling レポートの非同期生成を開始する"""
     job_id = uuid.uuid4().hex[:10]
     _profiling_jobs[job_id] = {"status": "running", "message": "開始中...", "html": None}
@@ -107,7 +108,7 @@ async def start_profiling(use_optimized: bool = True):
 
 
 @router.get("/api/profiling/status/{job_id}")
-async def get_profiling_status(job_id: str):
+async def get_profiling_status(job_id: str, _: dict = Depends(require_admin)):
     """プロファイリングジョブの進捗を返す"""
     job = _profiling_jobs.get(job_id)
     if not job:
@@ -116,7 +117,7 @@ async def get_profiling_status(job_id: str):
 
 
 @router.get("/api/profiling/html/{job_id}")
-async def get_profiling_html(job_id: str):
+async def get_profiling_html(job_id: str, _: dict = Depends(require_admin)):
     """生成済み HTML レポートを返す"""
     job = _profiling_jobs.get(job_id)
     if not job:

@@ -3,6 +3,7 @@ import { spawn } from 'child_process'
 import fs from 'fs'
 import path from 'path'
 import { createClient } from '@supabase/supabase-js'
+import { verifyRequestAuth } from '@/lib/server-auth'
 
 export const runtime = 'nodejs'
 export const maxDuration = 300
@@ -47,7 +48,7 @@ const NOTION_PREFIX = ['nt', 'n_'].join('')
 type AuthzResult = {
   ok: boolean
   status: 200 | 401 | 403 | 503
-  error?: string
+  detail?: string
 }
 
 function toBoolFlag(value: string | undefined, fallback = false): boolean {
@@ -249,17 +250,17 @@ async function authorizeReadinessExecution(request: Request): Promise<AuthzResul
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || ''
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
   if (!supabaseUrl || !supabaseAnonKey) {
-    return { ok: false, status: 503, error: 'Supabase設定が不足しています' }
+    return { ok: false, status: 503, detail: 'Supabase設定が不足しています' }
   }
 
   const authHeader = request.headers.get('Authorization') || ''
   if (!authHeader.startsWith('Bearer ')) {
-    return { ok: false, status: 401, error: '認証が必要です' }
+    return { ok: false, status: 401, detail: '認証が必要です' }
   }
 
   const token = authHeader.slice('Bearer '.length).trim()
   if (!token) {
-    return { ok: false, status: 401, error: '認証が必要です' }
+    return { ok: false, status: 401, detail: '認証が必要です' }
   }
 
   const supabase = createClient(supabaseUrl, supabaseAnonKey, {
@@ -272,7 +273,7 @@ async function authorizeReadinessExecution(request: Request): Promise<AuthzResul
 
   const { data: userData, error: userError } = await supabase.auth.getUser()
   if (userError || !userData.user) {
-    return { ok: false, status: 401, error: '認証が必要です' }
+    return { ok: false, status: 401, detail: '認証が必要です' }
   }
 
   const { data: profile, error: profileError } = await supabase
@@ -282,7 +283,7 @@ async function authorizeReadinessExecution(request: Request): Promise<AuthzResul
     .single()
 
   if (profileError || !profile) {
-    return { ok: false, status: 403, error: '権限がありません' }
+    return { ok: false, status: 403, detail: '権限がありません' }
   }
 
   const role = String((profile as Record<string, unknown>).role || '').toLowerCase()
@@ -291,13 +292,18 @@ async function authorizeReadinessExecution(request: Request): Promise<AuthzResul
   const isPremium = isAdmin || tier === 'premium'
 
   if (!isPremium) {
-    return { ok: false, status: 403, error: '権限がありません' }
+    return { ok: false, status: 403, detail: '権限がありません' }
   }
 
   return { ok: true, status: 200 }
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  const authz = await verifyRequestAuth(request, { requirePremiumOrAdmin: true })
+  if (!authz.ok) {
+    return NextResponse.json({ detail: authz.detail || 'authorization failed' }, { status: authz.status })
+  }
+
   const appEnv = String(process.env.APP_ENV ?? '').trim() || 'unknown'
   const netkeibaWrite = toBoolFlag(process.env.NETKEIBA_RACE_WRITE_ENABLED, false)
   const allowStagingWrite = toBoolFlag(process.env.ALLOW_STAGING_WRITE, false)
@@ -318,10 +324,10 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  const authz = await authorizeReadinessExecution(request)
+  const authz = await verifyRequestAuth(request, { requirePremiumOrAdmin: true })
   if (!authz.ok) {
     return NextResponse.json(
-      { success: false, error: authz.error || 'authorization failed' },
+      { success: false, detail: authz.detail || 'authorization failed' },
       { status: authz.status },
     )
   }

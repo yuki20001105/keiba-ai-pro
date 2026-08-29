@@ -1,355 +1,194 @@
-# Frontend Data Collection System Design
+# Frontend Data Collection System Design (Canonicalized for Phase 3A)
 
-## 1. 概要
-
-本ドキュメントは、Data Collection フロントエンド（Next.js）とその API プロキシ群、ならびに関連する read-only 計画系 UI（Refresh Plan / P0 Repair Plan）の実装ベース設計を整理したものである。
-
-対象範囲:
-- 画面: `src/app/data-collection/page.tsx`, `src/app/data-collection/refresh-plan/page.tsx`, `src/app/data-collection/p0-repair-plan/page.tsx`
-- Next API route: `src/app/api/scrape/*`, `src/app/api/data-stats/route.ts`, `src/app/api/races/*`
-- FastAPI scrape API: `python-api/routers/scrape.py`
-- 計画/監査スクリプト: `scripts/plan_scrape_refresh.py`, `scripts/plan_p0_scrape_repair.py`, `scripts/plan_p0_targeted_refetch.py`, `scripts/validate_p0_targeted_refetch_live.py`, `scripts/diagnose_source_empty_result_cells.py`
-
-設計方針:
-- 本実行系（scrape start）は Next route から FastAPI に委譲。
-- 監査/計画系は read-only を原則にし、UI で Execute を無効化。
-- dry-run は「未完了」と「0件」を混同しない表示設計（pending/error/complete 分離）。
-- 認可は `authFetch` + `Authorization: Bearer` を透過し、必要 route で role/tier 判定。
+## Provenance
+- recovered source path: `C:/Users/yuki2/Documents/ws/keiba-ai-pro/docs/frontend_data_collection_system_design.md`
+- source blob hash: `0c53f582b6e26390f04561d31e1c4aa5e91290db`
+- reconciled base SHA (`origin/develop`): `80556e8ca2fae2280a0d2f5913ed14068d248d8e`
+- reconciliation date: `2026-07-12`
+- note: This document separates **implemented (as-is)** from **planned (future)** explicitly.
 
 ---
 
-## 2. 画面一覧
+## 1. Scope
+This document covers the Data Collection frontend and adjacent read-only planning surfaces.
 
-1) Data Collection
-- パス: `/data-collection`
-- 目的: 期間指定 dry-run / 実取得、履歴表示、取得済みデータ確認、API 健康状態確認、プロファイリング起動。
+- UI pages:
+  - `src/app/data-collection/page.tsx`
+  - `src/app/data-collection/refresh-plan/page.tsx`
+  - `src/app/data-collection/p0-repair-plan/page.tsx`
+  - `src/app/data-collection/targeted-refetch-plan/page.tsx`
+  - `src/app/data-collection/live-validation/page.tsx`
+  - `src/app/data-collection/uncertainty-reviews/page.tsx`
+- Next API routes:
+  - `src/app/api/scrape/*`
+  - `src/app/api/data-stats/route.ts`
+  - `src/app/api/races/*`
+- FastAPI scrape routes:
+  - `python-api/routers/scrape.py`
+- Related scripts (verified existing):
+  - `scripts/plan_scrape_refresh.py`
+  - `scripts/plan_p0_scrape_repair.py`
+  - `scripts/plan_p0_targeted_refetch.py`
+  - `scripts/validate_p0_targeted_refetch_live.py`
+  - `scripts/plan_p0_reparse_cache.py`
+  - `scripts/diagnose_p0_cache_coverage.py`
 
-2) Refresh Plan (Dry-run)
-- パス: `/data-collection/refresh-plan`
-- 目的: refresh 方針のプランのみ生成（DB 更新なし、スクレイプ実行なし）。
-
-3) P0 Repair Plan (Read-only)
-- パス: `/data-collection/p0-repair-plan`
-- 目的: P0 欠損/整合性異常の修復計画をプレビュー（実修復なし）。
-
----
-
-## 3. Data Collection 画面フロー
-
-主要 state:
-- 期間: `startPeriod`, `endPeriod`
-- 実行オプション: `forceRescrape`
-- dry-run: `dryRunLoading`, `dryRunStartedAt`, `dryRunElapsedSeconds`, `dryRunError`, `dryRunResultReady`, `dryRunResult`, `dryRunExecuted`
-- 実行: `useBatchScrape()` 由来 `batchLoading`, `batchProgress`, `batchResult`
-- 履歴: `fetchHistory`, `fetchHistoryLoading`
-- 統計/データ一覧: `dataStats`, `showCollectedData`, `collectedRaces`, `selectedRaceDetail`
-- API 健康: `localApiStatus`, `localApiReason`
-
-初期化:
-- `useEffect` で `loadStats()`, `checkLocalApi()`, `loadFetchSummaryHistory()`。
-
-ユーザー操作:
-1. 期間選択（年月）
-2. dry-run 実行または本実行
-3. 履歴・統計・レース詳細を確認
-
-UI ガード:
-- API が `unhealthy/unknown` の場合は実行ボタンを disable。
-- dry-run 実行中は結果カードを表示せず、進行中カードのみ表示。
+Observed mismatch from source document:
+- `scripts/diagnose_source_empty_result_cells.py` is not present in current `develop` implementation.
 
 ---
 
-## 4. Dry-run フロー
+## 2. Implemented (As-Is)
 
-入口:
-- UI: `/data-collection` の `handleDryRun()`
-- Next route: `POST /api/scrape`
-- FastAPI: `POST /api/scrape/start` (job 作成)
+### 2.1 Data Collection main page
+- Dry-run trigger exists and posts through Next route `/api/scrape` with `dry_run: true`.
+- Job polling exists via `/api/scrape/status/{jobId}`.
+- Execute path exists via `useBatchScrape()` integration.
+- Fetch summary history exists via `/api/scrape/history`.
+- Health status probe exists via `/api/scrape/health`.
+- Stats and recent races integration exists via `/api/data-stats`, `/api/races/recent`, `/api/races/{race_id}/horses`.
+- Links to Refresh Plan and P0 Repair Plan exist from the Data Collection context.
 
-処理:
-1. UI が `startPeriod/endPeriod` を `YYYYMMDD` に変換。
-2. `POST /api/scrape` に `dry_run: true` で起動要求。
-3. 返却 `job_id` を使い `GET /api/scrape/status/{job_id}` を 1 秒間隔ポーリング。
-4. `completed` で `result.fetch_summary.dry_run` を正規化して表示。
-5. 最大 90 回（約 90 秒）で未完了の場合は timeout エラー表示。
+### 2.2 Refresh Plan page and route
+- UI is preview-oriented and clearly indicates dry-run intent.
+- Next route `src/app/api/scrape/refresh-plan/route.ts`:
+  - Authz enforced with `verifyRequestAuth(...requirePremiumOrAdmin...)`.
+  - Runs `scripts/plan_scrape_refresh.py` in a child process.
+  - Returns `dry_run: true`, `update_enabled: false`.
+  - `PUT` responds `501 not-implemented`.
+  - Path-like unsafe input keys are rejected (`FORBIDDEN_PATH_KEYS`).
 
-表示設計:
-- 実行中: 「見積もり生成中」「経過秒」を表示。
-- 期間が 6 ヶ月以上の場合: 長時間化注意を表示。
-- 未完了時: 0 値を表示せず、明示エラーに遷移。
-- 完了時: dry-run summary cards をカテゴリ別に表示し、`DB existing / cache hit / resume hit / new fetch required` を分離表示。
+### 2.3 P0 Repair Plan page and route
+- UI is preview-only; execute buttons are disabled.
+- Next route `src/app/api/scrape/p0-repair-plan/route.ts`:
+  - Premium/Admin authz enforced.
+  - Runs `scripts/plan_p0_scrape_repair.py`.
+  - Returns `dry_run: true`, `read_only: true`, `update_enabled: false`.
+  - `PUT` responds `501 not-implemented`.
 
-dry-run 表示項目:
-- `total_target_count`, `unique_url_count`, `estimated_request_count`
-- `cache_hit_count`, `cache_miss_count`, `resume_hit_count`, `skipped_count`
-- `db_existing_skip_count`, `db_existing_race_count`, `db_existing_horse_count`, `db_existing_result_count`, `db_existing_pedigree_count`
-- `new_fetch_required_count`, `already_covered_count`
-- `estimated_runtime_sec`
-- rate-limit/retry-backoff/circuit-breaker policy
+### 2.4 Targeted Refetch Plan page and route
+- UI is preview-only and does not expose execution controls.
+- Next route `src/app/api/scrape/targeted-refetch-plan/route.ts`:
+  - Authz enforced with `verifyRequestAuth(...requirePremiumOrAdmin...)`.
+  - Runs `scripts/plan_p0_targeted_refetch.py`.
+  - Returns `dry_run: true`, `read_only: true`, `execution_enabled: false`.
+  - Applies fail-closed report validation for numeric fields, URL samples, and safety flags.
+  - Rejects unknown/path-like inputs and strips server filesystem paths from responses.
 
-指標補足:
-- `skipped_count`: 既存互換（cache hit + resume hit）
-- `db_existing_skip_count`: DB保存済み判定によるスキップ件数
-- `new_fetch_required_count`: 新規にフェッチが必要な件数
-- `already_covered_count`: 再利用可能件数（cache/resume/DB existing の合計）
+### 2.5 Bounded Live Validation page and route
+- UI requires an explicit confirmation before any external HTTP request.
+- UI caps validation at 3 sequential URLs and exposes pass/warn/partial/error/busy as separate states.
+- Each selected URL permits one outbound attempt with no automatic retry, so one run performs at most 3 external HTTP requests.
+- Next route `src/app/api/scrape/live-validation/route.ts`:
+  - re-verifies Admin authorization;
+  - accepts only `target`, `url_type`, `max_urls`, and literal `confirm_live_fetch=true`;
+  - forwards the verified bearer token to FastAPI;
+  - validates and allowlist-projects the response;
+  - never starts Python and never accepts a URL or filesystem path.
+- FastAPI route `POST /api/scrape/live-validation`:
+  - independently enforces Admin authorization;
+  - runs fixed server-owned planner/validator commands with shell disabled;
+  - disables redirects and bounds timeout, body size, output size, concurrency, cooldown and total runtime;
+  - treats only non-expired cache rows as available in both planning and validation;
+  - requires response-derived horse identity and real pedigree evidence instead of trusting request URLs as parse evidence;
+  - recomputes result counts and verdict from validated sample rows before returning evidence;
+  - performs no DB repair/upsert/cache write and removes temporary reports on all paths.
+- Runtime prerequisites are server-owned report inputs plus read-only data/cache volumes at the documented container paths. Reports mount at `/app/keiba/data/live-validation-inputs:ro`; operational data remains under `/app/keiba/data`. Neither is bundled into the image or Next/Vercel deployment, and missing prerequisites fail closed before external HTTP.
 
----
+### 2.6 FastAPI scrape contracts relevant to frontend
+- `POST /api/scrape/start`: starts one owner-bound async scrape job per Admin, using a complete UUID and durable pre-thread state.
+- `GET /api/scrape/status/{job_id}`: Admin-only, owner-scoped job status/progress/result.
+- `GET /api/scrape/history`: Admin-only, owner-scoped recent jobs; legacy ownerless rows are hidden.
+- `GET /api/scrape/health`: scrape health contract.
+- Legacy/specialized paths remain available (not all wired by UI):
+  - `POST /api/scrape`
+  - `POST /api/rescrape_incomplete`
 
-## 5. 実取得フロー
+### 2.7 Jobless uncertainty review and server ledger bridge
+- A strict jobless monitoring/client-stop lock can be accompanied by a local `pending_review` packet.
+- The packet is explicitly non-authoritative and cannot release the hook lock, enable execute/dry-run/retry, or invoke an API.
+- The durable lock is re-read before writing the review and both records are read back and matched.
+- Malformed/stale/tampered records fail closed and remain blocked; storage events propagate a new lock to already-open tabs.
+- Phase 3F adds an explicit second-step POST to a server-authoritative Supabase ledger and a read-only status refresh. Recording the Phase 3E draft still performs no request.
+- Admin identity is server-derived; request/status/hash/expiry/actor fields cannot be injected by the browser.
+- Authenticated profile updates are restricted to non-authoritative presentation columns, preventing browser-side role/tier self-promotion.
+- Immutable events and versioned RPC transitions support independent-Admin review, requester revoke and expiry, while database constraints fix the scope to `review_only` with execution and lock release disabled.
+- A strict local locator is correlation-only. Missing, deleted, malformed or mismatched locator/status data never releases the underlying uncertainty lock.
+- Orphaned review/locator evidence without its lock and stale responses from a replaced locator both fail closed.
+- The migration is not applied by code integration, so the external environment remains unverified and L3 is unclaimed.
 
-入口:
-- UI: `/data-collection` の `handlePeriodBatchScrape()`
-- 内部フック: `useBatchScrape()`
+### 2.8 Phase 3G reviewer console and runtime evidence gate
+- `/data-collection/uncertainty-reviews` is an Admin-only review surface over the existing server-authoritative ledger APIs.
+- Loading is explicit. Only strict pending, unexpired, review-only records are accepted; malformed, duplicate, expired or execution-capable records fail closed.
+- Approve/reject requires a review-only acknowledgement, a normalized 20-500 character reason and versioned response correlation.
+- The page uses synchronous single-flight guards and performs no scrape write, retry, unlock, automatic navigation or `localStorage` mutation.
+- CI exercises the unapplied Phase 3F migration in a disposable digest-pinned `postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3` container with `--network none`, no published port and no external database credentials. The host may contact the image registry to pull that immutable image; the test container itself has no network.
+- The runtime contract verifies migration replay, catalog/RLS/RPC boundaries, immutable events, review-only constraints, idempotency, concurrency serialization, expiry and cleanup.
+- A strict verifier binds the sanitized report to the tested commit and migration hash and rejects malformed, stale, secret/path-bearing or schema-drifting evidence.
+- Synthetic evidence is always `l3_eligible=false`; it proves an L2 runtime contract, not a staging deployment.
+- Execution reservation, consume, unlock and execute are not implemented. The Supabase ledger and SQLite scrape jobs require a cross-store saga/outbox and compensation design first.
 
-処理:
-1. 期間妥当性チェック（start <= end）。
-2. 月数算出し、確認ダイアログ表示。
-3. dry-run 未実行の場合は警告文を表示するが実行は許可。
-4. `useBatchScrape()` が月単位でバックエンド処理を進行。
-5. 完了後、統計と履歴を再読み込み。
+### 2.9 Phase 3H production readiness decision gate
+- A release-blocking offline verifier consumes the same-workflow Phase 3G runtime artifact and a versioned repository manifest.
+- The verifier revalidates the Phase 3G schema, freshness, tested commit, migration hash, runtime checks and cleanup before making any readiness decision.
+- Missing saga/outbox invariants, staging evidence and explicit migration/unlock/release approvals are converted into deterministic blocker codes.
+- Repository input may describe only the current absent prerequisites. It cannot self-assert a completed control, READY or L3; those transitions require a future trusted attestation boundary.
+- The sanitized report intentionally returns `verdict=not-ready`, `production_ready=false` and `l3_eligible=false` while still returning a successful contract evaluation.
+- No UI, scrape API, worker, lock, Supabase migration or external environment is changed by this gate.
 
-出力:
-- 完了サマリ（期間、月数、レース数、経過秒）。
-- 進捗バー（`batchProgress.current/message/eta`）。
+### 2.10 Phase 3I synthetic saga failure-injection gate
+- A pure state machine models immutable operation/job/review-version/owner/request-hash binding without connecting the model to an execution path.
+- Separate derived review and execution binding hashes are joined by a versioned binding digest; a future adapter must still prove the canonical mapping from current review/job hashes, and review approval is never an execution token.
+- The exact pure state model covers reserve/local-prepare/consume/dispatch/running, success, compensation and terminal manual/failure states. Unknown states/events, invalid snapshot versions, invalid state ordering and binding drift fail closed. Event-carried expected-version ordering is not modeled.
+- Stable command/event identifiers provide modeled replay idempotency. The model checks a fencing-token floor and stale-token rejection, but does not model a lease owner, renewal/progress events or durable compare-and-swap persistence.
+- The release-blocking failure matrix injects modeled cross-store crash windows, response loss, duplicate delivery, deterministic concurrent recovery calls, lease expiry, stale workers, compensation uncertainty and malformed snapshots.
+- The Phase 3I job consumes the same-run Phase 3H artifact and emits sanitized synthetic evidence with `effect_count=0`, `production_ready=false` and `l3_eligible=false`. The counter records forbidden effectful primitive attempts observed by the harness. The model has no executable effect adapter, and emitted intents are data rather than effects; the zero count does not cover real multi-instance execution.
+- No Data Collection UI, Next/FastAPI scrape API, worker thread, operational database, Supabase migration or external environment is changed. Phase 3I remains L2 contract evidence.
 
----
-
-## 6. fetch summary 履歴
-
-データ取得:
-- UI: `loadFetchSummaryHistory()`
-- Next route: `GET /api/scrape/history?limit=10`
-- FastAPI: `GET /api/scrape/history`
-
-表示:
-- `mode === dry-run` は見積系指標を表示。
-- それ以外（execute）は保存件数・ネットワーク件数・リトライ等を表示。
-- `fetch_summary` が存在する job のみ表示。
-- 古い dry-run 履歴で新指標が未定義の場合は `-` を表示し、`0` と未取得を混同しない。
-
-運用上の意義:
-- dry-run と execute の監査ログを同一 UI で比較可能。
-- 長期期間における見積差分と実績差分を追跡可能。
-
----
-
-## 7. 取得済みデータ表示
-
-統計:
-- `GET /api/data-stats?ultimate=true`
-- 表示: 総レース数、総出走馬数、最終取得日
-
-レース一覧:
-- `GET /api/races/recent?limit=50`
-- 折りたたみ表示 + 更新ボタン
-
-レース詳細:
-- `GET /api/races/{race_id}/horses`
-- モーダルで結果テーブル表示
-
----
-
-## 8. Refresh Plan UI
-
-画面:
-- `/data-collection/refresh-plan`
-
-入力:
-- `startDate`, `endDate`, `target`, `policy`, `staleDays`, `currentParserVersion`
-
-操作:
-- `Generate Dry-run Plan` で `POST /api/scrape/refresh-plan`
-- `Execute Refresh` は disabled（UI レベル）
-
-表示:
-- summary counters
-- warnings/verdict
-- action group 別 decisions サンプル
-
-制約:
-- 「dry-run preview のみ」を明示。
-- 実スクレイプ・DB 更新はこの画面では発火しない。
-
----
-
-## 9. P0 Repair Plan UI
-
-画面:
-- `/data-collection/p0-repair-plan`
-
-入力:
-- `target`
-
-操作:
-- `Generate P0 Repair Plan` で `POST /api/scrape/p0-repair-plan`
-- `Execute P0 Repair` / `Execute Refetch` は disabled（UI レベル）
-
-表示:
-- P0 総数、action/reason breakdown、sample targets、recommended actions
-
-制約:
-- read-only preview のみ。
+### 2.11 Phase 3J disposable durable saga/outbox gate
+- Phase 3J persists the Phase 3I binding and transition contract in a temporary SQLite saga/event/outbox store and exercises a separate PostgreSQL execution-authorization/reservation contract inside a digest-pinned `--network none` container.
+- The executable runtime is available only to repository tests and the disposable CI producer. It is not imported by the scrape API, `jobs.py`, the existing worker path or any browser action.
+- Preparation, recovery/replay, claim races, lease/fencing, stale acknowledgement, ambiguous remote outcomes, compensation replay and corrupt/unavailable storage are verified fail closed. PostgreSQL additionally proves that review approval alone is not execution authority.
+- Application-level worker dispatch, network, thread and operational-write counts must be zero. Temporary SQLite and disposable PostgreSQL mutations are counted separately and destroyed.
+- The gate consumes and revalidates same-run Phase 3H and Phase 3I artifacts and binds evidence to exact commit/schema/migration/contract/runtime hashes.
+- The new migration remains unapplied externally. A passing result is still L2 / Production NOT_READY / `l3_eligible=false`; it is not staging evidence and cannot unlock execution.
 
 ---
 
-## 10. P0 Targeted Refetch / Live Validation の位置づけ
-
-現状:
-- UI 画面としては未実装（Data Collection から直接操作する経路なし）。
-- スクリプト運用ベースで実行。
-
-関連スクリプト:
-- `scripts/plan_p0_targeted_refetch.py`
-  - read-only dry-run plan を作成（HTTP 実行なし、DB write なし）
-- `scripts/validate_p0_targeted_refetch_live.py`
-  - 小規模 live validation（上限件数）を実施
-  - upsert/repair 実行は行わない
-- `scripts/diagnose_source_empty_result_cells.py`
-  - live validation 出力 + cache を読んで原因分類
-  - `cache-missing` と `alternate-page-required` を分離
-
-今後の UI 化候補:
-- refetch plan preview
-- live validation 実行トリガ
-- source-empty 診断結果ビュー
+## 3. Planned (Future)
+- Controlled staging evidence for the bounded live-validation UI and FastAPI service.
+- Unified operational dashboard that joins:
+  - refresh dry-run
+  - p0 repair dry-run
+  - targeted refetch dry-run
+  - cache/reparse diagnostics
+- Controlled, approval-gated execution phase for refresh/p0 repair (currently intentionally disabled).
+- A separately approved staging migration/evidence run for the server-authoritative review ledger.
+- Connect the independently audited Phase 3J disposable runtime through one outbox-only worker path, remove the direct dispatch alternative, and prove idempotent downstream effects, lease renewal/progress, durable multi-process recovery and compensation in an explicitly approved staging topology before any lock release is considered.
 
 ---
 
-## 11. API route 契約（Frontend -> Next -> FastAPI/Script）
+## 4. API Contract Matrix (As-Is)
 
-### 11.1 Data Collection 主要 API
-
-| frontend screen | Next route | FastAPI/Python script | method | input | output | read-only | external HTTP | DB write | UI fields |
-|---|---|---|---|---|---|---|---|---|---|
-| Data Collection | `/api/scrape` | FastAPI `/api/scrape/start` | POST | `start_date,end_date,force_rescrape,dry_run` | `job_id` | dry_run時は実質 read-only、execute時は no | dry_run: no / execute: yes | dry_run: no / execute: yes | dry-run開始/実行開始 |
-| Data Collection | `/api/scrape/status/{jobId}` | FastAPI `/api/scrape/status/{job_id}` | GET | path `jobId` | `status, progress, result/error` | yes | no | no | 進捗、dry-run結果、完了判定 |
-| Data Collection | `/api/scrape/history` | FastAPI `/api/scrape/history` | GET | `limit` | jobs 配列 | yes | no | no | fetch summary 履歴 |
-| Data Collection | `/api/scrape/health` | FastAPI `/api/scrape/health` | GET | なし | `status, reason, metrics` | yes | no | no | API 稼働表示 |
-| Data Collection | `/api/data-stats` | FastAPI `/api/data_stats` | GET | query passthrough | 統計 JSON | yes | no | no | 総レース数等 |
-| Data Collection | `/api/races/recent` | FastAPI `/api/races/recent` | GET | `limit` | races 配列 | yes | no | no | 最近レース一覧 |
-| Data Collection | `/api/races/{race_id}/horses` | FastAPI `/api/races/{race_id}/horses` | GET | path `race_id` | horses 配列 | yes | no | no | レース詳細モーダル |
-
-### 11.2 Refresh/P0 Plan API
-
-| frontend screen | Next route | FastAPI/Python script | method | input | output | read-only | external HTTP | DB write | UI fields |
-|---|---|---|---|---|---|---|---|---|---|
-| Refresh Plan | `/api/scrape/refresh-plan` | `scripts/plan_scrape_refresh.py` | POST/GET | `startDate,endDate,target,policy,staleDays,currentParserVersion` | `dry_run,update_enabled=false,plan{...}` | yes | no | no | summary, warnings, decisions |
-| Refresh Plan | `/api/scrape/refresh-plan` | (実行系なし) | PUT | なし | 501 `not-implemented` | yes | no | no | Execute disabled |
-| P0 Repair Plan | `/api/scrape/p0-repair-plan` | `scripts/plan_p0_scrape_repair.py` | POST/GET | `target` | `dry_run,read_only,update_enabled=false,plan{...}` | yes | no | no | summary, breakdown, samples |
-| P0 Repair Plan | `/api/scrape/p0-repair-plan` | (実行系なし) | PUT | なし | 501 `not-implemented` | yes | no | no | Execute disabled |
-
-### 11.3 補助 API（既存）
-
-| frontend screen | Next route | FastAPI/Python script | method | input | output | read-only | external HTTP | DB write | UI fields |
-|---|---|---|---|---|---|---|---|---|---|
-| （運用/API用） | `/api/scrape/repair/{race_id}` | FastAPI `/api/scrape/repair/{race_id}` | POST | path `race_id` | repair response | no | あり得る | あり得る | 現在UI未接続 |
-| （運用/API用） | `/api/scrape/rescrape-incomplete` | FastAPI `/api/rescrape_incomplete` | POST | `limit` (query) | rescrape response | no | yes | yes | 現在UI未接続 |
+| frontend screen | Next route | backend/script | method | read-only | external HTTP | DB write | status |
+|---|---|---|---|---|---|---|---|
+| Data Collection | `/api/scrape` | FastAPI `/api/scrape/start` | POST | dry-run yes / execute no | dry-run: no, execute: yes | dry-run: no, execute: yes | implemented |
+| Data Collection | `/api/scrape/status/{jobId}` | FastAPI `/api/scrape/status/{job_id}` | GET | yes | no | no | implemented; Admin + owner scoped |
+| Data Collection | `/api/scrape/history` | FastAPI `/api/scrape/history` | GET | yes | no | no | implemented; Admin + owner scoped |
+| Data Collection | `/api/scrape/health` | FastAPI `/api/scrape/health` | GET | yes | no | no | implemented |
+| Refresh Plan | `/api/scrape/refresh-plan` | `plan_scrape_refresh.py` | POST/GET | yes | no | no | implemented |
+| Refresh Plan execute | `/api/scrape/refresh-plan` | none | PUT | yes | no | no | disabled (`501`) |
+| P0 Repair Plan | `/api/scrape/p0-repair-plan` | `plan_p0_scrape_repair.py` | POST/GET | yes | no | no | implemented |
+| P0 Repair execute | `/api/scrape/p0-repair-plan` | none | PUT | yes | no | no | disabled (`501`) |
+| Targeted Refetch Plan | `/api/scrape/targeted-refetch-plan` | `plan_p0_targeted_refetch.py` | POST | yes | no | no | implemented |
+| Bounded Live Validation | `/api/scrape/live-validation` | FastAPI `/api/scrape/live-validation` + fixed planner/validator | POST | yes | yes (max 3, sequential) | no | implemented, L2 contract-ready |
+| Uncertainty Review Queue | `/api/scrape/uncertainty-review-requests?scope=reviewable` | Supabase service-role review RPC | GET | yes | no | no | implemented, Admin review-only, L2 |
+| Uncertainty Review Decision | `/api/scrape/uncertainty-review-requests/{requestId}/decision` | Supabase service-role transition RPC | POST | review-only | no | audit ledger only | implemented; no unlock/execution, L2 |
 
 ---
 
-## 12. 状態管理
-
-Data Collection:
-- ローカル `useState` で画面状態を保持。
-- 長時間ジョブは `useBatchScrape`（実行）と `useJobPoller`（汎用ポーリング）で抽象化。
-
-Refresh/P0:
-- 単画面内 state 管理（`loading/error/plan` + フォーム state）。
-
-認証:
-- `authFetch` が Supabase session の access_token を取り、Authorization ヘッダ付与。
-- route 側はヘッダを FastAPI または Supabase authz に透過。
-
-エラーハンドリング:
-- route では `AbortSignal.timeout(...)` を設定。
-- UI は `res.ok` で分岐し、非200時は body `error/detail` を優先表示。
-
----
-
-## 13. 安全ガード
-
-実装済みガード:
-1. Refresh/P0 route で Supabase role/tier 認可（admin or premium）。
-2. `FORBIDDEN_PATH_KEYS` による危険入力キー拒否（path/output/dbPath 等）。
-3. `PUT` は 501 を返し、実行系を明示的に無効化。
-4. レスポンスに `update_enabled=false`, `update_action='not-implemented'` を付与。
-5. planner 子プロセスは timeout（120秒）付きで実行。
-6. `sanitizeError` で secret/token らしき文字列をマスク。
-7. UI 側ボタンを disabled にして誤操作防止。
-
-不変条件との整合:
-- dry-run は HTTP 実アクセスを行わないプレビューを前提。
-- 実行系タイムアウト・ポーリングは長期レンジでも未完了を 0 と誤解しない設計。
-
----
-
-## 14. 現在の課題
-
-1. Data Collection の実行フローは `useBatchScrape` 依存が大きく、統一状態機械（state machine）化されていない。
-2. Refresh/P0 は read-only 完成度が高いが、execution phase が未実装。
-3. targeted refetch / live validation / source-empty diagnosis が UI 非統合で運用手順が分断。
-4. API 契約の型共有（TS type <-> backend schema）が限定的で、手動同期コストが残る。
-5. 長時間処理での UX（ポーリング頻度、中断/再開、ジョブ再接続）に改善余地。
-
----
-
-## 15. 改善ロードマップ
-
-Phase 1 (短期):
-- Data Collection の dry-run/execute 状態を共通 state machine 化。
-- fetch summary 履歴にフィルタ（mode/status/date）を追加。
-- エラー分類（timeout/auth/network/backend）を UI で明示。
-
-Phase 2 (中期):
-- targeted refetch plan / live validation / source-empty diagnosis の専用 UI を追加。
-- Refresh/P0 の API 契約を OpenAPI or zod schema で固定。
-- 実行前チェックリスト（read-only / risk / expected http count）をガード UI として導入。
-
-Phase 3 (長期):
-- Refresh/P0 execution phase を段階解放（staging guard -> limited rollout）。
-- ジョブキュー可視化（cancel/retry/resume）を導入。
-- 監査レポートを画面内で一元化し、運用スクリプト依存を縮小。
-
----
-
-## 16. 関連ファイル一覧
-
-### Frontend pages
-- `src/app/data-collection/page.tsx`
-- `src/app/data-collection/refresh-plan/page.tsx`
-- `src/app/data-collection/p0-repair-plan/page.tsx`
-
-### Next API routes
-- `src/app/api/scrape/route.ts`
-- `src/app/api/scrape/status/[jobId]/route.ts`
-- `src/app/api/scrape/history/route.ts`
-- `src/app/api/scrape/health/route.ts`
-- `src/app/api/scrape/refresh-plan/route.ts`
-- `src/app/api/scrape/p0-repair-plan/route.ts`
-- `src/app/api/scrape/repair/[race_id]/route.ts`
-- `src/app/api/scrape/rescrape-incomplete/route.ts`
-- `src/app/api/data-stats/route.ts`
-- `src/app/api/races/recent/route.ts`
-- `src/app/api/races/[race_id]/horses/route.ts`
-
-### Frontend hooks/libs
-- `src/hooks/useBatchScrape.ts`
-- `src/hooks/useJobPoller.ts`
-- `src/lib/auth-fetch.ts`
-
-### Backend/FastAPI
-- `python-api/routers/scrape.py`
-
-### Planning/Audit scripts
-- `scripts/plan_scrape_refresh.py`
-- `scripts/plan_p0_scrape_repair.py`
-- `scripts/plan_p0_targeted_refetch.py`
-- `scripts/validate_p0_targeted_refetch_live.py`
-- `scripts/diagnose_source_empty_result_cells.py`
-
----
-
-## 補足: この文書の前提
-
-- 実装ベース（as-is）記述であり、未実装機能は「未実装」として明示。
-- read-only フローの定義は、UI 表示・route 契約・スクリプト docstring の三層で確認済み。
+## 5. Reconciliation Notes
+- Source document intent is preserved.
+- All implementation claims were rewritten against current `develop` code.
+- Non-existent script reference was corrected to currently existing planning/diagnostic scripts.
+- Execution-vs-plan boundary is now explicit to prevent misreading preview UI as write-enabled behavior.

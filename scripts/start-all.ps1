@@ -6,6 +6,7 @@ Write-Host ""
 
 # Get workspace root (parent of scripts folder)
 $workspaceRoot = Split-Path -Parent $PSScriptRoot
+$env:PYTHONUTF8 = "1"
 
 # FastAPIサーバーを起動
 Write-Host "Starting FastAPI Server..." -ForegroundColor Yellow

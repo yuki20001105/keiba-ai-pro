@@ -36,13 +36,16 @@ from scraping.constants import SCRAPE_HEADERS  # type: ignore
 from scraping.fetch_pipeline import fetch_text  # type: ignore
 from scraping.jobs import (  # type: ignore
     _JOBS_LOCK,
-    _persist_job,
     _purge_old_jobs,
     _scrape_jobs,
-    get_job,
     get_scrape_runtime_health,
-    list_recent_jobs,
-    start_scrape_job_worker,
+)
+from scraping.operational_saga_runtime import (  # type: ignore
+    EnqueueRequest,
+    MutationCode,
+    OperationalSagaUnavailable,
+    OperationalSagaMode,
+    get_operational_saga_runtime,
 )
 from scraping.race import scrape_race_full  # type: ignore
 from scraping.race_list import fetch_race_ids  # type: ignore
@@ -61,6 +64,28 @@ _SANDBOX_TABLE_MAP = {
     "race_results": "sandbox_netkeiba_race_results",
     "race_payouts": "sandbox_netkeiba_race_payouts",
 }
+_DEPLOYED_ENVIRONMENTS = frozenset({"staging", "stage", "production", "prod", "prd", "live"})
+_LOCAL_ENVIRONMENTS = frozenset({"local", "development", "dev", "test", "ci"})
+_EXPLICIT_TRUE = frozenset({"1", "true", "yes", "on"})
+
+
+def _require_legacy_scrape_write_allowed() -> None:
+    """Prevent admin-only legacy writers from bypassing execution authorization."""
+
+    environment = str(APP_ENV or "").strip().lower()
+    if environment in _DEPLOYED_ENVIRONMENTS:
+        raise HTTPException(
+            status_code=503,
+            detail="legacy direct scrape writes are disabled in deployed environments",
+        )
+    if environment not in _LOCAL_ENVIRONMENTS:
+        raise HTTPException(status_code=503, detail="legacy direct scrape environment is not allowed")
+    allow = os.environ.get("PHASE3N_ALLOW_LEGACY_SCRAPE_WRITES", "").strip().lower()
+    if allow not in _EXPLICIT_TRUE:
+        raise HTTPException(
+            status_code=503,
+            detail="legacy direct scrape writes require explicit local/test opt-in",
+        )
 
 
 def _is_text_type_compatible(type_decl: str) -> bool:
@@ -247,48 +272,106 @@ async def netkeiba_race_sandbox_precheck() -> dict[str, Any]:
 
 
 @router.post("/api/scrape/start")
-async def scrape_start(request: ScrapeRequest, _: dict = Depends(require_admin)):
-    """スクレイピングをバックグラウンドで開始し、即座に job_id を返す（Admin専用）"""
-    job_id = str(uuid.uuid4())[:8]
-    with _JOBS_LOCK:
-        _purge_old_jobs(_scrape_jobs)
-        _scrape_jobs[job_id] = {
-            "status": "queued",
-            "progress": {"done": 0, "total": 0, "message": "開始待ち"},
-            "result": None,
-            "error": None,
-            "request": {
-                "start_date": request.start_date,
-                "end_date": request.end_date,
-                "force_rescrape": request.force_rescrape,
-                "dry_run": request.dry_run,
-            },
-            "heartbeat_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
-            "resume_count": 0,
-            "worker_pid": os.getpid(),
-        }
-        _persist_job(job_id, _scrape_jobs[job_id])
+async def scrape_start(request: ScrapeRequest, admin_user: dict = Depends(require_admin)):
+    """Durably enqueue a scrape through the Phase 3N saga/outbox boundary."""
+    owner_user_id = str(admin_user.get("user_id") or "").strip()
+    if not owner_user_id:
+        raise HTTPException(status_code=503, detail="管理者IDを確認できません")
+
+    runtime = get_operational_saga_runtime()
+    if not runtime.enabled:
+        raise HTTPException(status_code=503, detail="operational scrape runtime is disabled")
+
+    required_binding = (
+        request.job_id,
+        request.operation_id,
+        request.authorization_id,
+        request.reservation_id,
+        request.review_id,
+        request.review_version,
+        request.expected_authorization_version,
+        request.consume_request_id,
+    )
+    if runtime.config.mode is OperationalSagaMode.SUPABASE and any(
+        value is None for value in required_binding
+    ):
+        raise HTTPException(status_code=403, detail="explicit execution authorization is required")
+    if runtime.config.mode is OperationalSagaMode.SUPABASE and request.dry_run is not True:
+        # The legacy destination cannot atomically validate the shared lease
+        # and fencing token. Do not consume authorization until a fenced
+        # destination write RPC exists. Deployed dry-run remains available.
+        raise HTTPException(status_code=503, detail="fenced operational execute is not enabled")
+
+    job_id = str(request.job_id or uuid.uuid4())
+    operation_id = str(request.operation_id or uuid.uuid4())
+    request_payload = {
+        "start_date": request.start_date.strip(),
+        "end_date": request.end_date.strip(),
+        "force_rescrape": bool(request.force_rescrape),
+        "dry_run": bool(request.dry_run),
+    }
+    request_hash = hashlib.sha256(
+        json.dumps(
+            request_payload,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
     try:
-        started = start_scrape_job_worker(job_id, _scrape_jobs[job_id]["request"])
-        if not started:
-            raise RuntimeError("scrape worker was not started")
-        logger.info(f"ジョブ {job_id} をスレッドでスケジュール済み")
-    except Exception as e:
-        logger.error(f"スレッド起動失敗: {e}")
-        _scrape_jobs[job_id]["status"] = "error"
-        _scrape_jobs[job_id]["error"] = f"タスク起動失敗: {e}"
-        _persist_job(job_id, _scrape_jobs[job_id])
+        enqueue_request = EnqueueRequest(
+            job_id=job_id,
+            operation_id=operation_id,
+            owner_user_id=owner_user_id,
+            request_hash=request_hash,
+            request_payload=request_payload,
+            authorization_id=request.authorization_id,
+            reservation_id=request.reservation_id,
+            review_id=request.review_id,
+            review_version=request.review_version,
+            expected_authorization_version=request.expected_authorization_version,
+            consume_request_id=request.consume_request_id,
+        )
+        queued = await asyncio.to_thread(
+            runtime.enqueue,
+            enqueue_request,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="operational scrape binding conflict") from exc
+    except OperationalSagaUnavailable as exc:
+        raise HTTPException(status_code=503, detail="operational scrape store is unavailable") from exc
+    if queued.code is MutationCode.CONFLICT:
+        raise HTTPException(status_code=409, detail=queued.reason or "operational scrape conflict")
+    if queued.code not in {MutationCode.APPLIED, MutationCode.DUPLICATE}:
+        raise HTTPException(status_code=503, detail=queued.reason or "operational scrape enqueue failed")
     return {
         "job_id": job_id,
-        "status": _scrape_jobs[job_id]["status"],
+        "operation_id": operation_id,
+        "status": str((queued.job or {}).get("status") or "queued"),
         "mode": "dry-run" if request.dry_run else "execute",
+        "duplicate": queued.code is MutationCode.DUPLICATE,
     }
 
 
 @router.get("/api/scrape/status/{job_id}")
-async def scrape_status(job_id: str):
+async def scrape_status(job_id: str, admin_user: dict = Depends(require_admin)):
     """スクレイピングジョブの進捗・結果を返す（メモリ → SQLite の順で検索）"""
-    job = get_job(job_id)
+    try:
+        canonical_job_id = str(uuid.UUID(job_id))
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=400, detail="job_id は完全なUUID形式で指定してください")
+    if canonical_job_id != job_id.lower():
+        raise HTTPException(status_code=400, detail="job_id は完全なUUID形式で指定してください")
+    job_id = canonical_job_id
+    owner_user_id = str(admin_user.get("user_id") or "").strip()
+    if not owner_user_id:
+        raise HTTPException(status_code=503, detail="管理者IDを確認できません")
+    try:
+        job = await asyncio.to_thread(
+            get_operational_saga_runtime().get_job, job_id, owner_user_id
+        )
+    except OperationalSagaUnavailable as exc:
+        raise HTTPException(status_code=503, detail="ジョブ状態を安全に確認できません") from exc
     if not job:
         return {
             "job_id": job_id,
@@ -310,9 +393,17 @@ async def scrape_status(job_id: str):
 
 
 @router.get("/api/scrape/history")
-async def scrape_history(limit: int = 20):
+async def scrape_history(limit: int = 20, admin_user: dict = Depends(require_admin)):
     """最近のスクレイピングジョブ履歴を返す。"""
-    jobs = list_recent_jobs(limit=limit)
+    owner_user_id = str(admin_user.get("user_id") or "").strip()
+    if not owner_user_id:
+        raise HTTPException(status_code=503, detail="管理者IDを確認できません")
+    try:
+        jobs = await asyncio.to_thread(
+            get_operational_saga_runtime().list_jobs, owner_user_id, limit
+        )
+    except OperationalSagaUnavailable as exc:
+        raise HTTPException(status_code=503, detail="ジョブ履歴を安全に確認できません") from exc
     return {
         "count": len(jobs),
         "jobs": jobs,
@@ -320,13 +411,36 @@ async def scrape_history(limit: int = 20):
 
 
 @router.get("/api/netkeiba/race-list")
-async def netkeiba_race_list(date: str):
+async def netkeiba_race_list(date: str, _: dict = Depends(require_admin)):
     """Scrape Service の race_list を FastAPI 経由で read-only プロキシする。"""
     date_str = (date or "").strip().replace("-", "")
     if not re.fullmatch(r"\d{8}", date_str):
         raise HTTPException(status_code=400, detail="date は YYYY-MM-DD または YYYYMMDD 形式で指定してください")
 
     try:
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                f"{_SCRAPE_SERVICE_URL}/scrape/race_list",
+                headers={"Content-Type": "application/json"},
+                json={"kaisai_date": date_str},
+            ) as resp:
+                body_text = await resp.text()
+                if resp.status < 400:
+                    data = json.loads(body_text) if body_text else {}
+                    races = data.get("races") if isinstance(data, dict) else []
+                    if isinstance(races, list) and races:
+                        return {
+                            "success": True,
+                            "date": date_str,
+                            "raceIds": races,
+                            "count": len(races),
+                            "source": "fastapi_proxy",
+                        }
+
+        # The legacy scrape service can return HTTP 400 for valid historical
+        # dates. Resolve the same date through the bounded direct/mobile race
+        # list pipeline before declaring the date unavailable.
         races, source = await fetch_race_ids(date_str)
         return {
             "success": True,
@@ -1193,7 +1307,10 @@ async def netkeiba_race_dry_run(payload: dict[str, Any] = Body(default={})) -> d
 
 
 @router.post("/api/netkeiba/race/write")
-async def netkeiba_race_write(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+async def netkeiba_race_write(
+    payload: dict[str, Any] = Body(default={}),
+    _: dict = Depends(require_admin),
+) -> dict[str, Any]:
     """Guarded write endpoint. P1-13 enables explicit sandbox-only writes under strict staging locks."""
     race_id_raw = payload.get("race_id") if isinstance(payload, dict) else None
     if race_id_raw is None and isinstance(payload, dict):
@@ -1550,11 +1667,12 @@ async def scrape_health() -> dict:
 
 
 @router.post("/api/scrape", response_model=ScrapeResponse)
-async def scrape_data(request: ScrapeRequest):
+async def scrape_data(request: ScrapeRequest, _: dict = Depends(require_admin)):
     """
     期間指定でnetkeiba.comから完全データを自動収集しkeiba_ultimate.dbに保存。
     NOTE: 土日のみ対象。全日程は /api/scrape/start を使用すること。
     """
+    _require_legacy_scrape_write_allowed()
     logger.info(f"完全スクレイピング開始: {request.start_date} ～ {request.end_date}")
     start_time = time.time()
 
@@ -1643,10 +1761,11 @@ async def scrape_data(request: ScrapeRequest):
 
 
 @router.post("/api/rescrape_incomplete")
-async def rescrape_incomplete(limit: int = 50) -> RescrapeResponse:
+async def rescrape_incomplete(limit: int = 50, _: dict = Depends(require_admin)) -> RescrapeResponse:
     """
     keiba_ultimate.db 内の不完全レコード（trainer_name=NULL / distance=0 等）を再スクレイプして上書き保存する。
     """
+    _require_legacy_scrape_write_allowed()
     import sqlite3 as _sq3
 
     start_time = time.time()
@@ -1722,6 +1841,7 @@ async def repair_race(race_id: str, _: dict = Depends(require_admin)) -> dict:
     """
     指定レース ID を再スクレイプして DB を上書き修復する（distance=0 等の修正用）。
     """
+    _require_legacy_scrape_write_allowed()
     import sqlite3 as _sq3
 
     if not re.fullmatch(r"\d{12}", race_id):

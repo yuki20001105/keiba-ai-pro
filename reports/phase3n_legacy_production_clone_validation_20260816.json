@@ -1,0 +1,95 @@
+{
+  "schema": "phase3n-legacy-production-clone-validation",
+  "schema_version": 1,
+  "production_project_ref": "grfwkutcsavqicaimssn",
+  "production_changed": false,
+  "production_migration_authorized": false,
+  "production_migration_applied": false,
+  "candidate_commit_sha": "86a2d314a641160e852d3597396aadcd03e81347",
+  "contract_sha256": "4670ee1c174ef3092e7a32c192a9fccc8711982532252576b214c6569fbf3083",
+  "clone": {
+    "name": "phase3n-legacy-adoption-20260816",
+    "project_ref": "txaqkmzfqmukhocgnbce",
+    "parent_project_ref": "grfwkutcsavqicaimssn",
+    "with_data": true,
+    "persistent": false,
+    "region": "ap-northeast-1",
+    "compute": "micro",
+    "created_at": "2026-08-16T14:01:46.021469+00:00",
+    "active_healthy": true,
+    "deleted_at": "2026-08-16T14:21:37.2818997Z",
+    "deletion_verified": true
+  },
+  "artifacts": {
+    "clone_apply_sql_sha256": "aa97a241e920da63225a80e823aade8bd2e4223805ff42157d7ffe98f2a44447",
+    "clone_rollback_probe_sql_sha256": "4959870802b34b376b4d17fdefbf12bbaa6f1ae87dee96415960276985dda8c9",
+    "canonical_bootstrap_contract_sha256": "86642d3881842c3dff5b44789801e7b276f91d20c2cf39f00e2fb271de59f937",
+    "adoption_bootstrap_contract_sha256": "ed67b21fe6d7fa3d022f7afea0af60575d418ff7498a7bac8cb3c83d27dd6639",
+    "adoption_adjustments": [
+      "make-the-test-admin-the-sole-admin-inside-the-rollback-only-test-transaction",
+      "retain-the-test-storage-object-until-the-enclosing-rollback-because-managed-storage-rejects-direct-delete"
+    ]
+  },
+  "checks": {
+    "initial_read_only_preflight_passed": true,
+    "forced_failure_after_archive_observed": true,
+    "post_failure_read_only_preflight_passed": true,
+    "full_adoption_transaction_committed_on_clone": true,
+    "canonical_auth_rls_idor_contract_passed": true,
+    "canonical_auth_rls_idor_fingerprint": "44e20d1c1e9a54fc40ba88ad6a8d643666e44fb6fadea56f61c96fc946772012",
+    "final_read_only_audit_passed": true,
+    "temporary_cli_token_revoked": true,
+    "temporary_cli_token_removed_locally": true
+  },
+  "final_audit": {
+    "checked_at": "2026-08-16T14:18:55.876466+00:00",
+    "migration_applied_at": "2026-08-16T14:14:38.508159+00:00",
+    "migration_count": 21,
+    "history_candidate_sha_count": 1,
+    "archive_table_count": 24,
+    "public_table_count": 45,
+    "public_tables_without_rls": 0,
+    "anon_table_privileges": 0,
+    "public_policy_count": 19,
+    "auth_user_count": 4,
+    "profile_count": 3,
+    "races_count": 288,
+    "race_results_count": 9588,
+    "race_payouts_count": 5847,
+    "model_metadata_count": 73,
+    "model_storage_object_count": 146,
+    "races_null_user_count": 288,
+    "race_results_null_user_count": 9588,
+    "race_payouts_null_user_count": 5847,
+    "archive_public_usage": false,
+    "archive_anon_usage": false,
+    "archive_authenticated_usage": false
+  },
+  "legacy_user_reference_decision": {
+    "fact": "one legacy system UUID referenced every races/race_results/race_payouts row but existed in neither profiles nor auth.users",
+    "canonical_treatment": "set only that invalid optional user_id reference to null",
+    "source_preservation": "the original UUID and every source row remain unchanged in phase3n_legacy_20260816",
+    "domain_rows_deleted": 0
+  },
+  "restore_point": {
+    "backup_id": 1391364483,
+    "inserted_at": "2026-08-16T10:51:14.656Z",
+    "status": "COMPLETED",
+    "physical": true,
+    "region": "ap-northeast-1",
+    "walg_enabled": true,
+    "pitr_enabled": false,
+    "additional_paid_pitr_enabled_by_this_work": false,
+    "storage_object_bytes_included": false,
+    "storage_database_metadata_included": true,
+    "migration_does_not_modify_storage_objects": true
+  },
+  "decision": {
+    "clone_gate": "PASS",
+    "restore_point_gate": "PASS",
+    "production_apply_contract": "PENDING_SEPARATE_EXPLICIT_APPROVAL",
+    "production_status": "NOT_READY",
+    "overall_progress_percent": 76.15,
+    "limited_production_readiness_percent": 83.20
+  }
+}

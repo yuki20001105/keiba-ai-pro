@@ -1,18 +1,18 @@
 # Model Retrain Approval Design
 
-Updated: 2026-07-06
-Status: design freeze (no runtime execution in this phase)
+Updated: 2026-08-02
+Status: approval/job/artifact/evaluation contracts and a fail-closed one-shot retrain runner are implemented locally; hosted execution is not yet evidenced
 
 ## 1. Purpose and Non-goals
 
 Purpose:
-- Fix the approval target boundary before implementing actual retrain jobs.
+- Keep the approval target boundary immutable through job execution and artifact registration.
 - Define immutable contracts for dry-run payload and approval record.
 - Define what becomes executable only after approval.
 
 Non-goals in this phase:
-- No actual retrain execution.
-- No `.joblib` create/overwrite.
+- No autonomous queue poller or production retrain execution.
+- No overwrite of an existing `.joblib`, legacy model directory, or registered object.
 - No `.active_model.json` mutation.
 - No active model switch execution.
 - No production/base table write enablement.
@@ -116,7 +116,7 @@ After approved retrain execution, update domains are separated:
 Critical separation rule:
 - `active_model_pointer` switch requires separate Admin approval, independent from retrain approval.
 
-## 6. API Design (Specification-only in this phase)
+## 6. API Design
 
 In-scope API contracts:
 - `POST /api/model-redesign/summary` with `action=retrain_dry_run`
@@ -125,8 +125,14 @@ In-scope API contracts:
 - `POST /api/model-redesign/job` with `action=submit_approved_retrain`
 
 Current phase execution policy:
-- only `retrain_dry_run` is runtime-active.
-- approval/job endpoints are design placeholders for next phase.
+- `retrain_dry_run` is runtime-active, emits a strict canonical preview payload when structurally possible, and marks it approval-ready only when every safety input passes;
+- `POST /api/model-redesign/approval` creates an Admin-authenticated, actor/hash-bound pending record through the private Supabase ledger RPC;
+- `GET /api/model-redesign/approval/[approval_id]` reads the authoritative record after server-side expiration materialization;
+- `POST /api/model-redesign/approval/[approval_id]/decision` performs CAS-versioned independent approval/rejection or requester revocation;
+- `POST /api/model-redesign/approval/assess` recomputes the payload hash and every submission precondition for Admin callers;
+- approval persistence and assessment always return execution disabled and cannot write an artifact, start a job, or switch the active model;
+- the migration is repository-ready but remains unapplied until the isolated Staging migration gate is explicitly approved;
+- approved job submission is implemented as an idempotent durable ledger RPC; it queues work but does not dispatch a worker from the web request.
 
 Response envelope (all endpoints):
 - `success`: boolean
@@ -146,8 +152,9 @@ Workbench future flow stages:
 7. active model switch request
 
 Current phase constraints:
-- actual submit buttons remain `disabled/not-implemented`.
-- no action executes actual retrain or pointer switch.
+- the Admin workbench can create/read/decide an approval, queue one approved job, and refresh its status;
+- the web request never dispatches the worker or switches the active model;
+- result comparison, promotion, active-model switch, and retirement remain separate, unimplemented approval boundaries.
 
 ## 8. Security and Safety Constraints
 
@@ -158,26 +165,78 @@ Current phase constraints:
 - no `.joblib` create/overwrite in preview/approval phase
 - no production/base table write enablement
 
-## 9. Next Phase Entry Criteria
+## 9. Implemented entry contract
 
-Before implementing actual retrain:
-- dry-run payload schema is versioned and fixed.
-- approval record schema is versioned and fixed.
-- hash canonicalization is implemented and tested.
-- approval expiration and invalidation rules are enforced.
-- active model switch remains separately approved.
+Before implementing actual retrain, the repository now enforces:
+- exact dry-run and approval-record schemas with unknown-field rejection;
+- deterministic SHA-256 binding for the normalized feature contract and full dry-run payload;
+- non-overlapping out-of-time periods, canonical future-field checks, immutable data-snapshot digest, active-model identity, deployed code version, and exact commit binding;
+- separate requester/approver identities, approval chronology, expiration, immutable-state comparisons, Admin role, and staging/sandbox artifact policy;
+- active model switch remains separately approved and unimplemented.
 
-## 10. Type-Only Scaffolding
+Runtime still requires an applied and runtime-verified Staging approval ledger, atomic job state machine, isolated artifact store, real out-of-time evaluation, and separate promotion approval. `MODEL_RETRAIN_ARTIFACT_WRITE_POLICY` defaults to `disabled`; changing it only affects eligibility assessment and does not enable a writer.
 
-Added type-only scaffolding for this design freeze:
+The pre-existing direct `/api/models/{model_id}/activate` path cannot serve as a bypass. Both proxy and FastAPI now reject it in Staging, Production, and unknown environments. Compatibility is available only when `APP_ENV` is local/test and `MODEL_ACTIVATION_LOCAL_ENABLED=true`; the default is false and the workbench does not set it.
+
+The pre-existing synchronous `/api/train` and asynchronous `/api/train/start` artifact writers also cannot serve as an approval bypass. The Next proxy rejects before forwarding, FastAPI rejects before allocating a job and again at the write-capable training boundary, and the normal `/train` UI action is disabled. Compatibility requires local/test `APP_ENV` plus exact `MODEL_TRAINING_LOCAL_ENABLED=true`; deployed and unknown environments reject even when that flag is set.
+
+Direct `DELETE /api/models/{model_id}` cannot bypass artifact lifecycle governance either. Next and FastAPI reject deletion in deployed and unknown environments before local or Supabase mutation, and `/train` does not offer an enabled delete action. Compatibility requires local/test `APP_ENV` plus exact `MODEL_DELETION_LOCAL_ENABLED=true`; a durable retirement approval is a separate future contract from retrain and promotion approval.
+
+## 10. Implemented repository boundary
+
+Contract implementation:
 - `src/lib/model-retrain-approval-types.ts`
+- `src/lib/model-retrain-approval-contract.ts`
+- `src/lib/model-retrain-approval-ledger.ts`
+- `src/app/api/model-redesign/approval/route.ts`
+- `src/app/api/model-redesign/approval/[approval_id]/route.ts`
+- `src/app/api/model-redesign/approval/[approval_id]/decision/route.ts`
+- `src/app/api/model-redesign/approval/assess/route.ts`
+- `supabase/migrations/20260802_model_retrain_approval_ledger.sql`
+- `src/lib/model-retrain-job-ledger.ts`
+- `src/app/api/model-redesign/jobs/route.ts`
+- `src/app/api/model-redesign/jobs/[job_id]/route.ts`
+- `src/components/ModelRetrainApprovalPanel.tsx`
+- `supabase/migrations/20260802_model_retrain_job_ledger.sql`
+- `supabase/migrations/20260802_model_retrain_worker_lease.sql`
+- `supabase/migrations/20260802_model_retrain_artifact_registration.sql`
+- `supabase/migrations/20260802_model_retrain_evaluation_registration.sql`
+- `supabase/migrations/20260802_model_retrain_execution_bundle.sql`
+- `supabase/migrations/20260802_model_retrain_orphan_reconciliation.sql`
+- `supabase/migrations/20260802_model_retrain_dispatch_queue.sql`
+- `python-api/training/approved_execution.py`
+- `python-api/training/execution_bundle.py`
+- `python-api/training/retrain_worker.py`
+- `python-api/retrain_worker_main.py`
+- `python-api/training/retrain_reconciler.py`
+- `python-api/retrain_reconciler_main.py`
+- `python-api/training/retrain_dispatcher.py`
+- `python-api/retrain_dispatcher_main.py`
+- `python-api/training/retrain_evaluator.py`
+- `python-api/retrain_evaluator_main.py`
+- `docs/model-retrain-worker-runbook.md`
 
 Coverage:
 - dry-run payload / preview contract
 - approval record contract
 - approved retrain job preconditions / submit request / result
 - active model switch approval record boundary
+- Admin workbench request/read/decision/queue/status controls without worker dispatch
 
 Runtime policy:
-- type-only scaffolding does not execute jobs.
-- no approval-create runtime, no job-submit runtime, no switch runtime.
+- payload generation and eligibility assessment do not execute jobs.
+- approval creation, transition, and queued-job submission are durable only after both migrations are explicitly applied and verified in isolated Staging;
+- the approval/job ledgers are private, append-audited, CAS-bound, two-person, expiring, and approval-idempotent; only an approved requester can atomically change `job_created` from false to true while `execution_enabled` remains false;
+- queued jobs can be atomically claimed with a 30-300 second lease, monotonic fencing token, CAS version, approval recheck, heartbeat, fenced start/failure reporting, and expired-lease recovery;
+- expired claimed work returns to `queued`, while an expired running attempt becomes terminal `failed` to prevent unsafe duplicate execution;
+- before registration, artifact fields remain structurally fixed to `artifact_written=false` and null identity;
+- only the live fenced `running` worker can bind one existing object from the private `models` bucket. The object name is derived from the job UUID and SHA-256, size and media type are bounded, and the immutable registration moves the job to `artifact-registered`;
+- artifact registration does not attest object contents, evaluate model quality, populate the active-model registry, or authorize activation/deletion;
+- a service-only evaluator may move `artifact-registered` to `evaluation-recorded` only with the exact sanitized accepted-report schema, approved contract projection, matching candidate commit/artifact digest, all verifier checks true, empty blockers/failures, and a seven-day freshness bound;
+- evaluation rows remain immutable with `trusted_promotion_evidence=false` and `promotion_eligible=false`; database registration cannot substitute for the signed Phase 3N artifact or activate a model;
+- the one-shot coordinator maintains the lease during snapshot copy, training and upload, validates the execution bundle independently, rehashes the copied snapshot, uploads a digest-named artifact without upsert, registers under the current fence, and removes the object on handled pre-registration failure;
+- the separate one-shot reconciler first recovers expired claimed/running leases through the existing CAS RPC, then considers only hour-old exact-name objects whose jobs are terminal `failed` with no artifact identity or immutable registration; registered, queued, claimed, running, malformed, and too-new objects are never candidates;
+- each bounded reconciliation records deleted, not-found, delete-failed, or candidate-zero observations in an immutable service-only ledger and fails closed after auditing any incomplete deletion;
+- the service-only dispatch projection is read-only and bounded to five exact policy/commit/active-model candidates; the one-shot Python dispatcher independently validates every returned binding and snapshot digest before delegating to the existing fenced coordinator;
+- the one-shot accepted evaluator rebuilds model evidence from strict OOT rows in memory, requires the canonical approved contract and an accepted sanitized report, revalidates its projection independently, and registers through exact job/CAS/evaluator/commit bindings without setting trusted-promotion or promotion eligibility;
+- the database contracts and local dispatcher/coordinator/trainer/uploader/evaluator code exist, but no hosted migration application, deployed recurring runtime, trusted Phase 3N attestation, candidate comparison, or switch runtime has been evidenced.

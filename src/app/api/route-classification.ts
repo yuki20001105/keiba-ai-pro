@@ -48,5 +48,5 @@ export const NEXT_API_ROUTE_CLASSIFICATION: NextRouteMeta[] = [
   },
   { route: '/api/stripe/webhook', classification: 'internal', note: 'Server-to-server callback only', migrationTarget: 'keep-next-direct', riskLevel: 'low' },
   { route: '/api/data/all', classification: 'internal', note: 'Destructive admin utility route', migrationTarget: 'keep-next-direct', riskLevel: 'high' },
-  { route: '/api/features/catalog', classification: 'unused', note: 'Available route, no current UI caller', migrationTarget: 'undecided', riskLevel: 'low' },
+  { route: '/api/features/catalog', classification: 'production', note: 'Premium/Admin read-only feature provenance catalog used by feature-lab', migrationTarget: 'fastapi-proxy', riskLevel: 'low' },
 ]

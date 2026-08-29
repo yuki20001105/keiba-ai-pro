@@ -10,9 +10,10 @@ import json
 
 import aiohttp
 from bs4 import BeautifulSoup
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from app_config import SUPABASE_ENABLED, get_supabase_client, logger  # type: ignore
+from deps.auth import require_admin  # type: ignore
 from scraping.constants import SCRAPE_HEADERS, HTML_STRAINER  # type: ignore
 from scraping.horse import _parse_blood_table, extract_coat_color  # type: ignore
 
@@ -20,7 +21,7 @@ router = APIRouter()
 
 
 @router.post("/api/backfill/nar-pedigree")
-async def backfill_nar_pedigree(limit: int = 100) -> dict:
+async def backfill_nar_pedigree(limit: int = 100, _: dict = Depends(require_admin)) -> dict:
     """
     Supabase の race_results_ultimate で sire='unknown_local' の NAR 馬（B プレフィックス）に対して
     db.netkeiba.com/horse/ped/<horse_id>/ から血統を再取得し、レコードを更新する。
@@ -127,7 +128,7 @@ async def backfill_nar_pedigree(limit: int = 100) -> dict:
 
 
 @router.post("/api/backfill/coat-color")
-async def backfill_coat_color(limit: int = 200) -> dict:
+async def backfill_coat_color(limit: int = 200, _: dict = Depends(require_admin)) -> dict:
     """
     race_results_ultimate で horse_coat_color が未取得の馬について
     db.netkeiba.com/horse/<horse_id>/ を再スクレイプして毛色を補完する。

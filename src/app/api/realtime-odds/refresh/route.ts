@@ -1,12 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { SCRAPE_API_URL as ML_API_URL } from '@/lib/backend-url'
+import { verifyRequestAuth } from '@/lib/server-auth'
 
 export async function POST(request: NextRequest) {
   try {
+    const authz = await verifyRequestAuth(request, { requireAdmin: true })
+    if (!authz.ok) {
+      return NextResponse.json({ detail: authz.detail }, { status: authz.status })
+    }
+
     const body = await request.json()
     const res = await fetch(`${ML_API_URL}/api/realtime-odds/refresh`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${authz.context.token}`,
+      },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(300_000),
     })

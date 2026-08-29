@@ -1,0 +1,61 @@
+services:
+  db:
+    image: postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+    tmpfs:
+      - /var/lib/postgresql/data
+
+  db-init:
+    image: postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGHOST: db
+      PGUSER: postgres
+      PGDATABASE: postgres
+    volumes:
+      - ./supabase:/workspace/supabase:ro
+      - ${PHASE3N_HA_EVIDENCE_DIR:?set PHASE3N_HA_EVIDENCE_DIR}:/evidence:ro
+    command:
+      - /bin/sh
+      - -euc
+      - |
+        psql -v ON_ERROR_STOP=1 -f /workspace/supabase/bootstrap/v1/tests/supabase_prelude.sql
+        psql -v ON_ERROR_STOP=1 -f /evidence/phase3n-ha-bootstrap.sql
+        psql -v ON_ERROR_STOP=1 -f /workspace/supabase/bootstrap/v1/tests/bootstrap_contract.sql
+
+  rest:
+    image: postgrest/postgrest:v14.12
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+    environment:
+      PGRST_DB_URI: postgres://postgres@db:5432/postgres
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_ANON_ROLE: service_role
+      PGRST_SERVER_PORT: "3000"
+
+  controller:
+    build:
+      context: .
+      dockerfile: Dockerfile.phase3n-ha
+    depends_on:
+      rest:
+        condition: service_started
+    environment:
+      PHASE3N_HA_REST_URL: http://rest:3000
+    volumes:
+      - ${PHASE3N_HA_EVIDENCE_DIR:?set PHASE3N_HA_EVIDENCE_DIR}:/evidence
+
+  instance-a:
+    extends: controller
+
+  instance-b:
+    extends: controller

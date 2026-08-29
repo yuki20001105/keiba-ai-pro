@@ -4,9 +4,13 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { Logo } from '@/components/Logo'
 import { PremiumRequiredNotice } from '@/components/PremiumRequiredNotice'
+import { ModelRetrainApprovalPanel } from '@/components/ModelRetrainApprovalPanel'
 import { useAuth } from '@/contexts/AuthContext'
 import { authFetch } from '@/lib/auth-fetch'
-import type { RetrainDryRunPreview } from '@/lib/model-retrain-approval-types'
+import type {
+  RetrainDryRunPayload,
+  RetrainDryRunPreview,
+} from '@/lib/model-retrain-approval-types'
 
 type UiState = 'pass' | 'warn' | 'fail'
 
@@ -70,8 +74,12 @@ type DryRunPreviewResponse = {
   action: string
   generated_at: string
   dry_run_preview: RetrainDryRunPreview
+  dry_run_payload: RetrainDryRunPayload | null
+  approved_payload_hash: string | null
+  approval_payload_blockers: string[]
   guard: {
     read_only_mode: boolean
+    approval_payload_ready: boolean
     retrain_execution: string
     active_model_switch: string
     production_write: boolean
@@ -100,6 +108,7 @@ export default function ModelRedesignWorkbenchPage() {
   const [dryRunLoading, setDryRunLoading] = useState(false)
   const [dryRunError, setDryRunError] = useState('')
   const [dryRunPreview, setDryRunPreview] = useState<DryRunPreviewResponse | null>(null)
+  const [dataSnapshotId, setDataSnapshotId] = useState('')
 
   useEffect(() => {
     if (authLoading || !canView) return
@@ -144,7 +153,10 @@ export default function ModelRedesignWorkbenchPage() {
       const response = await authFetch('/api/model-redesign/summary', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json; charset=utf-8' },
-        body: JSON.stringify({ action: 'retrain_dry_run' }),
+        body: JSON.stringify({
+          action: 'retrain_dry_run',
+          ...(dataSnapshotId.trim() ? { data_snapshot_id: dataSnapshotId.trim().toLowerCase() } : {}),
+        }),
         signal: AbortSignal.timeout(120000),
       })
       const data = await response.json().catch(() => ({})) as Partial<DryRunPreviewResponse> & { error?: string }
@@ -191,6 +203,18 @@ export default function ModelRedesignWorkbenchPage() {
           )}
 
           <div className="mt-4 flex flex-wrap items-center gap-3">
+            <label className="w-full text-xs text-[#aaa]">
+              Immutable data snapshot SHA-256（承認対象を作る場合は必須）
+              <input
+                value={dataSnapshotId}
+                onChange={event => setDataSnapshotId(event.target.value)}
+                maxLength={64}
+                spellCheck={false}
+                autoComplete="off"
+                placeholder="64文字のlowercase SHA-256"
+                className="mt-1 block w-full rounded border border-[#2a2a2a] bg-[#0f0f0f] px-3 py-2 font-mono text-xs text-white outline-none focus:border-[#555]"
+              />
+            </label>
             <button
               onClick={() => { void runDryRunPreview() }}
               disabled={!canView || dryRunLoading}
@@ -366,6 +390,39 @@ export default function ModelRedesignWorkbenchPage() {
                     ))}
                   </ul>
                 </div>
+
+                <div className={`mt-4 border rounded p-3 text-xs ${dryRunPreview.guard.approval_payload_ready ? 'border-emerald-800/50 text-emerald-200' : 'border-red-800/50 text-red-200'}`}>
+                  <div className="font-medium">
+                    Approval payload: {dryRunPreview.guard.approval_payload_ready ? 'READY' : 'NOT READY'}
+                  </div>
+                  {dryRunPreview.dry_run_payload ? (
+                    <div className="mt-2 space-y-1 break-all">
+                      <div>dry_run_id: {dryRunPreview.dry_run_payload.dry_run_id}</div>
+                      <div>payload_sha256: {dryRunPreview.approved_payload_hash || 'N/A'}</div>
+                      <div>feature_contract_sha256: {dryRunPreview.dry_run_payload.feature_contract_hash}</div>
+                      <div>data_snapshot_sha256: {dryRunPreview.dry_run_payload.data_snapshot_id}</div>
+                      <div>candidate_commit: {dryRunPreview.dry_run_payload.git_commit}</div>
+                      <div>active_model_id: {dryRunPreview.dry_run_payload.active_model_id || 'N/A'}</div>
+                      {dryRunPreview.dry_run_payload.warnings && dryRunPreview.dry_run_payload.warnings.length > 0 && (
+                        <div>blockers: {dryRunPreview.dry_run_payload.warnings.join(', ')}</div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="mt-2">
+                      完全な承認対象payloadを構築できませんでした。blockers: {dryRunPreview.approval_payload_blockers.join(', ')}
+                    </div>
+                  )}
+                  <div className="mt-2 text-[#888]">
+                    この画面は評価のみです。承認レコード作成、再学習、artifact書込み、active model切替は実行しません。
+                  </div>
+                </div>
+
+                <ModelRetrainApprovalPanel
+                  isAdmin={isAdmin}
+                  payload={dryRunPreview.dry_run_payload}
+                  approvedPayloadHash={dryRunPreview.approved_payload_hash}
+                  payloadReady={dryRunPreview.guard.approval_payload_ready}
+                />
               </div>
             )}
           </>

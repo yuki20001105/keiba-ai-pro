@@ -25,6 +25,7 @@ main.py (slim) - ルーターを機能ごとのモジュールに分割した版
       backfill.py      - POST /api/backfill/*
       profiling.py     - POST /api/profiling/start, GET /api/profiling/*
 """
+import asyncio
 import sys
 
 # Windowsの cp932 エンコード環境で Unicode 文字列の print/log が失敗しないよう UTF-8 に固定
@@ -36,13 +37,16 @@ for _s in (sys.stdout, sys.stderr):
             pass
 
 from contextlib import asynccontextmanager
+import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler  # type: ignore
 from slowapi.util import get_remote_address  # type: ignore
 from slowapi.errors import RateLimitExceeded  # type: ignore
+from app_config import ALLOWED_ORIGINS, ULTIMATE_DB  # type: ignore
 from middleware.auth import SupabaseJWTMiddleware  # type: ignore
+from scraping.storage import _init_sqlite_db  # type: ignore
 
 from routers import (  # type: ignore
     backfill,
@@ -51,6 +55,7 @@ from routers import (  # type: ignore
     export,
     feature_analysis,
     internal,
+    live_validation,
     models_mgmt,
     predict,
     prediction_history,
@@ -63,10 +68,9 @@ from routers import (  # type: ignore
     train,
 )
 from scheduler import start_scheduler, stop_scheduler  # type: ignore
-from scraping.jobs import (  # type: ignore
-    get_scrape_runtime_health,
-    start_scrape_supervisor,
-    stop_scrape_supervisor,
+from scraping.operational_saga_runtime import (  # type: ignore
+    start_operational_saga_worker,
+    stop_operational_saga_worker,
 )
 
 # ── Rate Limiter（インメモリ・Redis不要） ──────────────────────────────
@@ -75,11 +79,19 @@ limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Render Free has an ephemeral filesystem.  After a cold start the SQLite
+    # path may exist as an empty file, so every request-path SELECT must be
+    # preceded by idempotent schema initialization.  The database is only a
+    # local working cache; authoritative Phase 3N observations remain in
+    # Supabase PostgreSQL.
+    await asyncio.to_thread(_init_sqlite_db, ULTIMATE_DB)
     start_scheduler()
-    start_scrape_supervisor()
-    yield
-    stop_scrape_supervisor()
-    stop_scheduler()
+    await start_operational_saga_worker()
+    try:
+        yield
+    finally:
+        await stop_operational_saga_worker()
+        stop_scheduler()
 
 
 app = FastAPI(
@@ -96,10 +108,10 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 _EXEMPT_PATHS = {"/", "/health", "/docs", "/openapi.json", "/redoc"}
 app.add_middleware(SupabaseJWTMiddleware, exempt_paths=_EXEMPT_PATHS)
 
-# CORS設定（全オリジンを許可）
+# CORS設定（app_config の明示 allowlist のみ）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=list(ALLOWED_ORIGINS),
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -113,9 +125,11 @@ app.include_router(models_mgmt.router)
 app.include_router(purchase.router)
 app.include_router(scrape.router)
 app.include_router(backfill.router)
+app.include_router(export.router)
 app.include_router(profiling.router)
 app.include_router(races.router)
 app.include_router(internal.router)
+app.include_router(live_validation.router)
 app.include_router(debug_data.router)
 app.include_router(realtime_odds.router)
 app.include_router(bet_export.router)
@@ -123,24 +137,30 @@ app.include_router(feature_analysis.router)
 app.include_router(prediction_history.router)
 
 
+@app.middleware("http")
+async def live_validation_no_store(request, call_next):
+    """Never cache live-validation success, validation, or auth responses."""
+    response = await call_next(request)
+    if request.url.path == "/api/scrape/live-validation":
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @app.get("/health")
 async def health():
-    runtime = get_scrape_runtime_health()
-    healthy = (
-        bool(runtime.get("database_ok"))
-        and not (runtime.get("stale_job_ids") or [])
-        and runtime.get("resource_capacity_available", True)
-    )
     return {
-        "status": "ok" if healthy else "degraded",
-        "long_running_jobs": {
-            "auto_resume_enabled": runtime.get("auto_resume_enabled", False),
-            "active_worker_count": runtime.get("active_worker_count", 0),
-            "recoverable_job_count": runtime.get("recoverable_job_count", 0),
-            "stale_job_count": len(runtime.get("stale_job_ids") or []),
-            "resource_capacity_available": runtime.get("resource_capacity_available", True),
-            "resource": runtime.get("resource", {}),
-        },
+        "status": "ok",
+        "app_env": os.environ.get("APP_ENV", "development").strip().lower(),
+        "model_runtime_status": os.environ.get("MODEL_RUNTIME_STATUS", "disabled").strip().lower(),
+        "observation_enabled": os.environ.get("PHASE3N_OBSERVATION_ENABLED", "").strip().lower()
+        in {"true", "1", "yes"},
+        "observation_release_mode": os.environ.get(
+            "PHASE3N_OBSERVATION_RELEASE_MODE", "disabled"
+        ).strip().lower(),
+        "automated_betting_enabled": os.environ.get(
+            "AUTOMATED_BETTING_ENABLED", ""
+        ).strip().lower()
+        in {"true", "1", "yes"},
     }
 
 

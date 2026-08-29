@@ -13,7 +13,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 import aiohttp
 import httpx
@@ -41,6 +41,7 @@ from scraping.quality import (
     run_date_repair_audit,
     summarize_acquisition_quality,
 )
+from scraping.scrape_request_contract import MAX_SCRAPE_TARGETS, build_bounded_scrape_dates
 from scraping.storage import (
     _get_scraped_dates_sqlite,
     _init_sqlite_db,
@@ -71,6 +72,10 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+class JobStoreUnavailable(RuntimeError):
+    """Raised when durable scrape-job state cannot be read or written safely."""
+
+
 def _init_jobs_db() -> None:
     try:
         _JOBS_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -83,20 +88,29 @@ def _init_jobs_db() -> None:
                 progress TEXT DEFAULT '{}',
                 result TEXT DEFAULT 'null',
                 error TEXT DEFAULT 'null',
+                request_json TEXT DEFAULT '{}',
+                heartbeat_at TEXT,
+                resume_count INTEGER NOT NULL DEFAULT 0,
+                worker_pid INTEGER,
+                last_checkpoint TEXT,
+                owner_user_id TEXT NOT NULL DEFAULT '',
+                request_hash TEXT NOT NULL DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(scrape_jobs)")}
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(scrape_jobs)").fetchall()}
         migrations = {
             "request_json": "TEXT DEFAULT '{}'",
             "heartbeat_at": "TEXT",
             "resume_count": "INTEGER NOT NULL DEFAULT 0",
             "worker_pid": "INTEGER",
             "last_checkpoint": "TEXT",
+            "owner_user_id": "TEXT NOT NULL DEFAULT ''",
+            "request_hash": "TEXT NOT NULL DEFAULT ''",
         }
         for column, definition in migrations.items():
-            if column not in existing_columns:
+            if column not in columns:
                 conn.execute(f"ALTER TABLE scrape_jobs ADD COLUMN {column} {definition}")
         conn.commit()
         conn.close()
@@ -104,16 +118,19 @@ def _init_jobs_db() -> None:
         logger.warning(f"ジョブDB初期化失敗: {e}")
 
 
-def _persist_job(job_id: str, job: dict) -> None:
-    """ジョブ状態を SQLite に永続化する（失敗は握り潰す）"""
+def _persist_job(job_id: str, job: dict) -> bool:
+    """Persist job state and report whether the durable write succeeded."""
+    conn: sqlite3.Connection | None = None
     try:
         conn = sqlite3.connect(str(_JOBS_DB_PATH), timeout=30)
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("""
+        cursor = conn.execute("""
             INSERT INTO scrape_jobs (
-                job_id, status, progress, result, error, request_json,
-                heartbeat_at, resume_count, worker_pid, last_checkpoint, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                job_id, status, progress, result, error,
+                request_json, heartbeat_at, resume_count, worker_pid, last_checkpoint,
+                owner_user_id, request_hash, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(job_id) DO UPDATE SET
                 status = excluded.status,
                 progress = excluded.progress,
@@ -124,7 +141,11 @@ def _persist_job(job_id: str, job: dict) -> None:
                 resume_count = excluded.resume_count,
                 worker_pid = excluded.worker_pid,
                 last_checkpoint = excluded.last_checkpoint,
+                owner_user_id = scrape_jobs.owner_user_id,
+                request_hash = scrape_jobs.request_hash,
                 updated_at = CURRENT_TIMESTAMP
+            WHERE scrape_jobs.owner_user_id = excluded.owner_user_id
+              AND scrape_jobs.request_hash = excluded.request_hash
         """, (
             job_id,
             job.get("status", "unknown"),
@@ -136,37 +157,137 @@ def _persist_job(job_id: str, job: dict) -> None:
             int(job.get("resume_count", 0) or 0),
             job.get("worker_pid"),
             (job.get("progress") or {}).get("last_completed_date"),
+            str(job.get("owner_user_id") or ""),
+            str(job.get("request_hash") or ""),
         ))
+        if cursor.rowcount != 1:
+            conn.rollback()
+            logger.error("scrape job binding mismatch for %s", job_id)
+            return False
         conn.commit()
-        conn.close()
-    except Exception:
-        pass  # ログスパム防止
+        return True
+    except Exception as exc:
+        logger.error("scrape job persistence failed for %s: %s", job_id, exc)
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _persist_job_or_raise(job_id: str, job: dict) -> None:
+    """Persist a lifecycle transition or fail closed for status readers."""
+    if not _persist_job(job_id, job):
+        with _JOBS_LOCK:
+            current = _scrape_jobs.get(job_id)
+            if current is not None:
+                current["_store_unavailable"] = True
+        raise JobStoreUnavailable(f"scrape job state could not be persisted: {job_id}")
+
+    with _JOBS_LOCK:
+        current = _scrape_jobs.get(job_id)
+        if current is not None:
+            current.pop("_store_unavailable", None)
+
+
+def create_job_if_owner_idle(job_id: str, job: dict) -> Literal["created", "active", "unavailable"]:
+    """Atomically reject an active owner job or durably create a queued job."""
+    owner_user_id = str(job.get("owner_user_id") or "")
+    request_hash = str(job.get("request_hash") or "")
+    if not owner_user_id or not request_hash:
+        return "unavailable"
+
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(str(_JOBS_DB_PATH), timeout=10.0)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("BEGIN IMMEDIATE")
+        active = conn.execute(
+            """
+            SELECT 1
+            FROM scrape_jobs
+            WHERE owner_user_id = ? AND status IN ('queued', 'running')
+            LIMIT 1
+            """,
+            (owner_user_id,),
+        ).fetchone()
+        if active is not None:
+            conn.rollback()
+            return "active"
+        conn.execute(
+            """
+            INSERT INTO scrape_jobs (
+                job_id, status, progress, result, error,
+                request_json, heartbeat_at, resume_count, worker_pid, last_checkpoint,
+                owner_user_id, request_hash, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+            (
+                job_id,
+                job.get("status", "queued"),
+                json.dumps(job.get("progress", {}), ensure_ascii=False),
+                json.dumps(job.get("result"), ensure_ascii=False),
+                json.dumps(job.get("error"), ensure_ascii=False),
+                json.dumps(job.get("request", {}), ensure_ascii=False),
+                job.get("heartbeat_at"),
+                int(job.get("resume_count", 0) or 0),
+                job.get("worker_pid"),
+                (job.get("progress") or {}).get("last_completed_date"),
+                owner_user_id,
+                request_hash,
+            ),
+        )
+        conn.commit()
+        return "created"
+    except Exception as exc:
+        if conn is not None:
+            conn.rollback()
+        logger.error("atomic scrape job creation failed for %s: %s", job_id, exc)
+        return "unavailable"
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def _load_job_from_db(job_id: str) -> dict | None:
     """SQLite からジョブ状態を復元する"""
+    conn: sqlite3.Connection | None = None
     try:
         conn = sqlite3.connect(str(_JOBS_DB_PATH))
         row = conn.execute(
-            """SELECT status, progress, result, error, request_json,
-                      heartbeat_at, resume_count, worker_pid
-               FROM scrape_jobs WHERE job_id = ?""",
+            """
+            SELECT status, progress, result, error, request_json,
+                   heartbeat_at, resume_count, worker_pid, owner_user_id, request_hash
+            FROM scrape_jobs
+            WHERE job_id = ?
+            """,
             (job_id,),
         ).fetchone()
-        conn.close()
         if row:
-            return {
+            loaded = {
                 "status": row[0],
                 "progress": json.loads(row[1] or "{}"),
                 "result": json.loads(row[2] or "null"),
                 "error": json.loads(row[3] or "null"),
-                "request": json.loads(row[4] or "{}"),
-                "heartbeat_at": row[5],
-                "resume_count": int(row[6] or 0),
-                "worker_pid": row[7],
+                "owner_user_id": str(row[8] or ""),
+                "request_hash": str(row[9] or ""),
             }
-    except Exception:
-        pass
+            request_payload = json.loads(row[4] or "{}")
+            if request_payload:
+                loaded["request"] = request_payload
+            if row[5] is not None:
+                loaded["heartbeat_at"] = row[5]
+            if int(row[6] or 0):
+                loaded["resume_count"] = int(row[6])
+            if row[7] is not None:
+                loaded["worker_pid"] = row[7]
+            return loaded
+    except Exception as exc:
+        logger.error("scrape job load failed for %s: %s", job_id, exc)
+        raise JobStoreUnavailable(f"scrape job state could not be loaded: {job_id}") from exc
+    finally:
+        if conn is not None:
+            conn.close()
     return None
 
 
@@ -544,16 +665,52 @@ def _purge_old_jobs(store: dict, max_keep: int = _MAX_JOBS) -> None:
             del store[key]
 
 
-def get_job(job_id: str) -> dict | None:
-    """メモリ → SQLite の順でジョブを取得する"""
-    if job_id in _scrape_jobs:
-        return _scrape_jobs[job_id]
-    return _load_job_from_db(job_id)
+def get_job(job_id: str, *, owner_user_id: str) -> dict | None:
+    """Return an owner-bound job from memory or SQLite."""
+    if not owner_user_id:
+        return None
+    with _JOBS_LOCK:
+        job = _scrape_jobs.get(job_id)
+        if job is not None and job.get("_store_unavailable") is True:
+            raise JobStoreUnavailable(f"scrape job state is not durable: {job_id}")
+    if job is None:
+        job = _load_job_from_db(job_id)
+    if not job or str(job.get("owner_user_id") or "") != owner_user_id:
+        return None
+    return job
 
 
-def list_recent_jobs(limit: int = 20) -> list[dict]:
+def has_active_job(owner_user_id: str) -> bool | None:
+    """Return active-job presence, or None when durable state cannot be checked."""
+    if not owner_user_id:
+        return None
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(str(_JOBS_DB_PATH))
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM scrape_jobs
+            WHERE owner_user_id = ? AND status IN ('queued', 'running')
+            LIMIT 1
+            """,
+            (owner_user_id,),
+        ).fetchone()
+        return row is not None
+    except Exception as exc:
+        logger.error("active scrape job check failed for owner %s: %s", owner_user_id, exc)
+        return None
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def list_recent_jobs(*, owner_user_id: str, limit: int = 20) -> list[dict]:
     """SQLite から最近のジョブ履歴を取得する（fetch_summary 抜粋付き）。"""
+    if not owner_user_id:
+        return []
     safe_limit = max(1, min(int(limit), 100))
+    conn: sqlite3.Connection | None = None
     try:
         conn = sqlite3.connect(str(_JOBS_DB_PATH))
         rows = conn.execute(
@@ -561,14 +718,18 @@ def list_recent_jobs(limit: int = 20) -> list[dict]:
             SELECT job_id, status, progress, result, error, created_at, updated_at,
                    request_json, heartbeat_at, resume_count, worker_pid
             FROM scrape_jobs
+            WHERE owner_user_id = ?
             ORDER BY datetime(updated_at) DESC
             LIMIT ?
             """,
-            (safe_limit,),
+            (owner_user_id, safe_limit),
         ).fetchall()
-        conn.close()
-    except Exception:
-        return []
+    except Exception as exc:
+        logger.error("scrape job history load failed for owner %s: %s", owner_user_id, exc)
+        raise JobStoreUnavailable("scrape job history could not be loaded") from exc
+    finally:
+        if conn is not None:
+            conn.close()
 
     history: list[dict] = []
     for row in rows:
@@ -598,8 +759,9 @@ def list_recent_jobs(limit: int = 20) -> list[dict]:
                     "worker_pid": row[10],
                 }
             )
-        except Exception:
-            continue
+        except Exception as exc:
+            logger.error("malformed scrape job history row for owner %s: %s", owner_user_id, exc)
+            raise JobStoreUnavailable("scrape job history contains invalid durable state") from exc
     return history
 
 
@@ -751,35 +913,21 @@ async def _run_scrape_job(
     """バックグラウンドでスクレイピングを実行しジョブストアを更新する"""
     try:
         import time as _time
-        from datetime import datetime as _dt, timedelta as _td
-
         job = _scrape_jobs[job_id]
         job["status"] = "running"
         job["error"] = None
         job["worker_pid"] = os.getpid()
-        _checkpoint_job(job_id, job, force=True)
+        job["heartbeat_at"] = _utc_now()
+        job["resource"] = get_scrape_resource_snapshot()
+        await asyncio.to_thread(_persist_job_or_raise, job_id, job)
 
         ULTIMATE_DB = Path(__file__).parent.parent.parent / "keiba" / "data" / "keiba_ultimate.db"
-        _init_sqlite_db(ULTIMATE_DB)
-        init_acquisition_quality_db(ULTIMATE_DB)
+        await asyncio.to_thread(_init_sqlite_db, ULTIMATE_DB)
+        await asyncio.to_thread(init_acquisition_quality_db, ULTIMATE_DB)
 
         start_time = _time.time()
 
-        def _parse(s):
-            for fmt in ("%Y%m%d", "%Y/%m/%d", "%Y-%m-%d"):
-                try:
-                    return _dt.strptime(s, fmt)
-                except ValueError:
-                    pass
-            raise ValueError(f"日付フォーマット不正: {s}")
-
-        s_dt = _parse(start_date)
-        e_dt = _parse(end_date)
-        dates = []
-        cur = s_dt
-        while cur <= e_dt:
-            dates.append(cur.strftime("%Y%m%d"))
-            cur += _td(days=1)
+        dates = await asyncio.to_thread(build_bounded_scrape_dates, start_date, end_date)
 
         _MIN_RACES_PER_DAY = 6
 
@@ -819,7 +967,8 @@ async def _run_scrape_job(
             "saved_races": int(previous_progress.get("saved_races", 0) or 0),
             "saved_horses": int(previous_progress.get("saved_horses", 0) or 0),
         }
-        _checkpoint_job(job_id, job, force=True)
+        if not dry_run:
+            _checkpoint_job(job_id, job, force=True)
 
         if dry_run:
             dry_urls: list[str] = []
@@ -850,7 +999,12 @@ async def _run_scrape_job(
                 dry_resume_keys.append(f"job:{job_id}:date:{d}:list")
                 dry_resume_keys.append(f"job:{job_id}:date:{d}:sub")
 
-            plan = estimate_fetch_plan(dry_urls, resume_keys=dry_resume_keys)
+            if len(dry_urls) > MAX_SCRAPE_TARGETS or len(dry_resume_keys) > MAX_SCRAPE_TARGETS:
+                raise ValueError("scrape dry-run target limit exceeded")
+
+            plan = await asyncio.to_thread(
+                estimate_fetch_plan, dry_urls, resume_keys=dry_resume_keys
+            )
             if force_rescrape:
                 db_existing = {
                     "db_existing_skip_count": 0,
@@ -860,8 +1014,11 @@ async def _run_scrape_job(
                     "db_existing_pedigree_count": 0,
                 }
             else:
-                db_existing = _estimate_db_existing_coverage(
-                    ULTIMATE_DB, dates, min_races=_MIN_RACES_PER_DAY
+                db_existing = await asyncio.to_thread(
+                    _estimate_db_existing_coverage,
+                    ULTIMATE_DB,
+                    dates,
+                    _MIN_RACES_PER_DAY,
                 )
             cache_hits = int(plan.get("cache_hits", 0))
             resume_hits = int(plan.get("resume_hits", 0))
@@ -905,7 +1062,7 @@ async def _run_scrape_job(
                 "circuit_breaker_policy": _circuit_breaker_policy,
                 "plan": plan,
             }
-            report_path = write_fetch_summary(summary)
+            report_path = await asyncio.to_thread(write_fetch_summary, summary)
 
             with _JOBS_LOCK:
                 job["status"] = "completed"
@@ -916,7 +1073,7 @@ async def _run_scrape_job(
                     "fetch_summary": summary,
                     "fetch_summary_path": str(report_path),
                 }
-            _persist_job(job_id, job)
+            await asyncio.to_thread(_persist_job_or_raise, job_id, job)
             return
 
         # ── ② 前処理B: 取得済み日付を SQLite から読み込み（レジューム）──
@@ -1173,7 +1330,7 @@ async def _run_scrape_job(
                         _checkpoint_job(job_id, job)
                         if ci + 1 < len(race_ids):
                             await asyncio.sleep(_inter_race_sleep)  # レース間インターバル
-                        gc.collect()
+                        await asyncio.to_thread(gc.collect)
                     if errors:
                         logger.warning(f"エラー一覧: {errors[:5]}")
 
@@ -1220,7 +1377,7 @@ async def _run_scrape_job(
                     errors.append(f"{date}: date audit failed: {audit_exc}")
                     logger.error(f"{date}: date completeness audit failed: {audit_exc}")
                 # 進捗を SQLite に永続化（Render スピンダウン対策）
-                _checkpoint_job(job_id, job, force=True)
+                await asyncio.to_thread(_persist_job_or_raise, job_id, job)
                 # 日付間インターバル（最終日以外）
                 if i < total - 1:
                     await asyncio.sleep(_post_sleep)
@@ -1257,7 +1414,7 @@ async def _run_scrape_job(
                 "scope": "per-host",
             },
         }
-        report_path = write_fetch_summary(fetch_summary)
+        report_path = await asyncio.to_thread(write_fetch_summary, fetch_summary)
         with _JOBS_LOCK:
             job["status"] = "completed"
             job["result"] = {
@@ -1276,13 +1433,22 @@ async def _run_scrape_job(
                 "fetch_summary": fetch_summary,
                 "fetch_summary_path": str(report_path),
             }
-        _checkpoint_job(job_id, job, force=True)
+        await asyncio.to_thread(_persist_job_or_raise, job_id, job)
     except Exception as e:
         logger.error(f"スクレイピングジョブ失敗 {job_id}: {e}")
         with _JOBS_LOCK:
             if job_id in _scrape_jobs:
                 _scrape_jobs[job_id]["status"] = "error"
                 _scrape_jobs[job_id]["error"] = str(e)
-        failed_job = _scrape_jobs.get(job_id, {})
-        if failed_job:
-            _checkpoint_job(job_id, failed_job, force=True)
+                _scrape_jobs[job_id]["result"] = None
+        error_job = _scrape_jobs.get(job_id, {})
+        if await asyncio.to_thread(_persist_job, job_id, error_job):
+            with _JOBS_LOCK:
+                current = _scrape_jobs.get(job_id)
+                if current is not None:
+                    current.pop("_store_unavailable", None)
+        else:
+            with _JOBS_LOCK:
+                current = _scrape_jobs.get(job_id)
+                if current is not None:
+                    current["_store_unavailable"] = True

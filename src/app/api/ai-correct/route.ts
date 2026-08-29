@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import OpenAI from 'openai'
 import { GoogleGenerativeAI } from '@google/generative-ai'
+import { verifyRequestAuth } from '@/lib/server-auth'
 
 const openai = process.env.OPENAI_API_KEY ? new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -10,6 +11,11 @@ const genAI = process.env.GOOGLE_GEMINI_API_KEY ? new GoogleGenerativeAI(process
 
 export async function POST(request: NextRequest) {
   try {
+    const authz = await verifyRequestAuth(request)
+    if (!authz.ok) {
+      return NextResponse.json({ detail: authz.detail }, { status: authz.status })
+    }
+
     const { extractedText, provider = 'openai' } = await request.json()
 
     if (!extractedText) {

@@ -9,7 +9,8 @@
     （発走前は shutuba フォールバックで出走表、レース後は結果を上書き）
 
 環境変数:
-  SCHEDULER_ENABLED  : "false" を設定するとスケジューラを無効化（デフォルト: 有効）
+  SCHEDULER_ENABLED  : "true" を明示した場合だけスケジューラを有効化
+                       （デフォルト: 無効 / 不明な値も無効）
   SCHEDULER_TZ       : タイムゾーン（デフォルト: "Asia/Tokyo"）
 """
 from __future__ import annotations
@@ -21,8 +22,48 @@ from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
-_ENABLED = os.environ.get("SCHEDULER_ENABLED", "true").lower() not in ("false", "0", "no")
 _TZ = os.environ.get("SCHEDULER_TZ", "Asia/Tokyo")
+_EXPLICIT_TRUE_VALUES = frozenset({"true", "1", "yes"})
+_EXPLICIT_FALSE_VALUES = frozenset({"", "false", "0", "no", "off"})
+
+
+def scheduler_enabled(environ: "dict[str, str] | None" = None) -> bool:
+    """Return True only for an explicit, recognized opt-in.
+
+    The scheduler performs write-capable scraping, so absence and malformed
+    values must both fail closed.  Reading the environment at startup (rather
+    than module import time) also keeps test and process-launch behavior
+    deterministic.
+    """
+    values = os.environ if environ is None else environ
+    raw_value = values.get("SCHEDULER_ENABLED")
+    if raw_value is None:
+        return False
+
+    normalized = raw_value.strip().lower()
+    if normalized in _EXPLICIT_TRUE_VALUES:
+        try:
+            from app_config import resolve_app_env  # type: ignore
+
+            app_env = resolve_app_env(values)
+        except Exception:
+            logger.exception(
+                "[scheduler] runtime environment could not be verified; "
+                "scheduler remains disabled"
+            )
+            return False
+        if app_env != "development":
+            logger.error(
+                "[scheduler] legacy scheduler is forbidden outside local/test; "
+                "scheduler remains disabled"
+            )
+            return False
+        return True
+    if normalized not in _EXPLICIT_FALSE_VALUES:
+        logger.error(
+            "[scheduler] invalid SCHEDULER_ENABLED value; scheduler remains disabled"
+        )
+    return False
 
 # APScheduler はオプション依存
 try:
@@ -71,8 +112,8 @@ def start_scheduler() -> None:
     """FastAPI startup フックから呼び出す。"""
     global _scheduler
 
-    if not _ENABLED:
-        logger.info("[scheduler] SCHEDULER_ENABLED=false のためスキップ")
+    if not scheduler_enabled():
+        logger.info("[scheduler] explicit opt-in is absent; scheduler remains disabled")
         return
 
     if not _APSCHEDULER_AVAILABLE:

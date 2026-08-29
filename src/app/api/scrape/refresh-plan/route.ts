@@ -3,6 +3,7 @@ import { spawn } from 'child_process'
 import fs from 'fs'
 import path from 'path'
 import { createClient } from '@supabase/supabase-js'
+import { verifyRequestAuth } from '@/lib/server-auth'
 
 export const runtime = 'nodejs'
 export const maxDuration = 300
@@ -10,7 +11,7 @@ export const maxDuration = 300
 type AuthzResult = {
   ok: boolean
   status: 200 | 401 | 403 | 503
-  error?: string
+  detail?: string
 }
 
 type AllowedTarget = 'all' | 'race' | 'horse' | 'result' | 'pedigree' | 'odds'
@@ -59,17 +60,17 @@ async function authorizeRefreshPlanRequest(request: Request): Promise<AuthzResul
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || ''
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
   if (!supabaseUrl || !supabaseAnonKey) {
-    return { ok: false, status: 503, error: 'Supabase configuration missing' }
+    return { ok: false, status: 503, detail: 'Supabase configuration missing' }
   }
 
   const authHeader = request.headers.get('Authorization') || ''
   if (!authHeader.startsWith('Bearer ')) {
-    return { ok: false, status: 401, error: 'Authentication required' }
+    return { ok: false, status: 401, detail: 'Authentication required' }
   }
 
   const token = authHeader.slice('Bearer '.length).trim()
   if (!token) {
-    return { ok: false, status: 401, error: 'Authentication required' }
+    return { ok: false, status: 401, detail: 'Authentication required' }
   }
 
   const supabase = createClient(supabaseUrl, supabaseAnonKey, {
@@ -78,7 +79,7 @@ async function authorizeRefreshPlanRequest(request: Request): Promise<AuthzResul
 
   const { data: userData, error: userError } = await supabase.auth.getUser()
   if (userError || !userData.user) {
-    return { ok: false, status: 401, error: 'Authentication required' }
+    return { ok: false, status: 401, detail: 'Authentication required' }
   }
 
   const { data: profile, error: profileError } = await supabase
@@ -88,13 +89,13 @@ async function authorizeRefreshPlanRequest(request: Request): Promise<AuthzResul
     .maybeSingle()
 
   if (profileError || !profile) {
-    return { ok: false, status: 403, error: 'Access denied' }
+    return { ok: false, status: 403, detail: 'Access denied' }
   }
 
   const role = String((profile as { role?: string }).role || '').toLowerCase()
   const tier = String((profile as { subscription_tier?: string }).subscription_tier || '').toLowerCase()
   if (role !== 'admin' && tier !== 'premium') {
-    return { ok: false, status: 403, error: 'Premium or admin role required' }
+    return { ok: false, status: 403, detail: 'Premium or admin role required' }
   }
 
   return { ok: true, status: 200 }
@@ -199,9 +200,9 @@ async function runRefreshPlanner(args: {
 }
 
 async function handlePlanRequest(request: NextRequest, body: Record<string, unknown>) {
-  const authz = await authorizeRefreshPlanRequest(request)
+  const authz = await verifyRequestAuth(request, { requirePremiumOrAdmin: true })
   if (!authz.ok) {
-    return NextResponse.json({ error: authz.error || 'forbidden' }, { status: authz.status })
+    return NextResponse.json({ detail: authz.detail || 'forbidden' }, { status: authz.status })
   }
 
   const forbidden = rejectForbiddenPathInputs(body)
@@ -286,6 +287,11 @@ async function handlePlanRequest(request: NextRequest, body: Record<string, unkn
 }
 
 export async function POST(request: NextRequest) {
+  const authz = await verifyRequestAuth(request, { requirePremiumOrAdmin: true })
+  if (!authz.ok) {
+    return NextResponse.json({ detail: authz.detail || 'forbidden' }, { status: authz.status })
+  }
+
   let body: Record<string, unknown>
   try {
     const raw = await request.json()
@@ -298,6 +304,11 @@ export async function POST(request: NextRequest) {
 }
 
 export async function GET(request: NextRequest) {
+  const authz = await verifyRequestAuth(request, { requirePremiumOrAdmin: true })
+  if (!authz.ok) {
+    return NextResponse.json({ detail: authz.detail || 'forbidden' }, { status: authz.status })
+  }
+
   const url = new URL(request.url)
   const payload: Record<string, unknown> = {
     startDate: url.searchParams.get('startDate') || undefined,
@@ -310,7 +321,12 @@ export async function GET(request: NextRequest) {
   return handlePlanRequest(request, payload)
 }
 
-export async function PUT() {
+export async function PUT(request: NextRequest) {
+  const authz = await verifyRequestAuth(request, { requirePremiumOrAdmin: true })
+  if (!authz.ok) {
+    return NextResponse.json({ detail: authz.detail || 'forbidden' }, { status: authz.status })
+  }
+
   return NextResponse.json(
     {
       error: 'not-implemented',

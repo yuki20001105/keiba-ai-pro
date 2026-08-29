@@ -624,13 +624,14 @@ def _fe_prev_race(df: pd.DataFrame) -> pd.DataFrame:
     """前走日由来の days_since_last_race 補完・距離変化・馬の通算勝率・スピード指数を追加する。"""
     # prev_race_date → days 補完（DB 計算値が優先、こちらは残った NaN を埋める）
     if 'prev_race_date' in df.columns:
-        if 'race_date' in df.columns:
-            _race_dt = pd.to_datetime(df['race_date'].astype(str).str.strip(), format='%Y%m%d', errors='coerce')
+        _current_date_col = 'race_date' if 'race_date' in df.columns else ('date' if 'date' in df.columns else None)
+        if _current_date_col is not None:
+            _race_dt = pd.to_datetime(df[_current_date_col].astype(str).str.strip(), format='%Y%m%d', errors='coerce')
             if _race_dt.isna().mean() > 0.5:
-                _race_dt = pd.to_datetime(df['race_date'].astype(str).str.strip(), errors='coerce')
+                _race_dt = pd.to_datetime(df[_current_date_col].astype(str).str.strip(), errors='coerce')
         else:
             import warnings as _w
-            _w.warn("race_date 列がありません。race_id[:8] で代替しますが精度が低下します。", UserWarning, stacklevel=3)
+            _w.warn("race_date/date 列がありません。race_id[:8] で代替しますが精度が低下します。", UserWarning, stacklevel=3)
             _race_dt = pd.to_datetime(df['race_id'].str[:8], format='%Y%m%d', errors='coerce')
         _prev_dt     = pd.to_datetime(df['prev_race_date'].astype(str).str.replace('/', '-').str.strip(), errors='coerce')
         _scraped_days = (_race_dt - _prev_dt).dt.days.where(lambda d: d >= 1, np.nan)
@@ -832,6 +833,20 @@ def _fe_history(df: pd.DataFrame, full_history_df: pd.DataFrame) -> pd.DataFrame
       _feh_payout_history     — 過去単勝配当 rolling 統計
       _feh_running_style      — 脚質 rolling 統計
     """
+    # A fresh hosted runtime can legitimately contain only the upcoming race.
+    # Those rows have no settled ``finish`` value, so there is no historical
+    # signal from which expanding/rolling features can be computed.  Entering
+    # the history helpers in that state used to raise KeyError('finish') and,
+    # because add_derived_features is fail-soft, discarded every base feature
+    # calculated before this stage.  Keep the already-computed pre-race
+    # features and let the model bundle's missing-value handling represent the
+    # unavailable history instead.
+    if full_history_df.empty or "finish" not in full_history_df.columns:
+        return df
+    settled_finish = pd.to_numeric(full_history_df["finish"], errors="coerce")
+    if not settled_finish.notna().any():
+        return df
+
     df, full_history_df = _feh_jockey_course(df, full_history_df)
     df, full_history_df = _feh_horse_aptitude(df, full_history_df)
     df, full_history_df = _feh_gate_bias(df, full_history_df)

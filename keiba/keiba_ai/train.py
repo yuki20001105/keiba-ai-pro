@@ -27,6 +27,10 @@ except ImportError:
 from .config import load_config
 from .db import connect, init_db, load_training_frame
 from .feature_engineering import add_derived_features
+from .speed_deviation import (
+    apply_speed_deviation_baseline,
+    fit_speed_deviation_baseline,
+)
 
 JST = timezone(timedelta(hours=9))
 
@@ -85,18 +89,12 @@ def _make_target(df: pd.DataFrame, target: str) -> pd.Series:
         )
         return (is_winner | is_tie).astype(int)
     if target == "speed_deviation":
-        # 速度偏差（距離×馬場種別グループ内 z-score）
-        # speed_index = distance / time_seconds（m/s）をグループ正規化
-        ts = pd.to_numeric(df["time_seconds"], errors="coerce")
-        dist = pd.to_numeric(df["distance"], errors="coerce")
-        spd = dist / ts.replace(0, np.nan)
-        if "surface" in df.columns:
-            grp = df["distance"].astype(str) + "_" + df["surface"].fillna("unknown").astype(str)
-        else:
-            grp = df["distance"].astype(str)
-        grp_mean = spd.groupby(grp).transform("mean")
-        grp_std = spd.groupby(grp).transform("std").replace(0, np.nan)
-        return (spd - grp_mean) / grp_std
+        # Legacy callers do not expose a train/validation boundary. Keep the
+        # public helper compatible while delegating the target definition to
+        # the same implementation used by the strict walk-forward trainer.
+        # Release candidates must fit the baseline on training rows only.
+        baseline = fit_speed_deviation_baseline(df)
+        return apply_speed_deviation_baseline(df, baseline)
     if target == "rank":
         # ランキング学習用スコア（1着=最高スコア）
         # LGBMRanker の label_gain に対応した整数スコアに変換

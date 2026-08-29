@@ -1,0 +1,6 @@
+# Local Supabase configuration only. Remote project references and credentials
+# must never be committed; use an explicit isolated worktree when linking.
+project_id = "keiba-ai-pro"
+
+[db]
+major_version = 17
