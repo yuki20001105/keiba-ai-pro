@@ -1641,7 +1641,10 @@ export default function DataCollectionPage() {
 
               {batchStatus === 'completed' && batchResult && (
                 <div className="text-xs text-[#4ade80]" role="status" aria-live="polite">
-                  取得完了: 新規{batchResult.races_collected}レース・{batchResult.saved_horses}頭 / 既存品質合格{batchResult.existing_races_skipped}レースをスキップ / 正常非開催日{batchResult.verified_no_race_dates}日
+                  {batchResult.races_collected === 0
+                    ? '取得完了: 0レース（0レース・正常完了） / '
+                    : '取得完了: '}
+                  新規{batchResult.races_collected}レース・{batchResult.saved_horses}頭 / 既存品質合格{batchResult.existing_races_skipped}レースをスキップ / 正常非開催日{batchResult.verified_no_race_dates}日
                 </div>
               )}
 
