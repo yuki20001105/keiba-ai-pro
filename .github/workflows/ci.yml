@@ -1,35 +1,147 @@
-# CI: main / release への PR 時に自動テスト
 name: CI
 
 on:
   pull_request:
     branches:
+      - develop
       - main
       - release
+      - security/phase3n-trusted-producer-v4
+  push:
+    branches:
+      - main
+      - release
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
 
 jobs:
-  # ── フロントエンド（Next.js）ビルド確認 ──
-  test-frontend:
-    name: Frontend Build Check
+  frontend-static-and-unit:
+    name: Frontend L1 (lint/typecheck/vitest/build)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: http://127.0.0.1:54321
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-dummy-anon-key
+      SUPABASE_URL: http://127.0.0.1:54321
+      SUPABASE_SERVICE_KEY: ci-dummy-service-key
+      SUPABASE_SERVICE_ROLE_KEY: ci-dummy-service-role-key
+      NETKEIBA_RACE_WRITE_ENABLED: "false"
+      ALLOW_STAGING_WRITE: "false"
+      SCHEDULER_ENABLED: "false"
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
 
       - name: Install dependencies
         run: npm ci
 
+      - name: Lint
+        run: npm run lint
+
+      - name: TypeScript
+        run: npx tsc --noEmit
+
+      - name: Vitest
+        run: npm test
+
+      - name: Vitest supabase-ssr-cookie-contract
+        run: npx vitest run src/__tests__/supabase-ssr-cookie-contract.test.ts
+
       - name: Build
         run: npm run build
 
-  # ── バックエンド（FastAPI）起動確認 ──
-  test-backend:
-    name: Backend Import Check
+  dependency-security-release-blocking:
+    name: Dependency security (release-blocking)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependency graph without lifecycle scripts
+        run: npm ci --ignore-scripts --omit=optional --no-fund
+
+      - name: Verify installed mandatory dependency tree
+        run: npm ls --all --omit=optional
+
+      - name: Generate full dependency audit report
+        continue-on-error: true
+        run: |
+          mkdir -p reports
+          npm audit --audit-level=high --json > reports/npm-audit-full.json
+
+      - name: Generate production dependency audit report
+        continue-on-error: true
+        run: |
+          mkdir -p reports
+          npm audit --omit=dev --audit-level=high --json > reports/npm-audit-production.json
+
+      - name: Enforce Node 24 and zero critical/high vulnerabilities
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs')
+
+          if (process.versions.node.split('.')[0] !== '24') {
+            throw new Error(`Expected Node 24, got ${process.version}`)
+          }
+
+          const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf8'))
+          if (packageJson.engines?.node !== '24.x') {
+            throw new Error('package.json must pin engines.node to 24.x')
+          }
+
+          for (const reportPath of [
+            'reports/npm-audit-full.json',
+            'reports/npm-audit-production.json',
+          ]) {
+            const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'))
+            const counts = report?.metadata?.vulnerabilities
+            if (!counts || !Number.isInteger(counts.critical) || !Number.isInteger(counts.high)) {
+              throw new Error(`${reportPath} is missing vulnerability counters`)
+            }
+            if (counts.critical !== 0 || counts.high !== 0) {
+              throw new Error(
+                `${reportPath} contains critical=${counts.critical}, high=${counts.high}`,
+              )
+            }
+          }
+          NODE
+
+      - name: Upload dependency security reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-security-reports
+          path: |
+            reports/npm-audit-full.json
+            reports/npm-audit-production.json
+          if-no-files-found: error
+
+  python-static-and-tests:
+    name: Python L1/L2 (compile/import/pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PYTHONUTF8: '1'
+      NEXT_PUBLIC_SUPABASE_URL: http://127.0.0.1:54321
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-dummy-anon-key
+      SUPABASE_URL: http://127.0.0.1:54321
+      SUPABASE_SERVICE_KEY: ci-dummy-service-key
+      SUPABASE_SERVICE_ROLE_KEY: ci-dummy-service-role-key
+      NETKEIBA_RACE_WRITE_ENABLED: "false"
+      ALLOW_STAGING_WRITE: "false"
+      SCHEDULER_ENABLED: "false"
     steps:
       - uses: actions/checkout@v4
 
@@ -39,7 +151,735 @@ jobs:
           cache: 'pip'
 
       - name: Install dependencies
-        run: pip install -r python-api/requirements.txt
+        run: |
+          pip install -r python-api/requirements.txt
+          pip install "pytest>=9,<10"
 
-      - name: Import check
-        run: cd python-api && python -c "import main; print('FastAPI import OK')"
+      - name: Python compile check
+        run: python -m compileall -q python-api scripts
+
+      - name: FastAPI import check
+        run: python -c "import sys; sys.path.insert(0, 'python-api'); import main; print('FastAPI import OK')"
+
+      - name: Pytest (feature consistency included)
+        run: |
+          python -m pytest \
+            keiba/keiba_ai/tests/test_feature_engineering.py \
+            keiba/keiba_ai/tests/test_jra_official_history.py \
+            keiba/keiba_ai/tests/test_licensed_history.py \
+            keiba/keiba_ai/tests/test_nested_strategy.py \
+            keiba/keiba_ai/tests/test_phase3n_oof_value.py \
+            keiba/keiba_ai/tests/test_point_in_time_odds.py \
+            keiba/keiba_ai/tests/test_speed_deviation.py \
+            keiba/keiba_ai/tests/test_speed_deviation_candidate_policy.py \
+            keiba/keiba_ai/tests/test_winner_meta_model.py \
+            keiba/keiba_ai/tests/test_train_inference_consistency.py::TestConsistencyWithSyntheticData \
+            python-api/tests/test_contract_health.py \
+            -v --tb=short
+
+      - name: Pytest Phase2 authz
+        run: python -m pytest python-api/tests/test_phase2_authz.py -q
+
+      - name: Pytest Phase2 static contracts
+        run: python -m pytest python-api/tests/test_phase2_static_contracts.py -q
+
+      - name: Pytest Phase2 authz matrix gate
+        run: python -m pytest python-api/tests/test_phase2_authz_matrix_gate.py -q
+
+      - name: Generate Phase2 authz matrix check
+        run: python scripts/security/generate_phase2_authz_matrix.py --check
+
+      - name: Phase3D live validation safety (release-blocking)
+        run: python -m pytest python-api/tests/test_live_validation.py python-api/tests/test_p0_live_validator_safety.py -q
+
+      - name: Phase3E scrape job ownership and persistence (release-blocking)
+        run: python -m pytest python-api/tests/test_phase3e_scrape_job_security.py -q
+
+      - name: Phase3F authoritative review ledger contract (release-blocking)
+        run: python -m pytest python-api/tests/test_phase3f_approval_ledger_static_contract.py -q
+
+      - name: Phase3G runtime evidence verifier and harness contracts (release-blocking)
+        run: python -m pytest python-api/tests/test_phase3g_runtime_evidence_gate.py python-api/tests/test_phase3g_review_ledger_runtime_harness.py -q
+
+      - name: Phase3H production readiness decision contract (release-blocking)
+        run: python -m pytest python-api/tests/test_phase3h_production_readiness_gate.py -q
+
+      - name: Model acceptance contract (release-blocking)
+        run: python -m pytest python-api/tests/test_model_acceptance_evidence_builder.py python-api/tests/test_model_acceptance_gate.py -q
+
+      - name: Phase3I synthetic saga failure-injection contracts (release-blocking)
+        run: >-
+          python -m pytest
+          python-api/tests/test_phase3i_cross_store_saga_contract.py
+          python-api/tests/test_phase3i_saga_failure_injection_harness.py
+          python-api/tests/test_phase3i_saga_failure_injection_gate.py
+          -q
+
+      - name: Phase3J disposable saga/outbox runtime contracts (release-blocking)
+        run: >-
+          python -m pytest
+          python-api/tests/test_phase3j_reservation_migration_contract.py
+          python-api/tests/test_phase3j_saga_config.py
+          python-api/tests/test_phase3j_saga_store.py
+          python-api/tests/test_phase3j_saga_runtime.py
+          python-api/tests/test_phase3j_saga_outbox_runtime_harness.py
+          python-api/tests/test_phase3j_saga_outbox_runtime_gate.py
+          -q
+
+      - name: Phase3L deployment workflow safety (release-blocking)
+        run: python -m pytest python-api/tests/test_phase3l_deployment_safety.py -q
+
+      - name: Phase3N operational Saga/outbox runtime (release-blocking)
+        run: python -m pytest python-api/tests/test_phase3n_operational_saga_runtime.py -q
+
+      - name: Phase3N trusted Staging evidence gate (release-blocking)
+        run: python -m pytest python-api/tests/test_phase3n_staging_evidence_gate.py -q
+
+  contract-smoke-aux:
+    name: Contract smoke aux (warn-allowed)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONUTF8: '1'
+      NEXT_PUBLIC_SUPABASE_URL: http://127.0.0.1:54321
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-dummy-anon-key
+      SUPABASE_URL: http://127.0.0.1:54321
+      SUPABASE_SERVICE_KEY: ci-dummy-service-key
+      SUPABASE_SERVICE_ROLE_KEY: ci-dummy-service-role-key
+      NETKEIBA_RACE_WRITE_ENABLED: "false"
+      ALLOW_STAGING_WRITE: "false"
+      SCHEDULER_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r python-api/requirements.txt
+          pip install "pytest>=9,<10"
+
+      - name: Run payload contract diff smoke
+        run: python scripts/compare_netkeiba_race_payload_contract.py
+
+      - name: Upload smoke JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-smoke-aux-json
+          path: reports/netkeiba_race_payload_contract_diff.json
+          if-no-files-found: ignore
+
+  contract-gate-deterministic:
+    name: Contract gate deterministic (release-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONUTF8: '1'
+      NEXT_PUBLIC_SUPABASE_URL: http://127.0.0.1:54321
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-dummy-anon-key
+      SUPABASE_URL: http://127.0.0.1:54321
+      SUPABASE_SERVICE_KEY: ci-dummy-service-key
+      SUPABASE_SERVICE_ROLE_KEY: ci-dummy-service-role-key
+      NETKEIBA_RACE_WRITE_ENABLED: "false"
+      ALLOW_STAGING_WRITE: "false"
+      SCHEDULER_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r python-api/requirements.txt
+          pip install "pytest>=9,<10"
+
+      - name: Validate compare-script matrix and gate policy
+        run: python -m pytest python-api/tests/test_payload_contract_gate.py -v --tb=short
+
+      - name: Run deterministic contract gate fixture
+        run: |
+          python scripts/compare_netkeiba_race_payload_contract.py --dry-run-report python-api/tests/fixtures/contract_dry_run_compatible.json --skip-staleness-check
+          python -c "import json,sys; d=json.load(open('reports/netkeiba_race_payload_contract_diff.json',encoding='utf-8')); ok=bool(d.get('success')) and d.get('verdict')=='pass'; print({'verdict':d.get('verdict'),'reason':d.get('verdict_reason')}); sys.exit(0 if ok else 1)"
+
+      - name: Upload contract-gate JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-gate-json
+          path: reports/netkeiba_race_payload_contract_diff.json
+          if-no-files-found: ignore
+
+  e2e-public-and-fixture-smoke:
+    name: Playwright public + fixture smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: http://127.0.0.1:54321
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-dummy-anon-key
+      SUPABASE_URL: http://127.0.0.1:54321
+      SUPABASE_SERVICE_KEY: ci-dummy-service-key
+      SUPABASE_SERVICE_ROLE_KEY: ci-dummy-service-role-key
+      NETKEIBA_RACE_WRITE_ENABLED: "false"
+      ALLOW_STAGING_WRITE: "false"
+      SCHEDULER_ENABLED: "false"
+      PW_USE_WEBSERVER: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run release-blocking Playwright E2E suite
+        run: npx playwright test e2e/public-fixture-smoke.spec.ts e2e/phase2-authz.spec.ts e2e/data-collection-phase3b.spec.ts e2e/data-collection-phase3c.spec.ts e2e/data-collection-phase3d.spec.ts e2e/data-collection-phase3e.spec.ts e2e/data-collection-phase3f.spec.ts e2e/data-collection-phase3g.spec.ts --trace=retain-on-failure --retries=0 --workers=1
+
+      - name: Upload Playwright artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-public-fixture-smoke
+          path: |
+            test-results
+            e2e-report
+          if-no-files-found: ignore
+
+  security-scanners-release-blocking:
+    name: Security scanners (release-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and fetch scanner comparison base
+        env:
+          PR_BASE_REF: ${{ github.base_ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_ref="${PR_BASE_REF:-develop}"
+          git check-ref-format --branch "$base_ref" >/dev/null
+          git fetch --no-tags origin "+refs/heads/$base_ref:refs/remotes/origin/$base_ref"
+          echo "SCANNER_BASE_REF=origin/$base_ref" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install test dependencies
+        run: pip install "pytest>=9,<10"
+
+      - name: Secret scanner (release-blocking)
+        run: python scripts/security/scan_new_secrets.py
+
+      - name: Test weakening scanner (release-blocking)
+        run: python scripts/security/scan_test_weakening.py
+
+      - name: Scanner regression tests
+        run: python -m pytest python-api/tests/test_security_scanners_regression.py -q
+
+      - name: Upload scanner reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-scanner-reports
+          path: |
+            reports/security_secret_scan.json
+            reports/test_weakening_scan.json
+          if-no-files-found: ignore
+
+  phase3g-review-ledger-runtime:
+    name: Phase3G review ledger runtime (release-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run disposable network-isolated PostgreSQL contract
+        run: python scripts/security/run_phase3g_review_ledger_runtime_gate.py
+
+      - name: Verify sanitized synthetic runtime evidence
+        run: python scripts/verify_phase3g_runtime_evidence.py --evidence reports/phase3g_review_ledger_runtime.json --expected-commit "$GITHUB_SHA" --max-age-seconds 900
+
+      - name: Upload Phase3G runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase3g-review-ledger-runtime-json
+          path: |
+            reports/phase3g_review_ledger_runtime.json
+            reports/phase3g_runtime_evidence_gate.json
+          if-no-files-found: error
+
+  phase3n-observation-ha-contract:
+    name: Phase3N observation/cache/HA contract (release-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.11'
+
+      - name: Run isolated two-instance crash/recovery and cache rebuild contract
+        run: python scripts/run_phase3n_ha_compose.py
+
+      - name: Upload sanitized synthetic HA contract evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phase3n-observation-ha-contract
+          path: |
+            reports/phase3n_ha_contract_evidence.json
+            reports/phase3n_ha_timeline.jsonl
+          if-no-files-found: error
+
+  phase3h-production-readiness:
+    name: Phase3H production readiness decision (release-blocking)
+    needs: phase3g-review-ledger-runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.11'
+
+      - name: Download Phase3G runtime evidence from this workflow run
+        if: >-
+          !(
+            (github.event_name == 'pull_request' && (github.base_ref == 'main' || github.base_ref == 'release')) ||
+            (github.event_name == 'push' && (github.ref_name == 'main' || github.ref_name == 'release')) ||
+            (github.event_name == 'workflow_dispatch' && (github.ref_name == 'main' || github.ref_name == 'release'))
+          )
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: phase3g-review-ledger-runtime-json
+          path: reports/phase3g-input
+
+      - name: Derive fail-closed current readiness assessment
+        if: >-
+          !(
+            (github.event_name == 'pull_request' && (github.base_ref == 'main' || github.base_ref == 'release')) ||
+            (github.event_name == 'push' && (github.ref_name == 'main' || github.ref_name == 'release')) ||
+            (github.event_name == 'workflow_dispatch' && (github.ref_name == 'main' || github.ref_name == 'release'))
+          )
+        run: >-
+          python scripts/verify_phase3h_production_readiness.py
+          --manifest python-api/tests/fixtures/phase3h_production_readiness_current_not_ready.json
+          --phase3g-evidence reports/phase3g-input/phase3g_review_ledger_runtime.json
+          --expected-commit "$GITHUB_SHA"
+          --max-age-seconds 3600
+
+      - name: Resolve exact promotion candidate and trusted attestation run
+        id: trusted-attestation
+        if: >-
+          (github.event_name == 'pull_request' && (github.base_ref == 'main' || github.base_ref == 'release')) ||
+          (github.event_name == 'push' && (github.ref_name == 'main' || github.ref_name == 'release')) ||
+          (github.event_name == 'workflow_dispatch' && (github.ref_name == 'main' || github.ref_name == 'release'))
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          REF_NAME: ${{ github.ref_name }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          STAGING_EVIDENCE_RUN_ID: ${{ vars.PHASE3N_STAGING_EVIDENCE_RUN_ID }}
+          TRUSTED_PRODUCER_SHA: ${{ vars.PHASE3N_TRUSTED_PRODUCER_SHA }}
+          PRODUCTION_RELEASE_MODE: ${{ vars.PRODUCTION_RELEASE_MODE }}
+          TRUSTED_REF: refs/heads/security/phase3n-trusted-producer-v4
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          candidate=""
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            if [[ "$BASE_REF" != "main" || "$HEAD_REF" != "develop" ]]; then
+              echo "::error::Only develop -> main is an authorized production promotion path."
+              exit 1
+            fi
+
+            if [[ ! "$PR_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::The pull request head SHA is invalid."
+              exit 1
+            fi
+
+            # A pull_request workflow checks out GitHub's synthetic merge commit.
+            # Bind that exact merge tree to the current main tip and the attested
+            # develop candidate so a diverged or stale merge cannot be promoted.
+            git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/main"
+            mapfile -t parents < <(git show -s --format=%P "$GITHUB_SHA" | tr ' ' '\n')
+            if [[ "${#parents[@]}" -ne 2 ]]; then
+              echo "::error::The pull request validation commit must be a two-parent synthetic merge."
+              exit 1
+            fi
+            if [[ "${parents[0]}" != "$(git rev-parse origin/main)" ]]; then
+              echo "::error::The synthetic merge base is not the current origin/main tip."
+              exit 1
+            fi
+            if [[ "${parents[1]}" != "$PR_HEAD_SHA" ]]; then
+              echo "::error::The synthetic merge second parent is not the pull request head."
+              exit 1
+            fi
+            if [[ "$(git rev-parse "$GITHUB_SHA^{tree}")" != "$(git rev-parse "$PR_HEAD_SHA^{tree}")" ]]; then
+              echo "::error::The pull request merge tree differs from the attested candidate tree."
+              exit 1
+            fi
+            candidate="$PR_HEAD_SHA"
+          elif [[ "$REF_NAME" == "main" ]]; then
+            mapfile -t parents < <(git show -s --format=%P "$GITHUB_SHA" | tr ' ' '\n')
+            if [[ "${#parents[@]}" -ne 2 ]]; then
+              echo "::error::The main promotion commit must be a two-parent merge commit."
+              exit 1
+            fi
+            candidate="${parents[1]}"
+            if [[ "$(git rev-parse "$candidate^{tree}")" != "$(git rev-parse "$GITHUB_SHA^{tree}")" ]]; then
+              echo "::error::The promoted merge tree differs from the attested candidate tree."
+              exit 1
+            fi
+          else
+            echo "::error::release promotion remains disabled until a separate attested path is defined."
+            exit 1
+          fi
+
+          if [[ ! "$candidate" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Resolved candidate SHA is invalid."
+            exit 1
+          fi
+          release_mode="${PRODUCTION_RELEASE_MODE:-full-model-validation}"
+          if [[ "$release_mode" != "full-model-validation" && "$release_mode" != "limited-observation" ]]; then
+            echo "::error::PRODUCTION_RELEASE_MODE is invalid."
+            exit 1
+          fi
+
+          if [[ ! "$STAGING_EVIDENCE_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::PHASE3N_STAGING_EVIDENCE_RUN_ID must identify one approved trusted-producer run."
+            exit 1
+          fi
+          if [[ ! "$TRUSTED_PRODUCER_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::PHASE3N_TRUSTED_PRODUCER_SHA must be a full lowercase commit SHA."
+            exit 1
+          fi
+
+          response="$(gh api --method GET \
+            -H 'Accept: application/vnd.github+json' \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$STAGING_EVIDENCE_RUN_ID")"
+          jq -e \
+            --arg producer "$TRUSTED_PRODUCER_SHA" \
+            --argjson run_id "$STAGING_EVIDENCE_RUN_ID" \
+            '.id == $run_id
+              and .path == ".github/workflows/staging-evidence.yml"
+              and .head_branch == "security/phase3n-trusted-producer-v4"
+              and .head_sha == $producer
+              and .event == "workflow_dispatch"
+              and .status == "completed"
+              and .conclusion == "success"
+              and (.run_attempt | type == "number")
+              and .run_attempt >= 1' \
+            <<<"$response" >/dev/null
+          run_attempt="$(jq -r '.run_attempt' <<<"$response")"
+
+          echo "candidate_sha=$candidate" >> "$GITHUB_OUTPUT"
+          echo "run_id=$STAGING_EVIDENCE_RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "run_attempt=$run_attempt" >> "$GITHUB_OUTPUT"
+          echo "producer_sha=$TRUSTED_PRODUCER_SHA" >> "$GITHUB_OUTPUT"
+          echo "release_mode=$release_mode" >> "$GITHUB_OUTPUT"
+
+      - name: Download trusted Phase3N staging attestation
+        if: >-
+          (github.event_name == 'pull_request' && (github.base_ref == 'main' || github.base_ref == 'release')) ||
+          (github.event_name == 'push' && (github.ref_name == 'main' || github.ref_name == 'release')) ||
+          (github.event_name == 'workflow_dispatch' && (github.ref_name == 'main' || github.ref_name == 'release'))
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: phase3n-staging-evidence-json
+          path: reports/phase3n-input
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.trusted-attestation.outputs.run_id }}
+
+      - name: Verify GitHub-signed staging evidence provenance
+        if: >-
+          (github.event_name == 'pull_request' && (github.base_ref == 'main' || github.base_ref == 'release')) ||
+          (github.event_name == 'push' && (github.ref_name == 'main' || github.ref_name == 'release')) ||
+          (github.event_name == 'workflow_dispatch' && (github.ref_name == 'main' || github.ref_name == 'release'))
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_MODE: ${{ steps.trusted-attestation.outputs.release_mode }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          subjects=(reports/phase3n-input/phase3n_staging_evidence_gate.json)
+          if [[ "$RELEASE_MODE" == "full-model-validation" ]]; then
+            subjects+=(reports/phase3n-input/model_acceptance_gate.json)
+          fi
+          for subject in "${subjects[@]}"
+          do
+            gh attestation verify "$subject" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/staging-evidence.yml" \
+              --source-ref "refs/heads/security/phase3n-trusted-producer-v4" \
+              --source-digest "${{ steps.trusted-attestation.outputs.producer_sha }}" \
+              --signer-digest "${{ steps.trusted-attestation.outputs.producer_sha }}" \
+              --deny-self-hosted-runners
+          done
+
+      - name: Require trusted READY evidence for promotion
+        if: >-
+          steps.trusted-attestation.outputs.release_mode == 'full-model-validation' && (
+            (github.event_name == 'pull_request' && (github.base_ref == 'main' || github.base_ref == 'release')) ||
+            (github.event_name == 'push' && (github.ref_name == 'main' || github.ref_name == 'release')) ||
+            (github.event_name == 'workflow_dispatch' && (github.ref_name == 'main' || github.ref_name == 'release'))
+          )
+        run: >-
+          python scripts/verify_phase3h_production_readiness.py
+          --manifest python-api/tests/fixtures/phase3h_production_readiness_current_not_ready.json
+          --trusted-attestation reports/phase3n-input/phase3n_staging_evidence_gate.json
+          --model-acceptance-report reports/phase3n-input/model_acceptance_gate.json
+          --expected-attestation-run-id "${{ steps.trusted-attestation.outputs.run_id }}"
+          --expected-attestation-run-attempt "${{ steps.trusted-attestation.outputs.run_attempt }}"
+          --expected-repository "$GITHUB_REPOSITORY"
+          --expected-repository-id "${{ github.repository_id }}"
+          --expected-commit "${{ steps.trusted-attestation.outputs.candidate_sha }}"
+          --max-age-seconds 3600
+          --require-ready
+
+      - name: Require limited observation release evidence for promotion
+        if: >-
+          steps.trusted-attestation.outputs.release_mode == 'limited-observation' && (
+            (github.event_name == 'pull_request' && (github.base_ref == 'main' || github.base_ref == 'release')) ||
+            (github.event_name == 'push' && (github.ref_name == 'main' || github.ref_name == 'release')) ||
+            (github.event_name == 'workflow_dispatch' && (github.ref_name == 'main' || github.ref_name == 'release'))
+          )
+        run: >-
+          python scripts/verify_limited_production_observation_release.py
+          --contract config/limited_production_observation_contract.v1.json
+          --trusted-attestation reports/phase3n-input/phase3n_staging_evidence_gate.json
+          --expected-run-id "${{ steps.trusted-attestation.outputs.run_id }}"
+          --expected-run-attempt "${{ steps.trusted-attestation.outputs.run_attempt }}"
+          --expected-repository "$GITHUB_REPOSITORY"
+          --expected-repository-id "${{ github.repository_id }}"
+          --expected-commit "${{ steps.trusted-attestation.outputs.candidate_sha }}"
+          --max-age-seconds 3600
+          --require-observation-ready
+
+      - name: Upload Phase3H production readiness decision
+        if: always() && steps.trusted-attestation.outputs.release_mode != 'limited-observation'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phase3h-production-readiness-json
+          path: reports/phase3h_production_readiness_gate.json
+          if-no-files-found: error
+
+      - name: Upload limited observation release decision
+        if: always() && steps.trusted-attestation.outputs.release_mode == 'limited-observation'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: limited-production-observation-release-json
+          path: reports/limited_production_observation_release_gate.json
+          if-no-files-found: error
+
+  phase3i-saga-failure-injection:
+    name: Phase3I synthetic saga failure injection (release-blocking)
+    needs: phase3h-production-readiness
+    if: >-
+      !(
+        (github.event_name == 'pull_request' && (github.base_ref == 'main' || github.base_ref == 'release')) ||
+        (github.event_name == 'push' && (github.ref_name == 'main' || github.ref_name == 'release')) ||
+        (github.event_name == 'workflow_dispatch' && (github.ref_name == 'main' || github.ref_name == 'release'))
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download same-run Phase3H decision evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: phase3h-production-readiness-json
+          path: reports/phase3h-input
+
+      - name: Run synthetic saga failure-injection matrix
+        run: >-
+          python scripts/security/run_phase3i_saga_failure_injection_gate.py
+          --contract python-api/tests/fixtures/phase3i_saga_failure_matrix_v1.json
+          --expected-commit "$GITHUB_SHA"
+
+      - name: Verify synthetic saga evidence and Phase3H boundary
+        run: >-
+          python scripts/verify_phase3i_saga_failure_injection.py
+          --evidence reports/phase3i_saga_failure_injection_runtime.json
+          --contract python-api/tests/fixtures/phase3i_saga_failure_matrix_v1.json
+          --phase3h-evidence reports/phase3h-input/phase3h_production_readiness_gate.json
+          --expected-commit "$GITHUB_SHA"
+          --max-age-seconds 3600
+
+      - name: Upload Phase3I synthetic saga evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase3i-saga-failure-injection-json
+          path: |
+            reports/phase3i_saga_failure_injection_runtime.json
+            reports/phase3i_saga_failure_injection_gate.json
+          if-no-files-found: error
+
+  phase3j-saga-outbox-runtime:
+    name: Phase3J disposable saga/outbox runtime (release-blocking)
+    needs:
+      - phase3h-production-readiness
+      - phase3i-saga-failure-injection
+    if: >-
+      !(
+        (github.event_name == 'pull_request' && (github.base_ref == 'main' || github.base_ref == 'release')) ||
+        (github.event_name == 'push' && (github.ref_name == 'main' || github.ref_name == 'release')) ||
+        (github.event_name == 'workflow_dispatch' && (github.ref_name == 'main' || github.ref_name == 'release'))
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download same-run Phase3H decision evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: phase3h-production-readiness-json
+          path: reports/phase3h-input
+
+      - name: Download same-run Phase3I saga evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: phase3i-saga-failure-injection-json
+          path: reports/phase3i-input
+
+      - name: Run disposable SQLite and network-isolated PostgreSQL saga/outbox matrix
+        run: >-
+          python scripts/security/run_phase3j_saga_outbox_runtime_gate.py
+          --contract python-api/tests/fixtures/phase3j_saga_outbox_failure_matrix_v1.json
+          --migration supabase/migrations/20260720_scrape_execution_reservation.sql
+          --runtime-dir python-api/scraping
+          --expected-commit "$GITHUB_SHA"
+
+      - name: Verify Phase3J runtime and same-run Phase3H/Phase3I boundaries
+        if: always()
+        run: >-
+          python scripts/verify_phase3j_saga_outbox_runtime.py
+          --evidence reports/phase3j_saga_outbox_runtime.json
+          --contract python-api/tests/fixtures/phase3j_saga_outbox_failure_matrix_v1.json
+          --migration supabase/migrations/20260720_scrape_execution_reservation.sql
+          --store python-api/scraping/cross_store_saga_store.py
+          --runtime-dir python-api/scraping
+          --phase3h-evidence reports/phase3h-input/phase3h_production_readiness_gate.json
+          --phase3i-evidence reports/phase3i-input/phase3i_saga_failure_injection_gate.json
+          --expected-commit "$GITHUB_SHA"
+          --max-age-seconds 3600
+
+      - name: Upload Phase3J disposable saga/outbox evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase3j-saga-outbox-runtime-json
+          path: |
+            reports/phase3j_saga_outbox_runtime.json
+            reports/phase3j_saga_outbox_runtime_gate.json
+          if-no-files-found: error
+
+  container-build-check:
+    name: Container build check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Phase3M test dependencies
+        run: pip install "pytest>=9,<10"
+
+      - name: Verify Phase3M bootstrap harness contracts
+        run: >-
+          python -m pytest
+          python-api/tests/test_phase3m_supabase_bootstrap_core.py
+          python-api/tests/test_phase3m_supabase_bootstrap_domain.py
+          python-api/tests/test_phase3m_supabase_bootstrap_gate.py
+          python-api/tests/test_phase3m_supabase_promotion_tool.py
+          python-api/tests/test_phase3m_supabase_upgrade_tool.py
+          python-api/tests/test_phase3m_supabase_writer_contract.py
+          python-api/tests/test_phase3m_admin_atomic_role.py
+          python-api/tests/test_phase3m_ocr_atomic_quota.py
+          -q
+
+      - name: Replay canonical Supabase bootstrap (release-blocking)
+        run: >-
+          python scripts/security/run_phase3m_supabase_bootstrap_gate.py
+          --manifest supabase/bootstrap/v1/manifest.json
+          --expected-commit "$GITHUB_SHA"
+
+      - name: Exercise Phase3M append-only upgrade (release-blocking)
+        run: >-
+          python scripts/security/run_phase3m_supabase_upgrade_gate.py
+          --expected-commit "$GITHUB_SHA"
+
+      - name: Build FastAPI image
+        run: docker build -f Dockerfile -t keiba-ai-pro-fastapi:ci .
+
+      - name: Build Next.js image
+        run: docker build -f Dockerfile.nextjs -t keiba-ai-pro-nextjs:ci .
+
+      - name: Upload sanitized Phase3M bootstrap evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase3m-supabase-bootstrap-json
+          path: reports/phase3m_supabase_bootstrap_gate.json
+          if-no-files-found: error
