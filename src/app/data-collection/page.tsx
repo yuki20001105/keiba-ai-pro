@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { Logo } from '@/components/Logo'
 import { Toast } from '@/components/Toast'
 import { authFetch } from '@/lib/auth-fetch'
+import { formatApiErrorDetail } from '@/lib/api-error'
 import { useJobPoller } from '@/hooks/useJobPoller'
 import { BatchScrapeError, useBatchScrape } from '@/hooks/useBatchScrape'
 import { useAuth } from '@/contexts/AuthContext'
@@ -1106,7 +1107,7 @@ export default function DataCollectionPage() {
 
       if (!startRes.ok) {
         const err = await startRes.json().catch(() => ({}))
-        throw new Error(err.detail || `HTTP ${startRes.status}`)
+        throw new Error(formatApiErrorDetail(err?.detail ?? err, `HTTP ${startRes.status}`))
       }
 
       const { job_id } = await startRes.json()
@@ -1125,7 +1126,7 @@ export default function DataCollectionPage() {
         }
         if (dryRunStatus === 'error') {
           reachedTerminal = true
-          throw new Error(statusData?.error || 'Dry-run failed')
+          throw new Error(formatApiErrorDetail(statusData?.error, 'Dry-run failed'))
         }
       }
 

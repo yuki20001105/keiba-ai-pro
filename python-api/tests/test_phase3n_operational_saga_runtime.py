@@ -159,6 +159,22 @@ def test_disabled_is_default_and_unsafe_partial_enablement_fails_closed() -> Non
         )
 
 
+@pytest.mark.parametrize("environment", ["local", "development", "dev", "test", "ci"])
+def test_local_sqlite_runtime_accepts_only_explicit_local_environment_aliases(
+    tmp_path: Path,
+    environment: str,
+) -> None:
+    config = OperationalSagaConfig(
+        mode=OperationalSagaMode.LOCAL_SQLITE,
+        environment=environment,
+        sqlite_path=tmp_path / f"phase3n-{environment}.sqlite3",
+        worker_enabled=True,
+        remote_effects_enabled=True,
+        execution_unlock_enabled=True,
+    )
+    assert config.enabled is True
+
+
 def test_deployed_mode_requires_shared_supabase_and_all_explicit_flags() -> None:
     config = load_operational_saga_config(
         {

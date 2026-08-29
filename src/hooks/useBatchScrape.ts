@@ -2,6 +2,7 @@
 
 import { useCallback, useRef, useState } from 'react'
 import { authFetch } from '@/lib/auth-fetch'
+import { formatApiErrorDetail } from '@/lib/api-error'
 import type { JobStatus } from '@/lib/types'
 
 export type BatchProgress = {
@@ -217,8 +218,8 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
           let detail = ''
           try {
             const err = await startRes.json()
-            if (isRecord(err) && typeof err.detail === 'string') {
-              detail = err.detail
+            if (isRecord(err) && err.detail !== undefined) {
+              detail = formatApiErrorDetail(err.detail, '')
             }
           } catch {
             // fall through to status code message

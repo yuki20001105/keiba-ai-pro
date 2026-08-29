@@ -57,7 +57,7 @@ class MutationCode(str, Enum):
     UNAVAILABLE = "unavailable"
 
 
-_LOCAL_ENVS = frozenset({"local", "test", "ci"})
+_LOCAL_ENVS = frozenset({"local", "development", "dev", "test", "ci"})
 _DEPLOYED_ENVS = frozenset({"staging", "stage", "production", "prod", "prd", "live"})
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _FALSE = frozenset({"", "0", "false", "no", "off"})
