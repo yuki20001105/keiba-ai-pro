@@ -95,6 +95,9 @@ type FetchSummaryHistoryItem = {
     end_date?: string
     saved_races?: number
     saved_horses?: number
+    existing_races_skipped?: number
+    verified_no_race_dates?: number
+    execution_mode?: string
     elapsed_time_sec?: number
     dry_run?: {
       estimated_request_count?: number
@@ -1303,7 +1306,7 @@ export default function DataCollectionPage() {
                 onChange={e => setForceRescrape(e.target.checked)}
                 className="w-3.5 h-3.5 accent-white"
               />
-              <span className="text-xs text-[#888]">強制再取得（取得済みを上書き）</span>
+              <span className="text-xs text-[#888]">修復取得（不足・品質未達レースのみ再取得）</span>
             </label>
 
             <div className="flex items-center gap-2">
@@ -1616,6 +1619,20 @@ export default function DataCollectionPage() {
                     </span>
                   </div>
                   <div className="text-xs text-[#666]">{batchProgress.message || (batchStatus === 'queued' ? '開始待ち' : '取得実行中')}</div>
+                  <div className="grid grid-cols-2 gap-2 pt-1 text-[11px] md:grid-cols-4" data-testid="scrape-progress-counters">
+                    <div className="rounded border border-[#1e1e1e] px-2 py-1.5 text-[#aaa]">
+                      新規保存レース <span className="text-white">{batchProgress.newSavedRaces ?? 0}</span>
+                    </div>
+                    <div className="rounded border border-[#1e1e1e] px-2 py-1.5 text-[#aaa]">
+                      新規保存頭数 <span className="text-white">{batchProgress.newSavedHorses ?? 0}</span>
+                    </div>
+                    <div className="rounded border border-[#1e1e1e] px-2 py-1.5 text-[#aaa]">
+                      既存品質合格スキップ <span className="text-white">{batchProgress.existingRacesSkipped ?? 0}</span>
+                    </div>
+                    <div className="rounded border border-[#1e1e1e] px-2 py-1.5 text-[#aaa]">
+                      正常非開催日 <span className="text-white">{batchProgress.verifiedNoRaceDates ?? 0}</span>
+                    </div>
+                  </div>
                   <div className="w-full bg-[#1e1e1e] rounded-full h-1.5 overflow-hidden">
                     <div className="bg-white h-1.5 rounded-full transition-all duration-500" style={{ width: `${batchProgress.current}%` }} />
                   </div>
@@ -1624,7 +1641,7 @@ export default function DataCollectionPage() {
 
               {batchStatus === 'completed' && batchResult && (
                 <div className="text-xs text-[#4ade80]" role="status" aria-live="polite">
-                  取得完了: {batchResult.races_collected}レース（{batchResult.races_collected === 0 ? '0レース・正常完了' : '正常完了'}）
+                  取得完了: 新規{batchResult.races_collected}レース・{batchResult.saved_horses}頭 / 既存品質合格{batchResult.existing_races_skipped}レースをスキップ / 正常非開催日{batchResult.verified_no_race_dates}日
                 </div>
               )}
 
@@ -1670,7 +1687,8 @@ export default function DataCollectionPage() {
           <div className="bg-[#0a1a0a] border border-[#1a3a1a] rounded-lg px-5 py-4 flex flex-wrap gap-5 items-center">
             <span className="text-xs text-[#4ade80] font-medium">✓ 取得完了</span>
             <span className="text-xs text-[#888]">{batchResult.stats.period} · {batchResult.stats.total_months}ヶ月</span>
-            <span className="text-xs text-white font-medium">{batchResult.races_collected}レース</span>
+            <span className="text-xs text-white font-medium">新規{batchResult.races_collected}レース</span>
+            <span className="text-xs text-[#888]">既存{batchResult.existing_races_skipped}レースをスキップ</span>
             <span className="text-xs text-[#555]">{batchResult.elapsed_time}秒</span>
             {batchResult.races_collected === 0 && <span className="text-xs text-[#93c5fd]">0レース・正常完了</span>}
           </div>
@@ -1743,6 +1761,9 @@ export default function DataCollectionPage() {
                       <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-[11px]">
                         <div className="text-[#aaa]">saved races: <span className="text-white">{summary.saved_races ?? '-'}</span></div>
                         <div className="text-[#aaa]">saved horses: <span className="text-white">{summary.saved_horses ?? '-'}</span></div>
+                        <div className="text-[#aaa]">existing races skipped: <span className="text-white">{summary.existing_races_skipped ?? '-'}</span></div>
+                        <div className="text-[#aaa]">verified no-race dates: <span className="text-white">{summary.verified_no_race_dates ?? '-'}</span></div>
+                        <div className="text-[#aaa]">mode: <span className="text-white">{summary.execution_mode ?? '-'}</span></div>
                         <div className="text-[#aaa]">elapsed: <span className="text-white">{Math.ceil(Number(summary.elapsed_time_sec || 0))} sec</span></div>
                         <div className="text-[#aaa]">network req: <span className="text-white">{metrics.network_requests ?? '-'}</span></div>
                         <div className="text-[#aaa]">retries: <span className="text-white">{metrics.retry_count ?? '-'}</span></div>

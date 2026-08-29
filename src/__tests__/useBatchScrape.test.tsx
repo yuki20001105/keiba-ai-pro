@@ -115,6 +115,68 @@ describe('useBatchScrape', () => {
     expect(result.current.canRetry).toBe(false)
   })
 
+  it('keeps new saves separate from existing and no-race skips', async () => {
+    let statusCalls = 0
+    const completion = deferred<Response>()
+    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/scrape' && init?.method === 'POST') {
+        return jsonResponse({ job_id: 'job-counters' })
+      }
+      if (url === '/api/scrape/status/job-counters') {
+        statusCalls += 1
+        if (statusCalls === 1) {
+          return jsonResponse({
+            status: 'running',
+            progress: {
+              done: 2,
+              total: 5,
+              message: 'repairing',
+              saved_races: 1,
+              saved_horses: 12,
+              existing_races_skipped: 47,
+              no_race_dates: 20,
+            },
+          })
+        }
+        return completion.promise
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    const { result } = await renderBatchHook()
+    const promise = result.current.start('2026-01', '2026-01', true)
+    await waitFor(() => {
+      expect(result.current.progress.existingRacesSkipped).toBe(47)
+    })
+    expect(result.current.progress.newSavedRaces).toBe(1)
+    expect(result.current.progress.newSavedHorses).toBe(12)
+    expect(result.current.progress.verifiedNoRaceDates).toBe(20)
+
+    await act(async () => {
+      completion.resolve(jsonResponse({
+        status: 'completed',
+        result: {
+          races_collected: 1,
+          saved_horses: 12,
+          existing_races_skipped: 47,
+          verified_no_race_dates: 20,
+        },
+      }))
+    })
+
+    let resolved: any
+    await act(async () => {
+      resolved = await promise
+    })
+    expect(resolved).toMatchObject({
+      races_collected: 1,
+      saved_horses: 12,
+      existing_races_skipped: 47,
+      verified_no_race_dates: 20,
+    })
+  })
+
   it('keeps status non-completed and result null during second-month running', async () => {
     let postCount = 0
     const febStatusDeferred: Array<ReturnType<typeof deferred<Response>>> = []

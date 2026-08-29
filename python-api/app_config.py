@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 import joblib
 from fastapi import HTTPException
 from dotenv import load_dotenv
+from logging_security import SecretRedactionFilter, suppress_sensitive_dependency_logs
 
 _WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
 _MANAGED_RUNTIME_MARKERS = (
@@ -42,14 +43,20 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "keiba"))
 
 # ── ログ設定 ──────────────────────────────────────────────────────
 log_file = Path(__file__).parent / "optuna_debug.log"
+_log_level_name = os.environ.get("LOG_LEVEL", "INFO").strip().upper()
+_log_level = getattr(logging, _log_level_name, logging.INFO)
+_log_handlers = [
+    logging.FileHandler(log_file, mode="a", encoding="utf-8"),
+    logging.StreamHandler(),
+]
+for _handler in _log_handlers:
+    _handler.addFilter(SecretRedactionFilter())
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=_log_level,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler(log_file, mode="a", encoding="utf-8"),
-        logging.StreamHandler(),
-    ],
+    handlers=_log_handlers,
 )
+suppress_sensitive_dependency_logs()
 logger = logging.getLogger(__name__)
 logger.info("=" * 80)
 logger.info("app_config ロード開始")

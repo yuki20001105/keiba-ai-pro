@@ -8,6 +8,7 @@ from scraping.quality import (
     excluded_standard_race_ids,
     record_date_expectation,
     record_date_failure,
+    record_verified_no_race_dates,
     record_race_failure,
     record_race_quality,
     run_date_repair_audit,
@@ -242,6 +243,33 @@ def test_successful_date_expectation_closes_prior_race_list_repair(tmp_path: Pat
             "WHERE entity_type='date' AND entity_id=? AND repair_kind='race_list'",
             (race_date,),
         ).fetchone()
+    assert repair == ("completed", None)
+
+
+def test_verified_no_race_date_is_a_successful_checkpoint(tmp_path: Path) -> None:
+    db_path = tmp_path / "ultimate.db"
+    race_date = "20250106"
+    record_date_failure(
+        db_path,
+        race_date=race_date,
+        reason="race_list_unavailable",
+        source_status="exception",
+    )
+
+    assert record_verified_no_race_dates(db_path, [race_date, race_date]) == 1
+
+    with sqlite3.connect(str(db_path)) as conn:
+        completeness = conn.execute(
+            "SELECT expected_race_count, status FROM scrape_date_completeness "
+            "WHERE race_date=?",
+            (race_date,),
+        ).fetchone()
+        repair = conn.execute(
+            "SELECT status, last_error FROM scrape_repair_queue "
+            "WHERE entity_type='date' AND entity_id=? AND repair_kind='race_list'",
+            (race_date,),
+        ).fetchone()
+    assert completeness == (0, "complete")
     assert repair == ("completed", None)
 
 
