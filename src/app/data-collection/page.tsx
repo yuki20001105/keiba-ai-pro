@@ -6,6 +6,11 @@ import { Logo } from '@/components/Logo'
 import { Toast } from '@/components/Toast'
 import { authFetch } from '@/lib/auth-fetch'
 import { formatApiErrorDetail } from '@/lib/api-error'
+import {
+  aggregateDryRunResults,
+  enumerateMonthDateRanges,
+  type DryRunResult as ScrapeDryRunResult,
+} from '@/lib/dry-run-batch'
 import { useJobPoller } from '@/hooks/useJobPoller'
 import { BatchScrapeError, useBatchScrape } from '@/hooks/useBatchScrape'
 import { useAuth } from '@/contexts/AuthContext'
@@ -41,44 +46,6 @@ const DRY_RUN_TIMEOUT_MS = 24 * 60 * 60 * 1000
 
 type ScrapeHealthStatus = 'healthy' | 'degraded' | 'unhealthy' | 'unknown'
 type LocalApiStatus = 'checking' | ScrapeHealthStatus
-
-type ScrapeDryRunSummary = {
-  total_target_count: number
-  unique_url_count: number
-  estimated_request_count: number
-  cache_hit_count: number
-  cache_miss_count: number
-  resume_hit_count: number
-  skipped_count: number
-  db_existing_skip_count: number
-  db_existing_race_count: number
-  db_existing_horse_count: number
-  db_existing_result_count: number
-  db_existing_pedigree_count: number
-  new_fetch_required_count: number
-  already_covered_count: number
-  estimated_runtime_sec: number
-}
-
-type ScrapeDryRunResult = {
-  dry_run: ScrapeDryRunSummary
-  rate_limit_policy?: {
-    min_interval_sec?: number
-    scope?: string
-    note?: string
-  }
-  retry_backoff_policy?: {
-    max_retries?: number
-    retry_statuses?: number[]
-    backoff?: { type?: string; base_sec?: number; jitter_sec?: number }
-    retry_after?: string
-  }
-  circuit_breaker_policy?: {
-    failure_threshold?: number
-    cooldown_sec?: number
-    scope?: string
-  }
-}
 
 type StoredDryRunJob = {
   jobId: string
@@ -237,6 +204,16 @@ export default function DataCollectionPage() {
   const [dryRunResultReady, setDryRunResultReady] = useState(false)
   const [dryRunResult, setDryRunResult] = useState<ScrapeDryRunResult | null>(null)
   const [dryRunExecuted, setDryRunExecuted] = useState(false)
+
+  useEffect(() => {
+    if (dryRunStartedAt == null) return
+    const updateElapsed = () => {
+      setDryRunElapsedSeconds(Math.floor(Math.max(0, Date.now() - dryRunStartedAt) / 1000))
+    }
+    updateElapsed()
+    const timer = window.setInterval(updateElapsed, 1000)
+    return () => window.clearInterval(timer)
+  }, [dryRunStartedAt])
   const [dryRunPendingMessage, setDryRunPendingMessage] = useState('')
   const [dryRunErrorMessage, setDryRunErrorMessage] = useState('')
   const [periodErrorMessage, setPeriodErrorMessage] = useState('')
@@ -1035,20 +1012,6 @@ export default function DataCollectionPage() {
     }
   }
 
-  const periodToDateRange = (startPeriodValue: string, endPeriodValue: string) => {
-    const [startYearStr, startMonthStr] = startPeriodValue.split('-')
-    const [endYearStr, endMonthStr] = endPeriodValue.split('-')
-    const sy = parseInt(startYearStr, 10)
-    const sm = parseInt(startMonthStr, 10)
-    const ey = parseInt(endYearStr, 10)
-    const em = parseInt(endMonthStr, 10)
-    const pad = (n: number) => String(n).padStart(2, '0')
-    const startDateStr = `${sy}${pad(sm)}01`
-    const endLastDay = new Date(ey, em, 0).getDate()
-    const endDateStr = `${ey}${pad(em)}${pad(endLastDay)}`
-    return { startDateStr, endDateStr }
-  }
-
   const periodMonthSpan = (startPeriodValue: string, endPeriodValue: string) => {
     const [startYearStr, startMonthStr] = startPeriodValue.split('-')
     const [endYearStr, endMonthStr] = endPeriodValue.split('-')
@@ -1088,71 +1051,80 @@ export default function DataCollectionPage() {
     }
     setPeriodErrorMessage('')
     setDryRunLoading(true)
+    setDryRunStartedAt(Date.now())
+    setDryRunElapsedSeconds(0)
+    setDryRunResult(null)
+    setDryRunResultReady(false)
     setExecuteWarn('')
     setDryRunPendingMessage('')
     setDryRunErrorMessage('')
     try {
       setExecuteWarn('')
-      const { startDateStr, endDateStr } = periodToDateRange(startPeriod, endPeriod)
-      const startRes = await authFetch('/api/scrape', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          start_date: startDateStr,
-          end_date: endDateStr,
-          force_rescrape: forceRescrape,
-          dry_run: true,
-        }),
-      })
+      const months = enumerateMonthDateRanges(startPeriod, endPeriod)
+      const monthlyResults: ScrapeDryRunResult[] = []
 
-      if (!startRes.ok) {
-        const err = await startRes.json().catch(() => ({}))
-        throw new Error(formatApiErrorDetail(err?.detail ?? err, `HTTP ${startRes.status}`))
-      }
+      for (const [index, month] of months.entries()) {
+        setDryRunPendingMessage(`Dry-run見積もり中 (${index + 1}/${months.length}): ${month.label}`)
+        const startRes = await authFetch('/api/scrape', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            start_date: month.startDateStr,
+            end_date: month.endDateStr,
+            force_rescrape: forceRescrape,
+            dry_run: true,
+          }),
+        })
 
-      const { job_id } = await startRes.json()
-      let resultPayload: any = null
-      let reachedTerminal = false
-      for (let i = 0; i < 10; i++) {
-        await new Promise(resolve => setTimeout(resolve, 500))
-        const statusRes = await authFetch(`/api/scrape/status/${job_id}`)
-        if (!statusRes.ok) continue
-        const statusData = await statusRes.json().catch(() => ({}))
-        const dryRunStatus = statusData?.status
-        if (dryRunStatus === 'completed') {
-          reachedTerminal = true
-          resultPayload = statusData?.result
-          break
+        if (!startRes.ok) {
+          const err = await startRes.json().catch(() => ({}))
+          throw new Error(`${month.label}: ${formatApiErrorDetail(err?.detail ?? err, `HTTP ${startRes.status}`)}`)
         }
-        if (dryRunStatus === 'error') {
-          reachedTerminal = true
-          throw new Error(formatApiErrorDetail(statusData?.error, 'Dry-run failed'))
+
+        const startPayload = await startRes.json().catch(() => ({}))
+        const jobId = startPayload?.job_id
+        if (typeof jobId !== 'string' || !jobId) {
+          throw new Error(`${month.label}: Dry-run開始応答にjob_idがありません`)
         }
+
+        let resultPayload: unknown = null
+        for (let attempt = 0; attempt < 120; attempt += 1) {
+          await new Promise(resolve => setTimeout(resolve, 500))
+          const statusRes = await authFetch(`/api/scrape/status/${jobId}`)
+          if (!statusRes.ok) continue
+          const statusData = await statusRes.json().catch(() => ({}))
+          if (statusData?.status === 'completed') {
+            resultPayload = statusData?.result
+            break
+          }
+          if (statusData?.status === 'error' || statusData?.status === 'not_found') {
+            throw new Error(`${month.label}: ${formatApiErrorDetail(statusData?.error, 'Dry-run failed')}`)
+          }
+        }
+
+        if (!resultPayload) {
+          throw new Error(`${month.label}: Dry-runが60秒以内に完了しませんでした`)
+        }
+        monthlyResults.push(normalizeDryRunResult(resultPayload))
       }
 
-      if (!reachedTerminal || !resultPayload) {
-        setDryRunResult(null)
-        setDryRunExecuted(false)
-        setDryRunPendingMessage('Dry-runはまだ処理中です。しばらく待って再実行してください。')
-        showToast('Dry-runはまだ処理中です。しばらく待って再実行してください。', 'error')
-        return
-      }
-
-      const normalized = normalizeDryRunResult(resultPayload)
-      setDryRunResult(normalized)
+      setDryRunResult(aggregateDryRunResults(monthlyResults))
+      setDryRunResultReady(true)
       setDryRunExecuted(true)
       setDryRunPendingMessage('')
       setDryRunErrorMessage('')
-      showToast('Dry-run完了（HTTPアクセスなし）')
+      showToast(`Dry-run完了（${months.length}ヶ月、HTTPアクセスなし）`)
       loadFetchSummaryHistory()
     } catch (error: any) {
       setDryRunResult(null)
+      setDryRunResultReady(false)
       setDryRunExecuted(false)
       setDryRunPendingMessage('')
       setDryRunErrorMessage(error?.message || 'Dry-run failed')
       showToast(`Dry-runエラー: ${error.message}`, 'error')
     } finally {
       setDryRunLoading(false)
+      setDryRunStartedAt(null)
     }
   }
 
