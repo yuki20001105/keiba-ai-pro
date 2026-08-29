@@ -2,7 +2,7 @@
 const nextConfig = {
   output: 'standalone',
   reactStrictMode: true,
-  allowedDevOrigins: ['10.132.114.4'],
+  allowedDevOrigins: ['127.0.0.1', 'localhost', '10.132.114.4'],
   
   experimental: {
     serverActions: {
