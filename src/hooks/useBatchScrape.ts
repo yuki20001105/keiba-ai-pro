@@ -9,10 +9,17 @@ export type BatchProgress = {
   total: number
   message: string
   eta: string
+  newSavedRaces?: number
+  newSavedHorses?: number
+  existingRacesSkipped?: number
+  verifiedNoRaceDates?: number
 }
 
 export type BatchResult = {
   races_collected: number
+  saved_horses: number
+  existing_races_skipped: number
+  verified_no_race_dates: number
   elapsed_time: number
   stats: { period: string; total_months: number }
 }
@@ -177,6 +184,9 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
       startTimeRef.current = Date.now()
 
       let totalRaces = 0
+      let totalSavedHorses = 0
+      let totalExistingRacesSkipped = 0
+      let totalVerifiedNoRaceDates = 0
       let completedMonths = 0
 
       for (const { year, month } of months) {
@@ -287,6 +297,10 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
             : 0
           const monthPct = totalCount > 0 ? doneCount / totalCount : 0
           const overallPct = Math.round(((completedMonths + monthPct) / totalMonths) * 95)
+          const progressNumber = (key: string): number => {
+            const value = progressPayload[key]
+            return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0
+          }
 
           let eta = ''
           if (completedMonths > 0) {
@@ -309,6 +323,10 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
               ? `${year}年${month}月 (${completedMonths + 1}/${totalMonths}ヶ月): 開始待ち`
               : `${year}年${month}月 (${completedMonths + 1}/${totalMonths}ヶ月): ${typeof progressPayload.message === 'string' ? progressPayload.message : '取得実行中...'}`,
             eta,
+            newSavedRaces: progressNumber('saved_races'),
+            newSavedHorses: progressNumber('saved_horses'),
+            existingRacesSkipped: progressNumber('existing_races_skipped'),
+            verifiedNoRaceDates: progressNumber('no_race_dates'),
           })
 
           if (rawStatus === 'completed') {
@@ -326,8 +344,15 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
               fail(COMPLETED_CONTRACT_MESSAGE, 'monitoring', false)
             }
             const racesCollectedNumber = racesCollected as number
+            const resultNumber = (key: string): number => {
+              const value = resultPayload[key]
+              return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0
+            }
             done = true
             totalRaces += racesCollectedNumber
+            totalSavedHorses += resultNumber('saved_horses')
+            totalExistingRacesSkipped += resultNumber('existing_races_skipped')
+            totalVerifiedNoRaceDates += resultNumber('verified_no_race_dates')
             completedMonths += 1
           } else if (rawStatus === 'error') {
             const message = typeof statusPayload.error === 'string' && statusPayload.error.trim().length > 0
@@ -351,6 +376,9 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
       setStatus('completed')
       const batchResult: BatchResult = {
         races_collected: totalRaces,
+        saved_horses: totalSavedHorses,
+        existing_races_skipped: totalExistingRacesSkipped,
+        verified_no_race_dates: totalVerifiedNoRaceDates,
         elapsed_time: elapsed,
         stats: { period: `${startYear}年${startMonth}月〜${endYear}年${endMonth}月`, total_months: totalMonths },
       }

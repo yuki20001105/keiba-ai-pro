@@ -355,6 +355,49 @@ def record_date_expectation(db_path: Path, race_date: str, race_ids: Iterable[st
             )
 
 
+def record_verified_no_race_dates(
+    db_path: Path,
+    race_dates: Iterable[str],
+) -> int:
+    """Persist authoritative no-race dates as successful checkpoints.
+
+    An empty HTTP/parse result is not sufficient evidence.  Callers may use
+    this only after the calendar or race-list provider explicitly returned a
+    verified-empty result.  The batch form avoids opening thousands of SQLite
+    connections during a long historical repair run.
+    """
+    dates = sorted({str(value) for value in race_dates if str(value)})
+    if not dates:
+        return 0
+    init_acquisition_quality_db(db_path)
+    now = _utc_now()
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.executemany(
+            """INSERT INTO scrape_date_completeness (
+                   race_date, expected_race_ids_json, expected_race_count,
+                   saved_race_ids_json, complete_race_ids_json, missing_race_ids_json,
+                   quarantined_race_ids_json, status, updated_at
+               ) VALUES (?, '[]', 0, '[]', '[]', '[]', '[]', 'complete', ?)
+               ON CONFLICT(race_date) DO UPDATE SET
+                   expected_race_ids_json='[]',
+                   expected_race_count=0,
+                   saved_race_ids_json='[]',
+                   complete_race_ids_json='[]',
+                   missing_race_ids_json='[]',
+                   quarantined_race_ids_json='[]',
+                   status='complete',
+                   updated_at=excluded.updated_at""",
+            [(race_date, now) for race_date in dates],
+        )
+        conn.executemany(
+            "UPDATE scrape_repair_queue SET status='completed', last_error=NULL, "
+            "updated_at=? WHERE entity_type='date' AND entity_id=? "
+            "AND repair_kind='race_list'",
+            [(now, race_date) for race_date in dates],
+        )
+    return len(dates)
+
+
 def queue_repair(
     db_path: Path,
     *,

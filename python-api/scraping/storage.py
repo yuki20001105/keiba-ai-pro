@@ -10,6 +10,7 @@ import uuid
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Iterable
 
 from app_config import logger  # type: ignore
 
@@ -243,6 +244,37 @@ def _save_scraped_date_sqlite(
         conn.close()
     except Exception:
         pass
+
+
+def _save_verified_no_race_dates_sqlite(
+    db_path: Path,
+    dates: Iterable[str],
+) -> int:
+    """Batch-persist provider-verified no-race dates in the coverage ledger."""
+    normalized = sorted({str(value) for value in dates if str(value)})
+    if not normalized:
+        return 0
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS scraped_dates (
+                date TEXT PRIMARY KEY,
+                race_count INTEGER DEFAULT 0,
+                no_race INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
+        )
+        conn.executemany(
+            """INSERT INTO scraped_dates (date, race_count, no_race)
+               VALUES (?, 0, 1)
+               ON CONFLICT(date) DO UPDATE SET race_count=0, no_race=1""",
+            [(date,) for date in normalized],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return len(normalized)
 
 
 def _normalize_scraped_date(value: object) -> str | None:

@@ -6,6 +6,7 @@ from scraping.storage import (
     _get_scraped_dates_sqlite,
     _init_sqlite_db,
     _save_scraped_date_sqlite,
+    _save_verified_no_race_dates_sqlite,
     reconcile_scraped_dates_from_races,
 )
 
@@ -33,6 +34,18 @@ def test_only_real_database_coverage_is_skipped(tmp_path: Path) -> None:
     covered = _get_scraped_dates_sqlite(db_path, min_races=6)
     assert "20200104" in covered
     assert "20200105" not in covered
+
+
+def test_verified_no_race_dates_are_batch_persisted(tmp_path: Path) -> None:
+    db_path = tmp_path / "ultimate.db"
+    assert _save_verified_no_race_dates_sqlite(
+        db_path, ["20200101", "20200102", "20200101"]
+    ) == 2
+    with sqlite3.connect(str(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT date, race_count, no_race FROM scraped_dates ORDER BY date"
+        ).fetchall()
+    assert rows == [("20200101", 0, 1), ("20200102", 0, 1)]
 
 
 def test_reconcile_coverage_ledger_is_audited_and_idempotent(tmp_path: Path) -> None:

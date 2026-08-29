@@ -20,6 +20,7 @@ import httpx
 
 from scraping.constants import SCRAPE_HEADERS, SCRAPE_PROXY_URL, get_random_headers
 from scraping.fetch_pipeline import (
+    decode_html_body,
     estimate_fetch_plan,
     fetch_text,
     get_fetch_metrics,
@@ -36,6 +37,7 @@ from scraping.quality import (
     init_acquisition_quality_db,
     record_date_expectation,
     record_date_failure,
+    record_verified_no_race_dates,
     record_race_failure,
     record_race_quality,
     run_date_repair_audit,
@@ -47,6 +49,7 @@ from scraping.storage import (
     _init_sqlite_db,
     _save_race_sqlite_only,
     _save_scraped_date_sqlite,
+    _save_verified_no_race_dates_sqlite,
 )
 
 try:
@@ -320,10 +323,14 @@ _init_jobs_db()
 # カレンダーから開催日を取得するヘルパー
 # ============================================================
 
-async def _fetch_race_days_for_month(year: int, month: int, timeout_sec: float = 15.0) -> list[str]:
+async def _fetch_race_days_for_month(
+    year: int,
+    month: int,
+    timeout_sec: float = 15.0,
+) -> list[str] | None:
     """race.netkeiba.com のカレンダーから指定年月の開催日一覧を取得する。
 
-    返り値: ['YYYYMMDD', ...] のリスト（開催日のみ）。取得失敗時は空リスト。
+    返り値: ['YYYYMMDD', ...] のリスト（開催日のみ）。取得・検証失敗時は None。
     参照実装に倣い kaisai_date リンクからレース開催日を抽出する。
     """
     url = f"https://race.netkeiba.com/top/calendar.html?year={year}&month={month:02d}"
@@ -335,16 +342,22 @@ async def _fetch_race_days_for_month(year: int, month: int, timeout_sec: float =
         ) as hx:
             resp = await hx.get(url)
         if resp.status_code != 200:
-            logger.debug(f"カレンダー HTTP {resp.status_code}: {year}/{month:02d}")
-            return []
-        html = resp.content.decode("euc-jp", errors="replace")
+            logger.warning(f"calendar HTTP {resp.status_code}: {year}/{month:02d}")
+            return None
+        html = decode_html_body(resp.content)
         # href="/top/race_list.html?kaisai_date=20240105" 形式のリンクから日付を抽出
         dates = list(dict.fromkeys(re.findall(r"kaisai_date=(\d{8})", html)))
+        if not dates:
+            # An empty parse is indistinguishable from an upstream layout or
+            # encoding change. Fall back to authoritative per-date lookup
+            # instead of excluding an entire month as no-race.
+            logger.warning(f"calendar contained no verifiable dates: {year}/{month:02d}")
+            return None
         logger.info(f"カレンダー取得: {year}/{month:02d} → {len(dates)}日 {dates[:3]}")
         return dates
     except Exception as e:
-        logger.debug(f"カレンダー取得失敗 {year}/{month:02d}: {e}")
-        return []
+        logger.warning(f"calendar fetch failed {year}/{month:02d}: {e}")
+        return None
 
 
 async def _build_race_dates_from_calendar(
@@ -899,6 +912,47 @@ def _estimate_db_existing_coverage(db_path: Path, dates: list[str], min_races: i
     return out
 
 
+def _completed_date_race_counts(db_path: Path, dates: list[str]) -> dict[str, int]:
+    """Return authoritative complete-race counts for whole-date skips."""
+    if not db_path.exists() or not dates:
+        return {}
+    result: dict[str, int] = {}
+    with sqlite3.connect(str(db_path)) as conn:
+        for chunk in _iter_chunks(sorted(set(dates))):
+            placeholders = ",".join("?" for _ in chunk)
+            rows = conn.execute(
+                f"SELECT race_date, expected_race_count FROM scrape_date_completeness "
+                f"WHERE status='complete' AND race_date IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            result.update({str(date): int(count or 0) for date, count in rows})
+    return result
+
+
+def _existing_race_dates(db_path: Path, dates: list[str]) -> set[str]:
+    """Return requested dates that already contain at least one race row."""
+    targets = set(dates)
+    if not db_path.exists() or not targets:
+        return set()
+    found: set[str] = set()
+    with sqlite3.connect(str(db_path)) as conn:
+        for (data_text,) in conn.execute("SELECT data FROM races_ultimate"):
+            try:
+                payload = json.loads(data_text or "{}")
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            race_date = (
+                _parse_yyyymmdd(payload.get("race_date"))
+                or _parse_yyyymmdd(payload.get("date"))
+                or _parse_yyyymmdd(payload.get("kaisai_date"))
+            )
+            if race_date in targets:
+                found.add(race_date)
+    return found
+
+
 # ============================================================
 # バックグラウンドスクレイピングジョブ
 # ============================================================
@@ -928,20 +982,26 @@ async def _run_scrape_job(
         start_time = _time.time()
 
         dates = await asyncio.to_thread(build_bounded_scrape_dates, start_date, end_date)
+        previous_progress = job.get("progress") if isinstance(job.get("progress"), dict) else {}
 
         _MIN_RACES_PER_DAY = 6
 
-        # ── ① 前処理A: カレンダーから実際の開催日のみに絞り込み（歴史データ高速化）──
-        # 30日以上前のデータが含まれる場合はカレンダーAPIで開催日を事前取得し
-        # 開催なし日のリクエストをゼロにする（最大70%以上の削減効果）
-        from datetime import date as _date_cls
-        _oldest = min(dates)
-        _oldest_days_ago = (_date_cls.today() - _date_cls(int(_oldest[:4]), int(_oldest[4:6]), int(_oldest[6:8]))).days
+        # ── ① 前処理A: カレンダーから実際の開催日のみに絞り込み ──
+        # Repair mode still resolves the calendar first. It rechecks every
+        # scheduled race, not every calendar day. Verified no-race dates are
+        # persisted in one batch and are never reported as failures.
         calendar_filter_applied = False
+        calendar_verified_no_race_dates: set[str] = set()
+        calendar_verified_no_race_count = int(previous_progress.get("no_race_dates", 0) or 0)
         # A dry-run is a zero-HTTP planning operation. Calendar HTTP filtering
         # belongs to execution and must not make the preview mutate cache/state.
-        if _oldest_days_ago > 30 and not force_rescrape and not dry_run:
-            job["progress"] = {"done": 0, "total": len(dates), "message": "カレンダー取得中..."}
+        if not dry_run:
+            job["progress"] = {
+                **previous_progress,
+                "done": 0,
+                "total": len(dates),
+                "message": "カレンダー取得中...",
+            }
             logger.info(f"カレンダー取得開始: {start_date}〜{end_date} ({len(dates)}日 → 開催日のみに絞り込み)")
             _calendar_dates = await _build_race_dates_from_calendar(
                 start_date,
@@ -950,15 +1010,40 @@ async def _run_scrape_job(
             )
             if _calendar_dates is not None:
                 calendar_filter_applied = True
+                original_dates = set(dates)
+                existing_race_dates = await asyncio.to_thread(
+                    _existing_race_dates, ULTIMATE_DB, dates
+                )
+                scheduled_dates = original_dates & (
+                    set(_calendar_dates) | existing_race_dates
+                )
+                verified_no_race_dates = sorted(original_dates - scheduled_dates)
+                calendar_verified_no_race_dates = set(verified_no_race_dates)
+                if verified_no_race_dates:
+                    await asyncio.to_thread(
+                        record_verified_no_race_dates,
+                        ULTIMATE_DB,
+                        verified_no_race_dates,
+                    )
+                    await asyncio.to_thread(
+                        _save_verified_no_race_dates_sqlite,
+                        ULTIMATE_DB,
+                        verified_no_race_dates,
+                    )
+                calendar_verified_no_race_count = len(verified_no_race_dates)
                 _original_count = len(dates)
-                dates = sorted(set(dates) & set(_calendar_dates))
-                logger.info(f"カレンダー絞り込み完了: {_original_count}日 → {len(dates)}日（開催日のみ）")
+                dates = sorted(scheduled_dates)
+                logger.info(
+                    f"カレンダー絞り込み完了: {_original_count}日 → {len(dates)}開催日 / "
+                    f"{calendar_verified_no_race_count}非開催日"
+                )
             else:
                 logger.warning("カレンダー取得失敗 → 全日付で処理（フォールバック）")
 
         total = len(dates)
-        previous_progress = job.get("progress") if isinstance(job.get("progress"), dict) else {}
         completed_dates = set(previous_progress.get("completed_dates") or [])
+        failed_dates = set(previous_progress.get("failed_dates") or [])
+        failed_dates.difference_update(calendar_verified_no_race_dates)
         job["progress"] = {
             "done": sum(1 for date in dates if date in completed_dates),
             "total": total,
@@ -966,6 +1051,10 @@ async def _run_scrape_job(
             "completed_dates": sorted(completed_dates),
             "saved_races": int(previous_progress.get("saved_races", 0) or 0),
             "saved_horses": int(previous_progress.get("saved_horses", 0) or 0),
+            "existing_races_skipped": int(previous_progress.get("existing_races_skipped", 0) or 0),
+            "no_race_dates": calendar_verified_no_race_count,
+            "execution_mode": "repair_missing_or_incomplete" if force_rescrape else "incremental",
+            "failed_dates": sorted(failed_dates),
         }
         if not dry_run:
             _checkpoint_job(job_id, job, force=True)
@@ -1005,21 +1094,15 @@ async def _run_scrape_job(
             plan = await asyncio.to_thread(
                 estimate_fetch_plan, dry_urls, resume_keys=dry_resume_keys
             )
-            if force_rescrape:
-                db_existing = {
-                    "db_existing_skip_count": 0,
-                    "db_existing_race_count": 0,
-                    "db_existing_horse_count": 0,
-                    "db_existing_result_count": 0,
-                    "db_existing_pedigree_count": 0,
-                }
-            else:
-                db_existing = await asyncio.to_thread(
-                    _estimate_db_existing_coverage,
-                    ULTIMATE_DB,
-                    dates,
-                    _MIN_RACES_PER_DAY,
-                )
+            # The compatibility flag now means repair mode: complete existing
+            # races are still skipped, while missing/incomplete races are
+            # refreshed. Dry-run must therefore retain DB coverage estimates.
+            db_existing = await asyncio.to_thread(
+                _estimate_db_existing_coverage,
+                ULTIMATE_DB,
+                dates,
+                _MIN_RACES_PER_DAY,
+            )
             cache_hits = int(plan.get("cache_hits", 0))
             resume_hits = int(plan.get("resume_hits", 0))
             unique_urls = int(plan.get("unique_urls", 0))
@@ -1039,6 +1122,7 @@ async def _run_scrape_job(
                 "end_date": end_date,
                 "total_dates": total,
                 "force_rescrape": bool(force_rescrape),
+                "execution_mode": "repair_missing_or_incomplete" if force_rescrape else "incremental",
                 "calendar_filter_applied": calendar_filter_applied,
                 "dry_run": {
                     "total_target_count": total_target_count,
@@ -1095,9 +1179,18 @@ async def _run_scrape_job(
 
         timeout = aiohttp.ClientTimeout(total=25, connect=8)
         connector = aiohttp.TCPConnector(limit=5, limit_per_host=3)
+        from datetime import date as _date_cls
+
+        completed_date_counts = await asyncio.to_thread(
+            _completed_date_race_counts, ULTIMATE_DB, dates
+        )
         counter = {
             "races": int(job["progress"].get("saved_races", 0) or 0),
             "horses": int(job["progress"].get("saved_horses", 0) or 0),
+            "existing_races_skipped": int(
+                job["progress"].get("existing_races_skipped", 0) or 0
+            ),
+            "no_race_dates": int(job["progress"].get("no_race_dates", 0) or 0),
         }
         counter_lock = asyncio.Lock()
 
@@ -1150,15 +1243,24 @@ async def _run_scrape_job(
 
                 if date in scraped_dates:
                     logger.info(f"{date}: 取得済み（SQLite/Supabase）→ スキップ")
-                    job["progress"] = {
+                    counter["existing_races_skipped"] += int(
+                        completed_date_counts.get(date, 0)
+                    )
+                    job["progress"].update({
                         "done": i + 1,
                         "total": total,
-                        "message": f"{i+1}/{total}日処理済み / {counter['races']}レース保存 (スキップ含む)",
+                        "message": (
+                            f"{i+1}/{total}開催日処理済み / "
+                            f"新規{counter['races']}レース / "
+                            f"既存{counter['existing_races_skipped']}レースをスキップ"
+                        ),
                         "saved_races": counter["races"],
                         "saved_horses": counter["horses"],
+                        "existing_races_skipped": counter["existing_races_skipped"],
+                        "no_race_dates": counter["no_race_dates"],
                         "completed_dates": sorted(completed_dates | {date}),
                         "last_completed_date": date,
-                    }
+                    })
                     completed_dates.add(date)
                     _checkpoint_job(job_id, job, force=True)
                     continue
@@ -1168,6 +1270,7 @@ async def _run_scrape_job(
                 expected_race_ids: list[str] = []
                 list_failure_reason: str | None = None
                 list_source_status = "not_requested"
+                verified_no_race = False
                 try:
                     await asyncio.sleep(_pre_sleep)  # レース一覧リクエスト間のインターバル
 
@@ -1180,9 +1283,10 @@ async def _run_scrape_job(
                         race_ids, race_list_source = await fetch_race_ids(date)
                         list_source_status = f"ok:{race_list_source}"
                         if not race_ids:
+                            verified_no_race = race_list_source.endswith(":verified-empty")
                             list_failure_reason = (
                                 "race_list_verified_empty"
-                                if race_list_source.endswith(":verified-empty")
+                                if verified_no_race
                                 else "race_list_empty"
                             )
                     except Exception as _list_error:
@@ -1195,7 +1299,20 @@ async def _run_scrape_job(
                     # Freeze the authoritative race list before exclusions.
                     # Quarantined races remain visible to the date audit, so a
                     # partial day can never become a silent success.
-                    if not race_ids:
+                    if verified_no_race:
+                        await asyncio.to_thread(
+                            record_verified_no_race_dates,
+                            ULTIMATE_DB,
+                            [date],
+                        )
+                        await asyncio.to_thread(
+                            _save_verified_no_race_dates_sqlite,
+                            ULTIMATE_DB,
+                            [date],
+                        )
+                        counter["no_race_dates"] += 1
+                        logger.info(f"{date}: verified no-race date; recorded as complete")
+                    elif not race_ids:
                         await asyncio.to_thread(
                             record_date_failure,
                             ULTIMATE_DB,
@@ -1206,17 +1323,30 @@ async def _run_scrape_job(
                         errors.append(f"{date}: {list_failure_reason or 'race_list_empty'}")
 
                     expected_race_ids = list(race_ids)
-                    await asyncio.to_thread(
-                        record_date_expectation, ULTIMATE_DB, date, expected_race_ids
-                    )
-                    existing_audit = await asyncio.to_thread(
-                        hydrate_quality_from_existing_data,
-                        ULTIMATE_DB,
-                        date,
-                        expected_race_ids,
-                    )
-                    missing_or_incomplete = set(existing_audit["missing_race_ids"])
-                    race_ids = [rid for rid in expected_race_ids if rid in missing_or_incomplete]
+                    if verified_no_race:
+                        existing_audit = {
+                            "complete_race_count": 0,
+                            "missing_race_ids": [],
+                        }
+                        race_ids = []
+                    else:
+                        await asyncio.to_thread(
+                            record_date_expectation, ULTIMATE_DB, date, expected_race_ids
+                        )
+                        existing_audit = await asyncio.to_thread(
+                            hydrate_quality_from_existing_data,
+                            ULTIMATE_DB,
+                            date,
+                            expected_race_ids,
+                        )
+                        existing_complete_count = int(
+                            existing_audit.get("complete_race_count", 0) or 0
+                        )
+                        counter["existing_races_skipped"] += existing_complete_count
+                        missing_or_incomplete = set(existing_audit["missing_race_ids"])
+                        race_ids = [
+                            rid for rid in expected_race_ids if rid in missing_or_incomplete
+                        ]
                     if expected_race_ids and not race_ids:
                         logger.info(
                             f"{date}: all {len(expected_race_ids)} expected races already "
@@ -1285,6 +1415,8 @@ async def _run_scrape_job(
                                             ),
                                             "saved_races": counter["races"],
                                             "saved_horses": counter["horses"],
+                                            "existing_races_skipped": counter["existing_races_skipped"],
+                                            "no_race_dates": counter["no_race_dates"],
                                         })
                                     logger.info(f"保存完了: {race_id} ({n_horses}頭)")
                                 else:
@@ -1341,9 +1473,16 @@ async def _run_scrape_job(
                 job["progress"].update({
                     "done": i + 1,
                     "total": total,
-                    "message": f"{i+1}/{total}日処理済み / {counter['races']}レース保存 (errors:{len(errors)})",
+                    "message": (
+                        f"{i+1}/{total}開催日処理済み / "
+                        f"新規{counter['races']}レース・{counter['horses']}頭 / "
+                        f"既存{counter['existing_races_skipped']}レースをスキップ "
+                        f"(errors:{len(errors)})"
+                    ),
                     "saved_races": counter["races"],
                     "saved_horses": counter["horses"],
+                    "existing_races_skipped": counter["existing_races_skipped"],
+                    "no_race_dates": counter["no_race_dates"],
                     "last_errors": errors[-3:] if errors else [],
                 })
                 # A date is complete only when every expected race has a
@@ -1351,23 +1490,39 @@ async def _run_scrape_job(
                 # races remain in the repair ledger and are never hidden by a
                 # fixed minimum-race threshold.
                 try:
-                    date_audit = await asyncio.to_thread(
-                        run_date_repair_audit,
-                        ULTIMATE_DB,
-                        date,
-                        expected_race_ids,
-                    )
-                    day_complete = date_audit["status"] == "complete"
-                    if day_complete:
-                        await asyncio.to_thread(
-                            _save_scraped_date_sqlite,
+                    if verified_no_race:
+                        date_audit = {
+                            "race_date": date,
+                            "status": "complete",
+                            "expected_race_count": 0,
+                            "saved_race_count": 0,
+                            "complete_race_count": 0,
+                            "missing_race_ids": [],
+                            "quarantined_race_ids": [],
+                            "no_race": True,
+                        }
+                    else:
+                        date_audit = await asyncio.to_thread(
+                            run_date_repair_audit,
                             ULTIMATE_DB,
                             date,
-                            date_audit["expected_race_count"],
+                            expected_race_ids,
                         )
+                    day_complete = date_audit["status"] == "complete"
+                    if day_complete:
+                        if not verified_no_race:
+                            await asyncio.to_thread(
+                                _save_scraped_date_sqlite,
+                                ULTIMATE_DB,
+                                date,
+                                date_audit["expected_race_count"],
+                            )
                         completed_dates.add(date)
                         job["progress"]["completed_dates"] = sorted(completed_dates)
                         job["progress"]["last_completed_date"] = date
+                        failed_dates = set(job["progress"].get("failed_dates") or [])
+                        failed_dates.discard(date)
+                        job["progress"]["failed_dates"] = sorted(failed_dates)
                     else:
                         failed_dates = set(job["progress"].get("failed_dates") or [])
                         failed_dates.add(date)
@@ -1384,6 +1539,8 @@ async def _run_scrape_job(
 
         saved_races = counter["races"]
         saved_horses = counter["horses"]
+        existing_races_skipped = counter["existing_races_skipped"]
+        no_race_dates = counter["no_race_dates"]
         elapsed = _time.time() - start_time
         quality_audit = await asyncio.to_thread(
             summarize_acquisition_quality, ULTIMATE_DB, dates
@@ -1395,6 +1552,10 @@ async def _run_scrape_job(
             "end_date": end_date,
             "saved_races": saved_races,
             "saved_horses": saved_horses,
+            "existing_races_skipped": existing_races_skipped,
+            "verified_no_race_dates": no_race_dates,
+            "execution_mode": "repair_missing_or_incomplete" if force_rescrape else "incremental",
+            "calendar_filter_applied": calendar_filter_applied,
             "elapsed_time_sec": elapsed,
             "quality_audit": quality_audit,
             "metrics": get_fetch_metrics(reset=True),
@@ -1421,9 +1582,13 @@ async def _run_scrape_job(
                 "success": bool(quality_audit["quality_complete"]),
                 "races_collected": saved_races,
                 "saved_horses": saved_horses,
+                "existing_races_skipped": existing_races_skipped,
+                "verified_no_race_dates": no_race_dates,
+                "execution_mode": "repair_missing_or_incomplete" if force_rescrape else "incremental",
                 "elapsed_time": elapsed,
                 "message": (
-                    f"{saved_races}レース・{saved_horses}頭のデータを収集しました"
+                    f"新規{saved_races}レース・{saved_horses}頭を保存し、"
+                    f"既存{existing_races_skipped}レースを品質確認済みとしてスキップしました"
                     if quality_audit["quality_complete"]
                     else (
                         f"収集は完了しましたが、{quality_audit['incomplete_date_count']}日を"
