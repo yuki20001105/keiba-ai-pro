@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { useAuth } from '@/contexts/AuthContext'
 import { Logo } from '@/components/Logo'
 import { supabase } from '@/lib/supabase'
+import { authFetch } from '@/lib/auth-fetch'
 
 const FLOW_STEPS = [
   { href: '/data-collection', label: 'データ取得',   desc: 'netkeibaからレース情報を自動収集', step: '01' },
@@ -32,14 +33,10 @@ export default function HomePage() {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 5000)
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      const authHeaders: Record<string, string> = session?.access_token
-        ? { Authorization: `Bearer ${session.access_token}` }
-        : {}
-
+    const loadStatus = async () => {
       Promise.all([
         fetch('/api/health', { signal: controller.signal }).then(r => r.ok).catch(() => false),
-        fetch('/api/data-stats', { headers: authHeaders, signal: controller.signal }).then(r => r.ok ? r.json() : null).catch(() => null),
+        authFetch('/api/data-stats', { signal: controller.signal }).then(r => r.ok ? r.json() : null).catch(() => null),
       ]).then(([online, stats]) => {
         clearTimeout(timeout)
         setStatus({
@@ -48,7 +45,9 @@ export default function HomePage() {
           totalModels: stats?.total_models ?? null,
         })
       })
-    })
+    }
+
+    void loadStatus()
 
     return () => { clearTimeout(timeout); controller.abort() }
   }, [])
