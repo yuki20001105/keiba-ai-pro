@@ -197,6 +197,21 @@ export default function DataCollectionPage() {
     `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
   )
   const [forceRescrape, setForceRescrape] = useState(false)
+
+  // A resume link lets an interrupted long-running batch reopen at the exact
+  // month without relying on browser-specific month-input automation.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const resumeStart = params.get('start')
+    const resumeEnd = params.get('end')
+    if (!resumeStart || !resumeEnd) return
+
+    const validation = validatePeriodRange(resumeStart, resumeEnd)
+    if (!validation.ok) return
+    setStartPeriod(resumeStart)
+    setEndPeriod(resumeEnd)
+    setForceRescrape(params.get('repair') === '1')
+  }, [])
   const [dryRunLoading, setDryRunLoading] = useState(false)
   const [dryRunStartedAt, setDryRunStartedAt] = useState<number | null>(null)
   const [dryRunElapsedSeconds, setDryRunElapsedSeconds] = useState(0)
