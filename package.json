@@ -22,6 +22,7 @@
     "lint": "eslint \"src/**/*.{js,jsx,ts,tsx}\" \"scripts/**/*.ts\" \".github/skills/**/*.ts\"",
     "up": "powershell -ExecutionPolicy Bypass -File ./scripts/start-all.ps1",
     "down": "powershell -ExecutionPolicy Bypass -File ./scripts/stop-all.ps1",
+    "status": "powershell -ExecutionPolicy Bypass -File ./scripts/status-local-app.ps1",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
