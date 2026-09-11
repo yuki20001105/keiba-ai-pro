@@ -220,6 +220,17 @@
     "detail_error_passthrough_reason": ""
   },
   {
+    "route": "/api/local-login",
+    "method": "GET",
+    "policy": "Public",
+    "auth_header_forward": false,
+    "status_propagation": false,
+    "detail_error_passthrough": false,
+    "auth_header_forward_reason": "/api/local-login establishes a loopback-only session instead of forwarding an end-user Authorization header",
+    "status_propagation_reason": "/api/local-login returns route-owned redirects and local authentication status codes",
+    "detail_error_passthrough_reason": "/api/local-login maps authentication failures to fixed local_auto_login reason codes"
+  },
+  {
     "route": "/api/ml/train/start",
     "method": "POST",
     "policy": "PremiumOrAdmin",

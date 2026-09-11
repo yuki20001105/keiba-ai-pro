@@ -5,7 +5,11 @@ const { mockedAuthFetch } = vi.hoisted(() => ({ mockedAuthFetch: vi.fn() }))
 
 vi.mock('@/lib/auth-fetch', () => ({ authFetch: mockedAuthFetch }))
 
-import { BatchScrapeError, useBatchScrape } from '@/hooks/useBatchScrape'
+import {
+  BATCH_SCRAPE_MAX_POLL_DURATION_MS,
+  BatchScrapeError,
+  useBatchScrape,
+} from '@/hooks/useBatchScrape'
 
 const FAST_OPTIONS = {
   pollIntervalMs: 1,
@@ -43,6 +47,10 @@ async function renderBatchHook(options = FAST_OPTIONS) {
 }
 
 describe('useBatchScrape', () => {
+  it('uses a 24-hour monitoring deadline for normal long-running jobs', () => {
+    expect(BATCH_SCRAPE_MAX_POLL_DURATION_MS).toBe(24 * 60 * 60 * 1000)
+  })
+
   beforeEach(() => {
     mockedAuthFetch.mockReset()
   })

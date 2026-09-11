@@ -11,7 +11,7 @@ __pycache__/
 *.csv
 data/
 results/
-models/
+/models/
 *.pkl
 *.joblib
 

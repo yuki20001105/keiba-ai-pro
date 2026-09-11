@@ -4,6 +4,19 @@
 
 ---
 
+## Windowsワンクリック起動
+
+必要なローカル環境が設定済みのPCでは、リポジトリ直下の`start-keiba-ai-pro.bat`をダブルクリックすると、FastAPIとWebアプリを安全なObservationモードで一括起動し、ログイン画面を開きます。
+
+- 起動: `start-keiba-ai-pro.bat`
+- 状態確認: `check-keiba-ai-pro.bat`
+- 停止: `stop-keiba-ai-pro.bat`
+- 詳細手順: [競馬AI Pro 操作手順書](docs/USER_OPERATION_GUIDE.md)
+
+起動時にスケジューラ、Production書き込み、自動購入は有効化されません。不足しているvenv、環境設定、DB、Node依存がある場合はfail-closedで停止します。
+
+---
+
 ## 目次
 
 1. [システム全体フロー](#1-システム全体フロー)

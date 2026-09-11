@@ -2,6 +2,7 @@
 
 import { useCallback, useRef, useState } from 'react'
 import { authFetch } from '@/lib/auth-fetch'
+import { formatApiErrorDetail } from '@/lib/api-error'
 import type { JobStatus } from '@/lib/types'
 
 export type BatchProgress = {
@@ -27,6 +28,7 @@ export type BatchResult = {
 export type UseBatchScrapeOptions = {
   pollIntervalMs?: number
   maxPollAttempts?: number
+  maxPollDurationMs?: number
   maxConsecutiveStatusFailures?: number
 }
 
@@ -56,9 +58,11 @@ type ParsedPeriod = {
   month: number
 }
 
+export const BATCH_SCRAPE_MAX_POLL_DURATION_MS = 24 * 60 * 60 * 1000
+
 const DEFAULT_OPTIONS = {
   pollIntervalMs: 3000,
-  maxPollAttempts: 600,
+  maxPollDurationMs: BATCH_SCRAPE_MAX_POLL_DURATION_MS,
   maxConsecutiveStatusFailures: 10,
 } as const
 
@@ -109,7 +113,13 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
   }
 
   const pollIntervalMs = Math.max(0, hookOptions?.pollIntervalMs ?? DEFAULT_OPTIONS.pollIntervalMs)
-  const maxPollAttempts = Math.max(1, hookOptions?.maxPollAttempts ?? DEFAULT_OPTIONS.maxPollAttempts)
+  // maxPollAttempts remains available for deterministic tests. Normal operation
+  // uses an elapsed-time deadline so a slow but healthy job is not abandoned
+  // merely because it needed more polling cycles.
+  const maxPollAttempts = hookOptions?.maxPollAttempts == null
+    ? null
+    : Math.max(1, hookOptions.maxPollAttempts)
+  const maxPollDurationMs = Math.max(1, hookOptions?.maxPollDurationMs ?? DEFAULT_OPTIONS.maxPollDurationMs)
   const maxConsecutiveStatusFailures = Math.max(
     1,
     hookOptions?.maxConsecutiveStatusFailures ?? DEFAULT_OPTIONS.maxConsecutiveStatusFailures,
@@ -217,8 +227,8 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
           let detail = ''
           try {
             const err = await startRes.json()
-            if (isRecord(err) && typeof err.detail === 'string') {
-              detail = err.detail
+            if (isRecord(err) && err.detail !== undefined) {
+              detail = formatApiErrorDetail(err.detail, '')
             }
           } catch {
             // fall through to status code message
@@ -243,12 +253,16 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
 
         let done = false
         let pollAttempts = 0
+        const pollStartedAt = Date.now()
         let consecutiveTransportFailures = 0
         let consecutiveNotFound = 0
 
         while (!done && !abortRef.current) {
           pollAttempts += 1
-          if (pollAttempts > maxPollAttempts) {
+          if (Date.now() - pollStartedAt >= maxPollDurationMs) {
+            fail(`ステータス確認が24時間の監視期限に達しました (job_id: ${currentJobId})`, 'monitoring', false)
+          }
+          if (maxPollAttempts !== null && pollAttempts > maxPollAttempts) {
             fail(`ステータス取得が上限回数に達しました (job_id: ${currentJobId})`, 'monitoring', false)
           }
 
@@ -409,7 +423,7 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
       setLoading(false)
       inFlightRef.current = false
     }
-  }, [maxConsecutiveStatusFailures, maxPollAttempts, pollIntervalMs])
+  }, [maxConsecutiveStatusFailures, maxPollAttempts, maxPollDurationMs, pollIntervalMs])
 
   const abort = useCallback(() => {
     abortRef.current = true

@@ -634,7 +634,7 @@
     "duplicates": []
   },
   "next": {
-    "count": 79,
+    "count": 80,
     "routes": [
       {
         "route": "/api/admin/profiles",
@@ -875,6 +875,18 @@
         "status_propagation": true,
         "detail_error_passthrough": true,
         "source": "src/app/api/health/route.ts"
+      },
+      {
+        "route": "/api/local-login",
+        "method": "GET",
+        "policy": "Public",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/local-login/route.ts"
       },
       {
         "route": "/api/ml/train/start",
@@ -1586,7 +1598,7 @@
       }
     ],
     "unclassified": [],
-    "canonical_entries": 79,
+    "canonical_entries": 80,
     "gate_failures": []
   },
   "gate": {

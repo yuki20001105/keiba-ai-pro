@@ -104,6 +104,7 @@ keiba.db
 logs/
 
 # Generated reports & script outputs
+/output/
 *.html
 *_out.txt
 *_output*.txt

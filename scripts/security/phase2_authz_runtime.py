@@ -46,6 +46,7 @@ GENERIC_REASON_VALUES = {
 
 DIRECT_PUBLIC_ALLOWLIST = {
     "/api/health",
+    "/api/local-login",
     "/api/stripe/webhook",
 }
 

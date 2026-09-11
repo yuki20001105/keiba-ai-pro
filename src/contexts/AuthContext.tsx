@@ -25,9 +25,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    let active = true
+    let authRefreshTimer: ReturnType<typeof setTimeout> | null = null
+
     const fetchRole = async () => {
       try {
         const { data: { user } } = await supabase.auth.getUser()
+        if (!active) return
         if (!user) {
           setRole(null)
           setSubscriptionTier(null)
@@ -38,22 +42,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           .select('role, subscription_tier')
           .eq('id', user.id)
           .single()
+        if (!active) return
         setRole(profile?.role ?? 'user')
         setSubscriptionTier(profile?.subscription_tier ?? 'free')
       } catch {
+        if (!active) return
         setRole('user')
         setSubscriptionTier('free')
       } finally {
-        setLoading(false)
+        if (active) setLoading(false)
       }
     }
 
-    fetchRole()
+    void fetchRole()
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(() => {
-      fetchRole()
+      // Supabase invokes this callback while it holds the auth lock. Calling
+      // another auth method synchronously here can deadlock getSession().
+      if (authRefreshTimer !== null) clearTimeout(authRefreshTimer)
+      authRefreshTimer = setTimeout(() => {
+        authRefreshTimer = null
+        if (active) void fetchRole()
+      }, 0)
     })
-    return () => subscription.unsubscribe()
+    return () => {
+      active = false
+      if (authRefreshTimer !== null) clearTimeout(authRefreshTimer)
+      subscription.unsubscribe()
+    }
   }, [])
 
   return (
