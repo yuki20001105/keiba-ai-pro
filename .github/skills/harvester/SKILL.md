@@ -133,7 +133,7 @@ GET  /api/profiling/status/{jobId}  ← 進捗確認
 
 ```powershell
 # DB の races テーブル件数確認
-& ".venv\Scripts\python.exe" -c "
+& "python-api\.venv\Scripts\python.exe" -c "
 import sqlite3, sys; sys.path.insert(0,'python-api')
 from app_config import ULTIMATE_DB
 conn = sqlite3.connect(str(ULTIMATE_DB))

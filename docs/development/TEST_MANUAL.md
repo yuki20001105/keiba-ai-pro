@@ -70,7 +70,8 @@
 解決策: 
 ```powershell
 cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
-C:\Users\yuki2\Documents\ws\keiba\Scripts\python.exe scraping_service_ultimate_fast.py
+.\start-keiba-ai-pro.bat
+npm run status
 ```
 
 ### 問題2: ログインできない

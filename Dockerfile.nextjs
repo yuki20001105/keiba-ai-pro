@@ -6,6 +6,7 @@ RUN if [ -f package-lock.json ]; then npm ci --legacy-peer-deps; else npm instal
 
 FROM node:24-alpine AS builder
 WORKDIR /app
+ENV NEXT_STANDALONE_BUILD=1
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build

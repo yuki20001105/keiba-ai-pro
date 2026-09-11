@@ -14,7 +14,7 @@ services:
       - TZ=Asia/Tokyo
     volumes:
       - ./keiba/data:/app/keiba/data
-      - ./reports:/app/keiba/data/live-validation-inputs:ro
+      - ./keiba/data/live-validation-inputs:/app/keiba/data/live-validation-inputs:ro
       - ./python-api/models:/app/python-api/models
       - ./data/logs:/app/python-api/logs
     restart: unless-stopped

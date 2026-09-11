@@ -20,7 +20,13 @@ except ImportError:
     logger = logging.getLogger(__name__)
 
 _CACHE_DB_PATH = Path(__file__).parent.parent.parent / "keiba" / "data" / "fetch_cache.db"
-_SUMMARY_JSON_PATH = Path(__file__).parent.parent.parent / "reports" / "fetch_summary.json"
+_SUMMARY_JSON_PATH = (
+    Path(__file__).parent.parent.parent
+    / "reports"
+    / "generated"
+    / "runtime"
+    / "fetch_summary.json"
+)
 
 _STATE_LOCK = Lock()
 _CACHE_INIT_LOCK = Lock()

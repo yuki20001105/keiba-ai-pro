@@ -67,26 +67,29 @@ postcondition requires both the expected canonical NULL counts and zero
 remaining non-NULL orphan references.
 
 The sanitized counts and aggregate hashes are in
-`reports/phase3n_legacy_production_adoption_contract_20260816.json`. No row
+`reports/evidence/phase3n/phase3n_legacy_production_adoption_contract_20260816.json`. No row
 payload, user email, credential, object name, or connection string is stored.
 
 ## Artifacts and generation
 
 - `scripts/security/render_phase3n_legacy_production_preflight_sql.py` emits
-  `reports/phase3n_legacy_production_preflight.sql`. It begins a
+  `reports/generated/phase3n/phase3n_legacy_production_preflight.sql`. It begins a
   `REPEATABLE READ, READ ONLY` transaction and fails if any reviewed count,
   aggregate digest, table identity, relationship, decoded JSON shape, Auth
   link, or Storage reference has changed.
 - `scripts/security/render_phase3n_legacy_production_adoption_sql.py` emits
-  `reports/phase3n_legacy_production_adoption_review.sql`. The complete
+  `reports/generated/phase3n/phase3n_legacy_production_adoption_review.sql`. The complete
   migration is present for review, but review scope always places an
   unconditional exception before the first schema change. The separately
   rendered, digest-bound Production artifact is
-  `reports/phase3n_legacy_production_adoption_apply.sql`.
+  `reports/evidence/phase3n/phase3n_legacy_production_adoption_apply.sql`.
+- Generated SQL remains outside Git. After review, an approved immutable snapshot
+  may be promoted deliberately into `reports/evidence/phase3n/`; renderers never
+  overwrite the reviewed evidence by default.
 - The review SQL contains no `DROP TABLE`, `TRUNCATE`, or source-row `DELETE`.
   It has no provider credential and no remote apply capability.
 
-Render the current review artifacts with:
+Render the current review artifacts into `reports/generated/phase3n/` with:
 
 ```powershell
 python scripts/security/render_phase3n_legacy_production_preflight_sql.py `
@@ -99,7 +102,7 @@ python scripts/security/render_phase3n_legacy_production_adoption_sql.py `
 The owner approved Production application on 2026-08-22 under
 `codex-user-instruction-2026-08-22-production-migration-approval`. The approved
 contract is retained separately as
-`reports/phase3n_legacy_production_adoption_contract_approved_20260822.json`
+`reports/evidence/phase3n/phase3n_legacy_production_adoption_contract_approved_20260822.json`
 with canonical SHA-256 `27372764c3e577e0cf9d158d50dbf2673bd7b05edfc6739911985740ece589e8`;
 the resulting Production apply SQL has SHA-256
 `42249f1ab036e800ef66873026acfd6f58403a55066d0eaf4aaaef1b595220a7`.
@@ -135,7 +138,7 @@ Production has a completed physical backup `1391364483` from
 enabled. The migration does not modify Storage objects; Supabase physical
 backup limitations for Storage bytes are retained in the release decision.
 Sanitized evidence is in
-`reports/phase3n_legacy_production_clone_validation_20260816.json`.
+`reports/evidence/phase3n/phase3n_legacy_production_clone_validation_20260816.json`.
 
 ## Required pre-apply gates
 
@@ -218,7 +221,7 @@ without RLS, zero direct anon table privileges, 19 policies, four Auth users,
 all 146 model Storage objects, and the Phase 3N observation table. Render then
 resumed and both backend and frontend health returned 200. The sanitized
 execution record is
-`reports/phase3n_production_credential_rotation_and_migration_20260822.json`.
+`reports/evidence/phase3n/phase3n_production_credential_rotation_and_migration_20260822.json`.
 
 This database result does not authorize the Limited Production runtime by
 itself. The exact candidate remains undeployed to Production, automatic

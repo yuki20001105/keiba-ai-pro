@@ -16,10 +16,12 @@ from pathlib import Path
 from typing import Any
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_AUDIT_INPUT = ROOT_DIR / "reports" / "scrape_missingness_audit.json"
-DEFAULT_REFRESH_INPUT = ROOT_DIR / "reports" / "scrape_refresh_plan.json"
-DEFAULT_SOURCE_EMPTY_DIAG_INPUT = ROOT_DIR / "reports" / "source_empty_result_cells_diagnosis.json"
-DEFAULT_OUTPUT = ROOT_DIR / "reports" / "p0_scrape_repair_plan.json"
+RUNTIME_INPUT_DIR = ROOT_DIR / "keiba" / "data" / "live-validation-inputs"
+DEFAULT_AUDIT_INPUT = RUNTIME_INPUT_DIR / "scrape_missingness_audit.json"
+GENERATED_SCRAPE_DIR = ROOT_DIR / "reports" / "generated" / "scraping"
+DEFAULT_REFRESH_INPUT = GENERATED_SCRAPE_DIR / "plans" / "scrape_refresh_plan.json"
+DEFAULT_SOURCE_EMPTY_DIAG_INPUT = GENERATED_SCRAPE_DIR / "diagnostics" / "source_empty_result_cells_diagnosis.json"
+DEFAULT_OUTPUT = RUNTIME_INPUT_DIR / "p0_scrape_repair_plan.json"
 DEFAULT_AVG_SEC_PER_REQ = 1.2
 
 TARGET_COLUMNS: dict[str, set[str]] = {

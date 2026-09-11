@@ -77,6 +77,7 @@ keiba/pyvenv.cfg
 keiba/data/
 keiba/models/
 keiba/.vscode/
+keiba/etc/
 
 # Database files (ローカル開発用)
 # デプロイ用にDBを含めたい場合は下記をコメントアウトする
@@ -113,12 +114,10 @@ regen_*.txt
 verify_result.txt
 patch_log*.txt
 dev-server.log
-reports/
-reports/analyze_race_smoke_result.json
-reports/e2e_notebooks/
-reports/e2e_debug/
-reports/e2e_logs/
-reports/keiba_notebook_e2e_result.json
+/reports/*
+!/reports/README.md
+!/reports/evidence/
+!/reports/evidence/**
 docs/reports/feature_analysis.json
 docs/reports/feature_llm_report.md
 
@@ -130,8 +129,16 @@ python-api/data/models/
 python-api/models/*.joblib
 python-api/models/*.metadata.json
 
-# Local notebook workspace
-notebooks/
+# Notebook sources are tracked; runtime state stays local.
+/notebooks/.ipynb_checkpoints/
+/notebooks/**/.ipynb_checkpoints/
+/notebooks/**/__pycache__/
+/notebooks/config.json
+/notebooks/data/
+/notebooks/reports/
+
+# Legacy root data logs
+/data/*_err.txt
 
 # python-api generated outputs
 python-api/*.log

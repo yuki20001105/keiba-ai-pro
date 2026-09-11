@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from logging.handlers import RotatingFileHandler
 from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
@@ -46,7 +47,12 @@ log_file = Path(__file__).parent / "optuna_debug.log"
 _log_level_name = os.environ.get("LOG_LEVEL", "INFO").strip().upper()
 _log_level = getattr(logging, _log_level_name, logging.INFO)
 _log_handlers = [
-    logging.FileHandler(log_file, mode="a", encoding="utf-8"),
+    RotatingFileHandler(
+        log_file,
+        maxBytes=5 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
+    ),
     logging.StreamHandler(),
 ]
 for _handler in _log_handlers:

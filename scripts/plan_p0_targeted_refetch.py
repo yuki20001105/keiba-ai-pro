@@ -19,11 +19,13 @@ from typing import Any
 from urllib.parse import urlsplit
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_AUDIT_INPUT = ROOT_DIR / "reports" / "scrape_missingness_audit.json"
-DEFAULT_P0_PLAN_INPUT = ROOT_DIR / "reports" / "p0_scrape_repair_plan.json"
-DEFAULT_CACHE_DIAG_INPUT = ROOT_DIR / "reports" / "p0_cache_coverage_diagnosis.json"
-DEFAULT_SOURCE_EMPTY_DIAG_INPUT = ROOT_DIR / "reports" / "source_empty_result_cells_diagnosis.json"
-DEFAULT_OUTPUT = ROOT_DIR / "reports" / "p0_targeted_refetch_plan.json"
+RUNTIME_INPUT_DIR = ROOT_DIR / "keiba" / "data" / "live-validation-inputs"
+DEFAULT_AUDIT_INPUT = RUNTIME_INPUT_DIR / "scrape_missingness_audit.json"
+DEFAULT_P0_PLAN_INPUT = RUNTIME_INPUT_DIR / "p0_scrape_repair_plan.json"
+DEFAULT_CACHE_DIAG_INPUT = RUNTIME_INPUT_DIR / "p0_cache_coverage_diagnosis.json"
+GENERATED_SCRAPE_DIR = ROOT_DIR / "reports" / "generated" / "scraping"
+DEFAULT_SOURCE_EMPTY_DIAG_INPUT = GENERATED_SCRAPE_DIR / "diagnostics" / "source_empty_result_cells_diagnosis.json"
+DEFAULT_OUTPUT = GENERATED_SCRAPE_DIR / "plans" / "p0_targeted_refetch_plan.json"
 DEFAULT_DB_PATH = ROOT_DIR / "keiba" / "data" / "keiba_ultimate.db"
 DEFAULT_CACHE_DB = ROOT_DIR / "keiba" / "data" / "fetch_cache.db"
 DEFAULT_PEDIGREE_CACHE_DB = ROOT_DIR / "keiba" / "data" / "pedigree_cache.db"

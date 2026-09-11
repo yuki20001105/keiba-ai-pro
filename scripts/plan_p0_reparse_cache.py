@@ -28,8 +28,9 @@ if str(PYTHON_API_DIR) not in sys.path:
 
 from scraping.constants import HTML_STRAINER, VENUE_MAP, is_cloudflare_block  # type: ignore
 
-DEFAULT_P0_PLAN_INPUT = ROOT_DIR / "reports" / "p0_scrape_repair_plan.json"
-DEFAULT_OUTPUT = ROOT_DIR / "reports" / "p0_reparse_cache_plan.json"
+RUNTIME_INPUT_DIR = ROOT_DIR / "keiba" / "data" / "live-validation-inputs"
+DEFAULT_P0_PLAN_INPUT = RUNTIME_INPUT_DIR / "p0_scrape_repair_plan.json"
+DEFAULT_OUTPUT = ROOT_DIR / "reports" / "generated" / "scraping" / "plans" / "p0_reparse_cache_plan.json"
 DEFAULT_CACHE_DB = ROOT_DIR / "keiba" / "data" / "fetch_cache.db"
 DEFAULT_PEDIGREE_CACHE_DB = ROOT_DIR / "keiba" / "data" / "pedigree_cache.db"
 

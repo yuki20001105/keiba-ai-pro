@@ -74,8 +74,8 @@ Production Web版で「スクレイプAPIの状態を確認できません」と
 
 ### ローカル起動に必要なもの
 
-- `node_modules`とNode.js 18.17以降
-- `python-api/.venv`またはルート`.venv`
+- `node_modules`とNode.js 24.x
+- `python-api/.venv`（唯一のローカルPython環境）
 - `.env.local`と必要な認証設定
 - `keiba/data/keiba_ultimate.db`
 - `python-api/models`内のモデル

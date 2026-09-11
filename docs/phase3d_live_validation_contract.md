@@ -30,10 +30,31 @@
 - The container image never embeds operational reports or databases.
 - The main SQLite database is supplied through the existing `/app/keiba/data` runtime volume.
 - The three planner reports are supplied read-only at `/app/keiba/data/live-validation-inputs` (or an absolute server-configured `LIVE_VALIDATION_INPUT_DIR`).
-- Docker Compose mounts `./reports` read-only at that input directory; cloud environments must provide the equivalent server-owned mount.
+- Docker Compose mounts `./keiba/data/live-validation-inputs` read-only at that input directory; cloud environments must provide the equivalent server-owned mount.
 - Every request performs a fail-closed preflight and snapshots the bounded JSON reports into its private temporary workspace before starting a subprocess.
 - Missing or malformed required reports/main DB return `503` before planner or external HTTP work begins.
 - A missing HTTP cache is represented by an empty request-scoped temporary cache; no persistent cache file is created. The pedigree cache remains optional.
+
+### Local input regeneration
+
+The three JSON files under `keiba/data/live-validation-inputs` are snapshots,
+not timeless configuration. Refresh them after replacing the research DB:
+
+1. Run `scripts/audit_scrape_missingness.py` against the current DB and write
+   `scrape_missingness_audit.json`. Exit code 1 means the audit verdict is
+   `fail`; the report is still produced and must be reviewed.
+2. Run `scripts/plan_scrape_refresh.py`. Its default output is
+   `reports/generated/scraping/plans/scrape_refresh_plan.json`.
+3. Run `scripts/plan_p0_scrape_repair.py` to produce
+   `p0_scrape_repair_plan.json` in the runtime-input directory.
+4. Run `scripts/plan_p0_reparse_cache.py` and
+   `scripts/diagnose_p0_cache_coverage.py`. If no persistent HTTP cache exists,
+   use an explicitly empty `http_cache` database so the diagnosis records zero
+   cache coverage instead of reusing an older snapshot.
+
+All commands use `python-api/.venv/Scripts/python.exe -X utf8`. They are
+read-only with respect to the research DB and perform no external HTTP access.
+Archive the previous three JSON files before replacement.
 
 ## Request Contract
 

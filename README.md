@@ -705,7 +705,7 @@ Kelly % = (p × odds - 1) / (odds - 1)
 ### 必要環境
 
 - Python 3.11+
-- Node.js 18+
+- Node.js 24.x
 - `python-api/.venv` (FastAPI 用)
 
 ### ローカル起動
@@ -831,6 +831,9 @@ python scripts/smoke_netkeiba_race_write_guard.py --expect-sandbox-write-readbac
 
 **1) Notebook E2E audit**
 
+実行順は依存関係に合わせて `00 → 01 → 02 → 03 → 05 → 04 → 06 → 07 → 08`
+です。特徴量分析の`04`は、学習モデルを生成する`05`の後に実行します。
+
 ```powershell
 cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
 python-api\.venv\Scripts\python.exe scripts\run_keiba_notebook_e2e.py --mode audit
@@ -839,7 +842,7 @@ python-api\.venv\Scripts\python.exe scripts\run_keiba_notebook_e2e.py --mode aud
 結果確認:
 
 ```powershell
-Get-Content reports\keiba_notebook_e2e_result.json -Raw
+Get-Content reports\generated\notebooks\keiba_notebook_e2e_result.json -Raw
 ```
 
 **2) Analyze Race API smoke**
@@ -1011,7 +1014,7 @@ cd C:\Users\yuki2\Documents\ws\keiba-ai-pro\python-api
 $env:NETKEIBA_RACE_WRITE_ENABLED = "true"
 $env:ALLOW_STAGING_WRITE = "true"
 $env:APP_ENV = "staging"
-..\.venv\Scripts\python.exe main.py
+.venv\Scripts\python.exe main.py
 ```
 
 別ターミナルで enabled-mode smoke:
@@ -1040,7 +1043,7 @@ cd C:\Users\yuki2\Documents\ws\keiba-ai-pro\python-api
 $env:NETKEIBA_RACE_WRITE_ENABLED = "true"
 $env:ALLOW_STAGING_WRITE = "false"
 $env:APP_ENV = "development"
-..\.venv\Scripts\python.exe main.py
+.venv\Scripts\python.exe main.py
 ```
 
 ```powershell
@@ -1055,7 +1058,7 @@ cd C:\Users\yuki2\Documents\ws\keiba-ai-pro\python-api
 $env:NETKEIBA_RACE_WRITE_ENABLED = "true"
 $env:ALLOW_STAGING_WRITE = "true"
 $env:APP_ENV = "production"
-..\.venv\Scripts\python.exe main.py
+.venv\Scripts\python.exe main.py
 ```
 
 ```powershell
@@ -1070,7 +1073,7 @@ cd C:\Users\yuki2\Documents\ws\keiba-ai-pro\python-api
 $env:NETKEIBA_RACE_WRITE_ENABLED = "true"
 $env:ALLOW_STAGING_WRITE = "false"
 $env:APP_ENV = "staging"
-..\.venv\Scripts\python.exe main.py
+.venv\Scripts\python.exe main.py
 ```
 
 ```powershell
@@ -1092,7 +1095,7 @@ cd C:\Users\yuki2\Documents\ws\keiba-ai-pro\python-api
 $env:NETKEIBA_RACE_WRITE_ENABLED = "true"
 $env:ALLOW_STAGING_WRITE = "true"
 $env:APP_ENV = "staging"
-..\.venv\Scripts\python.exe main.py
+.venv\Scripts\python.exe main.py
 ```
 
 ```powershell
@@ -1259,8 +1262,9 @@ git status --short
 
 ### 生成物の保存先
 
-- Notebook実行済みファイル: `reports/e2e_notebooks/`
-- Notebook E2E結果JSON: `reports/keiba_notebook_e2e_result.json`
+- Notebookソース: `notebooks/00_config.ipynb`〜`notebooks/08_reporting.ipynb`
+- Notebook実行済みファイル: `reports/generated/notebooks/executed/`
+- Notebook E2E結果JSON: `reports/generated/notebooks/keiba_notebook_e2e_result.json`
 - Analyze Race smoke結果JSON: `reports/analyze_race_smoke_result.json`
 - Race-list proxy smoke結果JSON: `reports/netkeiba_race_list_proxy_smoke_result.json`
 - Race preflight smoke結果JSON: `reports/netkeiba_race_preflight_smoke_result.json`
@@ -1318,37 +1322,20 @@ git status --short
 
 ## 11. ディレクトリ構成
 
+追跡対象とローカル生成物の境界、依存環境およびDBの保管方針は
+[ローカルディレクトリ構成](docs/setup/LOCAL_DIRECTORY_LAYOUT.md)を正とします。
+API用Python環境は`npm run setup:api`、研究・Notebookを含む完全な環境は`npm run setup:research`で`python-api/.venv`へ再構築できます。
+
 ```
 keiba-ai-pro/
-├── src/                        # Next.js フロントエンド (App Router)
-│   ├── app/                    # ページ・APIルート
-│   ├── components/             # UIコンポーネント
-│   ├── contexts/               # React コンテキスト
-│   ├── hooks/                  # カスタムフック
-│   └── lib/                    # ユーティリティ・API設定
-├── python-api/                 # FastAPI バックエンド
-│   ├── main.py                 # エントリポイント
-│   ├── routers/                # APIルーター群
-│   ├── scraping/               # スクレイピング処理
-│   ├── models/                 # 学習済みモデル (.joblib)
-│   │   └── archive/            # 旧バージョンモデル
-│   ├── middleware/             # 認証ミドルウェア
-│   └── tests/                  # pytest テスト
-├── keiba/                      # ML パイプライン (Python)
-│   └── keiba_ai/               # コアMLモジュール
-│       ├── db_ultimate_loader.py
-│       ├── feature_engineering.py
-│       ├── ultimate_features.py
-│       ├── lightgbm_feature_optimizer.py
-│       └── constants.py
-├── tools/                      # 開発・メンテナンスツール
-├── validation/                 # データ品質・特徴量検証
-├── scripts/                    # 起動・運用スクリプト
+├── src/                        # Next.js フロントエンド（Git追跡）
+├── python-api/                 # FastAPIと唯一のPython環境 .venv/
+├── keiba/                      # MLコードとローカル研究DB
+├── notebooks/                  # 追跡するNotebookソース
+├── reports/                    # evidence（追跡）/ generated（生成物）
+├── scripts/                    # 起動・検証・運用スクリプト
 ├── supabase/                   # DBスキーマ定義
-├── docs/                       # ドキュメント
-├── patch_missing_data.py       # DBデータ補完ツール（ルート固定）
-├── generate_feature_report.py  # 特徴量重要度レポート生成
-└── generate_profiling_report.py # データプロファイリングレポート生成
+└── docs/                       # ドキュメント
 ```
 
 ---
@@ -1391,13 +1378,13 @@ keiba-ai-pro/
 
 ```powershell
 # 確認のみ（DBは更新しない）
-.venv\Scripts\python.exe patch_missing_data.py --dry-run
+python-api\.venv\Scripts\python.exe patch_missing_data.py --dry-run
 
 # Phase 指定実行
-.venv\Scripts\python.exe patch_missing_data.py --phase 3
+python-api\.venv\Scripts\python.exe patch_missing_data.py --phase 3
 
 # 全フェーズ実行（バックグラウンド）
-Start-Process .venv\Scripts\python.exe -ArgumentList "patch_missing_data.py" `
+Start-Process python-api\.venv\Scripts\python.exe -ArgumentList "patch_missing_data.py" `
   -RedirectStandardOutput tools\logs\patch_log.txt `
   -RedirectStandardError tools\logs\patch_log_err.txt
 ```
@@ -1432,16 +1419,16 @@ Start-Process .venv\Scripts\python.exe -ArgumentList "patch_missing_data.py" `
 
 ```powershell
 # 充填率確認（パッチ完了後に必ず実行）
-.venv\Scripts\python.exe validation\check_null_rates3.py
+python-api\.venv\Scripts\python.exe validation\check_null_rates3.py
 
 # データリーク診断
-.venv\Scripts\python.exe validation\check_date_leakage.py
+python-api\.venv\Scripts\python.exe validation\check_date_leakage.py
 
 # 特徴量詳細確認
-.venv\Scripts\python.exe validation\check_features_detail.py
+python-api\.venv\Scripts\python.exe validation\check_features_detail.py
 
 # 最終特徴量一覧
-.venv\Scripts\python.exe validation\check_final_features.py
+python-api\.venv\Scripts\python.exe validation\check_final_features.py
 ```
 
 | ファイル | 用途 | 実行タイミング |

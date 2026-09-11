@@ -12,7 +12,13 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "security" / "render_phase3n_legacy_production_adoption_sql.py"
 PREFLIGHT_SCRIPT = ROOT / "scripts" / "security" / "render_phase3n_legacy_production_preflight_sql.py"
-CONTRACT = ROOT / "reports" / "phase3n_legacy_production_adoption_contract_20260816.json"
+CONTRACT = (
+    ROOT
+    / "reports"
+    / "evidence"
+    / "phase3n"
+    / "phase3n_legacy_production_adoption_contract_20260816.json"
+)
 CANDIDATE = "86a2d314a641160e852d3597396aadcd03e81347"
 
 

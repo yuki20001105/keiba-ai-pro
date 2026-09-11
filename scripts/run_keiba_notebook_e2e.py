@@ -10,21 +10,26 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-IGNORED_NOTEBOOK_PARTS = {
-    ".git",
-    ".venv",
-    "__pycache__",
-    "node_modules",
-    "reports",
-    "test-results",
-}
+NOTEBOOK_SEQUENCE = tuple(
+    Path("notebooks") / name
+    for name in (
+        "00_config.ipynb",
+        "01_data_collection.ipynb",
+        "02_data_validation.ipynb",
+        "03_feature_engineering.ipynb",
+        "05_model_training.ipynb",
+        "04_feature_analysis.ipynb",
+        "06_prediction.ipynb",
+        "07_evaluation.ipynb",
+        "08_reporting.ipynb",
+    )
+)
 
 
 def utc_now_iso() -> str:
@@ -49,16 +54,11 @@ def repo_root() -> Path:
 
 
 def discover_notebooks(root: Path) -> list[Path]:
-    notebooks: list[Path] = []
-    for path in sorted(root.rglob("*.ipynb")):
-        try:
-            rel = path.relative_to(root)
-        except ValueError:
-            continue
-        if any(part in IGNORED_NOTEBOOK_PARTS for part in rel.parts):
-            continue
-        notebooks.append(rel)
-    return notebooks
+    missing = [path for path in NOTEBOOK_SEQUENCE if not (root / path).is_file()]
+    if missing:
+        rendered = ", ".join(path.as_posix() for path in missing)
+        raise FileNotFoundError(f"Required notebook sources are missing: {rendered}")
+    return list(NOTEBOOK_SEQUENCE)
 
 
 def mode_env(mode: str) -> dict[str, str]:
@@ -69,26 +69,19 @@ def mode_env(mode: str) -> dict[str, str]:
 
 def resolve_jupyter_command() -> list[str]:
     project_root = repo_root()
-    venv_python_candidates = [
-        project_root / "python-api" / ".venv" / "Scripts" / "python.exe",
-        project_root / ".venv" / "Scripts" / "python.exe",
-    ]
-    for python_exe in venv_python_candidates:
-        if python_exe.exists():
-            return [str(python_exe), "-m", "jupyter"]
-
-    jupyter = shutil.which("jupyter")
-    if jupyter:
-        return [jupyter]
-    # Fallback for environments where jupyter is not on PATH.
-    return [sys.executable, "-m", "jupyter"]
+    python_exe = project_root / "python-api" / ".venv" / "Scripts" / "python.exe"
+    if not python_exe.is_file():
+        raise FileNotFoundError(
+            "Canonical Python environment is missing. Run npm run setup:api."
+        )
+    return [str(python_exe), "-X", "utf8", "-m", "jupyter"]
 
 
 def ensure_targets(root: Path) -> tuple[Path, Path, Path]:
     notebooks_dir = root / "notebooks"
     reports_dir = root / "reports"
-    out_dir = reports_dir / "e2e_notebooks"
-    result_json = reports_dir / "keiba_notebook_e2e_result.json"
+    out_dir = reports_dir / "generated" / "notebooks" / "executed"
+    result_json = reports_dir / "generated" / "notebooks" / "keiba_notebook_e2e_result.json"
 
     reports_dir.mkdir(parents=True, exist_ok=True)
     out_dir.mkdir(parents=True, exist_ok=True)

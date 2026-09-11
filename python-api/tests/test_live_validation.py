@@ -415,7 +415,7 @@ def test_container_runtime_mount_contract_excludes_real_data_from_image() -> Non
     assert "COPY keiba/data" not in dockerfile
     assert "LIVE_VALIDATION_INPUT_DIR=/app/keiba/data/live-validation-inputs" in dockerfile
     assert "./keiba/data:/app/keiba/data" in compose
-    assert "./reports:/app/keiba/data/live-validation-inputs:ro" in compose
+    assert "./keiba/data/live-validation-inputs:/app/keiba/data/live-validation-inputs:ro" in compose
 
 
 def test_fixed_commands_projection_and_success_cleanup(tmp_path: Path) -> None:

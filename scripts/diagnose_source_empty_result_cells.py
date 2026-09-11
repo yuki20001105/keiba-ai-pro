@@ -21,9 +21,10 @@ from urllib.parse import urlsplit
 from bs4 import BeautifulSoup
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_INPUT = ROOT_DIR / "reports" / "p0_targeted_refetch_live_validation.json"
+GENERATED_SCRAPE_DIR = ROOT_DIR / "reports" / "generated" / "scraping"
+DEFAULT_INPUT = GENERATED_SCRAPE_DIR / "diagnostics" / "p0_targeted_refetch_live_validation.json"
 DEFAULT_CACHE_DB = ROOT_DIR / "keiba" / "data" / "fetch_cache.db"
-DEFAULT_OUTPUT = ROOT_DIR / "reports" / "source_empty_result_cells_diagnosis.json"
+DEFAULT_OUTPUT = GENERATED_SCRAPE_DIR / "diagnostics" / "source_empty_result_cells_diagnosis.json"
 
 DOMAIN_CANCELED_TOKENS = ("取消",)
 DOMAIN_EXCLUDED_TOKENS = ("除外",)

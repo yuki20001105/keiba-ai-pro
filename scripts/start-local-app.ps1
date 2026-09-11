@@ -200,18 +200,14 @@ if ((Test-Endpoint -Url $ApiHealthUrl) -and (Test-Endpoint -Url $WebHealthUrl)) 
     exit 0
 }
 
-$pythonCandidates = @(
-    (Join-Path $RepoRoot 'python-api\.venv\Scripts\python.exe'),
-    (Join-Path $RepoRoot '.venv\Scripts\python.exe')
-)
-$PythonExe = $pythonCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
-if (-not $PythonExe) {
-    throw 'Python virtual environment was not found. Create python-api\.venv and install python-api\requirements-lock.txt.'
+$PythonExe = Join-Path $RepoRoot 'python-api\.venv\Scripts\python.exe'
+if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) {
+    throw 'Python virtual environment was not found. Run npm run setup:api.'
 }
 
 $NpmCommand = Get-Command npm.cmd -ErrorAction SilentlyContinue
 if (-not $NpmCommand) {
-    throw 'npm.cmd was not found. Install Node.js 18.17 or later.'
+    throw 'npm.cmd was not found. Install Node.js 24.x.'
 }
 if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot 'node_modules\.bin\next.cmd'))) {
     throw 'Node dependencies were not found. Run npm ci in the repository root.'

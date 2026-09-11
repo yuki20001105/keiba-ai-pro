@@ -528,7 +528,7 @@
 
 | スイーチE| コマンチE| 対象 |
 |---|---|---|
-| Python pytest | `.venv\Scripts\python.exe -m pytest keiba/keiba_ai/tests/` | ML パイプライン・特徴釁E|
+| Python pytest | `npm run test:python -- keiba/keiba_ai/tests/` | ML パイプライン・特徴釁E|
 | Vitest | `npm test` | フロントエンドロジチE���E��EチE��ィング計算等！E|
 | Playwright | `npx playwright test` | 全画面の E2E |
 

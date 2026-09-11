@@ -85,7 +85,7 @@ python-api/deps/auth.py
 cd "c:\Users\yuki2\Documents\ws\keiba-ai-pro"
 $env:SUPABASE_URL="https://grfwkutcsavqicaimssn.supabase.co"
 $env:SUPABASE_SERVICE_KEY="<service_key>"
-& ".venv\Scripts\python.exe" -c "
+& "python-api\.venv\Scripts\python.exe" -c "
 import os, sys; sys.path.insert(0, 'python-api')
 from supabase_client import get_client
 client = get_client()
@@ -164,7 +164,7 @@ git push origin develop
 npm test
 
 # バックエンド (pytest)
-keiba\Scripts\python.exe -m pytest keiba/keiba_ai/tests/ -v --tb=short
+python-api\.venv\Scripts\python.exe -m pytest keiba/keiba_ai/tests/ -v --tb=short
 
 # E2E (Playwright) — サーバー起動後に実行
 npx playwright test e2e/real-workflow.spec.ts --reporter=list --timeout 90000
