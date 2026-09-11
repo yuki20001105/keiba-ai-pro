@@ -4,23 +4,11 @@
 
 ### 🔐 管理者権限の仕組み
 
-#### 1. データベース構造（修正必要）
+#### 1. データベース構造
 
-**現状のprofilesテーブル**:
-```sql
-CREATE TABLE public.profiles (
-  id UUID REFERENCES auth.users ON DELETE CASCADE PRIMARY KEY,
-  email TEXT UNIQUE NOT NULL,
-  full_name TEXT,
-  subscription_tier TEXT DEFAULT 'free',
-  -- ⚠️ role カラムが存在しない
-  ...
-);
-```
+`profiles.role` には `admin` または `user` を設定します。環境にroleカラムがない場合だけ、次の例を参考に追加してください。
 
-**必要な修正**:
 ```sql
--- roleカラムを追加
 ALTER TABLE public.profiles 
 ADD COLUMN role TEXT DEFAULT 'user' CHECK (role IN ('admin', 'user'));
 
@@ -35,48 +23,45 @@ WHERE email = 'your-admin-email@example.com';
 
 #### 2. フロントエンドの管理者判定
 
-**useUserRole フック** (`src/hooks/useUserRole.ts`):
-- Supabaseから `profiles.role` を取得
+**AuthContext** (`src/contexts/AuthContext.tsx`):
+- 認証済みユーザーの `profiles.role` を取得
 - `isAdmin = (role === 'admin')` で判定
 - デフォルトは `'user'`
 
-**AdminOnly コンポーネント** (`src/components/AdminOnly.tsx`):
-- 管理者以外は `/home` にリダイレクト
-- ページ全体を保護
+**統合ホーム** (`src/app/home/page.tsx`):
+- 一般ユーザーには管理者モードの切り替え操作を表示しない
+- Admin ロールでも、管理者ワークスペースは最初は非表示
+- 現在ログイン中のアカウントのパスワード再入力後だけ `AdminWorkspace` をマウント
+- サーバー側の `/api/admin/unlock` でもAdmin権限と直近のパスワード認証を確認
 
 ### 🎯 管理者専用UI
 
-#### 既存の管理者専用ページ
+#### 管理者ワークスペースから移動する運用ページ
 
 | ページ | パス | 機能 | 保護状態 |
 |--------|------|------|----------|
-| **データ収集** | `/data-collection` | ネットケイバからレースデータをスクレイピング | ⚠️ 保護必要 |
-| **モデル学習** | `/train` | 5種類のMLモデルをトレーニング | ⚠️ 保護必要 |
+| **データ収集** | `/data-collection` | ネットケイバからレースデータをスクレイピング | 管理者モードの画面ガードとAPI認可を併用 |
+| **モデル学習** | `/train` | MLモデルをトレーニング | 管理者モードの画面ガードとAPI認可を併用 |
+| **本番前チェック** | `/production-readiness` | build・health・smoke・feature flagを確認 | 管理者モードの画面ガードとAPI認可を併用 |
 
 #### ホーム画面での表示制御
 
-`/home` ページ:
-```tsx
-{isAdmin && (
-  <Link href="/data-collection">
-    <div>📊 データ取得</div>
-  </Link>
-)}
+`/home` ページでは、一般ユーザー向け画面と管理者ワークスペースを同じシェル内で切り替えます。
 
-{isAdmin && (
-  <Link href="/train">
-    <div>🧠 モデル学習</div>
-  </Link>
-)}
+```tsx
+{isAdmin && <button>管理者モード</button>}
+{adminMode && isAdmin
+  ? <AdminWorkspace />
+  : <UserHome />}
 ```
 
 ### 🚀 セットアップ手順
 
-#### ステップ1: データベースにroleカラムを追加
+#### ステップ1: データベースのroleカラムを確認
 
 1. Supabase Dashboard を開く
 2. SQL Editor → New Query
-3. 以下のSQLを実行:
+3. `profiles.role` が存在しない環境に限り、以下のSQLを実行:
 
 ```sql
 -- roleカラムを追加
@@ -99,21 +84,15 @@ WHERE email = 'your-email@example.com';
 SELECT id, email, role FROM public.profiles;
 ```
 
-#### ステップ3: 管理者専用ページを保護
+#### ステップ3: `/home` で管理者モードを確認
 
-`/data-collection/page.tsx` と `/train/page.tsx` を修正:
+1. Admin ロールを設定したアカウントでログイン
+2. `/home` のヘッダーで「管理者モード」をクリック
+3. 現在ログイン中のアカウントのパスワードを再入力
+4. 同じ `/home` 内に管理者ワークスペースが表示されることを確認
 
-```tsx
-import { AdminOnly } from '@/components/AdminOnly'
-
-export default function DataCollectionPage() {
-  return (
-    <AdminOnly>
-      {/* 既存のコンテンツ */}
-    </AdminOnly>
-  )
-}
-```
+管理者向けAPIは、UIの表示制御とは別にサーバー側でもAdmin権限を検証します。
+上記3画面は共通の`AdminModeRouteGuard`で保護し、有効な短期grantがなければ内容をマウントせず`/home`へ戻します。
 
 ### 📊 管理者専用機能の概要
 
@@ -159,62 +138,36 @@ export default function DataCollectionPage() {
 - モデルは全ユーザーで共有
 - 頻繁な再学習は不要
 
-### 🏗️ 推奨: 管理者専用ダッシュボード
+### 🏗️ 管理者ワークスペース（`/home` に統合済み）
 
-#### 新規作成: `/admin` ページ
+管理者と一般ユーザーは共通の `/home` を使用します。一般ユーザーには管理者用の切り替え操作と内容を表示しません。Admin ロールのユーザーは、ヘッダーの「管理者モード」を選び、現在ログイン中のアカウントのパスワードを再入力すると、同じ `/home` 内で管理者ワークスペースへ切り替わります。
+
+管理者モードは署名付きHttpOnly cookieで15分だけ同一ユーザー・同一ログインセッションに束縛します。再読み込み後も残り時間だけ復元され、ログアウト、「ユーザー画面に戻る」、権限喪失、認可エラー、または有効期限の到来で解除されます。パスワード自体をブラウザStorageへ保存しません。旧 `/admin` URL は独立した管理画面を表示せず、管理モードを解除して `/home` へリダイレクトします。
 
 **機能**:
 - データ統計の表示
 - ユーザー一覧と権限管理
-- スクレイピング履歴
-- モデルパフォーマンス比較
-- システムログ
+- データ収集への導線
+- モデル管理への導線
+- 本番前チェックへの導線
 
-**実装例**:
+**実装箇所**:
 ```tsx
-// src/app/admin/page.tsx
-import { AdminOnly } from '@/components/AdminOnly'
+// src/app/home/page.tsx
+// Admin ロールの表示判定、パスワード再確認、モード切り替えを担当
 
-export default function AdminDashboard() {
-  return (
-    <AdminOnly>
-      <div className="container mx-auto p-6">
-        <h1 className="text-3xl font-bold mb-6">管理者ダッシュボード</h1>
-        
-        {/* 統計カード */}
-        <div className="grid grid-cols-4 gap-4 mb-8">
-          <StatCard title="総レース数" value="1,234" />
-          <StatCard title="総ユーザー数" value="56" />
-          <StatCard title="学習済みモデル" value="5" />
-          <StatCard title="API呼び出し" value="8,901" />
-        </div>
-        
-        {/* クイックアクション */}
-        <div className="grid grid-cols-2 gap-4">
-          <Link href="/data-collection">
-            <button>📊 データ収集</button>
-          </Link>
-          <Link href="/train">
-            <button>🧠 モデル学習</button>
-          </Link>
-        </div>
-        
-        {/* ユーザー管理 */}
-        <UserManagementTable />
-        
-        {/* スクレイピング履歴 */}
-        <ScrapingHistory />
-      </div>
-    </AdminOnly>
-  )
-}
+// src/components/AdminWorkspace.tsx
+// 再確認に成功した場合だけ /home 内へ管理者機能をマウント
+
+// src/app/api/admin/unlock/route.ts
+// 現在の Admin 権限と直近のパスワード認証を確認し、短期cookieを発行・検証・破棄
 ```
 
 ### 🔒 セキュリティ
 
 #### Row Level Security (RLS)
 
-現状、管理者機能はフロントエンドで制御されていますが、APIレベルでも保護が必要です。
+画面上の非表示に加え、ユーザー管理APIはAdminロールと有効な管理者モードcookieを両方検証します。`/train`と`/production-readiness`の画面はPremiumユーザーにも表示しません。一方、既存クライアントとの互換性のため、一部の運用APIは従来の`PremiumOrAdmin`認可を維持しており、これは管理者モード画面の表示権限とは別契約です。データベースをブラウザから直接参照する場合はRLSも適用します。
 
 **推奨: RLSポリシー**:
 ```sql
@@ -230,20 +183,20 @@ CREATE POLICY "Admins can view scraping logs"
   );
 ```
 
-### 📝 TODO: 実装が必要な項目
+### 📝 TODO: 継続確認が必要な項目
 
-- [ ] Supabase schemaにroleカラムを追加
-- [ ] `/data-collection/page.tsx` を `<AdminOnly>` で保護
-- [ ] `/train/page.tsx` を `<AdminOnly>` で保護
-- [ ] 管理者専用ダッシュボード `/admin` を作成
-- [ ] ユーザー管理機能（role変更）
+- [ ] Supabase schemaのroleカラムと管理者アカウント設定を環境ごとに確認
+- [x] `/data-collection` を管理者モードの共通layoutで保護
+- [x] `/train` と `/production-readiness` を管理者モードの共通layoutで保護
+- [x] `/home` にパスワード再確認付きの管理者ワークスペースを統合
+- [x] ユーザー管理機能（role変更）
 - [ ] スクレイピング履歴テーブルとUI
-- [ ] API側でも管理者権限チェック
+- [ ] すべての管理者向けAPIでAdmin権限チェックが維持されていることを継続監査
 - [ ] RLSポリシーで管理者データを保護
 
 ### 🎯 次のステップ
 
-1. **今すぐ実行**: データベースにroleカラムを追加
-2. **優先度高**: 既存ページに `<AdminOnly>` を適用
-3. **推奨**: 管理者ダッシュボードを作成
-4. **将来**: ユーザー管理機能を実装
+1. **環境確認**: データベースのroleカラムと管理者ユーザーを確認
+2. **動作確認**: `/home` からパスワード再入力で管理者モードへ切り替える
+3. **認可確認**: 管理者向けAPIとRLSのサーバー側保護を継続検証
+4. **将来**: スクレイピング履歴など未実装機能を追加

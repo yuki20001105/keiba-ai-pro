@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react'
 import Link from 'next/link'
 import { Logo } from '@/components/Logo'
-import { PremiumRequiredNotice } from '@/components/PremiumRequiredNotice'
+import { AdminRequiredNotice } from '@/components/AdminRequiredNotice'
 import { useAuth } from '@/contexts/AuthContext'
 import { authFetch } from '@/lib/auth-fetch'
 
@@ -72,12 +72,12 @@ function renderCompactDetails(details?: Record<string, unknown>) {
 }
 
 export default function ProductionReadinessPage() {
-  const { isPremium, isAdmin, loading: authLoading } = useAuth()
+  const { isAdmin, loading: authLoading } = useAuth()
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState<ReadinessResponse | null>(null)
   const [error, setError] = useState('')
 
-  const canRun = isAdmin || isPremium
+  const canRun = isAdmin
 
   const grouped = useMemo(() => {
     if (!result) return [] as CheckItem[]
@@ -129,9 +129,9 @@ export default function ProductionReadinessPage() {
 
           {!authLoading && !canRun && (
             <div className="mt-4">
-              <PremiumRequiredNotice
-                title="本番前チェックは Premium または Admin 専用です"
-                message="非権限ユーザーは実行できません。チェック内容は read-only に限定されています。"
+              <AdminRequiredNotice
+                title="本番前チェック画面は管理者モード専用です"
+                message="ホームで管理者パスワードを確認してから開いてください。チェック内容は read-only に限定されています。"
               />
             </div>
           )}

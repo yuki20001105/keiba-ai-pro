@@ -25,14 +25,54 @@ describe('UI navigation contract', () => {
     }
   })
 
-  test('groups operational tools under the Admin menu', () => {
-    const source = readSource('src/app/admin/page.tsx')
+  test('groups operational tools in the password-unlocked Admin workspace', () => {
+    const source = readSource('src/components/AdminWorkspace.tsx')
 
-    expect(source).toContain('href="/data-collection"')
-    expect(source).toContain('href="/train"')
-    expect(source).toContain('href="/production-readiness"')
+    expect(source).toContain("href: '/data-collection'")
+    expect(source).toContain("href: '/train'")
+    expect(source).toContain("href: '/production-readiness'")
     expect(source).toContain('モデル管理')
     expect(source).toContain('学習実行は準備中')
+
+    const legacyRoute = readSource('src/app/admin/page.tsx')
+    expect(legacyRoute).toContain("redirect('/home')")
+    expect(legacyRoute).not.toContain('管理者ダッシュボード')
+  })
+
+  test('guards every linked operational page with the active Admin mode', () => {
+    for (const layout of [
+      'src/app/data-collection/layout.tsx',
+      'src/app/train/layout.tsx',
+      'src/app/production-readiness/layout.tsx',
+    ]) {
+      expect(readSource(layout)).toContain('<AdminModeRouteGuard>{children}</AdminModeRouteGuard>')
+    }
+  })
+
+  test('keeps the data-collection screen focused on the essential workflow', () => {
+    const source = readSource('src/app/data-collection/page.tsx')
+
+    expect(source).toContain('data-testid="start-period-input"')
+    expect(source).toContain('data-testid="end-period-input"')
+    expect(source).toContain('data-testid="dry-run-button"')
+    expect(source).toContain('data-testid="execute-button"')
+    expect(source).toContain('data-testid="latest-fetch-summary"')
+    expect(source).toContain('data-testid="uncertainty-panel"')
+    expect(source).toContain('取得済みデータ')
+
+    for (const optionalUi of [
+      'Refresh Plan',
+      'P0 Repair Plan',
+      'Targeted Refetch Plan',
+      'Live Validation',
+      'Review Queue',
+      'force-rescrape-input',
+      '特徴量プロファイリングレポート（オプション）',
+      'モデル学習へ',
+      'quality-bridge-card',
+    ]) {
+      expect(source).not.toContain(optionalUi)
+    }
   })
 
   test('exposes advanced analysis only from its related main screen', () => {

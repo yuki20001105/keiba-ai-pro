@@ -14,7 +14,7 @@ function noStoreJson(body: unknown, status: number): NextResponse {
 }
 
 export async function GET(request: NextRequest) {
-  const authz = await verifyRequestAuth(request, { requireAdmin: true })
+  const authz = await verifyRequestAuth(request, { requireAdminMode: true })
   if (!authz.ok) return noStoreJson({ detail: authz.detail }, authz.status)
 
   const serviceClient = createSupabaseServiceClient()

@@ -13,7 +13,7 @@ import {
 } from '../src/lib/scrape-uncertainty-review-server'
 import { mockSupabaseIdentity, setSupabaseTestSession } from './helpers/mock-api'
 
-const SUPABASE_ORIGIN = 'http://127.0.0.1:54321'
+const SUPABASE_ORIGIN = process.env.NEXT_PUBLIC_SUPABASE_URL || 'http://127.0.0.1:54321'
 const SERVER_REQUEST_ID = '22222222-2222-4222-8222-222222222222'
 const LOCK: PersistedUncertaintyLock = {
   version: 1,

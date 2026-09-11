@@ -5,7 +5,6 @@ import { beforeEach, describe, expect, test, vi } from 'vitest'
 const authFetchMock = vi.fn()
 
 vi.mock('@/lib/auth-fetch', () => ({ authFetch: authFetchMock }))
-vi.mock('@/components/AdminOnly', () => ({ AdminOnly: ({ children }: { children: React.ReactNode }) => <>{children}</> }))
 
 const TARGET_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 const profile = {
@@ -24,7 +23,7 @@ function jsonResponse(value: unknown, status = 200): Response {
   })
 }
 
-describe('Admin dashboard server-bound profile access', () => {
+describe('Integrated admin workspace server-bound profile access', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     authFetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -41,8 +40,8 @@ describe('Admin dashboard server-bound profile access', () => {
   })
 
   test('loads and updates profiles only through authFetch Admin routes', async () => {
-    const { default: AdminDashboard } = await import('@/app/admin/page')
-    render(<AdminDashboard />)
+    const { AdminWorkspace } = await import('@/components/AdminWorkspace')
+    render(<AdminWorkspace onAuthorizationFailure={vi.fn()} />)
 
     expect(await screen.findByText('user@example.com')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /データ取得/ })).toHaveAttribute('href', '/data-collection')
@@ -63,21 +62,26 @@ describe('Admin dashboard server-bound profile access', () => {
     })
   })
 
-  test('shows bounded server detail and does not render forged profile data', async () => {
+  test('locks immediately when the server rejects the Admin role', async () => {
     authFetchMock.mockImplementationOnce(async () => jsonResponse({ detail: 'Admin role required' }, 403))
-    const { default: AdminDashboard } = await import('@/app/admin/page')
-    render(<AdminDashboard />)
+    const onAuthorizationFailure = vi.fn()
+    const { AdminWorkspace } = await import('@/components/AdminWorkspace')
+    render(<AdminWorkspace onAuthorizationFailure={onAuthorizationFailure} />)
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('Admin role required')
+    await waitFor(() => expect(onAuthorizationFailure).toHaveBeenCalledTimes(1))
     expect(screen.queryByText('user@example.com')).not.toBeInTheDocument()
   })
 
   test('contains no browser-side profiles select/update or service-role access', () => {
-    const source = readFileSync('src/app/admin/page.tsx', 'utf8')
+    const source = readFileSync('src/components/AdminWorkspace.tsx', 'utf8')
     expect(source).not.toMatch(/@\/lib\/supabase/)
     expect(source).not.toMatch(/supabase\s*\.\s*from\s*\(/)
     expect(source).not.toContain(".from('profiles')")
     expect(source).not.toContain('SUPABASE_SERVICE_ROLE_KEY')
     expect(source).toContain("authFetch('/api/admin/profiles'")
+
+    const legacyRoute = readFileSync('src/app/admin/page.tsx', 'utf8')
+    expect(legacyRoute).toContain("redirect('/home')")
+    expect(legacyRoute).not.toContain('AdminWorkspace')
   })
 })

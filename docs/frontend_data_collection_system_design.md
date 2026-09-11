@@ -41,13 +41,14 @@ Observed mismatch from source document:
 ## 2. Implemented (As-Is)
 
 ### 2.1 Data Collection main page
-- Dry-run trigger exists and posts through Next route `/api/scrape` with `dry_run: true`.
-- Job polling exists via `/api/scrape/status/{jobId}`.
-- Execute path exists via `useBatchScrape()` integration.
-- Fetch summary history exists via `/api/scrape/history`.
-- Health status probe exists via `/api/scrape/health`.
-- Stats and recent races integration exists via `/api/data-stats`, `/api/races/recent`, `/api/races/{race_id}/horses`.
-- Links to Refresh Plan and P0 Repair Plan exist from the Data Collection context.
+- The normal Admin-mode surface is intentionally compact: API health, month range, Dry-run, normal execute, progress/completion/error state, uncertainty reconciliation when required, the latest fetch summary, and three stored-data statistics.
+- Dry-run posts through Next route `/api/scrape` with `dry_run: true` and does not perform external HTTP.
+- Normal execute uses `useBatchScrape()` and always submits `force_rescrape: false`; repair/refetch is not selectable from the normal surface.
+- Job polling and fail-closed uncertainty reconciliation use `/api/scrape/status/{jobId}`. The reconciliation control is shown only when an unresolved job could still be running.
+- `/api/scrape/history` remains available, while the normal surface renders only the latest summary rather than a full history console.
+- Health and the three stored-data statistics use `/api/scrape/health` and `/api/data-stats`.
+- Recent-race/detail inspection and profiling integrations remain implemented, but are maintenance capabilities and are not rendered on the normal surface.
+- Refresh Plan, P0 Repair Plan, Targeted Refetch Plan, Bounded Live Validation, and Uncertainty Review Queue pages/routes remain implemented. Their links are hidden from the normal Data Collection header and completion state.
 
 ### 2.2 Refresh Plan page and route
 - UI is preview-oriented and clearly indicates dry-run intent.
@@ -156,6 +157,7 @@ Observed mismatch from source document:
 ---
 
 ## 3. Planned (Future)
+- Keep maintenance and experimental planning/validation surfaces out of the normal Data Collection navigation until their separate approval and staging requirements are met. Hiding a link does not remove its page, route, script, authorization, or safety contract.
 - Controlled staging evidence for the bounded live-validation UI and FastAPI service.
 - Unified operational dashboard that joins:
   - refresh dry-run
@@ -172,9 +174,9 @@ Observed mismatch from source document:
 
 | frontend screen | Next route | backend/script | method | read-only | external HTTP | DB write | status |
 |---|---|---|---|---|---|---|---|
-| Data Collection | `/api/scrape` | FastAPI `/api/scrape/start` | POST | dry-run yes / execute no | dry-run: no, execute: yes | dry-run: no, execute: yes | implemented |
+| Data Collection | `/api/scrape` | FastAPI `/api/scrape/start` | POST | dry-run yes / execute no | dry-run: no, execute: yes | dry-run: no, execute: yes | implemented; normal UI fixes `force_rescrape=false` |
 | Data Collection | `/api/scrape/status/{jobId}` | FastAPI `/api/scrape/status/{job_id}` | GET | yes | no | no | implemented; Admin + owner scoped |
-| Data Collection | `/api/scrape/history` | FastAPI `/api/scrape/history` | GET | yes | no | no | implemented; Admin + owner scoped |
+| Data Collection | `/api/scrape/history` | FastAPI `/api/scrape/history` | GET | yes | no | no | implemented; Admin + owner scoped; normal UI shows latest item only |
 | Data Collection | `/api/scrape/health` | FastAPI `/api/scrape/health` | GET | yes | no | no | implemented |
 | Refresh Plan | `/api/scrape/refresh-plan` | `plan_scrape_refresh.py` | POST/GET | yes | no | no | implemented |
 | Refresh Plan execute | `/api/scrape/refresh-plan` | none | PUT | yes | no | no | disabled (`501`) |

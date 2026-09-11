@@ -6,7 +6,7 @@ type BatchScenario = {
   polls: Array<Record<string, unknown>>
 }
 
-const SUPABASE_ORIGIN = 'http://127.0.0.1:54321'
+const SUPABASE_ORIGIN = process.env.NEXT_PUBLIC_SUPABASE_URL || 'http://127.0.0.1:54321'
 
 async function setupAuthorizedPage(page: Page, baseURL: string) {
   await setSupabaseTestSession(page, {
@@ -34,7 +34,14 @@ async function setupAuthorizedPage(page: Page, baseURL: string) {
   )
 }
 
-async function mockBatchWorkflow(page: Page, scenarios: BatchScenario[], options?: { dryRunStatus?: Record<string, unknown> }) {
+async function mockBatchWorkflow(
+  page: Page,
+  scenarios: BatchScenario[],
+  options?: {
+    dryRunStatus?: Record<string, unknown>
+    onExecuteBody?: (body: Record<string, unknown>) => void
+  },
+) {
   let postIndex = 0
   const pollCount: Record<string, number> = {}
 
@@ -50,6 +57,7 @@ async function mockBatchWorkflow(page: Page, scenarios: BatchScenario[], options
       })
     }
 
+    options?.onExecuteBody?.(body)
     const scenario = scenarios[postIndex]
     postIndex += 1
     if (!scenario) {
@@ -148,10 +156,10 @@ test.describe('Phase3B Data Collection workflow', () => {
     const panel = page.getByTestId('batch-status-panel')
     await expect(panel).toContainText('取得完了: 0レース（0レース・正常完了）')
     await expect(panel).not.toContainText('Dry-runはまだ処理中です')
-    await expect(page.getByTestId('quality-bridge-card')).toBeVisible()
+    await expect(page.getByTestId('quality-bridge-card')).toHaveCount(0)
   })
 
-  test('queued/running/multi-month-running中はcompleted/quality bridgeを表示しない', async ({ page, baseURL }) => {
+  test('queued/running/multi-month-running中はcompleted表示へ早期遷移しない', async ({ page, baseURL }) => {
     if (!baseURL) throw new Error('Playwright baseURL is required')
 
     await setupAuthorizedPage(page, baseURL)
@@ -189,7 +197,7 @@ test.describe('Phase3B Data Collection workflow', () => {
     await expect(statusPanel).toContainText('5レース')
   })
 
-  test('実行中はフォーム入力と実行系ボタンをlockし、completed前にbridgeを表示しない', async ({ page, baseURL }) => {
+  test('実行中はフォーム入力と実行系ボタンをlockする', async ({ page, baseURL }) => {
     if (!baseURL) throw new Error('Playwright baseURL is required')
 
     await setupAuthorizedPage(page, baseURL)
@@ -213,7 +221,7 @@ test.describe('Phase3B Data Collection workflow', () => {
     await expect(page.getByTestId('batch-status-panel')).toContainText('取得実行中')
     await expect(page.getByTestId('start-period-input')).toBeDisabled()
     await expect(page.getByTestId('end-period-input')).toBeDisabled()
-    await expect(page.getByTestId('force-rescrape-input')).toBeDisabled()
+    await expect(page.getByTestId('force-rescrape-input')).toHaveCount(0)
     await expect(page.getByTestId('dry-run-button')).toBeDisabled()
     await expect(page.getByTestId('execute-button')).toBeDisabled()
     await expect(page.getByTestId('quality-bridge-card')).toHaveCount(0)
@@ -295,11 +303,16 @@ test.describe('Phase3B Data Collection workflow', () => {
     })
   }
 
-  test('quality bridge本文とリンク先を維持', async ({ page, baseURL }) => {
+  test('通常UIは保守導線を隠し、通常取得をforce_rescrape=falseで開始する', async ({ page, baseURL }) => {
     if (!baseURL) throw new Error('Playwright baseURL is required')
 
+    let executeBody: Record<string, unknown> | null = null
     await setupAuthorizedPage(page, baseURL)
-    await mockBatchWorkflow(page, [{ jobId: 'job-ok', polls: [{ status: 'completed', result: { races_collected: 1 } }] }])
+    await mockBatchWorkflow(
+      page,
+      [{ jobId: 'job-ok', polls: [{ status: 'completed', result: { races_collected: 1 } }] }],
+      { onExecuteBody: body => { executeBody = body } },
+    )
 
     page.on('dialog', dialog => dialog.accept())
 
@@ -307,11 +320,13 @@ test.describe('Phase3B Data Collection workflow', () => {
     await setSingleMonthRange(page, '2026-01')
     await page.getByTestId('execute-button').click()
 
-    const bridge = page.getByTestId('quality-bridge-card')
-    await expect(bridge).toBeVisible()
-    await expect(bridge).toContainText('取得は完了しましたが、品質確認は未実施です')
-    await expect(page.getByTestId('quality-bridge-refresh-link')).toHaveAttribute('href', '/data-collection/refresh-plan')
-    await expect(page.getByTestId('quality-bridge-p0-link')).toHaveAttribute('href', '/data-collection/p0-repair-plan')
+    await expect(page.getByTestId('batch-status-panel')).toContainText('取得完了')
+    expect(executeBody).toMatchObject({ force_rescrape: false })
+    await expect(page.getByTestId('force-rescrape-input')).toHaveCount(0)
+    await expect(page.getByTestId('quality-bridge-card')).toHaveCount(0)
+    for (const name of ['Refresh Plan', 'P0 Repair Plan', 'Targeted Refetch Plan', 'Live Validation', 'Review Queue']) {
+      await expect(page.getByRole('link', { name, exact: true })).toHaveCount(0)
+    }
   })
 
   test('retry前にbackend error detailが保持される', async ({ page, baseURL }) => {

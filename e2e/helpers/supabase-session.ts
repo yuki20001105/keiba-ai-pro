@@ -9,6 +9,8 @@ export type SupabaseSessionOptions = {
   expiresInSeconds?: number
   supabaseUrl?: string
   appBaseUrl?: string
+  sessionId?: string
+  passwordAuthenticatedAt?: number
 }
 
 type TestUser = {
@@ -56,6 +58,7 @@ export function buildTestJwt(opts: SupabaseSessionOptions = {}): string {
   const exp = now + (opts.expiresInSeconds ?? 3600)
   const role = opts.role ?? 'user'
   const tier = opts.tier ?? 'free'
+  const sessionId = opts.sessionId ?? 'e2e-session-id'
   const payload = {
     aud: 'authenticated',
     sub: opts.userId ?? 'e2e-user-id',
@@ -63,6 +66,8 @@ export function buildTestJwt(opts: SupabaseSessionOptions = {}): string {
     role: 'authenticated',
     iat: now,
     exp,
+    session_id: sessionId,
+    amr: [{ method: 'password', timestamp: opts.passwordAuthenticatedAt ?? now }],
     app_metadata: {
       role,
       subscription_tier: tier,

@@ -11,9 +11,7 @@ import {
   enumerateMonthDateRanges,
   type DryRunResult as ScrapeDryRunResult,
 } from '@/lib/dry-run-batch'
-import { useJobPoller } from '@/hooks/useJobPoller'
 import { BatchScrapeError, useBatchScrape } from '@/hooks/useBatchScrape'
-import { useAuth } from '@/contexts/AuthContext'
 import {
   UNCERTAINTY_REVIEW_STORAGE_KEY,
   UNCERTAINTY_STORAGE_KEY,
@@ -184,7 +182,6 @@ function normalizeDryRunResult(resultPayload: any): ScrapeDryRunResult {
 }
 
 export default function DataCollectionPage() {
-  const { isAdmin } = useAuth()
   const e2ePollIntervalRaw = process.env.NEXT_PUBLIC_E2E_BATCH_POLL_INTERVAL_MS
   const e2ePollInterval = e2ePollIntervalRaw ? Number(e2ePollIntervalRaw) : undefined
   const batchScrapeOptions = Number.isFinite(e2ePollInterval) && (e2ePollInterval as number) >= 0
@@ -196,7 +193,7 @@ export default function DataCollectionPage() {
   const [endPeriod, setEndPeriod] = useState(
     `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
   )
-  const [forceRescrape, setForceRescrape] = useState(false)
+  const forceRescrape = false
 
   // A resume link lets an interrupted long-running batch reopen at the exact
   // month without relying on browser-specific month-input automation.
@@ -210,7 +207,6 @@ export default function DataCollectionPage() {
     if (!validation.ok) return
     setStartPeriod(resumeStart)
     setEndPeriod(resumeEnd)
-    setForceRescrape(params.get('repair') === '1')
   }, [])
   const [dryRunLoading, setDryRunLoading] = useState(false)
   const [dryRunStartedAt, setDryRunStartedAt] = useState<number | null>(null)
@@ -297,34 +293,6 @@ export default function DataCollectionPage() {
 
   // データ統計と表示
   const [dataStats, setDataStats] = useState({ totalRaces: 0, totalResults: 0, latestDate: '' })
-  const [showCollectedData, setShowCollectedData] = useState(false)
-  const [collectedRaces, setCollectedRaces] = useState<any[]>([])
-  const [selectedRaceDetail, setSelectedRaceDetail] = useState<any>(null)
-
-  // プロファイリング
-  const [showProfiling, setShowProfiling] = useState(false)
-  const [profilingJobId, setProfilingJobId] = useState<string | null>(null)
-  const [useOptimized, setUseOptimized] = useState(true)
-
-  // useJobPoller でプロファイリングのポーリングを管理
-  const { status: profilingStatus, progress: profilingMessage } = useJobPoller({
-    jobId: profilingJobId,
-    getStatusUrl: id => `/api/profiling/status/${id}`,
-    intervalMs: 5000,
-  })
-
-  const inferProgress = (msg: string): number => {
-    if (msg.includes('読み込み')) return 15
-    if (msg.includes('エンジニアリング')) return 35
-    if (msg.includes('最適化')) return 55
-    if (msg.includes('ydata-profiling') || msg.includes('生成中')) return 75
-    if (msg.includes('完了')) return 100
-    return 5
-  }
-  const profilingProgress =
-    profilingStatus === 'completed' ? 100
-    : profilingStatus === 'error' ? 0
-    : profilingMessage ? inferProgress(profilingMessage) : 0
 
   // ローカルAPI稼働チェック
   const [localApiStatus, setLocalApiStatus] = useState<LocalApiStatus>('checking')
@@ -877,31 +845,6 @@ export default function DataCollectionPage() {
     }
   }
 
-  const fetchCollectedData = async () => {
-    try {
-      const res = await authFetch('/api/races/recent?limit=50')
-      if (!res.ok) return
-      const data = await res.json()
-      setCollectedRaces(data.races || [])
-    } catch (error) {
-      console.error('データ取得エラー:', error)
-    }
-  }
-
-  const fetchRaceDetail = async (raceId: string) => {
-    try {
-      const res = await authFetch(`/api/races/${raceId}/horses`)
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}))
-        throw new Error(err.error || `HTTP ${res.status}`)
-      }
-      const data = await res.json()
-      setSelectedRaceDetail({ raceId, results: data.horses || [] })
-    } catch (error) {
-      console.error('レース詳細取得エラー:', error)
-    }
-  }
-
   // 🚀 期間指定バッチスクレイピング（バリデーション・確認ダイアログのみ担当）
   const handlePeriodBatchScrape = async (override?: BatchRequestSnapshot) => {
     if (isOperationBusy) return
@@ -1054,6 +997,20 @@ export default function DataCollectionPage() {
     return `${Math.ceil(parsed)} sec`
   }
 
+  const formatSummaryDate = (value: unknown): string => {
+    const text = typeof value === 'string' ? value.trim() : ''
+    if (/^\d{8}$/.test(text)) {
+      return `${text.slice(0, 4)}/${text.slice(4, 6)}/${text.slice(6, 8)}`
+    }
+    return text || '-'
+  }
+
+  const formatSummaryTimestamp = (value: unknown): string => {
+    if (typeof value !== 'string' || !value.trim()) return ''
+    const parsed = new Date(value)
+    return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString('ja-JP')
+  }
+
   const handleDryRun = async () => {
     const validation = validatePeriodRange(startPeriod, endPeriod)
     if (!validation.ok) {
@@ -1149,48 +1106,11 @@ export default function DataCollectionPage() {
     void loadFetchSummaryHistory()
   }, [batchResult, loadFetchSummaryHistory])
 
-  const handleStartProfiling = async () => {
-    if (!isAdmin) {
-      showToast('特徴量プロファイリングはAdmin専用です。', 'error')
-      return
-    }
-    setProfilingJobId(null)
-    try {
-      const res = await authFetch('/api/profiling', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ use_optimized: useOptimized }),
-      })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const { job_id } = await res.json()
-      setProfilingJobId(job_id)
-    } catch (e: any) {
-      showToast(e.message, 'error')
-    }
-  }
-
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-white">
       <header className="border-b border-[#1e1e1e] px-6 py-4 flex items-center justify-between">
         <Logo href="/home" />
-        <div className="flex items-center gap-4">
-          <Link href="/data-collection/refresh-plan" className="text-xs text-[#666] hover:text-white transition-colors">
-            Refresh Plan
-          </Link>
-          <Link href="/data-collection/p0-repair-plan" className="text-xs text-[#666] hover:text-white transition-colors">
-            P0 Repair Plan
-          </Link>
-          <Link href="/data-collection/targeted-refetch-plan" className="text-xs text-[#666] hover:text-white transition-colors">
-            Targeted Refetch Plan
-          </Link>
-          <Link href="/data-collection/live-validation" className="text-xs text-[#b45309] hover:text-white transition-colors" data-testid="phase3d-header-link">
-            Live Validation
-          </Link>
-          {isAdmin && (
-            <Link href="/data-collection/uncertainty-reviews" className="text-xs text-[#38bdf8] hover:text-white transition-colors" data-testid="phase3g-review-queue-link">
-              Review Queue
-            </Link>
-          )}
+        <div className="flex flex-wrap items-center justify-end gap-3 sm:gap-4">
           <Link href="/home" className="flex items-center gap-1 text-xs text-[#555] hover:text-white transition-colors">
             <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
@@ -1237,7 +1157,7 @@ export default function DataCollectionPage() {
             <p className="text-xs text-[#555]">月単位で自動分割して順次取得</p>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
               <label className="block text-xs text-[#666] mb-2">開始年月</label>
               <input
@@ -1270,68 +1190,44 @@ export default function DataCollectionPage() {
             </div>
           </div>
 
-          {/* 期間情報 */}
-          {(() => {
-            const [sy, sm] = startPeriod.split('-').map(Number)
-            const [ey, em] = endPeriod.split('-').map(Number)
-            if (!sy || !ey) return null
-            const months = (ey - sy) * 12 + (em - sm) + 1
-            if (months <= 2) return null
-            return null
-          })()}
-
           <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] px-3 py-2.5 text-xs text-[#9db4cc]">
-            Dry-run は HTTPアクセスを実行しません。アクセス予定数とポリシーを事前確認するためのプレビューです。
+            Dry-run は HTTPアクセスを実行しません。取得件数と推定時間を事前確認するためのプレビューです。
           </div>
 
-          <div className="flex items-center justify-between pt-1 gap-3">
-            <label className="flex items-center gap-2 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                data-testid="force-rescrape-input"
-                checked={forceRescrape}
-                disabled={isOperationBusy || executeBlockedByUncertainty}
-                onChange={e => setForceRescrape(e.target.checked)}
-                className="w-3.5 h-3.5 accent-white"
-              />
-              <span className="text-xs text-[#888]">修復取得（不足・品質未達レースのみ再取得）</span>
-            </label>
+          <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+            <button
+              onClick={handleDryRun}
+              data-testid="dry-run-button"
+              disabled={isOperationBusy || isApiUnavailable || !isPeriodValid || executeBlockedByUncertainty}
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-lg font-medium text-sm transition-colors ${
+                isOperationBusy || isApiUnavailable || !isPeriodValid || executeBlockedByUncertainty
+                  ? 'bg-[#222] text-[#555] cursor-not-allowed'
+                  : 'bg-[#1e293b] text-[#dbeafe] hover:bg-[#334155]'
+              }`}
+            >
+              {dryRunLoading ? 'Dry-run中...' : 'Dry-run'}
+            </button>
 
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleDryRun}
-                data-testid="dry-run-button"
-                disabled={isOperationBusy || isApiUnavailable || !isPeriodValid || executeBlockedByUncertainty}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-lg font-medium text-sm transition-colors ${
-                  isOperationBusy || isApiUnavailable || !isPeriodValid || executeBlockedByUncertainty
-                    ? 'bg-[#222] text-[#555] cursor-not-allowed'
-                    : 'bg-[#1e293b] text-[#dbeafe] hover:bg-[#334155]'
-                }`}
-              >
-                {dryRunLoading ? 'Dry-run中...' : 'Dry-run'}
-              </button>
-
-              <button
-                onClick={() => handlePeriodBatchScrape()}
-                data-testid="execute-button"
-                disabled={isOperationBusy || isApiUnavailable || !isPeriodValid || executeBlockedByUncertainty}
-                className={`flex items-center gap-2 px-6 py-2.5 rounded-lg font-medium text-sm transition-colors ${
-                  isOperationBusy || isApiUnavailable || !isPeriodValid || executeBlockedByUncertainty
-                    ? 'bg-[#222] text-[#555] cursor-not-allowed'
-                    : 'bg-white text-black hover:bg-[#eee]'
-                }`}
-              >
-                {isBatchBusy ? (
-                  <>
-                    <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                    </svg>
-                    取得中...
-                  </>
-                ) : !uncertaintyHydrated || !reviewHydrated ? '状態確認中' : isApiUnavailable ? 'API確認不可' : !isPeriodValid ? '期間不正' : executeBlockedByUncertainty ? '実行確認待ち' : '取得開始'}
-              </button>
-            </div>
+            <button
+              onClick={() => handlePeriodBatchScrape()}
+              data-testid="execute-button"
+              disabled={isOperationBusy || isApiUnavailable || !isPeriodValid || executeBlockedByUncertainty}
+              className={`flex items-center gap-2 px-6 py-2.5 rounded-lg font-medium text-sm transition-colors ${
+                isOperationBusy || isApiUnavailable || !isPeriodValid || executeBlockedByUncertainty
+                  ? 'bg-[#222] text-[#555] cursor-not-allowed'
+                  : 'bg-white text-black hover:bg-[#eee]'
+              }`}
+            >
+              {isBatchBusy ? (
+                <>
+                  <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  取得中...
+                </>
+              ) : !uncertaintyHydrated || !reviewHydrated ? '状態確認中' : isApiUnavailable ? 'API確認不可' : !isPeriodValid ? '期間不正' : executeBlockedByUncertainty ? '実行確認待ち' : '取得開始'}
+            </button>
           </div>
 
           {uncertaintyStorageBlocked && (
@@ -1477,7 +1373,11 @@ export default function DataCollectionPage() {
           )}
 
           {dryRunErrorMessage && (
-            <div className="rounded border border-[#4a1d1d] bg-[#220d0d] px-3 py-2 text-xs text-[#fca5a5]" role="alert">
+            <div
+              className="rounded border border-[#4a1d1d] bg-[#220d0d] px-3 py-2 text-xs text-[#fca5a5]"
+              role="alert"
+              data-testid="dry-run-error"
+            >
               Dry-run失敗: {dryRunErrorMessage}
             </div>
           )}
@@ -1515,77 +1415,31 @@ export default function DataCollectionPage() {
           )}
 
           {!dryRunLoading && dryRunResultReady && dryRunResult && (
-            <div className="rounded-lg border border-[#1e1e1e] bg-[#0a0a0a] p-4 space-y-3">
+            <div
+              className="rounded-lg border border-[#1e1e1e] bg-[#0a0a0a] p-4 space-y-3"
+              data-testid="dry-run-result"
+            >
               <div className="flex items-center justify-between">
                 <h3 className="text-xs font-medium text-white">Dry-run 結果（実取得なし）</h3>
                 <span className="text-[11px] text-[#6b7280]">HTTPアクセスしないプレビュー</span>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">
-                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3 space-y-2">
-                  <div className="text-[#7dd3fc]">取得対象</div>
-                  <div className="text-[#aaa]">total target count: <span className="text-white">{dryRunResult.dry_run.total_target_count}</span></div>
-                  <div className="text-[#aaa]">unique URL count: <span className="text-white">{dryRunResult.dry_run.unique_url_count}</span></div>
+              <div className="grid grid-cols-2 gap-3 text-xs md:grid-cols-4">
+                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3">
+                  <div className="text-[#666]">新規取得</div>
+                  <div className="mt-1 text-lg font-semibold text-white">{dryRunResult.dry_run.new_fetch_required_count.toLocaleString()}</div>
                 </div>
-
-                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3 space-y-2">
-                  <div className="text-[#7dd3fc]">新規取得が必要</div>
-                  <div className="text-[#aaa]">new fetch required count: <span className="text-white">{dryRunResult.dry_run.new_fetch_required_count}</span></div>
-                  <div className="text-[#aaa]">estimated request count: <span className="text-white">{dryRunResult.dry_run.estimated_request_count}</span></div>
-                  <div className="text-[#aaa]">cache miss count: <span className="text-white">{dryRunResult.dry_run.cache_miss_count}</span></div>
+                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3">
+                  <div className="text-[#666]">既存データ</div>
+                  <div className="mt-1 text-lg font-semibold text-white">{dryRunResult.dry_run.already_covered_count.toLocaleString()}</div>
                 </div>
-
-                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3 space-y-2">
-                  <div className="text-[#7dd3fc]">既存DBでカバー済み</div>
-                  <div className="text-[#aaa]">already covered count: <span className="text-white">{dryRunResult.dry_run.already_covered_count}</span></div>
-                  <div className="text-[#aaa]">DB existing skip count: <span className="text-white">{dryRunResult.dry_run.db_existing_skip_count}</span></div>
-                  <div className="text-[#aaa]">DB existing race count: <span className="text-white">{dryRunResult.dry_run.db_existing_race_count}</span></div>
-                  <div className="text-[#aaa]">DB existing horse count: <span className="text-white">{dryRunResult.dry_run.db_existing_horse_count}</span></div>
-                  <div className="text-[#aaa]">DB existing result count: <span className="text-white">{dryRunResult.dry_run.db_existing_result_count}</span></div>
-                  <div className="text-[#aaa]">DB existing pedigree count: <span className="text-white">{dryRunResult.dry_run.db_existing_pedigree_count}</span></div>
+                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3">
+                  <div className="text-[#666]">HTTP予定</div>
+                  <div className="mt-1 text-lg font-semibold text-white">{dryRunResult.dry_run.estimated_request_count.toLocaleString()}</div>
                 </div>
-
-                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3 space-y-2">
-                  <div className="text-[#7dd3fc]">HTTPキャッシュ / resume でスキップ</div>
-                  <div className="text-[#aaa]">cache hit count: <span className="text-white">{dryRunResult.dry_run.cache_hit_count}</span></div>
-                  <div className="text-[#aaa]">resume hit count: <span className="text-white">{dryRunResult.dry_run.resume_hit_count}</span></div>
-                  <div className="text-[#aaa]">skipped count: <span className="text-white">{dryRunResult.dry_run.skipped_count}</span></div>
-                </div>
-
-                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3 space-y-2">
-                  <div className="text-[#7dd3fc]">推定HTTPリクエスト</div>
-                  <div className="text-[#aaa]">estimated request count: <span className="text-white">{dryRunResult.dry_run.estimated_request_count}</span></div>
-                </div>
-
-                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3 space-y-2">
-                  <div className="text-[#7dd3fc]">推定実行時間</div>
-                  <div className="text-[#aaa]">estimated runtime: <span className="text-white">{Math.ceil(dryRunResult.dry_run.estimated_runtime_sec)} sec</span></div>
-                </div>
-              </div>
-
-              <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] px-3 py-2 text-xs text-[#9db4cc] space-y-1">
-                <div>DB existing skip count は、既にDBに保存済みのため再取得不要と判定された件数です。</div>
-                <div>cache hit はHTTPキャッシュで再取得不要と判定された件数です。</div>
-                <div>resume hit は過去に成功済みのURLとして再実行をスキップできる件数です。</div>
-                <div>new fetch required は今回新たに取得が必要と推定される件数です。</div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-[11px]">
-                <div className="rounded border border-[#1e1e1e] p-2">
-                  <div className="text-[#7dd3fc] mb-1">rate limit policy</div>
-                  <div className="text-[#aaa]">min_interval_sec: {dryRunResult.rate_limit_policy?.min_interval_sec ?? '-'}</div>
-                  <div className="text-[#aaa]">scope: {dryRunResult.rate_limit_policy?.scope || '-'}</div>
-                </div>
-                <div className="rounded border border-[#1e1e1e] p-2">
-                  <div className="text-[#7dd3fc] mb-1">retry/backoff policy</div>
-                  <div className="text-[#aaa]">max_retries: {dryRunResult.retry_backoff_policy?.max_retries ?? '-'}</div>
-                  <div className="text-[#aaa]">backoff: {dryRunResult.retry_backoff_policy?.backoff?.type || '-'}</div>
-                  <div className="text-[#aaa]">retry_after: {dryRunResult.retry_backoff_policy?.retry_after || '-'}</div>
-                </div>
-                <div className="rounded border border-[#1e1e1e] p-2">
-                  <div className="text-[#7dd3fc] mb-1">circuit breaker policy</div>
-                  <div className="text-[#aaa]">failure_threshold: {dryRunResult.circuit_breaker_policy?.failure_threshold ?? '-'}</div>
-                  <div className="text-[#aaa]">cooldown_sec: {dryRunResult.circuit_breaker_policy?.cooldown_sec ?? '-'}</div>
+                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3">
+                  <div className="text-[#666]">推定時間</div>
+                  <div className="mt-1 text-lg font-semibold text-white">{formatMaybeSeconds(dryRunResult.dry_run.estimated_runtime_sec)}</div>
                 </div>
               </div>
             </div>
@@ -1685,101 +1539,58 @@ export default function DataCollectionPage() {
           </div>
         )}
 
-        {/* 完了後の品質確認ブリッジ（read-only導線のみ） */}
-        {batchStatus === 'completed' && (
-          <div className="bg-[#111827] border border-[#1f2937] rounded-lg px-5 py-4 space-y-2" data-testid="quality-bridge-card">
-            <div className="text-xs text-[#93c5fd]">取得は完了しましたが、品質確認は未実施です</div>
-            <div className="text-xs text-[#6b7280]">以下は read-only preview です（自動実行・自動遷移は行いません）。</div>
-            <div className="flex flex-wrap gap-3 pt-1">
-              <Link href="/data-collection/refresh-plan" className="text-xs text-[#bfdbfe] hover:text-white transition-colors" data-testid="quality-bridge-refresh-link">
-                Refresh Plan（read-only preview）
-              </Link>
-              <Link href="/data-collection/p0-repair-plan" className="text-xs text-[#bfdbfe] hover:text-white transition-colors" data-testid="quality-bridge-p0-link">
-                P0 Repair Plan（read-only preview）
-              </Link>
-              <Link href="/data-collection/targeted-refetch-plan" className="text-xs text-[#bfdbfe] hover:text-white transition-colors" data-testid="quality-bridge-targeted-refetch-link">
-                Targeted Refetch Plan（read-only preview）
-              </Link>
-              <Link href="/data-collection/live-validation" className="text-xs text-[#fbbf24] hover:text-white transition-colors" data-testid="quality-bridge-live-validation-link">
-                Live Validation（Admin・外部HTTP最大3件）
-              </Link>
+        {/* 通常運用では最新の実行結果だけを表示する */}
+        {fetchHistory.length > 0 && (
+          <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-5" data-testid="latest-fetch-summary">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-sm font-medium text-white">最新の実行結果</h2>
+              <button
+                data-testid="refresh-history-button"
+                onClick={loadFetchSummaryHistory}
+                className="text-xs text-[#555] hover:text-[#888] transition-colors"
+              >
+                {fetchHistoryLoading ? '更新中...' : '更新'}
+              </button>
             </div>
+
+            {(() => {
+              const item = fetchHistory[0]
+              const summary = item.fetch_summary || {}
+              const dry = summary.dry_run || {}
+              const isDryRun = summary.mode === 'dry-run'
+              return (
+                <div className="rounded border border-[#1e1e1e] bg-[#0a0a0a] p-3">
+                  <div className="mb-3 flex flex-wrap items-center gap-2 text-[11px] text-[#666]">
+                    <span className="rounded bg-[#1f2937] px-2 py-0.5 text-[#dbeafe]">{isDryRun ? '事前確認' : '取得'}</span>
+                    <span>{formatSummaryDate(summary.start_date)} ～ {formatSummaryDate(summary.end_date)}</span>
+                    {item.updated_at && <span>{formatSummaryTimestamp(item.updated_at)}</span>}
+                  </div>
+                  {isDryRun ? (
+                    <div className="grid grid-cols-1 gap-3 text-xs sm:grid-cols-3">
+                      <div className="text-[#888]">新規取得 <span className="text-white">{formatMaybeNumber(dry.new_fetch_required_count)}</span></div>
+                      <div className="text-[#888]">HTTP予定 <span className="text-white">{formatMaybeNumber(dry.estimated_request_count)}</span></div>
+                      <div className="text-[#888]">推定時間 <span className="text-white">{formatMaybeSeconds(dry.estimated_runtime_sec)}</span></div>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 gap-3 text-xs sm:grid-cols-3">
+                      <div className="text-[#888]">保存レース <span className="text-white">{formatMaybeNumber(summary.saved_races)}</span></div>
+                      <div className="text-[#888]">保存出走馬 <span className="text-white">{formatMaybeNumber(summary.saved_horses)}</span></div>
+                      <div className="text-[#888]">所要時間 <span className="text-white">{formatMaybeSeconds(summary.elapsed_time_sec)}</span></div>
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
           </div>
         )}
 
-        {/* fetch summary 履歴 */}
-        <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-5">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-medium text-white">fetch summary 履歴</h2>
-            <button
-              data-testid="refresh-history-button"
-              onClick={loadFetchSummaryHistory}
-              className="text-xs text-[#555] hover:text-[#888] transition-colors"
-            >
-              {fetchHistoryLoading ? '更新中...' : '更新'}
-            </button>
-          </div>
-
-          {fetchHistory.length === 0 ? (
-            <div className="text-xs text-[#555] py-3">履歴がありません（Dry-run または 取得実行後に表示されます）</div>
-          ) : (
-            <div className="space-y-2">
-              {fetchHistory.map((item) => {
-                const summary = item.fetch_summary || {}
-                const metrics = summary.metrics || {}
-                const dry = summary.dry_run || {}
-                const mode = summary.mode || '-'
-                return (
-                  <div key={item.job_id} className="rounded border border-[#1e1e1e] bg-[#0a0a0a] p-3">
-                    <div className="flex flex-wrap items-center gap-2 mb-2">
-                      <span className="text-[11px] px-2 py-0.5 rounded bg-[#1f2937] text-[#dbeafe]">{mode}</span>
-                      <span className="text-[11px] text-[#888]">job: {item.job_id}</span>
-                      <span className="text-[11px] text-[#666]">{summary.start_date || '-'} ~ {summary.end_date || '-'}</span>
-                      <span className="text-[11px] text-[#666]">updated: {item.updated_at || '-'}</span>
-                    </div>
-                    {mode === 'dry-run' ? (
-                      <div className="grid grid-cols-2 md:grid-cols-6 gap-2 text-[11px]">
-                        <div className="text-[#aaa]">est req: <span className="text-white">{formatMaybeNumber(dry.estimated_request_count)}</span></div>
-                        <div className="text-[#aaa]">new fetch: <span className="text-white">{formatMaybeNumber(dry.new_fetch_required_count)}</span></div>
-                        <div className="text-[#aaa]">already covered: <span className="text-white">{formatMaybeNumber(dry.already_covered_count)}</span></div>
-                        <div className="text-[#aaa]">cache hit: <span className="text-white">{formatMaybeNumber(dry.cache_hit_count)}</span></div>
-                        <div className="text-[#aaa]">cache miss: <span className="text-white">{formatMaybeNumber(dry.cache_miss_count)}</span></div>
-                        <div className="text-[#aaa]">resume hit: <span className="text-white">{formatMaybeNumber(dry.resume_hit_count)}</span></div>
-                        <div className="text-[#aaa]">db existing: <span className="text-white">{formatMaybeNumber(dry.db_existing_skip_count)}</span></div>
-                        <div className="text-[#aaa]">est runtime: <span className="text-white">{formatMaybeSeconds(dry.estimated_runtime_sec)}</span></div>
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-[11px]">
-                        <div className="text-[#aaa]">saved races: <span className="text-white">{summary.saved_races ?? '-'}</span></div>
-                        <div className="text-[#aaa]">saved horses: <span className="text-white">{summary.saved_horses ?? '-'}</span></div>
-                        <div className="text-[#aaa]">existing races skipped: <span className="text-white">{summary.existing_races_skipped ?? '-'}</span></div>
-                        <div className="text-[#aaa]">verified no-race dates: <span className="text-white">{summary.verified_no_race_dates ?? '-'}</span></div>
-                        <div className="text-[#aaa]">mode: <span className="text-white">{summary.execution_mode ?? '-'}</span></div>
-                        <div className="text-[#aaa]">elapsed: <span className="text-white">{Math.ceil(Number(summary.elapsed_time_sec || 0))} sec</span></div>
-                        <div className="text-[#aaa]">network req: <span className="text-white">{metrics.network_requests ?? '-'}</span></div>
-                        <div className="text-[#aaa]">retries: <span className="text-white">{metrics.retry_count ?? '-'}</span></div>
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          )}
-        </div>
-
         {/* 取得済みデータ統計 */}
         <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-5">
-          <div className="flex items-center justify-between mb-4">
+          <div className="mb-4">
             <h2 className="text-sm font-medium text-white">取得済みデータ</h2>
-            <button
-              onClick={() => { setShowCollectedData(v => !v); if (!showCollectedData) fetchCollectedData() }}
-              className="text-xs text-[#555] hover:text-[#888] transition-colors"
-            >
-              {showCollectedData ? '閉じる ▲' : 'レース一覧を見る ▼'}
-            </button>
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div className="bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg p-3">
               <div className="text-xs text-[#666] mb-1">総レース数</div>
               <div className="text-xl font-bold text-white">{dataStats.totalRaces.toLocaleString()}</div>
@@ -1796,144 +1607,6 @@ export default function DataCollectionPage() {
             </div>
           </div>
 
-          {/* レース一覧（折りたたみ） */}
-          {showCollectedData && (
-            <div className="mt-4 border-t border-[#1e1e1e] pt-4">
-              <div className="flex justify-between items-center mb-3">
-                <span className="text-xs text-[#555]">最近取得したレース（最新50件）</span>
-                <button onClick={fetchCollectedData} className="text-xs text-[#555] hover:text-[#888] transition-colors">更新</button>
-              </div>
-              <div className="space-y-1 max-h-96 overflow-y-auto">
-                {collectedRaces.length === 0 ? (
-                  <div className="py-8 text-center text-xs text-[#444]">データがまだ取得されていません</div>
-                ) : collectedRaces.map(race => (
-                  <div key={race.race_id} className="flex items-center justify-between px-3 py-2.5 rounded bg-[#0a0a0a] hover:bg-[#161616] transition-colors group">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-xs font-medium text-white">{race.race_name || `${race.venue} ${race.race_no}R`}</span>
-                        <span className="text-xs text-[#555]">{race.venue}</span>
-                        <span className="text-xs text-[#444]">{race.track_type} {race.distance}m</span>
-                      </div>
-                      <div className="text-[10px] text-[#333] mt-0.5">{race.date || race.created_at?.slice(0, 10) || ''}</div>
-                    </div>
-                    <button
-                      onClick={() => fetchRaceDetail(race.race_id)}
-                      className="text-xs text-[#444] hover:text-[#888] transition-colors opacity-0 group-hover:opacity-100 ml-3 shrink-0"
-                    >
-                      詳細
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* レース詳細モーダル */}
-        {selectedRaceDetail && (
-          <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setSelectedRaceDetail(null)}>
-            <div className="bg-[#111] border border-[#1e1e1e] rounded-lg max-w-4xl w-full max-h-[85vh] overflow-hidden" onClick={e => e.stopPropagation()}>
-              <div className="flex items-center justify-between px-5 py-4 border-b border-[#1e1e1e]">
-                <h3 className="text-sm font-medium">レース詳細</h3>
-                <button onClick={() => setSelectedRaceDetail(null)} className="text-[#555] hover:text-white text-xl leading-none">×</button>
-              </div>
-              <div className="overflow-auto max-h-[calc(85vh-56px)]">
-                <table className="w-full text-xs">
-                  <thead className="bg-[#0a0a0a] sticky top-0">
-                    <tr>
-                      {['着', '枠', '馬番', '馬名', '性齢', '斤量', '騎手', 'タイム', 'オッズ', '人気'].map(h => (
-                        <th key={h} className="px-3 py-2.5 text-left font-medium text-[#555] first:pl-5">{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {selectedRaceDetail.results.map((result: any, i: number) => (
-                      <tr key={i} className={`border-b border-[#1a1a1a] hover:bg-[#161616] transition-colors ${result.finish_position === 1 ? 'bg-[#0a1500]' : ''}`}>
-                        <td className={`px-3 py-2.5 pl-5 font-bold ${result.finish_position <= 3 ? 'text-[#4ade80]' : 'text-[#888]'}`}>{result.finish_position}</td>
-                        <td className="px-3 py-2.5 text-[#666]">{result.bracket_number}</td>
-                        <td className="px-3 py-2.5 font-bold">{result.horse_number}</td>
-                        <td className="px-3 py-2.5 font-medium text-white">{result.horse_name}</td>
-                        <td className="px-3 py-2.5 text-[#888]">{result.sex_age || `${result.sex || ''}${result.age || ''}`}</td>
-                        <td className="px-3 py-2.5 text-[#888]">{result.jockey_weight}kg</td>
-                        <td className="px-3 py-2.5 text-[#888]">{result.jockey_name}</td>
-                        <td className="px-3 py-2.5 font-mono text-[#aaa]">{result.finish_time?.toFixed(1)}</td>
-                        <td className="px-3 py-2.5 font-medium">{result.odds?.toFixed(1)}</td>
-                        <td className="px-3 py-2.5 text-[#666]">{result.popularity}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* プロファイリング（折りたたみ） */}
-        <div className="border border-[#1e1e1e] rounded-lg overflow-hidden">
-          <button
-            onClick={() => setShowProfiling(v => !v)}
-            className="w-full flex items-center justify-between px-5 py-3.5 bg-[#111] hover:bg-[#161616] transition-colors"
-          >
-            <span className="text-xs text-[#555]">特徴量プロファイリングレポート（オプション）</span>
-            <svg className={`w-3 h-3 text-[#444] transition-transform ${showProfiling ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-            </svg>
-          </button>
-          {showProfiling && (
-            <div className="px-5 pb-5 pt-4 bg-[#0d0d0d] border-t border-[#1e1e1e] space-y-3">
-              <label className="flex items-center gap-2 text-xs text-[#888] cursor-pointer select-none">
-                <input type="checkbox" checked={useOptimized} onChange={e => setUseOptimized(e.target.checked)} className="w-3.5 h-3.5 accent-white" />
-                LightGBM最適化済み（リーク除去・変換適用）
-              </label>
-              {!isAdmin && (
-                <div className="rounded border border-[#3f2b0b] bg-[#171107] px-3 py-2 text-xs text-[#d6a85f]">
-                  特徴量プロファイリングの生成・閲覧はAdmin専用です。
-                </div>
-              )}
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={handleStartProfiling}
-                  disabled={!isAdmin || profilingStatus === 'running'}
-                  className={`px-4 py-2 rounded text-xs font-medium transition-colors ${!isAdmin || profilingStatus === 'running' ? 'bg-[#1a1a1a] text-[#555] cursor-not-allowed' : 'bg-white text-black hover:bg-[#eee]'}`}
-                >
-                  {profilingStatus === 'running' ? '生成中...' : 'レポート生成'}
-                </button>
-                {profilingStatus === 'completed' && profilingJobId && (
-                  <Link href={`/data-collection/profiling/${profilingJobId}`} className="text-xs text-[#4ade80] hover:underline">認証付きビューアで開く →</Link>
-                )}
-              </div>
-              {profilingStatus === 'running' && (
-                <div className="space-y-1">
-                  <div className="flex justify-between text-xs text-[#555]">
-                    <span>{profilingMessage}</span>
-                    <span>{profilingProgress}%</span>
-                  </div>
-                  <div className="w-full bg-[#1e1e1e] rounded-full h-1 overflow-hidden">
-                    <div className="bg-[#555] h-1 rounded-full transition-all duration-700" style={{ width: `${profilingProgress}%` }} />
-                  </div>
-                </div>
-              )}
-              {profilingStatus === 'error' && <p className="text-xs text-red-400">{profilingMessage}</p>}
-            </div>
-          )}
-        </div>
-
-        {/* 次のステップ */}
-        <div className="p-5 bg-[#111] border border-[#1e1e1e] rounded-lg flex items-center justify-between gap-4">
-          <div>
-            <div className="text-xs text-[#666] mb-0.5">次のステップ — 02</div>
-            <div className="text-sm font-medium">モデル学習</div>
-            <div className="text-xs text-[#555] mt-0.5">収集したデータでAIモデルをトレーニング</div>
-          </div>
-          <Link
-            href="/train"
-            className="shrink-0 flex items-center gap-1.5 bg-white text-black text-sm font-medium px-5 py-2.5 rounded hover:bg-[#eee] transition-colors"
-          >
-            モデル学習へ
-            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-            </svg>
-          </Link>
         </div>
       </main>
 

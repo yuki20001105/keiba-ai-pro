@@ -154,6 +154,26 @@ export async function GET(request: NextRequest) {
     assert _detect_direct_policy(ts, "/api/example") == "Authenticated"
 
 
+def test_admin_mode_guard_is_detected_as_admin() -> None:
+    ts = """
+export async function GET(request: NextRequest) {
+  const authz = await verifyRequestAuth(request, { requireAdminMode: true })
+  if (!authz.ok) return NextResponse.json({ detail: authz.detail }, { status: authz.status })
+  return NextResponse.json({ ok: true })
+}
+"""
+    assert _detect_direct_policy(ts, "/api/admin/profiles") == "Admin"
+
+
+def test_admin_unlock_delete_is_an_explicit_public_lock_action() -> None:
+    ts = """
+export async function DELETE() {
+  return NextResponse.json({ unlocked: false })
+}
+"""
+    assert _detect_direct_policy(ts, "/api/admin/unlock") == "Public"
+
+
 def test_custom_premium_or_admin_helper_is_detected() -> None:
     ts = """
 async function authorizePremiumOrAdmin(request: Request) {

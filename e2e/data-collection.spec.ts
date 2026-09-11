@@ -31,18 +31,28 @@ test.describe('データ取得ページ', () => {
 
   test('90日以内の期間では警告が表示されない', async ({ page }) => {
     await page.goto('/data-collection')
-    const [startInput, endInput] = await page.locator('input[type="month"]').all()
+    const startInput = page.getByTestId('start-period-input')
+    const endInput = page.getByTestId('end-period-input')
+    await expect(startInput).toBeVisible()
+    await expect(endInput).toBeVisible()
     await startInput.fill('2026-03')
     await endInput.fill('2026-04')
     await expect(page.getByText(/大量リクエストはIPブロック/)).not.toBeVisible()
   })
 
-  test('90日超えの期間では警告が表示される', async ({ page }) => {
+  test('長期間でも月単位の取得範囲を保持する', async ({ page }) => {
     await page.goto('/data-collection')
-    const [startInput, endInput] = await page.locator('input[type="month"]').all()
+    const startInput = page.getByTestId('start-period-input')
+    const endInput = page.getByTestId('end-period-input')
+    await expect(startInput).toBeVisible()
+    await expect(endInput).toBeVisible()
     await startInput.fill('2025-01')
     await endInput.fill('2026-04')
-    await expect(page.getByText(/IPブロック/)).toBeVisible()
+    await expect(startInput).toHaveValue('2025-01')
+    await expect(endInput).toHaveValue('2026-04')
+    await expect(page.getByText('月単位で自動分割して順次取得')).toBeVisible()
+    await expect(page.getByTestId('dry-run-button')).toBeEnabled()
+    await expect(page.getByTestId('execute-button')).toBeEnabled()
   })
 
   test('ローカルAPI停止時はボタンが無効表示になる', async ({ page }) => {
@@ -54,9 +64,13 @@ test.describe('データ取得ページ', () => {
     await expect(btn).toBeVisible({ timeout: 5000 })
   })
 
-  test('モデル学習へのリンクが表示される', async ({ page }) => {
+  test('通常画面には保守・実験用の導線を表示しない', async ({ page }) => {
     await page.goto('/data-collection')
-    await expect(page.getByRole('link', { name: 'モデル学習へ' })).toBeVisible()
+    for (const label of ['Refresh Plan', 'P0 Repair Plan', 'Targeted Refetch Plan', 'Live Validation', 'Review Queue', 'モデル学習へ']) {
+      await expect(page.getByText(label, { exact: true })).toHaveCount(0)
+    }
+    await expect(page.getByTestId('force-rescrape-input')).toHaveCount(0)
+    await expect(page.getByText('特徴量プロファイリングレポート（オプション）')).toHaveCount(0)
   })
 
   test('スクレイピング実行中はプログレスバーが表示される', async ({ page }) => {

@@ -584,38 +584,44 @@ Kelly % = (p × odds - 1) / (odds - 1)
 ```
 1. ローカルFastAPI稼働チェック → GET /api/scrape/health
 2. 期間指定入力 (開始年月〜終了年月)
-3. [データ取得開始] → POST /api/scrape (ジョブ開始)
+3. [Dry-run] → POST /api/scrape (`dry_run=true`、外部HTTPなし)
+4. [取得開始] → POST /api/scrape (`force_rescrape=false`固定でジョブ開始)
    → GET /api/scrape/status/{job_id} ポーリング (3秒間隔)
-4. 取得済みデータ確認 → GET /api/races/recent?limit=50 (1回だけ)
-5. 詳細表示 → GET /api/races/{race_id}/horses (ML推論なし・軽量)
+5. 実行状態が不明な場合だけ同じstatus APIで安全に再確認（確認完了まで新規実行をロック）
+6. 最新fetch summary 1件 → GET /api/scrape/history
+7. 取得済み3指標 → GET /api/data-stats
 ```
+
+通常画面には上記だけを表示します。Refresh/P0/Targeted Refetch計画、Live Validation、Review Queue、全履歴、最近取得一覧/詳細、特徴量プロファイリングのページ/APIは保守用として存続しますが、通常のデータ収集画面からは非表示です。
 
 ### 本番前チェック画面 (`/production-readiness`)
 
 ```
-1. Premium/Admin 権限で [本番前チェックを実行]
-2. POST /api/production-readiness
-3. read-only checks を順次実行
+1. `/home` の管理者モードから [本番前チェック] を開く
+2. Admin 権限で [本番前チェックを実行]
+3. POST /api/production-readiness
+4. read-only checks を順次実行
   - Frontend build
   - FastAPI health / scrape health
   - analyze_race smoke / smoke suite summary
   - secret scan (Notion token prefix)
   - git status 注意
   - write flag / APP_ENV safety
-4. pass / warn / fail / unknown をカード表示
+5. pass / warn / fail / unknown をカード表示
   - 認証トークン未設定時の 401/403 は auth-required (warn) として表示
   - KEIBA_AUTH_BEARER_TOKEN 設定時は認証必須 smoke を通常の pass/fail で評価
-5. write API は呼ばない（sandbox write-readback は別管理）
+6. write API は呼ばない（sandbox write-readback は別管理）
 ```
 
 ### 学習画面 (`/train`)
 
 ```
-1. 条件設定 (target: win / place3 / win_tie / speed_deviation / 期間 / Optuna試行数 / CV分割数)
-2. [学習開始] → POST /api/train/start
-3. GET /api/train/status/{job_id} ポーリング
-4. 完了 → AUC / LogLoss / CV統計 表示
-5. 特徴量ラボへのリンク → /feature-lab
+1. `/home` の管理者モードから [モデル管理] を開く
+2. 条件設定 (target: win / place3 / win_tie / speed_deviation / 期間 / Optuna試行数 / CV分割数)
+3. [学習開始] → POST /api/ml/train/start（Next API）
+4. GET /api/ml/train/status/{job_id} ポーリング（Next API）
+5. 完了 → AUC / LogLoss / CV統計 表示
+6. 特徴量ラボへのリンク → /feature-lab
 ```
 
 ### 特徴量ラボ画面 (`/feature-lab`)
@@ -646,19 +652,26 @@ Kelly % = (p × odds - 1) / (odds - 1)
 2. GET /api/purchase_history, GET /api/statistics
 ```
 
-### 管理画面 (`/admin`)
+### 管理者モード (`/home`)
 
 ```
-1. モデル管理・スクレイプ実行（管理者専用）
-2. GET /api/models, POST /api/scrape/start
+1. Adminロールの利用者だけ、ホーム右上に「管理者モード」を表示
+2. 現在のアカウントのパスワードを再確認して、同じホーム画面内で切り替え
+3. データ取得・モデル管理・本番前チェック・ユーザー管理を表示
+4. 管理者モードは15分有効で、再読み込み後も同一セッション内だけ復元
+5. ログアウト、「ユーザー画面に戻る」、権限喪失、または期限到来で解除
+6. 旧 `/admin` は管理モードを解除して `/home` へリダイレクト
+7. 管理ツール3画面は有効な管理者モードがなければ `/home` へ戻る
 ```
+
+画面は一般ユーザー（Premiumを含む）に表示しません。既存クライアントとの互換性のため、一部の運用APIに残る`PremiumOrAdmin`認可は別契約であり、管理者モード画面を開く権限には使用しません。
 
 ### 認証・権限
 
 | ロール | 権限 |
 |-------|------|
 | `user` | 一般ユーザー（予測・閲覧） |
-| `admin` | 管理者（スクレイプ開始・モデル管理含む全機能）|
+| `admin` | 管理者（パスワード再確認後に管理UIを表示。実行可否は各APIの認可・環境フラグ・承認状態にも従う）|
 
 ---
 
@@ -691,9 +704,9 @@ Kelly % = (p × odds - 1) / (odds - 1)
 | POST | `/api/realtime-odds/refresh` | オッズ強制再取得（Playwright） |
 | POST | `/api/export/bet-list` | 馬券購入リスト出力（JSON） |
 | POST | `/api/export/bet-list/csv` | 馬券購入リスト出力（CSV） |
-| POST | `/api/profiling/start` | ydata-profiling レポート生成ジョブ開始 |
-| GET | `/api/profiling/status/{job_id}` | プロファイリングジョブ進捗 |
-| GET | `/api/profiling/html/{job_id}` | プロファイリング HTML レポート取得 |
+| POST | `/api/profiling/start` | ydata-profiling レポート生成ジョブ開始（保守用、通常UI非表示） |
+| GET | `/api/profiling/status/{job_id}` | プロファイリングジョブ進捗（保守用、通常UI非表示） |
+| GET | `/api/profiling/html/{job_id}` | プロファイリング HTML レポート取得（保守用、通常UI非表示） |
 | POST | `/api/backfill/nar-pedigree` | NAR血統情報バックフィル |
 | POST | `/api/backfill/coat-color` | 毛色情報バックフィル |
 | GET | `/health` | サーバー死活確認 |
@@ -730,6 +743,8 @@ npm run dev
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
 SUPABASE_SERVICE_ROLE_KEY=
+# 管理者モードcookie専用（32文字以上を推奨。未設定時はservice role keyを使用）
+ADMIN_MODE_SIGNING_SECRET=
 
 # FastAPI エンドポイント
 NEXT_PUBLIC_API_URL=http://localhost:8000
@@ -739,9 +754,10 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 
 ```
 1. FastAPI 起動 (python-api/main.py)
-2. /data-collection ページでデータ取得（期間指定）
-3. /train ページでモデル学習
-4. /predict-batch ページで当日レース予測
+2. Adminロールで `/home` の管理者モードへ切り替え
+3. /data-collection ページでデータ取得（期間指定）
+4. /train ページでモデル状態を確認（通常のProduction環境では学習開始は無効）
+5. /predict-batch ページで当日レース予測
 ```
 
 ### keibaAI 実行ガイド（Notebook E2E / API Smoke / Notion）
@@ -799,12 +815,15 @@ python scripts/smoke_analyze_race_api.py
 **UI での本番前チェック手順**
 
 ```
-1. /production-readiness を開く
-2. [本番前チェックを実行] を押す
-3. fail/warn があるカードの summary を確認
-4. write flag が false であることを確認
-5. sandbox write-readback は別管理であることを確認
+1. `/home` で管理者モードへ切り替える
+2. /production-readiness を開く
+3. [本番前チェックを実行] を押す
+4. fail/warn があるカードの summary を確認
+5. write flag が false であることを確認
+6. sandbox write-readback は別管理であることを確認
 ```
+
+ここでのread-onlyは、業務DBやproduction/base tableへ書き込まないという意味です。build・compile・smokeの実行により、ローカル生成物や計算負荷が発生する場合があります。
 
 **本番運用ルール**
 
@@ -1220,6 +1239,7 @@ python-api\.venv\Scripts\python.exe scripts\smoke_fetch_summary_history.py
 - `KEIBA_AUTH_BEARER_TOKEN` 未設定時は `auth-required` として warn
 - `limit` パラメータの適用、secret非露出、read-only（scrape_jobs row count不変）を検証
 - 空履歴は `warn` 扱いで fail にはしない
+- 通常UIは履歴APIの最新1件だけを表示し、全履歴コンソールは露出しない
 
 **Scrape speed benchmark (small + 10y estimate)**
 

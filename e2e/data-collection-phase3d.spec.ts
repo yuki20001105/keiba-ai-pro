@@ -1,7 +1,7 @@
 import { expect, Page, test } from '@playwright/test'
 import { mockSupabaseIdentity, setSupabaseTestSession } from './helpers/mock-api'
 
-const SUPABASE_ORIGIN = 'http://127.0.0.1:54321'
+const SUPABASE_ORIGIN = process.env.NEXT_PUBLIC_SUPABASE_URL || 'http://127.0.0.1:54321'
 
 async function authorizeAdmin(page: Page, baseURL: string) {
   await setSupabaseTestSession(page, {
@@ -183,14 +183,12 @@ test.describe('Phase 3D bounded live validation', () => {
     await page.getByTestId('phase3d-confirm').check()
   }
 
-  test('navigation is explicit and no request runs before confirmation', async ({ page, baseURL }) => {
+  test('direct maintenance URL runs no request before confirmation', async ({ page, baseURL }) => {
     if (!baseURL) throw new Error('Playwright baseURL is required')
     await authorizeAdmin(page, baseURL)
     await mockLive(page)
-    await page.goto('/data-collection')
-    const link = page.getByTestId('phase3d-header-link')
-    await expect(link).toHaveAttribute('href', '/data-collection/live-validation')
-    await link.click()
+    await page.goto('/data-collection/live-validation')
+    await expect(page.getByTestId('phase3d-confirm')).not.toBeChecked()
     await expect(page.getByTestId('phase3d-run')).toBeDisabled()
     expect(livePostCount).toBe(0)
   })
@@ -220,6 +218,7 @@ test.describe('Phase 3D bounded live validation', () => {
     const button = page.getByTestId('phase3d-run')
     await button.click()
     await expect(button).toBeDisabled()
+    await expect.poll(() => livePostCount).toBe(1)
     await button.click({ force: true })
     expect(livePostCount).toBe(1)
     release()

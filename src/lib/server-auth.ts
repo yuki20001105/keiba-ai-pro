@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient, type User } from '@supabase/supabase-js'
+import { isAdminModeConfigured, verifyAdminModeRequest } from '@/lib/admin-mode'
 
 type AuthzRole = 'admin' | 'user'
 type AuthzTier = 'free' | 'premium'
@@ -24,6 +25,7 @@ export type AuthzResult =
 
 type VerifyOptions = {
   requireAdmin?: boolean
+  requireAdminMode?: boolean
   requirePremiumOrAdmin?: boolean
 }
 
@@ -98,11 +100,19 @@ export async function verifyRequestAuth(request: Request, options: VerifyOptions
   const isAdmin = role === 'admin'
   const isPremiumOrAdmin = isAdmin || tier === 'premium'
 
-  if (options.requireAdmin && !isAdmin) {
+  if ((options.requireAdmin || options.requireAdminMode) && !isAdmin) {
     return { ok: false, status: 403, detail: 'Admin role required' }
   }
   if (options.requirePremiumOrAdmin && !isPremiumOrAdmin) {
     return { ok: false, status: 403, detail: 'Premium or admin role required' }
+  }
+  if (options.requireAdminMode) {
+    if (!isAdminModeConfigured()) {
+      return { ok: false, status: 503, detail: 'Admin mode configuration missing' }
+    }
+    if (!verifyAdminModeRequest(request, userData.user.id, token)) {
+      return { ok: false, status: 403, detail: 'Admin mode verification required' }
+    }
   }
 
   return {

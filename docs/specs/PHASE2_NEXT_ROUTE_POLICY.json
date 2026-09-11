@@ -33,6 +33,39 @@
     "detail_error_passthrough_reason": ""
   },
   {
+    "route": "/api/admin/unlock",
+    "method": "DELETE",
+    "policy": "Public",
+    "auth_header_forward": false,
+    "status_propagation": false,
+    "detail_error_passthrough": false,
+    "auth_header_forward_reason": "/api/admin/unlock DELETE only expires the browser's HttpOnly Admin-mode cookie and never reads or forwards an end-user Authorization header",
+    "status_propagation_reason": "/api/admin/unlock DELETE returns a fixed local lock-result contract without an upstream response",
+    "detail_error_passthrough_reason": "/api/admin/unlock DELETE has no upstream error detail and returns a fixed bounded response"
+  },
+  {
+    "route": "/api/admin/unlock",
+    "method": "GET",
+    "policy": "Admin",
+    "auth_header_forward": false,
+    "status_propagation": false,
+    "detail_error_passthrough": false,
+    "auth_header_forward_reason": "/api/admin/unlock GET verifies the bearer token and signed Admin-mode cookie locally and never forwards the token upstream",
+    "status_propagation_reason": "/api/admin/unlock GET returns a bounded Admin-mode status contract with normalized status codes",
+    "detail_error_passthrough_reason": "/api/admin/unlock GET maps authentication and grant failures to bounded route-specific detail"
+  },
+  {
+    "route": "/api/admin/unlock",
+    "method": "POST",
+    "policy": "Admin",
+    "auth_header_forward": false,
+    "status_propagation": false,
+    "detail_error_passthrough": false,
+    "auth_header_forward_reason": "/api/admin/unlock POST verifies the Admin bearer token and password AMR locally and never forwards the token upstream",
+    "status_propagation_reason": "/api/admin/unlock POST issues a bounded signed-cookie response with normalized status codes",
+    "detail_error_passthrough_reason": "/api/admin/unlock POST maps authentication, AMR, and configuration failures to bounded route-specific detail"
+  },
+  {
     "route": "/api/admin/profiles",
     "method": "GET",
     "policy": "Admin",

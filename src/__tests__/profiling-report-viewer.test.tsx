@@ -79,11 +79,11 @@ describe('Admin profiling report viewer', () => {
     expect(source).toContain('authFetch(`/api/profiling/html/${jobId}`')
   })
 
-  test('data collection links to the authenticated viewer instead of the Bearer-less API URL', () => {
+  test('keeps the optional profiling workflow off the essential data-collection screen', () => {
     const source = readFileSync('src/app/data-collection/page.tsx', 'utf8')
-    expect(source).toContain('href={`/data-collection/profiling/${profilingJobId}`}')
+    expect(source).not.toContain("authFetch('/api/profiling'")
+    expect(source).not.toContain('href={`/data-collection/profiling/${profilingJobId}`}')
     expect(source).not.toContain('href={`/api/profiling/html/${profilingJobId}`}')
-    expect(source).toContain("if (!isAdmin)")
-    expect(source).toContain("disabled={!isAdmin || profilingStatus === 'running'}")
+    expect(source).not.toContain('特徴量プロファイリングレポート（オプション）')
   })
 })

@@ -1,28 +1,35 @@
 'use client'
 
-import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState, ReactNode } from 'react'
 import { supabase } from '@/lib/supabase'
 
 interface AuthContextType {
+  userId: string | null
   role: 'admin' | 'user' | null
   subscriptionTier: 'free' | 'premium' | null
   isAdmin: boolean
   isPremium: boolean
   loading: boolean
+  refreshAuthorization: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextType>({
+  userId: null,
   role: null,
   subscriptionTier: null,
   isAdmin: false,
   isPremium: false,
   loading: true,
+  refreshAuthorization: async () => undefined,
 })
 
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const [userId, setUserId] = useState<string | null>(null)
   const [role, setRole] = useState<'admin' | 'user' | null>(null)
   const [subscriptionTier, setSubscriptionTier] = useState<'free' | 'premium' | null>(null)
   const [loading, setLoading] = useState(true)
+  const refreshAuthorizationRef = useRef<() => Promise<void>>(async () => undefined)
+  const refreshAuthorization = useCallback(() => refreshAuthorizationRef.current(), [])
 
   useEffect(() => {
     let active = true
@@ -33,10 +40,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const { data: { user } } = await supabase.auth.getUser()
         if (!active) return
         if (!user) {
+          setUserId(null)
           setRole(null)
           setSubscriptionTier(null)
           return
         }
+        setUserId(user.id)
         const { data: profile } = await supabase
           .from('profiles')
           .select('role, subscription_tier')
@@ -47,6 +56,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setSubscriptionTier(profile?.subscription_tier ?? 'free')
       } catch {
         if (!active) return
+        setUserId(null)
         setRole('user')
         setSubscriptionTier('free')
       } finally {
@@ -54,6 +64,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     }
 
+    refreshAuthorizationRef.current = fetchRole
     void fetchRole()
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(() => {
@@ -68,6 +79,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       active = false
       if (authRefreshTimer !== null) clearTimeout(authRefreshTimer)
+      refreshAuthorizationRef.current = async () => undefined
       subscription.unsubscribe()
     }
   }, [])
@@ -75,11 +87,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   return (
     <AuthContext.Provider
       value={{
+        userId,
         role,
         subscriptionTier,
         isAdmin: role === 'admin',
         isPremium: role === 'admin' || subscriptionTier === 'premium',
         loading,
+        refreshAuthorization,
       }}
     >
       {children}

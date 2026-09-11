@@ -61,7 +61,7 @@ export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ userId: string }> },
 ) {
-  const authz = await verifyRequestAuth(request, { requireAdmin: true })
+  const authz = await verifyRequestAuth(request, { requireAdminMode: true })
   if (!authz.ok) return noStoreJson({ detail: authz.detail }, authz.status)
 
   const target = validateAdminTargetUserId((await params).userId)

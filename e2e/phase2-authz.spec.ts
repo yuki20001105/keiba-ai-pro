@@ -48,7 +48,6 @@ test.describe('Phase2 AuthZ E2E', () => {
       role: 'user',
       tier: 'free',
       appBaseUrl: baseURL,
-      supabaseUrl: 'http://127.0.0.1:54321',
     })
     await mockSupabaseIdentity(page, { authenticated: true, role: 'user', tier: 'free' })
     await page.goto('/feature-lab')
@@ -62,7 +61,6 @@ test.describe('Phase2 AuthZ E2E', () => {
       role: 'user',
       tier: 'premium',
       appBaseUrl: baseURL,
-      supabaseUrl: 'http://127.0.0.1:54321',
     })
     await mockSupabaseIdentity(page, { authenticated: true, role: 'user', tier: 'premium' })
     await page.route('/api/features/summary**', route =>
@@ -80,14 +78,13 @@ test.describe('Phase2 AuthZ E2E', () => {
     await expect(page.getByText('Premium 専用')).not.toBeVisible()
   })
 
-  test('Admin ユーザーは管理画面を利用できる', async ({ page, baseURL }) => {
+  test('Admin ユーザーは統合ホームへ移動し、管理APIの権限を維持する', async ({ page, baseURL }) => {
     if (!baseURL) throw new Error('Playwright baseURL is required')
     let observedAuthorization = ''
     await setSupabaseTestSession(page, {
       role: 'admin',
       tier: 'free',
       appBaseUrl: baseURL,
-      supabaseUrl: 'http://127.0.0.1:54321',
     })
     await mockSupabaseIdentity(page, { authenticated: true, role: 'admin', tier: 'free' })
     await page.route('/api/data-stats**', route =>
@@ -103,8 +100,9 @@ test.describe('Phase2 AuthZ E2E', () => {
     })
 
     await page.goto('/admin')
-    await expect(page).toHaveURL(/\/admin$/)
-    await expect(page.getByText('Admin 専用')).toBeVisible()
+    await expect(page).toHaveURL(/\/home$/)
+    await expect(page.getByRole('button', { name: '管理者モード' })).toBeVisible()
+    await expect(page.getByText('ユーザー管理')).toHaveCount(0)
     const status = await page.evaluate(async () => {
       const res = await fetch('/api/scrape', {
         method: 'POST',
@@ -127,7 +125,6 @@ test.describe('Phase2 AuthZ E2E', () => {
         role: 'admin',
         tier: 'premium',
         appBaseUrl: baseURL,
-        supabaseUrl: 'http://127.0.0.1:54321',
       })
       await mockSupabaseIdentity(page, { authenticated: true, role: 'admin', tier: 'premium' })
       await mockRacesByDate(page)

@@ -58,7 +58,7 @@ describe('Admin profile server routes', () => {
     expect(response.status).toBe(403)
     expect(response.headers.get('Cache-Control')).toBe('no-store')
     expect(await response.json()).toEqual({ detail: 'Admin role required' })
-    expect(verifyRequestAuthMock).toHaveBeenCalledWith(expect.anything(), { requireAdmin: true })
+    expect(verifyRequestAuthMock).toHaveBeenCalledWith(expect.anything(), { requireAdminMode: true })
     expect(createSupabaseServiceClientMock).not.toHaveBeenCalled()
   })
 

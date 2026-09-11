@@ -5,7 +5,7 @@
  *
  * 対象フロー:
  *   1. ログイン
- *   2. データ取得（2015-01〜2016-03、強制再取得）
+ *   2. データ取得（2015-01〜2016-03、通常差分取得）
  *   3. モデル学習（速度偏差 / LightGBM / Optuna 100回）
  *   4. 予測実行（当日レース）
  *   5. 履歴・統計確認
@@ -58,21 +58,22 @@ test('Step1: ログインが正常に動作する', async ({ page }) => {
 })
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Step 2: データ取得（2015-01 〜 2016-03、強制再取得）
+// Step 2: データ取得（2015-01 〜 2016-03、通常差分取得）
 // ══════════════════════════════════════════════════════════════════════════════
-test('Step2: データ取得 2015-01〜2016-03 強制再取得', async ({ page }) => {
+test('Step2: データ取得 2015-01〜2016-03 通常差分取得', async ({ page }) => {
   test.setTimeout(TIMEOUT_SCRAPE_TOTAL)
 
   await login(page)
   await page.goto('/data-collection')
   await expect(page.getByText('期間指定一括取得')).toBeVisible({ timeout: 10_000 })
 
-  // ローカルAPI ステータス表示が出るまで待機（起動中/停止中/確認中）
-  await expect(page.locator('text=/ローカルAPI/')).toBeVisible({ timeout: 10_000 })
+  // バックエンドAPI ステータス表示が出るまで待機（稼働中/停止中/確認中）
+  const apiStatusBadge = page.getByText(/バックエンドAPI/)
+  await expect(apiStatusBadge).toBeVisible({ timeout: 10_000 })
   // API が起動中であることを確認（起動していない場合はテストスキップ）
-  const apiStatus = await page.locator('text=/起動中|停止中/').first().textContent({ timeout: 5_000 }).catch(() => '')
+  const apiStatus = await apiStatusBadge.textContent({ timeout: 5_000 }).catch(() => '')
   if (apiStatus?.includes('停止中')) {
-    console.warn('[Step2] ローカルAPI が停止中 — テストをスキップ')
+    console.warn('[Step2] バックエンドAPI が停止中 — テストをスキップ')
     test.skip()
     return
   }
@@ -82,11 +83,8 @@ test('Step2: データ取得 2015-01〜2016-03 強制再取得', async ({ page }
   await monthInputs.nth(0).fill('2015-01')
   await monthInputs.nth(1).fill('2016-03')
 
-  // 強制再取得チェックボックスを ON
-  const forceCheckbox = page.locator('input[type="checkbox"]').first()
-  const isChecked = await forceCheckbox.isChecked()
-  if (!isChecked) await forceCheckbox.check()
-  await expect(forceCheckbox).toBeChecked()
+  // 通常画面には修復取得チェックを出さず、差分取得だけを許可する
+  await expect(page.getByTestId('force-rescrape-input')).toHaveCount(0)
 
   // 「取得開始」ボタンをクリック
   const startBtn = page.getByRole('button', { name: /取得開始/ })
@@ -94,7 +92,14 @@ test('Step2: データ取得 2015-01〜2016-03 強制再取得', async ({ page }
 
   // confirm ダイアログを自動承認
   page.on('dialog', dialog => dialog.accept())
+  const executeRequestPromise = page.waitForRequest(request => {
+    if (request.method() !== 'POST' || new URL(request.url()).pathname !== '/api/scrape') return false
+    const body = request.postDataJSON() as Record<string, unknown>
+    return body.dry_run !== true
+  })
   await startBtn.click()
+  const executeRequest = await executeRequestPromise
+  expect(executeRequest.postDataJSON()).toMatchObject({ force_rescrape: false })
 
   // プログレスが表示されることを確認（取得が START したことを検証）
   await expect(

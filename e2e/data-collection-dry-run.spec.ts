@@ -1,22 +1,9 @@
 import { test, expect } from '@playwright/test'
-import { mockDataStats } from './helpers/mock-api'
-
-const E2E_EMAIL = process.env.E2E_EMAIL || 'yuki20001105@icloud.com'
-const E2E_PASSWORD = process.env.E2E_PASSWORD || ''
-
-async function login(page: import('@playwright/test').Page) {
-  await page.goto('/login')
-  await expect(page.locator('input[type="email"]')).toBeVisible({ timeout: 30000 })
-  await page.locator('input[type="email"]').fill(E2E_EMAIL)
-  await page.locator('input[type="password"]').fill(E2E_PASSWORD)
-  await page.locator('form button[type="submit"]').click()
-  await page.waitForURL('**/home', { timeout: 30000 })
-}
+import { mockAuth, mockDataStats } from './helpers/mock-api'
 
 test.describe('データ取得 Dry-run UI', () => {
   test.beforeEach(async ({ page }) => {
-    test.skip(!E2E_PASSWORD, 'E2E_PASSWORD is required for auth-guarded routes')
-    await login(page)
+    await mockAuth(page)
     await mockDataStats(page)
     await page.route('/api/scrape/health**', route =>
       route.fulfill({ status: 200, json: { status: 'healthy' } })
@@ -24,12 +11,15 @@ test.describe('データ取得 Dry-run UI', () => {
   })
 
   test('Dry-runボタンと結果カードを表示できる', async ({ page }) => {
+    let dryRunRequestBody: Record<string, unknown> | null = null
+
     await page.route('/api/scrape', async route => {
       if (route.request().method() !== 'POST') {
         return route.continue()
       }
       const body = route.request().postDataJSON() as Record<string, unknown>
       if (body?.dry_run === true) {
+        dryRunRequestBody = body
         return route.fulfill({ status: 200, json: { job_id: 'dry-run-job-001', status: 'queued', mode: 'dry-run' } })
       }
       return route.fulfill({ status: 200, json: { job_id: 'exec-job-001', status: 'queued' } })
@@ -89,6 +79,8 @@ test.describe('データ取得 Dry-run UI', () => {
 
     await expect(page.getByRole('button', { name: 'Dry-run' })).toBeVisible()
     await expect(page.getByText('Dry-run は HTTPアクセスを実行しません')).toBeVisible()
+    await page.getByTestId('start-period-input').fill('2026-01')
+    await page.getByTestId('end-period-input').fill('2026-01')
 
     await page.getByRole('button', { name: 'Dry-run' }).click()
 
@@ -100,25 +92,16 @@ test.describe('データ取得 Dry-run UI', () => {
     await expect(page.getByRole('button', { name: '取得開始' })).toBeDisabled()
     await expect(page.locator('input[type="month"]').first()).toBeDisabled()
     await expect(page.locator('input[type="month"]').nth(1)).toBeDisabled()
-    await expect(page.locator('input[type="checkbox"]').first()).toBeDisabled()
+    await expect(page.getByTestId('force-rescrape-input')).toHaveCount(0)
 
-    await expect(page.getByText('Dry-run 結果（実取得なし）')).toBeVisible()
-    await expect(page.getByText('取得対象')).toBeVisible()
-    await expect(page.getByText('新規取得が必要')).toBeVisible()
-    await expect(page.getByText('既存DBでカバー済み')).toBeVisible()
-    await expect(page.getByText('HTTPキャッシュ / resume でスキップ')).toBeVisible()
-    await expect(page.getByText('推定HTTPリクエスト')).toBeVisible()
-    await expect(page.getByText('推定実行時間')).toBeVisible()
-    const estReqCard = page.locator('div').filter({ hasText: 'estimated request count' }).first()
-    await expect(estReqCard).toBeVisible()
-    await expect(estReqCard).toContainText('8')
-    await expect(page.locator('div').filter({ hasText: 'estimated request count: 8' }).first()).toBeVisible()
-    await expect(page.locator('div').filter({ hasText: 'DB existing skip count: 14' }).first()).toBeVisible()
-    await expect(page.locator('div').filter({ hasText: 'new fetch required count: 8' }).first()).toBeVisible()
-    await expect(page.locator('div').filter({ hasText: 'already covered count: 26' }).first()).toBeVisible()
-    await expect(page.getByText('cache hit はHTTPキャッシュで再取得不要と判定された件数です。')).toBeVisible()
-    await expect(page.getByText('resume hit は過去に成功済みのURLとして再実行をスキップできる件数です。')).toBeVisible()
-    await expect(page.getByText('rate limit policy')).toBeVisible()
+    const result = page.getByTestId('dry-run-result')
+    await expect(result.getByText('Dry-run 結果（実取得なし）')).toBeVisible()
+    await expect(result.getByText('新規取得', { exact: true }).locator('..')).toContainText('8')
+    await expect(result.getByText('既存データ', { exact: true }).locator('..')).toContainText('26')
+    await expect(result.getByText('HTTP予定', { exact: true }).locator('..')).toContainText('8')
+    await expect(result.getByText('推定時間', { exact: true }).locator('..')).toContainText('8 sec')
+    expect(dryRunRequestBody).toMatchObject({ dry_run: true, force_rescrape: false })
+    await expect(page.getByText('rate limit policy')).toHaveCount(0)
   })
 
   test('Dry-runエラー時に0件ではなくエラーメッセージを表示する', async ({ page }) => {
@@ -135,9 +118,9 @@ test.describe('データ取得 Dry-run UI', () => {
     await page.goto('/data-collection')
     await page.getByRole('button', { name: 'Dry-run' }).click()
 
-    await expect(
-      page.getByText('Dry-run結果を取得できませんでした。期間を短くするか、再実行してください。', { exact: true })
-    ).toBeVisible()
+    await expect(page.getByTestId('dry-run-error')).toContainText(
+      'Dry-run結果を取得できませんでした。期間を短くするか、再実行してください。'
+    )
     await expect(page.getByText('Dry-run 結果（実取得なし）')).not.toBeVisible()
   })
 

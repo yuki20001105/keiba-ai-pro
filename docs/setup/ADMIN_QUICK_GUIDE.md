@@ -61,13 +61,13 @@ SELECT email, role FROM public.profiles;
 python set_admin.py --list
 ```
 
-または、ブラウザで `/home` を開いて「👑 管理者ダッシュボード」カードが表示されるか確認。
+または、ブラウザで`/home`を開いて、右上に「管理者モード」が表示されるか確認します。管理機能は、現在のアカウントのパスワードを再確認した後に表示されます。
 
 ---
 
 ### Q: 管理者権限で何ができるの？
 
-- **👑 管理者ダッシュボード** (`/admin`): ユーザー管理・統計情報
+- **管理者モード** (`/home`): パスワード再確認後にユーザー管理・統計情報を表示
 - **📊 データ収集** (`/data-collection`): ネットケイバからスクレイピング
 - **🧠 モデル学習** (`/train`): AIモデルのトレーニング
 
@@ -94,7 +94,7 @@ SET role = 'user'
 WHERE email = 'downgrade-user@example.com';
 ```
 
-または、`/admin` ページのユーザー管理テーブルからドロップダウンで変更。
+または、`/home`の管理者モードにあるユーザー管理テーブルからドロップダウンで変更します。
 
 ---
 
@@ -122,11 +122,12 @@ CHECK (role IN ('admin', 'user'));
 
 ---
 
-### 管理者ダッシュボードが表示されない
+### 管理者モードが表示されない
 
 1. ブラウザをハードリロード: **Ctrl+Shift+R**
 2. ログアウト → 再ログイン
-3. ブラウザのキャッシュをクリア
+3. `profiles.role`が`admin`であることを確認
+4. 現在のアカウントのパスワードを再入力
 
 ---
 
@@ -134,4 +135,4 @@ CHECK (role IN ('admin', 'user'));
 
 - [完全セットアップガイド](./ADMIN_SETUP.md)
 - [Supabaseスキーマ](../../supabase/setup_admin.sql)
-- [管理者ダッシュボード実装](../../src/app/admin/page.tsx)
+- [統合管理ワークスペース実装](../../src/components/AdminWorkspace.tsx)

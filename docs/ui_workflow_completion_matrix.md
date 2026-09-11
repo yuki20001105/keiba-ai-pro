@@ -16,6 +16,7 @@ Scope: UI (src/app) + Next API (src/app/api) + FastAPI router/script mapping inv
 ## 2026-08-02 WP2 delta: authenticated profiling viewer
 
 - `src/app/data-collection/profiling/[job_id]/page.tsx` now provides an Admin-only report viewer.
+- The viewer and profiling controls remain available for maintenance but are hidden from the normal Data Collection surface.
 - The viewer retrieves report HTML through `authFetch`, so the Bearer token reaches both the Next API and FastAPI Admin boundaries.
 - The former direct anchor to `/api/profiling/html/[job_id]` was removed because normal browser navigation cannot attach the required Authorization header.
 - Report HTML is isolated in a sandboxed iframe without `allow-same-origin`; an injected CSP denies connections, frames, forms, base URL changes, and all non-inline resources except local data/blob images and fonts.
@@ -56,17 +57,17 @@ Scope: UI (src/app) + Next API (src/app/api) + FastAPI router/script mapping inv
 
 | 画面 | 主目的 | 主入力/操作 | 主な Next API |
 |---|---|---|---|
-| /home | ハブ/状態確認 | 4-step導線, API状態確認 | /api/health, /api/data-stats |
-| /data-collection | データ取得/プロファイリング | 期間(月), 強制再取得, 取得開始, API health, profiling開始, fetch summary履歴確認 | /api/scrape, /api/scrape/status/[jobId], /api/scrape/history, /api/scrape/health, /api/profiling, /api/profiling/status/[job_id], /api/races/recent, /api/races/[race_id]/horses |
+| /home | ユーザー/Admin統合ハブ | 2-step導線, API状態確認, パスワード再確認後の管理モード | /api/health, /api/data-stats, /api/admin/unlock, /api/admin/profiles |
+| /data-collection (Admin mode) | 通常データ取得 | 期間(月), Dry-run, `force_rescrape=false`固定の取得, 進捗/状態再確認, 最新fetch summary, 取得済み3指標 | /api/scrape, /api/scrape/status/[jobId], /api/scrape/history, /api/scrape/health, /api/data-stats |
 | /data-view (Premium) | データ検証/特徴量確認 | 日付, レース選択, raw/featuresタブ, 列フィルタ | /api/races/by-date, /api/debug/race/[race_id], /api/debug/race/[race_id]/features |
 | /feature-lab (Premium) | 特徴量分析 | target, importance_type, topN, summary/importance/coverageタブ | /api/features/summary, /api/features/importance, /api/features/coverage |
-| /train | モデル学習/モデル管理 | target, model_type, 学習期間, advanced設定, Optuna, 学習開始, activate/delete | /api/ml/train/start, /api/ml/train/status/[job_id], /api/models, /api/models/[id], /api/models/[id]/activate |
+| /train (Admin mode) | モデル学習/モデル管理 | target, model_type, 学習期間, advanced設定, Optuna, 学習開始, activate/delete | /api/ml/train/start, /api/ml/train/status/[job_id], /api/models, /api/models/[id], /api/models/[id]/activate |
 | /predict-batch | 一括予測/購入/エクスポート | 日付, venue filter, model選択, 予測実行, odds refresh, 購入記録, JSON/CSV export | /api/races/by-date, /api/analyze-race, /api/realtime-odds/refresh, /api/realtime-odds/[race_id], /api/purchase, /api/export/bet-list |
 | /race-analysis | 単レース予測詳細/結果照合 | 日付, レース選択, モデル選択, predict/features/resultタブ | /api/races/by-date, /api/analyze-race, /api/models, /api/debug/race/[race_id]/features, /api/prediction-history/[race_id], /api/races/[race_id]/horses |
 | /prediction-history (Premium) | 予測分析/成績追跡 | 更新, レース一覧, race-analysisへの遷移 | /api/prediction-history |
-| /production-readiness (Premium/Admin) | 本番前 read-only チェック | 実行ボタン, pass/warn/fail表示, 結果要約JSON | /api/production-readiness |
+| /production-readiness (Admin mode) | 本番前 read-only チェック | 実行ボタン, pass/warn/fail表示, 結果要約JSON | /api/production-readiness |
 | /dashboard | 購入履歴/損益分析 | 結果入力(hit/miss,payout), delete, ソート | /api/purchase-history, /api/purchase/[id], /api/statistics, /api/data-stats |
-| /admin (AdminOnly) | 管理運用 | user role変更, stats確認 | Supabase profiles直接 + /api/data-stats |
+| /admin | 旧管理画面からの移行導線 | `/home`へリダイレクト | (直接API呼び出しなし) |
 | /login | 認証 | login/signup タブ, email/password submit | Supabase Auth SDK 直接 |
 | / | ランディング | 遷移のみ | (直接API呼び出しなし) |
 
@@ -76,13 +77,13 @@ Scope: UI (src/app) + Next API (src/app/api) + FastAPI router/script mapping inv
 
 | 業務操作 | UI | Next API | FastAPI endpoint / script | 備考 |
 |---|---|---|---|---|
-| 期間スクレイプ開始 | /data-collection | POST /api/scrape | POST /api/scrape/start (FastAPI scrape router) | 月単位ループ + job polling |
+| 期間スクレイプ開始 | /data-collection | POST /api/scrape | POST /api/scrape/start (FastAPI scrape router) | 月単位ループ + job polling; 通常UIは`force_rescrape=false`固定 |
 | スクレイプ進捗監視 | /data-collection, /predict-batch hooks | GET /api/scrape/status/[jobId] | GET /api/scrape/status/{job_id} | useJobPoller |
-| fetch summary履歴確認 | /data-collection | GET /api/scrape/history | GET /api/scrape/history | read-only history (reload-safe) |
+| 最新fetch summary確認 | /data-collection | GET /api/scrape/history | GET /api/scrape/history | read-only; 通常UIは最新1件のみ表示 |
 | スクレイプhealth | /data-collection | GET /api/scrape/health | GET /api/scrape/health | read-only health |
-| 取得済み一覧/詳細 | /data-collection | GET /api/races/recent, GET /api/races/[race_id]/horses | GET /api/races/recent, GET /api/races/{race_id}/horses | 結果表示あり |
-| Profiling起動 | /data-collection | POST /api/profiling | POST /api/profiling/start | レポート閲覧UIは限定 |
-| Profiling進捗 | /data-collection | GET /api/profiling/status/[job_id] | GET /api/profiling/status/{job_id} | job statusのみ |
+| 取得済み3指標 | /data-collection | GET /api/data-stats | GET /api/data-stats | 総レース数・総出走馬数・最終取得日 |
+| 取得済み一覧/詳細 | 通常UIでは非表示 | GET /api/races/recent, GET /api/races/[race_id]/horses | GET /api/races/recent, GET /api/races/{race_id}/horses | 保守用のAPI/実装は存続 |
+| Profiling起動/進捗 | 通常UIでは非表示 | /api/profiling, /api/profiling/status/[job_id] | /api/profiling/start, /api/profiling/status/{job_id} | 保守用のAPI/実装は存続 |
 | 学習開始 | /train | POST /api/ml/train/start | POST /api/train/start | local/test compatibility only; normal UI disabled pending approval-bound durable job |
 | 学習進捗 | /train | GET /api/ml/train/status/[job_id] | GET /api/train/status/{job_id} | progress表示あり |
 | モデル一覧/切替/削除 | /train | /api/models, /api/models/[id], /api/models/[id]/activate | /api/models, /api/models/{id}, /api/models/{id}/activate | read-only list/detail only; switch and delete disabled pending separate durable approvals |
@@ -104,7 +105,7 @@ Scope: UI (src/app) + Next API (src/app/api) + FastAPI router/script mapping inv
 | # | 業務フロー | UIあり | 実行可能 | 結果表示 | 分類 | complete/partial/missing | 本番利用 | 根拠メモ |
 |---|---|---|---|---|---|---|---|---|
 | 1 | データ取得 | yes | yes | yes | complete_ui | complete | OK (read/scrape運用) | /data-collection で期間指定+進捗+件数表示 |
-| 2 | データ検証 | yes | yes | yes | complete_ui | complete | OK | /data-view, /data-collection recent/details |
+| 2 | データ検証 | yes | yes | yes | complete_ui | complete | OK | /data-viewを通常導線とし、data-collectionのrecent/detailsは保守用に非表示 |
 | 3 | 特徴量生成 | yes | yes (予測/学習時に内部生成) | partial | partial_ui | partial | OK | 生成自体はbackend内部。専用「生成実行画面」はなし |
 | 4 | 特徴量分析 | yes | yes | yes | complete_ui | complete | OK (Premium) | /feature-lab summary/importance/coverage |
 | 5 | モデル学習 | yes | yes | yes | complete_ui | complete | 条件付きOK (権限制御前提) | /train start/status/result/models |
@@ -184,11 +185,11 @@ Next API routeは存在するが、主要業務UI導線で未使用/非表示の
 - /race-analysis 単レース予測 + (Premium)特徴量/結果照合
 - /feature-lab 特徴量分析 (Premium)
 - /data-view データ検証 (Premium)
-- /data-collection の read/scrape start/status/health/profiling start
-- /data-collection の fetch summary history 表示（read-only）
+- /data-collection のDry-run、`force_rescrape=false`固定のscrape start、status/health、状態不明時の安全確認
+- /data-collection の最新fetch summaryと取得済み3指標（read-only）
 - /dashboard 購入履歴更新と損益分析
 - /home の health/data stats 可視化
-- /admin (AdminOnly) のユーザー管理
+- /home のパスワード再確認済み管理者モードによるユーザー管理
 
 条件:
 
@@ -205,10 +206,11 @@ Next API routeは存在するが、主要業務UI導線で未使用/非表示の
 - /api/data/all (destructive admin utility)
 - sandbox write-readback 系運用を通常ユーザーUIに露出すること
 - 反復最適化/再設計を本番UIボタン化して即時実行すること (まずガード付き運用画面が必要)
+- Data Collectionの通常UIにrepair/refetch、Refresh/P0/Targeted計画、Live Validation、Review Queue、profiling、全履歴、最近取得一覧/詳細を常時露出すること。ページ/APIは保守用途として存続する
 
 ---
 
-## 8. UIに存在しないが必要な画面一覧
+## 8. 通常UIに存在しない、または保守表示に限定した画面一覧
 
 優先度高:
 
@@ -220,8 +222,8 @@ Next API routeは存在するが、主要業務UI導線で未使用/非表示の
 
 3. API-only運用機能のAdmin画面
    - scrape repair/rescrape-incomplete/backfill/debug-race-ids
-4. Profiling結果ビュー画面
-   - /api/profiling/html/[job_id] をUIで参照
+4. （実装済み・通常UI非表示）Profiling結果ビュー画面
+   - `/data-collection/profiling/[job_id]`から認証付きで参照する保守画面として存続
 
 ---
 
@@ -235,8 +237,7 @@ Next API routeは存在するが、主要業務UI導線で未使用/非表示の
 2. P2: Notionレポート出力 UI
    - 出力対象/期間/テンプレ選択
    - secretはserver-side envのみ
-3. P2: Profiling report viewer
-4. P3: API-only admin utilities の安全な集約 (role=admin + explicit confirm)
+3. P3: API-only admin utilities の安全な集約 (role=admin + explicit confirm)
 
 ---
 

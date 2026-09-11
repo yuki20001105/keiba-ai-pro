@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { mockAuth, mockHealth, mockDataStats } from './helpers/mock-api'
+import { buildTestSession } from './helpers/supabase-session'
 
 test.describe('ホームページ', () => {
   test.beforeEach(async ({ page }) => {
@@ -39,12 +40,77 @@ test.describe('ホームページ', () => {
       await expect(page.locator(`a[href="${href}"]`)).toHaveCount(0)
     }
     await expect(page.locator('a[href="/admin"]')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: '管理者モード' })).toHaveCount(0)
+    await expect(page.getByText('ユーザー管理')).toHaveCount(0)
   })
 
-  test('管理者には管理メニューへの入口が表示される', async ({ page }) => {
+  test('一般ユーザーは管理ツールのURLを直接開いてもホームへ戻る', async ({ page }) => {
+    for (const path of ['/data-collection', '/train', '/production-readiness']) {
+      await page.goto(path)
+      await expect(page).toHaveURL(/\/home$/)
+      await expect(page.getByRole('heading', { name: 'AI競馬予測', exact: true })).toBeVisible()
+    }
+  })
+
+  test('管理者はパスワード確認後に同じホームで管理モードへ切り替えられる', async ({ page }) => {
     await mockAuth(page, { role: 'admin', tier: 'premium' })
+    const session = buildTestSession({ role: 'admin', tier: 'premium' })
+    let unlockPostObserved = false
+    await page.route('**/auth/v1/token**', route => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(session),
+    }))
+    await page.route('/api/admin/unlock**', route => {
+      const request = route.request()
+      if (request.method() === 'GET') {
+        return route.fulfill({ status: 403, json: { detail: 'Admin mode is locked' } })
+      }
+      if (request.method() === 'POST') {
+        unlockPostObserved = true
+        expect(request.headers().authorization).toBe(`Bearer ${session.access_token}`)
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: { 'Set-Cookie': 'keiba_admin_mode=e2e-signed-grant; Path=/; HttpOnly; SameSite=Strict' },
+          body: JSON.stringify({
+            version: 1,
+            unlocked: true,
+            expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+          }),
+        })
+      }
+      return route.fulfill({ status: 200, json: { version: 1, unlocked: false } })
+    })
+    await page.route('/api/admin/profiles**', route => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        version: 1,
+        profiles: [{
+          id: 'e2e-user-id',
+          email: 'e2e@example.com',
+          role: 'admin',
+          full_name: 'E2E Admin',
+          subscription_tier: 'premium',
+          created_at: '2026-01-01T00:00:00Z',
+        }],
+      }),
+    }))
+
     await page.goto('/home')
-    await expect(page.getByRole('link', { name: '管理者' })).toHaveAttribute('href', '/admin')
+    await expect(page.getByRole('button', { name: '管理者モード' })).toBeVisible()
+    await expect(page.getByText('ユーザー管理')).toHaveCount(0)
+
+    await page.getByRole('button', { name: '管理者モード' }).click()
+    await page.getByRole('textbox', { name: '管理者パスワード', exact: true }).fill('verified-password')
+    await page.getByRole('button', { name: '確認して切り替える' }).click()
+
+    await expect(page).toHaveURL(/\/home$/)
+    await expect(page.getByRole('heading', { name: '管理者モード' })).toBeVisible()
+    expect(unlockPostObserved).toBe(true)
+    await expect(page.getByRole('heading', { name: 'ユーザー管理', exact: true })).toBeVisible()
+    expect((await page.context().cookies()).find(cookie => cookie.name === 'keiba_admin_mode')?.httpOnly).toBe(true)
   })
 
   test('システムステータスカードが3つ表示される', async ({ page }) => {

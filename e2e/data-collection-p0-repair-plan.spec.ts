@@ -1,22 +1,11 @@
 import { test, expect } from '@playwright/test'
+import { mockAuth } from './helpers/mock-api'
 
-const E2E_EMAIL = process.env.E2E_EMAIL || 'yuki20001105@icloud.com'
-const E2E_PASSWORD = process.env.E2E_PASSWORD || ''
 const NOTION_TOKEN_PREFIX = 'ntn' + '_'
-
-async function login(page: import('@playwright/test').Page) {
-  await page.goto('/login')
-  await expect(page.locator('input[type="email"]')).toBeVisible({ timeout: 30000 })
-  await page.locator('input[type="email"]').fill(E2E_EMAIL)
-  await page.locator('input[type="password"]').fill(E2E_PASSWORD)
-  await page.locator('form button[type="submit"]').click()
-  await page.waitForURL('**/home', { timeout: 30000 })
-}
 
 test.describe('P0 Repair Plan UI (read-only preview only)', () => {
   test.beforeEach(async ({ page }) => {
-    test.skip(!E2E_PASSWORD, 'E2E_PASSWORD is required for auth-guarded routes')
-    await login(page)
+    await mockAuth(page)
 
     await page.route('**/api/scrape/p0-repair-plan**', async route => {
       const req = route.request()
@@ -88,12 +77,7 @@ test.describe('P0 Repair Plan UI (read-only preview only)', () => {
     })
   })
 
-  test('Data Collection から遷移し read-only p0 plan を表示できる', async ({ page }) => {
-    await page.goto('/data-collection')
-    const p0PlanLink = page.getByRole('link', { name: 'P0 Repair Plan' })
-    await expect(p0PlanLink).toBeVisible()
-    await expect(p0PlanLink).toHaveAttribute('href', '/data-collection/p0-repair-plan')
-
+  test('保守用URLを直接開き read-only p0 plan を表示できる', async ({ page }) => {
     await page.goto('/data-collection/p0-repair-plan')
     await expect(page).toHaveURL(/\/data-collection\/p0-repair-plan/)
 

@@ -1,7 +1,7 @@
 import { expect, Page, test } from '@playwright/test'
 import { mockSupabaseIdentity, setSupabaseTestSession } from './helpers/mock-api'
 
-const SUPABASE_ORIGIN = 'http://127.0.0.1:54321'
+const SUPABASE_ORIGIN = process.env.NEXT_PUBLIC_SUPABASE_URL || 'http://127.0.0.1:54321'
 
 type Scenario =
   | { kind: 'ok'; body: Record<string, unknown> }
@@ -168,11 +168,6 @@ test.describe('Phase3C Targeted Refetch Planning (read-only)', () => {
     if (!baseURL) throw new Error('Playwright baseURL is required')
     await setupAuthorizedPage(page, baseURL)
     await mountScenario(page, { kind: 'ok', body: successPayload('all', 10, 2) }, 'all')
-
-    await page.goto('/data-collection')
-    const link = page.getByRole('link', { name: 'Targeted Refetch Plan' }).first()
-    await expect(link).toBeVisible()
-    await expect(link).toHaveAttribute('href', '/data-collection/targeted-refetch-plan')
 
     await page.goto('/data-collection/targeted-refetch-plan')
     await expect(page).toHaveURL(/\/data-collection\/targeted-refetch-plan/)

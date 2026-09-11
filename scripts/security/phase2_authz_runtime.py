@@ -47,6 +47,7 @@ GENERIC_REASON_VALUES = {
 DIRECT_PUBLIC_ALLOWLIST = {
     "/api/health",
     "/api/local-login",
+    "/api/admin/unlock",
     "/api/stripe/webhook",
 }
 
@@ -248,7 +249,11 @@ def _extract_auth_helper_policies(ts: str) -> dict[str, str]:
         body = ts[start:end]
 
         policy = ""
-        if "requireAdmin: true" in body or re.search(r"role\s*!==\s*['\"]admin['\"]", body):
+        if (
+            "requireAdmin: true" in body
+            or "requireAdminMode: true" in body
+            or re.search(r"role\s*!==\s*['\"]admin['\"]", body)
+        ):
             policy = "Admin"
         elif (
             "requirePremiumOrAdmin: true" in body
@@ -273,7 +278,9 @@ def _detect_direct_policy(ts: str, route_path: str, helper_policies: dict[str, s
         return "Webhook"
     if route_path.startswith("/api/internal/"):
         return "Internal"
-    if "verifyRequestAuth(" in ts and "requireAdmin: true" in ts:
+    if "verifyRequestAuth(" in ts and (
+        "requireAdmin: true" in ts or "requireAdminMode: true" in ts
+    ):
         return "Admin"
     if "verifyRequestAuth(" in ts and "requirePremiumOrAdmin: true" in ts:
         return "PremiumOrAdmin"

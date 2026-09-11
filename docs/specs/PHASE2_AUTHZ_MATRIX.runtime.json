@@ -634,7 +634,7 @@
     "duplicates": []
   },
   "next": {
-    "count": 80,
+    "count": 83,
     "routes": [
       {
         "route": "/api/admin/profiles",
@@ -659,6 +659,42 @@
         "status_propagation": false,
         "detail_error_passthrough": false,
         "source": "src/app/api/admin/profiles/[userId]/role/route.ts"
+      },
+      {
+        "route": "/api/admin/unlock",
+        "method": "DELETE",
+        "policy": "Public",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/admin/unlock/route.ts"
+      },
+      {
+        "route": "/api/admin/unlock",
+        "method": "GET",
+        "policy": "Admin",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/admin/unlock/route.ts"
+      },
+      {
+        "route": "/api/admin/unlock",
+        "method": "POST",
+        "policy": "Admin",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/admin/unlock/route.ts"
       },
       {
         "route": "/api/ai-correct",
@@ -1598,7 +1634,7 @@
       }
     ],
     "unclassified": [],
-    "canonical_entries": 80,
+    "canonical_entries": 83,
     "gate_failures": []
   },
   "gate": {

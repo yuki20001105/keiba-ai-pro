@@ -29,8 +29,11 @@ import {
 } from './helpers/mock-api'
 
 // ── 共通モック設定 ──────────────────────────────────────────────
-async function setupCommonMocks(page: Page) {
-  await mockAuth(page)
+async function setupCommonMocks(
+  page: Page,
+  auth: { role?: 'admin' | 'user'; tier?: 'free' | 'premium' } = {},
+) {
+  await mockAuth(page, auth)
   await mockHealth(page)
   await mockDataStats(page)
   await mockRacesByDate(page)
@@ -142,9 +145,10 @@ test.describe('【Step 1】データ取得フロー', () => {
     await expect(page.getByText(/取得中|完了|24/).first()).toBeVisible({ timeout: 15000 })
   })
 
-  test('1-4: 次のステップ（モデル学習）へのリンクが表示される', async ({ page }) => {
+  test('1-4: データ取得画面は取得操作だけに集中している', async ({ page }) => {
     await page.goto('/data-collection')
-    await expect(page.getByRole('link', { name: /モデル学習/ })).toBeVisible()
+    await expect(page.getByText('期間指定一括取得')).toBeVisible()
+    await expect(page.getByRole('link', { name: /モデル学習/ })).toHaveCount(0)
   })
 })
 
@@ -431,7 +435,7 @@ test.describe('【Step 5】予測スコア詳細フロー', () => {
 // ══════════════════════════════════════════════════════════════════
 test.describe('【Full Workflow】ホームから主要機能へ遷移するシナリオ', () => {
   test.beforeEach(async ({ page }) => {
-    await setupCommonMocks(page)
+    await setupCommonMocks(page, { role: 'user', tier: 'free' })
     await mockScraping(page)
     await mockTraining(page)
     page.on('dialog', dialog => dialog.accept())

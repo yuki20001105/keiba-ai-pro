@@ -8,7 +8,7 @@ import {
 } from '../src/lib/scrape-uncertainty-approval'
 import { mockSupabaseIdentity, setSupabaseTestSession } from './helpers/mock-api'
 
-const SUPABASE_ORIGIN = 'http://127.0.0.1:54321'
+const SUPABASE_ORIGIN = process.env.NEXT_PUBLIC_SUPABASE_URL || 'http://127.0.0.1:54321'
 const LOCK: PersistedUncertaintyLock = {
   version: 1,
   failureKind: 'monitoring',

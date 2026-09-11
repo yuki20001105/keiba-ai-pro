@@ -1,7 +1,7 @@
 # Frontend UI / Backend Contract Inventory
 
-Updated: 2026-07-05
-Scope: Current-state inventory only (no behavior change)
+Updated: 2026-09-12
+Scope: Current-state inventory
 
 ## 0. Purpose
 
@@ -15,16 +15,18 @@ Architecture (current):
 
 | UI Page | Role | Uses API | Notes |
 |---|---|---|---|
-| src/app/home/page.tsx | entry dashboard | yes | health/data summary |
-| src/app/data-collection/page.tsx | scrape/profiling ops | yes | includes scrape health-like probe |
-| src/app/train/page.tsx | model training management | yes | async train job flow |
+| src/app/home/page.tsx | user/Admin integrated dashboard | yes | health/data summary; Admin mode requires password re-verification |
+| src/app/data-collection/page.tsx | compact Admin-mode scrape ops | yes | AdminModeRouteGuard; normal UI is health/range/Dry-run/normal execute/progress/latest summary/three stats only; maintenance surfaces are hidden |
+| src/app/train/page.tsx | Admin-mode model training management | yes | AdminModeRouteGuard; async train job flow |
 | src/app/predict-batch/page.tsx | batch race prediction/purchase | yes | central prediction workflow |
 | src/app/race-analysis/page.tsx | single race analysis | yes | model switch + cache |
 | src/app/feature-lab/page.tsx | feature catalog/importance/coverage | yes | premium-sensitive endpoints behind API |
 | src/app/data-view/page.tsx | raw/features debug viewer | yes | premium-sensitive debug endpoints |
 | src/app/prediction-history/page.tsx | prediction performance history | yes | premium-sensitive endpoint |
 | src/app/dashboard/page.tsx | purchase performance dashboard | yes | purchase/statistics endpoints |
-| src/app/admin/page.tsx | admin operational page | yes | currently uses data-stats |
+| src/components/AdminWorkspace.tsx | password-unlocked admin workspace | yes | profiles/data-stats; mounted only with a valid user/session-bound unlock grant |
+| src/app/production-readiness/page.tsx | Admin-mode readiness checks | yes | AdminModeRouteGuard; read-only operational checks |
+| src/app/admin/page.tsx | legacy admin route | no | clears Admin mode and redirects to `/home` |
 | src/app/login/page.tsx | authentication screen | no direct backend | auth entry only |
 | src/app/page.tsx | landing page | no direct backend | marketing/entry |
 
@@ -38,6 +40,7 @@ Architecture (current):
 | train | /api/models/[id] | GET /api/models/{model_id} | authenticated read | production | none critical |
 | train | /api/models/[id] | DELETE /api/models/{model_id} | Admin + exact local/test opt-in | local compatibility | deployed/unknown environments fail closed; UI deletion is disabled pending separate durable retirement approval |
 | train | /api/models/[id]/activate | PUT /api/models/{model_id}/activate | Admin + explicit local/test opt-in only | local compatibility | deployed and unknown environments fail closed; UI direct activation is disabled |
+| production-readiness | /api/production-readiness | local allowlisted build/health/smoke checks | UI: Admin mode; API: Premium/Admin | production | no business DB write; local artifacts and compute load may still occur |
 | model-redesign-workbench | /api/model-redesign/jobs | private Supabase RPC | Admin + approved requester + exact approval CAS/hash | internal API | durable queued submission exists; UI wiring and worker execution remain absent |
 | model-redesign-workbench | /api/model-redesign/jobs/[job_id] | private Supabase RPC | Admin | internal API | authoritative queued status only; no execution claim exists |
 | predict-batch | /api/analyze-race | POST /api/analyze_race | login required | production | none critical |
@@ -51,14 +54,15 @@ Architecture (current):
 | data-view | /api/debug/race/[race_id] | GET /api/debug/race/{race_id} | premium required (backend) | production | UI guard missing |
 | data-view | /api/debug/race/[race_id]/features | GET /api/debug/race/{race_id}/features | premium required (backend) | production | UI guard missing |
 | prediction-history | /api/prediction-history | GET /api/prediction-history | premium required (backend) | production | UI guard missing |
-| data-collection | /api/scrape | POST /api/scrape (legacy sync) | login required/admin-intent | production | uses legacy sync endpoint |
+| data-collection | /api/scrape | POST /api/scrape (legacy sync) | login required/admin-intent | production | normal UI uses Dry-run or normal execute and fixes `force_rescrape=false` |
 | data-collection | /api/scrape/status/[jobId] | GET /api/scrape/status/{job_id} | login required | production | batch scrape polling endpoint |
-| data-collection | /api/scrape/history | GET /api/scrape/history | login required | production | fetch summary history (read-only) |
+| data-collection | /api/scrape/history | GET /api/scrape/history | login required | production | read-only; normal UI renders the latest fetch summary only |
 | data-collection | /api/scrape/health | GET /api/scrape/health | login required | production | dedicated health contract |
-| data-collection | /api/profiling | POST /api/profiling/start | login required | production | query/body contract should be documented |
-| data-collection | /api/profiling/status/[job_id] | GET /api/profiling/status/{job_id} | login required | production | none critical |
-| data-collection | /api/races/recent | GET /api/races/recent | login required | production | none critical |
-| data-collection | /api/races/[race_id]/horses | GET /api/races/{race_id}/horses | login required | production | none critical |
+| data-collection | /api/data-stats | GET /api/data_stats | login required | production | normal UI renders total races, total runners, and latest acquisition date |
+| data-collection maintenance | /api/profiling | POST /api/profiling/start | login required | production | capability retained; not exposed on the normal Data Collection surface |
+| data-collection maintenance | /api/profiling/status/[job_id] | GET /api/profiling/status/{job_id} | login required | production | capability retained; not exposed on the normal Data Collection surface |
+| data-collection maintenance | /api/races/recent | GET /api/races/recent | login required | production | capability retained; recent-race list is hidden from the normal surface |
+| data-collection maintenance | /api/races/[race_id]/horses | GET /api/races/{race_id}/horses | login required | production | capability retained; race-detail viewer is hidden from the normal surface |
 | dashboard | /api/purchase/[id] | PATCH/DELETE /api/purchase/{purchase_id} | login required | production | none critical |
 | dashboard | /api/purchase-history | GET /api/purchase_history | login required | production | naming mixed |
 | dashboard | /api/statistics | GET /api/statistics | login required | production | none critical |
@@ -189,12 +193,18 @@ Guarded screens (P0):
 	- non-premium: debug/features and prediction-history calls suppressed
 	- premium-only notices shown in locked tabs
 	- 401/403 on result API: explicit permission message
+- src/app/home/page.tsx + src/components/AdminWorkspace.tsx
+	- user and Admin share the same `/home` shell
+	- Admin-only switch is hidden from ordinary users
+	- Admin mode requires re-entering the current signed-in account password
+	- successful re-verification mounts the Admin workspace in `/home`; reload restores the remaining grant, while logout, role loss, authorization failure, explicit return, or expiry locks it
 - src/app/admin/page.tsx
-	- Admin badge shown in header
+	- legacy route redirects to locked `/home`; it does not render a separate Admin dashboard
 
 Notes:
 - Backend authorization remains authoritative; UI guard is pre-check UX only.
-- API contracts and backend permission logic are unchanged.
+- `/train` and `/production-readiness` are Admin-mode UI surfaces. Some underlying operational APIs retain their existing `PremiumOrAdmin` contract for compatibility; that API contract does not grant access to these screens.
+- Existing operational API contracts and backend permissions are unchanged; the admin profile APIs now additionally require the short-lived Admin-mode grant.
 
 ## 12. Verification Baseline (P0.5)
 
@@ -1010,8 +1020,7 @@ Smoke contract:
 	- `retry_count`
 
 E2E contract:
-- Data Collection page shows history section and refresh button
-- history cards or empty-state message is rendered
+- Data Collection page shows at most the latest fetch summary when one exists; the full history console is not part of the normal surface
 - dry-run/execute display labels remain visible
 - secret-like strings are not rendered in UI
-- auth-guarded route uses real login pattern and skips when `E2E_PASSWORD` is unset
+- auth-guarded route uses an isolated mocked Admin session, so the compact UI contract runs without external credentials

@@ -37,6 +37,20 @@ export async function setSupabaseTestSession(page: Page, opts: SupabaseSessionOp
       sameSite: 'Lax',
     },
   ])
+  if ((opts.role ?? 'user') === 'admin') {
+    await page.route('/api/admin/unlock**', route => {
+      if (route.request().method() !== 'GET') return route.fallback()
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          version: 1,
+          unlocked: true,
+          expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+        }),
+      })
+    })
+  }
   return cookie.name
 }
 
