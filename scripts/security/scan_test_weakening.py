@@ -66,6 +66,8 @@ ALLOWLIST_EXACT: Dict[str, str] = {
     "python-api/tests/test_phase3k_dependency_security_contract.py:assert package_json[\"dependencies\"][\"next\"] == \"^16.2.10\"": "replaced by exact Next.js 16.2.12 security pin assertion",
     "python-api/tests/test_phase3k_dependency_security_contract.py:assert package_json[\"devDependencies\"][\"postcss\"] == \"^8.5.10\"": "replaced by exact PostCSS 8.5.25 security pin assertion",
     "python-api/tests/test_phase3k_dependency_security_contract.py:assert \"overrides\" not in package_json": "replaced by exact safe PostCSS and sharp override assertion",
+    "python-api/tests/test_phase3k_dependency_security_contract.py:assert package_json[\"dependencies\"][\"next\"] == \"16.2.12\"": "replaced by exact Next.js 16.3.4 security pin assertion after the newer advisory",
+    "python-api/tests/test_phase3k_dependency_security_contract.py:assert package_json[\"dependencies\"][\"sharp\"] == \"0.35.3\"": "replaced by exact Sharp 0.35.4 security pin assertion after the newer advisory",
     # Phase 3N replaces the in-memory thread start contract with a durable,
     # fenced Saga/outbox contract. Equivalent and stronger assertions live in
     # test_phase3n_operational_saga_runtime.py and the rewritten Phase 3E suite.

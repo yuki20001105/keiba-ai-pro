@@ -27,17 +27,18 @@ def test_node_runtime_and_direct_security_floors_are_explicit() -> None:
     package_json = json.loads((REPO_ROOT / "package.json").read_text(encoding="utf-8"))
 
     assert package_json["engines"]["node"] == "24.x"
-    assert package_json["dependencies"]["next"] == "16.2.12"
-    assert package_json["dependencies"]["sharp"] == "0.35.3"
+    assert package_json["dependencies"]["next"] == "16.3.4"
+    assert package_json["dependencies"]["sharp"] == "0.35.4"
     assert package_json["dependencies"]["@google-cloud/vision"] == "^5.3.7"
     assert package_json["devDependencies"]["concurrently"] == "^9.2.4"
+    assert package_json["devDependencies"]["eslint-config-next"] == "16.3.4"
     assert package_json["devDependencies"]["picomatch"] == "^4.0.5"
     assert package_json["devDependencies"]["postcss"] == "8.5.25"
     assert package_json["devDependencies"]["tsx"] == "^4.23.1"
     assert package_json["devDependencies"]["vitest"] == "^4.1.10"
     assert "lucide-react" not in package_json["dependencies"]
     assert package_json["overrides"] == {
-        "js-yaml": "4.3.1",
+        "js-yaml": "4.3.2",
         "nanoid": "3.3.18",
         "postcss": "$postcss",
         "sharp": "$sharp",
@@ -48,14 +49,15 @@ def test_node_runtime_and_direct_security_floors_are_explicit() -> None:
 def test_lockfile_contains_only_fixed_critical_and_high_versions() -> None:
     minimums = {
         "@grpc/grpc-js": (1, 14, 4),
-        "js-yaml": (4, 3, 1),
+        "browserslist": (4, 28, 7),
+        "js-yaml": (4, 3, 2),
         "lodash": (4, 18, 0),
         "nanoid": (3, 3, 18),
-        "next": (16, 2, 12),
+        "next": (16, 3, 4),
         "postcss": (8, 5, 25),
         "protobufjs": (7, 6, 3),
         "shell-quote": (1, 9, 0),
-        "sharp": (0, 35, 3),
+        "sharp": (0, 35, 4),
         "undici": (7, 29, 0),
         "vite": (8, 0, 16),
         "ws": (8, 21, 0),

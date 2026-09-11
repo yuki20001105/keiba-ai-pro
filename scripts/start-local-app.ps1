@@ -96,7 +96,7 @@ function Import-DotEnv([string]$Path) {
     }
 }
 
-function Get-OrCreate-LocalAutoLoginToken([string]$Path) {
+function Get-LocalLoginToken([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         throw '.env.test was not found. Configure E2E_EMAIL and E2E_PASSWORD for local auto-login.'
     }
@@ -180,8 +180,8 @@ function Sync-StandaloneAssets {
 New-Item -ItemType Directory -Path $RuntimeDir -Force | Out-Null
 $env:LOCAL_CONFIGURATION_ROOT = $ConfigRoot
 $env:PYTHONUTF8 = '1'
-$LocalAutoLoginToken = Get-OrCreate-LocalAutoLoginToken -Path (Join-Path $ConfigRoot '.env.test')
-$AppUrl = 'http://127.0.0.1:3000/api/local-login?token=' + [Uri]::EscapeDataString($LocalAutoLoginToken)
+$LoginToken = Get-LocalLoginToken -Path (Join-Path $ConfigRoot '.env.test')
+$AppUrl = 'http://127.0.0.1:3000/api/local-login?token=' + [Uri]::EscapeDataString($LoginToken)
 
 # A second double-click must not overwrite the launcher state; otherwise the
 # stop BAT would lose the PIDs of the already-running processes.
