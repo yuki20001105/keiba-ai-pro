@@ -3,7 +3,7 @@ import { mockAuth, mockHealth, mockDataStats } from './helpers/mock-api'
 
 test.describe('ホームページ', () => {
   test.beforeEach(async ({ page }) => {
-    await mockAuth(page)
+    await mockAuth(page, { role: 'user', tier: 'free' })
     await mockHealth(page)
     await mockDataStats(page)
   })
@@ -14,20 +14,37 @@ test.describe('ホームページ', () => {
     await expect(page.getByText('予測を始める')).toBeVisible()
   })
 
-  test('「アプリへ」でホームページへ遷移する', async ({ page }) => {
+  test('ランディングページのCTAでホームページへ遷移する', async ({ page }) => {
     await page.goto('/')
-    await page.getByRole('link', { name: 'アプリへ' }).click()
+    await page.getByRole('link', { name: '予測を始める' }).click()
     await page.waitForURL('/home')
     await expect(page.getByText('AI競馬予測')).toBeVisible()
   })
 
-  test('ホームページに4ステップのナビゲーションカードが表示される', async ({ page }) => {
+  test('ホームページに2ステップの主要ナビゲーションだけが表示される', async ({ page }) => {
     await page.goto('/home')
-    await expect(page.getByText('データ取得')).toBeVisible()
-    await expect(page.getByText('モデル学習')).toBeVisible()
-    await expect(page.getByText('予測実行')).toBeVisible()
-    await expect(page.getByText('成績確認')).toBeVisible()
-    await expect(page.getByText('予測スコア詳細')).toBeVisible()
+    await expect(page.getByText('基本的な使い方 — 2ステップ')).toBeVisible()
+    await expect(page.getByRole('link', { name: /予測実行/ }).first()).toHaveAttribute('href', '/predict-batch')
+    await expect(page.getByRole('link', { name: /成績確認/ }).first()).toHaveAttribute('href', '/dashboard')
+
+    for (const href of [
+      '/data-collection',
+      '/train',
+      '/race-analysis',
+      '/prediction-history',
+      '/production-readiness',
+      '/notion-report',
+      '/model-redesign-workbench',
+    ]) {
+      await expect(page.locator(`a[href="${href}"]`)).toHaveCount(0)
+    }
+    await expect(page.locator('a[href="/admin"]')).toHaveCount(0)
+  })
+
+  test('管理者には管理メニューへの入口が表示される', async ({ page }) => {
+    await mockAuth(page, { role: 'admin', tier: 'premium' })
+    await page.goto('/home')
+    await expect(page.getByRole('link', { name: '管理者' })).toHaveAttribute('href', '/admin')
   })
 
   test('システムステータスカードが3つ表示される', async ({ page }) => {
@@ -57,9 +74,9 @@ test.describe('ホームページ', () => {
     await expect(modelCard.locator('..').getByText('3')).toBeVisible({ timeout: 6000 })
   })
 
-  test('Step 01から始めるボタンでデータ取得ページへ遷移', async ({ page }) => {
+  test('「予測を始める」ボタンで一括予測ページへ遷移', async ({ page }) => {
     await page.goto('/home')
-    await page.getByRole('link', { name: /Step 01 から始める/ }).click()
-    await page.waitForURL('/data-collection')
+    await page.getByRole('link', { name: /予測を始める/ }).click()
+    await page.waitForURL('/predict-batch')
   })
 })

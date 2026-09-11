@@ -8,17 +8,8 @@ import { supabase } from '@/lib/supabase'
 import { authFetch } from '@/lib/auth-fetch'
 
 const FLOW_STEPS = [
-  { href: '/data-collection', label: 'データ取得',   desc: 'netkeibaからレース情報を自動収集', step: '01' },
-  { href: '/train',           label: 'モデル学習',   desc: 'AIモデルをトレーニング',           step: '02' },
-  { href: '/predict-batch',   label: '予測実行',     desc: 'レース結果を予測・購入推奨',       step: '03' },
-  { href: '/dashboard',       label: '成績確認',     desc: '購入履歴と損益・回収率を分析',     step: '04' },
-]
-const EXTRA_ITEMS = [
-  { href: '/race-analysis', label: '予測スコア詳細', desc: '馬ごとの予測スコア・特徴量を確認' },
-  { href: '/prediction-history', label: '予測履歴', desc: '過去の予測と実際の着順を比較' },
-  { href: '/production-readiness', label: '本番前チェック', desc: 'health/smoke/flag を read-only で確認' },
-  { href: '/notion-report', label: 'Notionレポート出力', desc: 'Premium/Admin向けに preview -> send を実行' },
-  { href: '/model-redesign-workbench', label: 'モデル再設計ワークベンチ', desc: 'read-only / preview 中心のMVP' },
+  { href: '/predict-batch', label: '予測実行', desc: 'レースを選び、予測・購入推奨を確認', step: '01' },
+  { href: '/dashboard', label: '成績確認', desc: '購入履歴と損益・回収率を分析', step: '02' },
 ]
 
 export default function HomePage() {
@@ -107,9 +98,9 @@ export default function HomePage() {
           </div>
         </div>
 
-        {/* ── 4ステップ フロー ── */}
+        {/* ── 2ステップ フロー ── */}
         <div className="mb-2">
-          <p className="text-xs text-[#555] mb-4 tracking-wider uppercase">基本的な使い方 — 4ステップ</p>
+          <p className="text-xs text-[#555] mb-4 tracking-wider uppercase">基本的な使い方 — 2ステップ</p>
           <div className="space-y-2">
             {FLOW_STEPS.map((item, idx) => (
               <div key={item.href}>
@@ -139,30 +130,12 @@ export default function HomePage() {
           </div>
         </div>
 
-        {/* ── サブメニュー ── */}
-        <div className="mt-6 border-t border-[#1e1e1e] pt-5">
-          <p className="text-xs text-[#444] mb-3">詳細分析</p>
-          {EXTRA_ITEMS.map(item => (
-            <Link key={item.href} href={item.href}>
-              <div className="group flex items-center justify-between px-4 py-3 rounded-lg hover:bg-[#111] transition-all cursor-pointer">
-                <div>
-                  <div className="text-sm text-[#888] group-hover:text-white transition-colors">{item.label}</div>
-                  <div className="text-xs text-[#444] mt-0.5">{item.desc}</div>
-                </div>
-                <svg className="w-3.5 h-3.5 text-[#333] group-hover:text-[#555] transition-colors shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                </svg>
-              </div>
-            </Link>
-          ))}
-        </div>
-
         <div className="mt-6 pt-6 border-t border-[#1e1e1e]">
           <Link
-            href="/data-collection"
+            href="/predict-batch"
             className="flex items-center justify-center gap-2 w-full py-3 bg-white text-black text-sm font-medium rounded-lg hover:bg-[#eee] transition-colors"
           >
-            Step 01 から始める
+            予測を始める
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
             </svg>

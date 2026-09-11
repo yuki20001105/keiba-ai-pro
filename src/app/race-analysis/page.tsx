@@ -4,7 +4,7 @@ import { useSearchParams } from 'next/navigation'
 import { Logo } from '@/components/Logo'
 import Link from 'next/link'
 import type { RaceItem } from '@/lib/types'
-import { todayStr } from '@/lib/types'
+import { todayStr, toInputDate } from '@/lib/types'
 import { useRaceCache } from '@/hooks/useRaceCache'
 import { RacePredictionPanel } from '@/components/RacePredictionPanel'
 import { RaceFeaturePanel } from '@/components/RaceFeaturePanel'
@@ -48,10 +48,11 @@ export default function RaceAnalysisPage() {
 }
 
 function RaceAnalysisPageContent() {
-  const { isPremium } = useAuth()
+  const { isPremium, loading: authLoading } = useAuth()
   const searchParams = useSearchParams()
-  const initialDate = searchParams.get('date') ?? todayStr()
+  const initialDate = toInputDate((searchParams.get('date') ?? todayStr()).replace(/-/g, ''))
   const initialRaceId = searchParams.get('race_id') ?? ''
+  const initialTab = searchParams.get('tab') === 'features' ? 'features' : 'predict'
 
   const [date, setDate] = useState(initialDate)
   const [races, setRaces] = useState<RaceItem[]>([])
@@ -59,7 +60,7 @@ function RaceAnalysisPageContent() {
   const [selectedRaceId, setSelectedRaceId] = useState('')
   const [selectedModelId, setSelectedModelId] = useState<string>('')
   const [models, setModels] = useState<{ model_id: string; target: string; cv_auc_mean: number }[]>([])
-  const [tab, setTab] = useState<'predict' | 'features' | 'result'>('predict')
+  const [tab, setTab] = useState<'predict' | 'features' | 'result'>(initialTab)
 
   // 結果照合タブ
   const [resultData, setResultData] = useState<PredictionHistoryResult | null>(null)
@@ -139,26 +140,22 @@ function RaceAnalysisPageContent() {
       if (res.ok) {
         const fetchedRaces: RaceItem[] = (await res.json()).races || []
         setRaces(fetchedRaces)
-        if (initialRaceId && fetchedRaces.some(r => r.race_id === initialRaceId)) {
-          // useEffect(レース監視)がロードするのでここでは設定のみ
-          setSelectedRaceId(initialRaceId)
-        }
       }
     } catch { }
     finally { setRacesLoading(false) }
-  }, [date, initialRaceId])
+  }, [date])
 
   useEffect(() => { loadRaces() }, [loadRaces])
 
   // URL パラメータで race_id が指定されている場合、レース一覧ロード後に自動選択
   useEffect(() => {
-    if (initialRaceId && races.length > 0 && !selectedRaceId) {
+    if (!authLoading && initialRaceId && races.length > 0 && !selectedRaceId) {
       if (races.some(r => r.race_id === initialRaceId)) {
         loadRaceData(initialRaceId)
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [races])
+  }, [races, authLoading])
 
   const loadRaceData = useCallback(async (raceId: string, forceRefresh = false, modelId?: string) => {
     const effectiveModelId = modelId ?? selectedModelId
@@ -175,7 +172,7 @@ function RaceAnalysisPageContent() {
         setFeatData(cached.featData)
         setFromCache(true)
         setCachedAt(cached.cachedAt)
-        if (!cached.featData) {
+        if (isPremium && !cached.featData) {
           authFetch(`/api/debug/race/${raceId}/features`)
             .then(r => r.ok ? r.json() : null)
             .then(feat => { if (feat) { setFeatData(feat); raceCache.updateFeat(cacheKey, feat) } })

@@ -45,6 +45,9 @@ describe('Admin dashboard server-bound profile access', () => {
     render(<AdminDashboard />)
 
     expect(await screen.findByText('user@example.com')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /データ取得/ })).toHaveAttribute('href', '/data-collection')
+    expect(screen.getByRole('link', { name: /モデル管理/ })).toHaveAttribute('href', '/train')
+    expect(screen.getByRole('link', { name: /本番前チェック/ })).toHaveAttribute('href', '/production-readiness')
     expect(authFetchMock).toHaveBeenCalledWith('/api/admin/profiles', {
       method: 'GET',
       cache: 'no-store',

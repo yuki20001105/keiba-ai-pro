@@ -10,6 +10,7 @@ import type { RaceItem } from '@/lib/types'
 import { useScrape } from '@/hooks/useScrape'
 import { useJobPoller } from '@/hooks/useJobPoller'
 import { CACHE_TTL_MS } from '@/hooks/useRaceCache'
+import { useAuth } from '@/contexts/AuthContext'
 
 // 馬番配列 + 券種 → 組み合わせ文字列配列を生成
 function genManualCombos(nos: number[], betType: string): string[] {
@@ -55,6 +56,7 @@ const MIN_HORSES: Record<string, number> = {
 }
 
 export default function PredictBatchPage() {
+  const { isPremium } = useAuth()
   const [date, setDate] = useState(todayStr())
   const [venueFilter, setVenueFilter] = useState<Set<string>>(new Set())
   const [races, setRaces] = useState<RaceItem[]>([])
@@ -767,7 +769,7 @@ export default function PredictBatchPage() {
         {/* ── Layer 3: 一括予測結果 ── */}
         {Object.keys(results).length > 0 && (
           <div className="space-y-3">
-            <h2 className="text-sm font-semibold text-white">③ 予測結果</h2>
+            <h2 className="text-sm font-semibold text-white">③ 予測結果・スコア詳細</h2>
             {filteredRaces
               .filter(r => results[r.race_id])
               .map(r => {
@@ -776,6 +778,8 @@ export default function PredictBatchPage() {
                 const preds = res.data?.predictions || []
                 const rec = res.data?.recommendation
                 const raceLevel = res.data?.race_level ?? 'normal'
+                const confidenceValue = res.data?.pro_evaluation?.confidence
+                const confidence = confidenceValue == null ? null : Number(confidenceValue)
 
                 return (
                   <div key={r.race_id} className="bg-[#111] border border-[#1e1e1e] rounded-lg overflow-hidden">
@@ -790,6 +794,9 @@ export default function PredictBatchPage() {
                         {r.race_name && <span className="text-xs text-[#888]">{r.race_name}</span>}
                         {raceLevel === 'decisive' && <span className="text-xs text-yellow-400">🔥 勝負</span>}
                         {raceLevel === 'skip' && <span className="text-xs text-[#555]">見送り</span>}
+                        {confidence !== null && Number.isFinite(confidence) && (
+                          <span className="text-[10px] text-[#666]">信頼度 {Math.round(confidence * 100)}%</span>
+                        )}
                       </div>
                       <div className="flex items-center gap-3">
                         {!res.success && <span className="text-xs text-[#f87171]">エラー</span>}
@@ -815,7 +822,7 @@ export default function PredictBatchPage() {
                               <table className="w-full text-sm">
                                 <thead>
                                   <tr className="border-b border-[#1e1e1e]">
-                                    {['順位', '馬番', '馬名', '騎手', '勝率', '複勝圏', 'アンサンブル', '期待値', 'オッズ'].map(h => (
+                                    {['順位', '馬番', '馬名', '騎手', 'スコア', '勝率', '複勝圏', 'アンサンブル', '期待値', 'オッズ', '人気'].map(h => (
                                       <th key={h} className="px-4 py-2.5 text-left text-xs text-[#555] font-normal first:pl-5">{h}</th>
                                     ))}
                                   </tr>
@@ -825,6 +832,7 @@ export default function PredictBatchPage() {
                                     const maxProb = Math.max(...preds.map((p: any) => p.p_norm ?? p.win_probability ?? 0), 0.001)
                                     return preds.map((p: any, i: number) => {
                                       const pNorm = p.p_norm ?? p.win_probability ?? 0
+                                      const pRaw = p.p_raw ?? pNorm
                                       const pPlace3: number | null = p.p_place3 ?? null
                                       const pEns: number = p.p_ensemble ?? pNorm
                                       const ev: number | null = p.expected_value ?? (p.odds != null ? pNorm * p.odds : null)
@@ -836,6 +844,7 @@ export default function PredictBatchPage() {
                                           <td className="px-4 py-2.5 font-bold">{p.horse_number ?? p.horse_no}</td>
                                           <td className="px-4 py-2.5">{p.horse_name}</td>
                                           <td className="px-4 py-2.5 text-[#888]">{p.jockey_name}</td>
+                                          <td className="px-4 py-2.5 tabular-nums text-[#7dd3fc]">{(pRaw * 100).toFixed(1)}</td>
                                           <td className="px-4 py-2.5">
                                             <div className="flex items-center gap-2">
                                               <div className="w-16 h-1.5 bg-[#1e1e1e] rounded-full overflow-hidden">
@@ -852,6 +861,7 @@ export default function PredictBatchPage() {
                                           </td>
                                           <td className={`px-4 py-2.5 font-medium ${evColor}`}>{ev != null ? ev.toFixed(2) : '—'}</td>
                                           <td className="px-4 py-2.5 text-[#888]">{p.odds != null ? p.odds : '—'}</td>
+                                          <td className="px-4 py-2.5 text-[#888]">{p.popularity ?? '—'}</td>
                                         </tr>
                                       )
                                     })
@@ -859,6 +869,23 @@ export default function PredictBatchPage() {
                                 </tbody>
                               </table>
                             </div>
+
+                            {isPremium && (
+                              <div className="flex justify-end px-5 py-3 border-t border-[#1a1a1a]">
+                                <Link
+                                  href={`/race-analysis?date=${date}&race_id=${encodeURIComponent(r.race_id)}&tab=features`}
+                                  className="inline-flex items-center gap-1.5 text-xs text-[#7dd3fc] hover:text-[#bae6fd] transition-colors"
+                                >
+                                  特徴量・結果照合を詳しく見る
+                                  <span className="rounded border border-[#3b2f64] bg-[#211b36] px-1.5 py-0.5 text-[9px] text-[#c4b5fd]">
+                                    Premium
+                                  </span>
+                                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                                  </svg>
+                                </Link>
+                              </div>
+                            )}
 
                             {/* 購入セクション */}
                             {res.success && (() => {

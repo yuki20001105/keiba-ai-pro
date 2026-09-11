@@ -5,11 +5,24 @@
 import { Page } from '@playwright/test'
 import { buildSupabaseSessionCookie, getAppOrigin, type SupabaseSessionOptions } from './supabase-session'
 
-/** Supabase auth — ログイン不要の匿名ユーザーを返す */
-export async function mockAuth(page: Page) {
-  await page.route('**/auth/v1/user**', route =>
-    route.fulfill({ status: 401, json: { error: 'not authenticated' } })
-  )
+/** Supabase auth — protected-page test session (Admin/Premium by default for legacy suites). */
+export async function mockAuth(
+  page: Page,
+  opts: { role?: 'admin' | 'user'; tier?: 'free' | 'premium' } = {},
+) {
+  const appBaseUrl = process.env.PW_BASE_URL || `http://127.0.0.1:${process.env.PW_PORT || '3101'}`
+  const role = opts.role ?? 'admin'
+  const tier = opts.tier ?? 'premium'
+  await setSupabaseTestSession(page, {
+    appBaseUrl,
+    role,
+    tier,
+  })
+  await mockSupabaseIdentity(page, {
+    authenticated: true,
+    role,
+    tier,
+  })
 }
 
 export async function setSupabaseTestSession(page: Page, opts: SupabaseSessionOptions) {

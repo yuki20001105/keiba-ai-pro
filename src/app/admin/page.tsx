@@ -230,12 +230,12 @@ export default function AdminDashboard() {
             />
           </div>
 
-          {/* クイックアクション */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+          {/* 管理メニュー */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
             <Link href="/data-collection">
               <div className="bg-slate-800/50 backdrop-blur-sm border border-blue-500/30 rounded-xl p-6 hover:border-blue-400 transition-all cursor-pointer group">
                 <div className="text-4xl mb-2">📊</div>
-                <h3 className="text-xl font-bold text-white mb-2">データ収集</h3>
+                <h3 className="text-xl font-bold text-white mb-2">データ取得</h3>
                 <p className="text-blue-200 text-sm">ネットケイバからレース情報を取得</p>
               </div>
             </Link>
@@ -243,8 +243,21 @@ export default function AdminDashboard() {
             <Link href="/train">
               <div className="bg-slate-800/50 backdrop-blur-sm border border-blue-500/30 rounded-xl p-6 hover:border-blue-400 transition-all cursor-pointer group">
                 <div className="text-4xl mb-2">🧠</div>
-                <h3 className="text-xl font-bold text-white mb-2">モデル学習</h3>
-                <p className="text-blue-200 text-sm">AIモデルをトレーニング</p>
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  <h3 className="text-xl font-bold text-white">モデル管理</h3>
+                  <span className="rounded-full border border-amber-400/40 bg-amber-500/15 px-2 py-0.5 text-[10px] text-amber-300">
+                    学習実行は準備中
+                  </span>
+                </div>
+                <p className="text-blue-200 text-sm">保存済みモデルと学習機能の状態を確認</p>
+              </div>
+            </Link>
+
+            <Link href="/production-readiness">
+              <div className="bg-slate-800/50 backdrop-blur-sm border border-blue-500/30 rounded-xl p-6 hover:border-blue-400 transition-all cursor-pointer group">
+                <div className="text-4xl mb-2">🛡️</div>
+                <h3 className="text-xl font-bold text-white mb-2">本番前チェック</h3>
+                <p className="text-blue-200 text-sm">build・health・smoke・feature flag を確認</p>
               </div>
             </Link>
           </div>

@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 import { mockAuth, mockDataStats } from './helpers/mock-api'
 
 async function mockDashboardApis(page: import('@playwright/test').Page) {
-  await mockAuth(page)
+  await mockAuth(page, { role: 'user', tier: 'free' })
   await mockDataStats(page)
   await page.route('/api/purchase-history**', route => {
     if (route.request().method() === 'GET') {
@@ -33,21 +33,27 @@ test.describe('ダッシュボード', () => {
     await expect(page.getByText('ダッシュボード')).toBeVisible()
   })
 
+  test('予測履歴を成績画面のサブメニューから開ける', async ({ page }) => {
+    await page.goto('/dashboard')
+    await expect(page.getByRole('link', { name: /予測履歴/ })).toHaveAttribute('href', '/prediction-history')
+  })
+
   test('購入履歴テーブルが表示される', async ({ page }) => {
     await page.goto('/dashboard')
-    await expect(page.getByRole('heading', { name: /購入履歴/ })).toBeVisible({ timeout: 5000 })
+    await expect(page.getByRole('heading', { name: '結果未入力' })).toBeVisible({ timeout: 5000 })
+    await expect(page.getByRole('table')).toBeVisible()
   })
 
   test('購入履歴の「結果入力」ボタンが表示される', async ({ page }) => {
     await page.goto('/dashboard')
-    await expect(page.getByRole('button', { name: '結果入力' }).first()).toBeVisible({ timeout: 5000 })
+    await expect(page.getByRole('button', { name: /結果を入力/ }).first()).toBeVisible({ timeout: 5000 })
   })
 
   test('「結果入力」をクリックするとインラインフォームが展開される', async ({ page }) => {
     await page.goto('/dashboard')
-    await page.getByRole('button', { name: '結果入力' }).first().click()
-    // 払い戻し金額の入力欄が出る
-    await expect(page.getByPlaceholder('0')).toBeVisible({ timeout: 3000 })
+    await page.getByRole('button', { name: /結果を入力/ }).first().click()
+    await expect(page.getByRole('button', { name: /的中/ })).toBeVisible({ timeout: 3000 })
+    await expect(page.getByRole('button', { name: /外れ/ })).toBeVisible()
   })
 
   test('払い戻し額を入力して保存できる', async ({ page }) => {
@@ -59,8 +65,9 @@ test.describe('ダッシュボード', () => {
     })
 
     await page.goto('/dashboard')
-    await page.getByRole('button', { name: '結果入力' }).first().click()
-    const returnInput = page.getByPlaceholder('0')
+    await page.getByRole('button', { name: /結果を入力/ }).first().click()
+    await page.getByRole('button', { name: /的中/ }).click()
+    const returnInput = page.getByPlaceholder('例: 1560')
     await returnInput.fill('3200')
     await page.getByRole('button', { name: /保存|確定|更新/ }).first().click()
     await expect(page.getByText(/記録しました|更新しました|保存しました/)).toBeVisible({ timeout: 5000 })

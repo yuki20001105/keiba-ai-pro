@@ -3,7 +3,7 @@ import { mockAuth, mockRacesByDate, mockPredict } from './helpers/mock-api'
 
 test.describe('一括予測ページ', () => {
   test.beforeEach(async ({ page }) => {
-    await mockAuth(page)
+    await mockAuth(page, { role: 'user', tier: 'free' })
     await mockRacesByDate(page)
     await mockPredict(page)
     await page.route('/api/purchase', route =>
@@ -35,7 +35,8 @@ test.describe('一括予測ページ', () => {
     await expect(predictBtn).toBeDisabled()
   })
 
-  test('レース一覧取得 → 全選択 → 予測実行で結果が表示される', async ({ page }) => {
+  test('レース一覧取得 → 全選択 → 予測実行でスコア詳細が表示される', async ({ page }) => {
+    await mockAuth(page, { role: 'user', tier: 'premium' })
     await page.goto('/predict-batch')
     // ① レース一覧取得
     await page.getByRole('button', { name: /レース一覧を取得/ }).click()
@@ -50,6 +51,14 @@ test.describe('一括予測ページ', () => {
     await predictBtn.click()
     // 予測結果カードが現れる
     await expect(page.getByText('テスト馬A').first()).toBeVisible({ timeout: 8000 })
+    await expect(page.getByRole('heading', { name: '③ 予測結果・スコア詳細' })).toBeVisible()
+    for (const heading of ['順位', 'スコア', '勝率', '複勝圏', 'アンサンブル', '期待値', 'オッズ', '人気']) {
+      await expect(page.getByRole('columnheader', { name: heading })).toBeVisible()
+    }
+    await expect(page.getByRole('link', { name: /特徴量・結果照合を詳しく見る/ })).toHaveAttribute(
+      'href',
+      /^\/race-analysis\?date=\d{8}&race_id=202604070101&tab=features$/,
+    )
   })
 
   test('予測結果に確率バーが表示される', async ({ page }) => {
@@ -61,6 +70,7 @@ test.describe('一括予測ページ', () => {
     await page.getByRole('button', { name: /予測実行|一括予測/ }).last().click()
     // 確率バーのdivが存在する (スタイルにwidthがある要素)
     await expect(page.locator('[style*="width"]').first()).toBeVisible({ timeout: 8000 })
+    await expect(page.getByRole('link', { name: /特徴量・結果照合を詳しく見る/ })).toHaveCount(0)
   })
 
   test('購入後にダッシュボードへのリンクが表示される', async ({ page }) => {

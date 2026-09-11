@@ -122,7 +122,7 @@ function RaceCard({ race }: { race: RaceHistory }) {
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#1e1e1e] text-[#555]">外れ</span>
           )}
         </div>
-        <Link href={`/race-analysis?race_id=${race.race_id}`}
+        <Link href={`/race-analysis?date=${encodeURIComponent(race.race_date)}&race_id=${encodeURIComponent(race.race_id)}`}
           className="text-[10px] text-[#555] hover:text-[#888] transition-colors">
           詳細 →
         </Link>

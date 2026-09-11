@@ -3,11 +3,12 @@
  * ──────────────────────────────────────────────────────────────
  * フルフロー統合テスト
  *
- *   Step 1: データ取得  (/data-collection)
- *   Step 2: モデル学習  (/train)
- *   Step 3: 予測実行    (/predict-batch)
- *   Step 4: 成績確認    (/dashboard)
- *   Step 5: 予測スコア詳細 (/race-analysis)
+ *   一般ユーザーの主要フロー:
+ *     Step 1: 予測実行 (/predict-batch)
+ *     Step 2: 成績確認 (/dashboard)
+ *
+ *   データ取得・モデル管理・本番前チェックは管理者導線、
+ *   予測スコア詳細と予測履歴は主要画面から辿る補助機能として個別検証する。
  *
  * 実行コマンド:
  *   npx playwright test e2e/workflow.spec.ts --reporter=list
@@ -320,9 +321,10 @@ test.describe('【Step 4】成績確認フロー', () => {
     }
   })
 
-  test('4-6: データ取得ページへのリンクが表示される（次サイクルへ）', async ({ page }) => {
+  test('4-6: 予測履歴と次の予測へのリンクが表示される', async ({ page }) => {
     await page.goto('/dashboard')
-    await expect(page.getByRole('link', { name: /データ取得/ })).toBeVisible({ timeout: 5000 })
+    await expect(page.getByRole('link', { name: /予測履歴/ })).toHaveAttribute('href', '/prediction-history')
+    await expect(page.getByRole('link', { name: /予測実行へ/ })).toHaveAttribute('href', '/predict-batch')
   })
 })
 
@@ -408,12 +410,26 @@ test.describe('【Step 5】予測スコア詳細フロー', () => {
     // odds_win列が消える
     await expect(page.getByRole('columnheader', { name: 'odds_win' })).not.toBeVisible()
   })
+
+  test('5-7: 日付とレースIDのリンクから対象レースを自動表示できる', async ({ page }) => {
+    await page.goto('/race-analysis?date=20260407&race_id=202604070101')
+
+    await expect(page.locator('input[type="date"]')).toHaveValue('2026-04-07')
+    await expect(page.getByText('テスト馬A').first()).toBeVisible({ timeout: 5000 })
+  })
+
+  test('5-8: 予測結果の詳細リンクから特徴量タブを直接表示できる', async ({ page }) => {
+    await page.goto('/race-analysis?date=20260407&race_id=202604070101&tab=features')
+
+    await expect(page.locator('input[type="date"]')).toHaveValue('2026-04-07')
+    await expect(page.getByRole('columnheader', { name: 'odds_win' })).toBeVisible({ timeout: 5000 })
+  })
 })
 
 // ══════════════════════════════════════════════════════════════════
 // Full Workflow: 全ステップを通した統合シナリオ
 // ══════════════════════════════════════════════════════════════════
-test.describe('【Full Workflow】ホームから全ページ遷移シナリオ', () => {
+test.describe('【Full Workflow】ホームから主要機能へ遷移するシナリオ', () => {
   test.beforeEach(async ({ page }) => {
     await setupCommonMocks(page)
     await mockScraping(page)
@@ -421,42 +437,28 @@ test.describe('【Full Workflow】ホームから全ページ遷移シナリオ'
     page.on('dialog', dialog => dialog.accept())
   })
 
-  test('ホーム → データ取得 → 学習 → 予測 → 成績 まで全ページ正常遷移', async ({ page }) => {
+  test('ホーム → 予測 → 成績の主要フローを正常に遷移できる', async ({ page }) => {
     // ── ホーム ──
     await page.goto('/home')
     await expect(page.getByText('AI競馬予測')).toBeVisible()
-    await expect(page.getByText('データ取得')).toBeVisible()
-
-    // Step 1 へ
-    await page.getByRole('link', { name: 'データ取得' }).first().click()
-    await page.waitForURL('/data-collection')
-    await expect(page.getByText('データ取得', { exact: true })).toBeVisible()
-
-    // Step 2 へ
-    await page.getByRole('link', { name: /モデル学習/ }).click()
-    await page.waitForURL('/train')
-    await expect(page.getByText('モデル学習')).toBeVisible()
-
-    // Step 3 へ（ヘッダーロゴからホームに戻り再遷移、または直接）
-    await page.goto('/predict-batch')
+    await page.getByRole('link', { name: /予測実行/ }).first().click()
+    await page.waitForURL('/predict-batch')
     await expect(page.getByText('一括予測')).toBeVisible()
 
-    // Step 4 へ
-    await page.goto('/dashboard')
+    await page.goto('/home')
+    await page.getByRole('link', { name: /成績確認/ }).first().click()
+    await page.waitForURL('/dashboard')
     await expect(page.getByText('ダッシュボード')).toBeVisible()
-
-    // Step 5 へ（詳細分析）
-    await page.goto('/race-analysis')
-    await expect(page.getByText('予測結果確認')).toBeVisible()
   })
 
-  test('ホームのStepカードから各ページへ正しくリンクされる', async ({ page }) => {
+  test('ホームのStepカードは主要2機能だけにリンクされる', async ({ page }) => {
     await page.goto('/home')
 
-    // 各Stepリンクが正しいURLを持つ
-    await expect(page.getByRole('link', { name: 'データ取得' }).first()).toHaveAttribute('href', '/data-collection')
-    await expect(page.getByRole('link', { name: 'モデル学習' }).first()).toHaveAttribute('href', '/train')
-    await expect(page.getByRole('link', { name: '予測実行' }).first()).toHaveAttribute('href', '/predict-batch')
-    await expect(page.getByRole('link', { name: '成績確認' }).first()).toHaveAttribute('href', '/dashboard')
+    await expect(page.getByRole('link', { name: /予測実行/ }).first()).toHaveAttribute('href', '/predict-batch')
+    await expect(page.getByRole('link', { name: /成績確認/ }).first()).toHaveAttribute('href', '/dashboard')
+
+    for (const href of ['/data-collection', '/train', '/race-analysis', '/prediction-history', '/production-readiness', '/notion-report', '/model-redesign-workbench']) {
+      await expect(page.locator(`a[href="${href}"]`)).toHaveCount(0)
+    }
   })
 })
