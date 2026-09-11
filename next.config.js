@@ -1,6 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  output: 'standalone',
+  // Vercel packages server functions itself. Keeping standalone enabled there
+  // can move tracing manifests before Vercel's onBuildComplete hook reads them.
+  ...(process.env.VERCEL === '1' ? {} : { output: 'standalone' }),
   reactStrictMode: true,
   allowedDevOrigins: ['127.0.0.1', 'localhost', '10.132.114.4'],
   
