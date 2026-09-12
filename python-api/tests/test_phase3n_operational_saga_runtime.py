@@ -329,6 +329,19 @@ def test_terminal_completion_unlocks_owner_for_a_new_job_only_after_durable_sett
 ) -> None:
     store = _store(tmp_path)
     assert store.enqueue(_request(), 100).code is MutationCode.APPLIED
+    active_history = store.list_jobs(OWNER, 10)
+    assert active_history == [
+        {
+            "job_id": JOB,
+            "status": "queued",
+            "progress": {},
+            "result": None,
+            "error": None,
+            "request_payload": PAYLOAD,
+            "created_at": "1970-01-01T00:01:40Z",
+            "updated_at": "1970-01-01T00:01:40Z",
+        }
+    ]
     blocked = store.enqueue(
         _request(job_id=JOB_2, operation_id=OPERATION_2), 101
     )
@@ -822,6 +835,56 @@ def test_supabase_claim_binds_configured_retry_ceiling() -> None:
             },
         )
     ]
+
+
+def test_supabase_job_reads_project_display_metadata() -> None:
+    selected_columns: list[str] = []
+
+    class Query:
+        def select(self, columns: str):
+            selected_columns.append(columns)
+            return self
+
+        def eq(self, *_args):
+            return self
+
+        def order(self, *_args, **_kwargs):
+            return self
+
+        def limit(self, *_args):
+            return self
+
+        def execute(self):
+            return type(
+                "Response",
+                (),
+                {
+                    "data": [
+                        {
+                            "job_id": JOB,
+                            "status": "running",
+                            "request_payload": PAYLOAD,
+                            "created_at": "2026-09-11T17:27:04Z",
+                            "updated_at": "2026-09-11T17:28:04Z",
+                        }
+                    ]
+                },
+            )()
+
+    class Client:
+        def rpc(self, *_args, **_kwargs):
+            return Query()
+
+        def table(self, *_args):
+            return Query()
+
+    store = SupabaseOperationalSagaStore(Client())
+
+    assert store.get_job(JOB, OWNER)["request_payload"] == PAYLOAD  # type: ignore[index]
+    assert store.list_jobs(OWNER, 10)[0]["created_at"] == "2026-09-11T17:27:04Z"
+    assert len(selected_columns) == 2
+    assert all("request_payload" in columns for columns in selected_columns)
+    assert all("created_at" in columns and "updated_at" in columns for columns in selected_columns)
 
 
 @pytest.mark.parametrize("max_attempts", [0, 21, True])

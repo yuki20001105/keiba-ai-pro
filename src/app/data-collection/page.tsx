@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import Link from 'next/link'
 import { Logo } from '@/components/Logo'
 import { Toast } from '@/components/Toast'
+import { useAuth } from '@/contexts/AuthContext'
 import { authFetch } from '@/lib/auth-fetch'
 import { formatApiErrorDetail } from '@/lib/api-error'
 import {
@@ -39,15 +40,25 @@ import {
   type ScrapeUncertaintyReviewRecord,
 } from '@/lib/scrape-uncertainty-review-server'
 
-const ACTIVE_DRY_RUN_JOB_KEY = 'keiba-ai-pro:active-dry-run-job:v1'
+const ACTIVE_DRY_RUN_JOB_KEY_PREFIX = 'keiba-ai-pro:active-dry-run-job:v2'
 const DRY_RUN_TIMEOUT_MS = 24 * 60 * 60 * 1000
+const ACTIVE_JOB_POLL_INTERVAL_MS = 3000
+const OWNER_ACTIVE_JOB_MESSAGE = '別のデータ取得が実行中です。完了までお待ちください。'
+const PARTIAL_DRY_RUN_RECOVERY_MESSAGE = '再読み込み前に開始した月のDry-runは完了しましたが、複数月の集計は完了していません。全期間のDry-runを再実行してください。'
 
 type ScrapeHealthStatus = 'healthy' | 'degraded' | 'unhealthy' | 'unknown'
 type LocalApiStatus = 'checking' | ScrapeHealthStatus
 
 type StoredDryRunJob = {
+  ownerUserId: string
   jobId: string
   startedAt: number
+  startDate: string
+  endDate: string
+  batchStartPeriod: string
+  batchEndPeriod: string
+  monthIndex: number
+  totalMonths: number
 }
 
 type FetchSummaryHistoryItem = {
@@ -55,6 +66,13 @@ type FetchSummaryHistoryItem = {
   status: string
   created_at?: string
   updated_at?: string
+  request_payload?: {
+    start_date?: string
+    end_date?: string
+    force_rescrape?: boolean
+    dry_run?: boolean
+  }
+  result?: unknown
   fetch_summary?: {
     mode?: string
     start_date?: string
@@ -89,16 +107,142 @@ type FetchSummaryHistoryItem = {
   }
 }
 
+type ActiveScrapeJob = {
+  jobId: string
+  status: 'queued' | 'running'
+  startDate: string
+  endDate: string
+  startedAt: string | null
+  dryRun: boolean
+}
+
 type PeriodValidation = {
   ok: boolean
   message?: string
 }
 
+class DryRunPollingError extends Error {
+  readonly terminal: boolean
+
+  constructor(message: string, terminal: boolean) {
+    super(message)
+    this.name = 'DryRunPollingError'
+    this.terminal = terminal
+  }
+}
+
 const PERIOD_PATTERN = /^(\d{4})-(0[1-9]|1[0-2])$/
 const COMPLETED_CONTRACT_MESSAGE = '完了応答の形式を確認できないため、サーバージョブの状態確認が必要'
 
+function parseStoredDryRunJob(value: unknown, expectedOwnerUserId: string): StoredDryRunJob | null {
+  if (!isObject(value)) return null
+  const candidate = value as Partial<StoredDryRunJob>
+  if (candidate.ownerUserId !== expectedOwnerUserId) return null
+  if (typeof candidate.jobId !== 'string' || candidate.jobId.length === 0) return null
+  if (typeof candidate.startedAt !== 'number' || !Number.isFinite(candidate.startedAt)) return null
+  if (typeof candidate.startDate !== 'string' || !/^\d{8}$/.test(candidate.startDate)) return null
+  if (typeof candidate.endDate !== 'string' || !/^\d{8}$/.test(candidate.endDate)) return null
+  if (typeof candidate.batchStartPeriod !== 'string' || !PERIOD_PATTERN.test(candidate.batchStartPeriod)) return null
+  if (typeof candidate.batchEndPeriod !== 'string' || !PERIOD_PATTERN.test(candidate.batchEndPeriod)) return null
+  if (!Number.isInteger(candidate.monthIndex) || (candidate.monthIndex as number) < 0) return null
+  if (!Number.isInteger(candidate.totalMonths) || (candidate.totalMonths as number) < 1) return null
+  if ((candidate.monthIndex as number) >= (candidate.totalMonths as number)) return null
+  const [startYear, startMonth] = candidate.batchStartPeriod.split('-').map(Number)
+  const [endYear, endMonth] = candidate.batchEndPeriod.split('-').map(Number)
+  const expectedTotalMonths = (endYear - startYear) * 12 + endMonth - startMonth + 1
+  if (expectedTotalMonths !== candidate.totalMonths) return null
+  const expectedMonthIndex = (Number(candidate.startDate.slice(0, 4)) - startYear) * 12
+    + Number(candidate.startDate.slice(4, 6)) - startMonth
+  if (expectedMonthIndex !== candidate.monthIndex) return null
+  if (candidate.endDate.slice(0, 6) !== candidate.startDate.slice(0, 6)) return null
+  return candidate as StoredDryRunJob
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
+}
+
+function isActiveJobStatus(value: unknown): value is ActiveScrapeJob['status'] {
+  return value === 'queued' || value === 'running'
+}
+
+function isKnownJobStatus(value: unknown): value is 'queued' | 'running' | 'completed' | 'error' {
+  return isActiveJobStatus(value) || value === 'completed' || value === 'error'
+}
+
+function normalizeHistoryItem(value: unknown): FetchSummaryHistoryItem | null {
+  if (!isObject(value) || typeof value.job_id !== 'string' || !value.job_id || !isKnownJobStatus(value.status)) return null
+  const result = isObject(value.result) ? value.result : null
+  const nestedSummary = result && isObject(result.fetch_summary) ? result.fetch_summary : null
+  const directSummary = isObject(value.fetch_summary) ? value.fetch_summary : null
+  return {
+    ...(value as FetchSummaryHistoryItem),
+    fetch_summary: (directSummary ?? nestedSummary ?? undefined) as FetchSummaryHistoryItem['fetch_summary'],
+  }
+}
+
+function activeJobFromHistory(item: FetchSummaryHistoryItem): ActiveScrapeJob | null {
+  if (!isActiveJobStatus(item.status)) return null
+  const request = item.request_payload
+  return {
+    jobId: item.job_id,
+    status: item.status,
+    startDate: typeof request?.start_date === 'string' ? request.start_date : '',
+    endDate: typeof request?.end_date === 'string' ? request.end_date : '',
+    startedAt: item.status === 'running' && typeof item.updated_at === 'string' && item.updated_at
+      ? item.updated_at
+      : typeof item.created_at === 'string' && item.created_at
+        ? item.created_at
+        : null,
+    dryRun: request?.dry_run === true,
+  }
+}
+
+function activeJobFromStoredDryRun(stored: StoredDryRunJob): ActiveScrapeJob {
+  return {
+    jobId: stored.jobId,
+    status: 'queued',
+    startDate: stored.startDate,
+    endDate: stored.endDate,
+    startedAt: new Date(stored.startedAt).toISOString(),
+    dryRun: true,
+  }
+}
+
+function activeDryRunStorageKey(userId: string): string {
+  return `${ACTIVE_DRY_RUN_JOB_KEY_PREFIX}:${userId}`
+}
+
+function removeStoredDryRunIfMatches(storageKey: string, jobId: string, ownerUserId: string): void {
+  try {
+    const raw = localStorage.getItem(storageKey)
+    if (!raw) return
+    const stored = JSON.parse(raw)
+    if (isObject(stored) && stored.jobId === jobId && stored.ownerUserId === ownerUserId) {
+      localStorage.removeItem(storageKey)
+    }
+  } catch {
+    // A malformed or unavailable storage area must not trigger a blind delete.
+  }
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError'
+}
+
+function waitForDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'))
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      window.clearTimeout(timer)
+      reject(new DOMException('Aborted', 'AbortError'))
+    }
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, milliseconds)
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
 }
 
 function hasStrictCompletedResult(payload: unknown): boolean {
@@ -182,11 +326,16 @@ function normalizeDryRunResult(resultPayload: any): ScrapeDryRunResult {
 }
 
 export default function DataCollectionPage() {
+  const { userId } = useAuth()
+  const dryRunStorageKey = userId ? activeDryRunStorageKey(userId) : null
   const e2ePollIntervalRaw = process.env.NEXT_PUBLIC_E2E_BATCH_POLL_INTERVAL_MS
   const e2ePollInterval = e2ePollIntervalRaw ? Number(e2ePollIntervalRaw) : undefined
   const batchScrapeOptions = Number.isFinite(e2ePollInterval) && (e2ePollInterval as number) >= 0
     ? { pollIntervalMs: e2ePollInterval as number }
     : undefined
+  const activeJobPollIntervalMs = Number.isFinite(e2ePollInterval)
+    ? Math.max(100, e2ePollInterval as number)
+    : ACTIVE_JOB_POLL_INTERVAL_MS
   // 期間指定用
   const now = new Date()
   const [startPeriod, setStartPeriod] = useState(`${now.getFullYear() - 1}-01`)
@@ -252,6 +401,14 @@ export default function DataCollectionPage() {
   const [serverReviewLastCheckedAt, setServerReviewLastCheckedAt] = useState<string | null>(null)
   const [fetchHistory, setFetchHistory] = useState<FetchSummaryHistoryItem[]>([])
   const [fetchHistoryLoading, setFetchHistoryLoading] = useState(false)
+  const [activeServerJob, setActiveServerJob] = useState<ActiveScrapeJob | null>(null)
+  const [activeJobHydrated, setActiveJobHydrated] = useState(false)
+  const [activeJobCheckError, setActiveJobCheckError] = useState('')
+  const [activeJobConflictPending, setActiveJobConflictPending] = useState(false)
+  const [dryRunStorageError, setDryRunStorageError] = useState('')
+  const [activeJobLastCheckedAt, setActiveJobLastCheckedAt] = useState<string | null>(null)
+  const activeJobRefreshPromiseRef = useRef<Promise<ActiveScrapeJob | null> | null>(null)
+  const dryRunPollingAbortRef = useRef<AbortController | null>(null)
   const [toast, setToast] = useState({ visible: false, message: '', type: 'success' as 'success' | 'error' })
   const showToast = (message: string, type: 'success' | 'error' = 'success') =>
     setToast({ visible: true, message, type })
@@ -287,7 +444,13 @@ export default function DataCollectionPage() {
     setServerReviewLastCheckedAt(null)
   }, [])
   const isBatchBusy = batchLoading || batchStatus === 'queued' || batchStatus === 'running'
-  const isOperationBusy = isBatchBusy || dryRunLoading
+  const serverJobBlocksExecution = !dryRunStorageKey
+    || !activeJobHydrated
+    || activeJobConflictPending
+    || Boolean(activeJobCheckError)
+    || Boolean(dryRunStorageError)
+    || activeServerJob !== null
+  const isOperationBusy = isBatchBusy || dryRunLoading || serverJobBlocksExecution
   const periodValidation = validatePeriodRange(startPeriod, endPeriod)
   const isPeriodValid = periodValidation.ok
 
@@ -297,7 +460,6 @@ export default function DataCollectionPage() {
   // ローカルAPI稼働チェック
   const [localApiStatus, setLocalApiStatus] = useState<LocalApiStatus>('checking')
   const [localApiReason, setLocalApiReason] = useState('')
-  const dryRunTrackingRef = useRef<string | null>(null)
 
   const statusMeta: Record<LocalApiStatus, { label: string; dotClass: string; textClass: string }> = {
     checking: { label: '確認中', dotClass: 'bg-[#555] animate-pulse', textClass: 'text-[#555]' },
@@ -744,28 +906,244 @@ export default function DataCollectionPage() {
     }
   }, [activeJobId, transientUncertaintyKind, persistUncertaintyLock])
 
-  const loadFetchSummaryHistory = useCallback(async () => {
-    setFetchHistoryLoading(true)
+  const loadFetchSummaryHistory = useCallback((silent = false): Promise<ActiveScrapeJob | null> => {
+    const existingRequest = activeJobRefreshPromiseRef.current
+    if (existingRequest) {
+      if (!silent) {
+        setFetchHistoryLoading(true)
+        void existingRequest.finally(() => setFetchHistoryLoading(false))
+      }
+      return existingRequest
+    }
+    if (!silent) setFetchHistoryLoading(true)
+
+    const request = (async (): Promise<ActiveScrapeJob | null> => {
+      try {
+        const res = await authFetch('/api/scrape/history?limit=10', {
+          signal: AbortSignal.timeout(10000),
+        })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const data: unknown = await res.json().catch(() => null)
+        if (!isObject(data) || !Array.isArray(data.jobs)) {
+          throw new Error('invalid scrape history envelope')
+        }
+        if (!Number.isInteger(data.count) || data.count !== data.jobs.length) {
+          throw new Error('invalid scrape history count')
+        }
+        const parsedJobs = data.jobs.map(normalizeHistoryItem)
+        if (parsedJobs.some(item => item === null)) {
+          throw new Error('invalid scrape history item')
+        }
+        const jobs = parsedJobs as FetchSummaryHistoryItem[]
+        if (new Set(jobs.map(item => item.job_id)).size !== jobs.length) {
+          throw new Error('duplicate scrape history job')
+        }
+        const activeJobs = jobs.map(activeJobFromHistory).filter((item): item is ActiveScrapeJob => item !== null)
+        if (activeJobs.length > 1) {
+          throw new Error('multiple active scrape jobs')
+        }
+        const activeJob = activeJobs[0] ?? null
+
+        if (dryRunStorageKey) {
+          try {
+            const storedRaw = localStorage.getItem(dryRunStorageKey)
+            const stored = storedRaw && userId ? parseStoredDryRunJob(JSON.parse(storedRaw), userId) : null
+            if (storedRaw && !stored) {
+              setDryRunStorageError('保存済みDry-runジョブの形式を確認できません。安全のため新しい処理を停止しています。')
+            } else if (!storedRaw || (stored && activeJob?.jobId === stored.jobId)) {
+              setDryRunStorageError('')
+            }
+            const terminalStoredJob = stored
+              ? jobs.find(item => item.job_id === stored.jobId && (item.status === 'completed' || item.status === 'error'))
+              : null
+            if (terminalStoredJob && stored) {
+              removeStoredDryRunIfMatches(dryRunStorageKey, stored.jobId, stored.ownerUserId)
+              setDryRunStorageError('')
+              if (terminalStoredJob.status === 'completed') {
+                if (stored.totalMonths === 1) {
+                  try {
+                    const normalized = normalizeDryRunResult(terminalStoredJob.result)
+                    setDryRunResult(normalized)
+                    setDryRunResultReady(true)
+                    setDryRunExecuted(true)
+                  } catch {
+                    // A completed non-Dry-run job or malformed result is ignored here.
+                  }
+                } else {
+                  setDryRunResult(null)
+                  setDryRunResultReady(false)
+                  setDryRunExecuted(false)
+                  setDryRunError(PARTIAL_DRY_RUN_RECOVERY_MESSAGE)
+                }
+              }
+            }
+          } catch {
+            // Storage evidence is left untouched when it cannot be read safely.
+            setDryRunStorageError('保存済みDry-runジョブを安全に読み取れません。新しい処理を停止しています。')
+          }
+        }
+
+        setFetchHistory(jobs.filter(item => item.fetch_summary !== undefined))
+        setActiveServerJob(activeJob)
+        if (!activeJob) {
+          setDryRunErrorMessage(current => current === OWNER_ACTIVE_JOB_MESSAGE ? '' : current)
+        }
+        setActiveJobHydrated(true)
+        setActiveJobCheckError('')
+        setActiveJobLastCheckedAt(new Date().toISOString())
+        return activeJob
+      } catch (error) {
+        console.error('fetch history load error:', error)
+        setActiveJobHydrated(true)
+        setActiveJobCheckError('実行状態を確認できません。安全のため新しい処理を停止しています。')
+        return null
+      }
+    })()
+
+    const trackedRequest = request.finally(() => {
+      if (activeJobRefreshPromiseRef.current === trackedRequest) {
+        activeJobRefreshPromiseRef.current = null
+      }
+      if (!silent) setFetchHistoryLoading(false)
+    })
+    activeJobRefreshPromiseRef.current = trackedRequest
+    return trackedRequest
+  }, [dryRunStorageKey, userId])
+
+  const refreshActiveJobAfterConflict = useCallback(async (): Promise<ActiveScrapeJob | null> => {
+    setActiveJobConflictPending(true)
     try {
-      const res = await authFetch('/api/scrape/history?limit=10')
-      if (!res.ok) return
-      const data = await res.json().catch(() => ({}))
-      const jobs = Array.isArray(data?.jobs) ? data.jobs : []
-      setFetchHistory(jobs.filter((j: any) => !!j?.fetch_summary))
-    } catch (error) {
-      console.error('fetch history load error:', error)
+      const requestStartedBeforeConflict = activeJobRefreshPromiseRef.current
+      if (requestStartedBeforeConflict) {
+        await requestStartedBeforeConflict
+      }
+      return await loadFetchSummaryHistory(false)
     } finally {
-      setFetchHistoryLoading(false)
+      setActiveJobConflictPending(false)
+    }
+  }, [loadFetchSummaryHistory])
+
+  useEffect(() => {
+    void loadFetchSummaryHistory(false)
+  }, [loadFetchSummaryHistory])
+
+  useEffect(() => {
+    if (!activeServerJob && !activeJobCheckError && !dryRunStorageError) return
+    const timer = window.setInterval(() => {
+      void loadFetchSummaryHistory(true)
+    }, activeJobPollIntervalMs)
+    return () => window.clearInterval(timer)
+  }, [activeJobCheckError, activeJobPollIntervalMs, activeServerJob, dryRunStorageError, loadFetchSummaryHistory])
+
+  const waitForDryRunResult = useCallback(async (
+    stored: StoredDryRunJob,
+    signal: AbortSignal,
+  ): Promise<ScrapeDryRunResult> => {
+    let consecutiveFailures = 0
+    let consecutiveNotFound = 0
+    let deadlineWarningShown = false
+
+    while (true) {
+      if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
+      if (!deadlineWarningShown && Date.now() - stored.startedAt > DRY_RUN_TIMEOUT_MS) {
+        deadlineWarningShown = true
+        setDryRunError('Dry-runが24時間を超えています。ジョブIDを保持したまま自動再確認しています。')
+      }
+      let statusRes: Response
+      try {
+        const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(10000)])
+        statusRes = await authFetch(`/api/scrape/status/${stored.jobId}`, { signal: requestSignal })
+      } catch (error) {
+        if (isAbortError(error) || signal.aborted) throw new DOMException('Aborted', 'AbortError')
+        consecutiveFailures += 1
+        if (consecutiveFailures >= 10) {
+          setDryRunError('Dry-runの状態確認に失敗しています。ジョブIDを保持したまま自動再確認しています。')
+        }
+        await waitForDelay(3000, signal)
+        continue
+      }
+
+      if (!statusRes.ok) {
+        if ([400, 401, 403, 404].includes(statusRes.status)) {
+          throw new DryRunPollingError(
+            `Dry-runの状態確認を継続できません (HTTP ${statusRes.status}, job_id: ${stored.jobId})。ジョブIDは保持しています。`,
+            false,
+          )
+        }
+        consecutiveFailures += 1
+        if (consecutiveFailures >= 10) {
+          setDryRunError('Dry-runの状態確認に失敗しています。ジョブIDを保持したまま自動再確認しています。')
+        }
+        await waitForDelay(3000, signal)
+        continue
+      }
+
+      const statusData = await statusRes.json().catch(() => null)
+      if (!isObject(statusData) || typeof statusData.status !== 'string') {
+        throw new DryRunPollingError(
+          `Dry-runの状態応答を確認できません (job_id: ${stored.jobId})。ジョブIDは保持しています。`,
+          false,
+        )
+      }
+
+      consecutiveFailures = 0
+      if (!deadlineWarningShown) setDryRunError('')
+      if (statusData.status === 'completed') {
+        try {
+          return normalizeDryRunResult(statusData.result)
+        } catch (error) {
+          throw new DryRunPollingError(
+            error instanceof Error ? error.message : 'Dry-run完了結果の形式が不正です。',
+            true,
+          )
+        }
+      }
+      if (statusData.status === 'error') {
+        throw new DryRunPollingError(
+          formatApiErrorDetail(statusData.error, `Dry-runジョブが失敗しました (job_id: ${stored.jobId})`),
+          true,
+        )
+      }
+      if (statusData.status === 'not_found') {
+        consecutiveNotFound += 1
+        if (consecutiveNotFound >= 10) {
+          throw new DryRunPollingError(
+            `Dry-runジョブを確認できません (job_id: ${stored.jobId})。ジョブIDは保持しています。`,
+            false,
+          )
+        }
+      } else if (isActiveJobStatus(statusData.status)) {
+        consecutiveNotFound = 0
+        const request = isObject(statusData.request_payload) ? statusData.request_payload : null
+        setActiveServerJob({
+          jobId: stored.jobId,
+          status: statusData.status,
+          startDate: typeof request?.start_date === 'string' ? request.start_date : stored.startDate,
+          endDate: typeof request?.end_date === 'string' ? request.end_date : stored.endDate,
+          startedAt: statusData.status === 'running' && typeof statusData.updated_at === 'string'
+            ? statusData.updated_at
+            : typeof statusData.created_at === 'string'
+              ? statusData.created_at
+              : new Date(stored.startedAt).toISOString(),
+          dryRun: true,
+        })
+        setActiveJobHydrated(true)
+        setActiveJobCheckError('')
+        setActiveJobLastCheckedAt(new Date().toISOString())
+      } else {
+        throw new DryRunPollingError(
+          `Dry-runの状態を判定できません (${statusData.status}, job_id: ${stored.jobId})。ジョブIDは保持しています。`,
+          false,
+        )
+      }
+      await waitForDelay(1000, signal)
     }
   }, [])
 
-  useEffect(() => {
-    void loadFetchSummaryHistory()
-  }, [loadFetchSummaryHistory])
-
-  const pollDryRunJob = useCallback(async (stored: StoredDryRunJob) => {
-    if (dryRunTrackingRef.current === stored.jobId) return
-    dryRunTrackingRef.current = stored.jobId
+  const pollDryRunJob = useCallback(async (stored: StoredDryRunJob, signal: AbortSignal) => {
+    setActiveServerJob(activeJobFromStoredDryRun(stored))
+    setActiveJobHydrated(true)
+    setActiveJobCheckError('')
     setDryRunLoading(true)
     setDryRunStartedAt(stored.startedAt)
     setDryRunElapsedSeconds(Math.floor(Math.max(0, Date.now() - stored.startedAt) / 1000))
@@ -773,38 +1151,35 @@ export default function DataCollectionPage() {
     setDryRunResultReady(false)
     setDryRunResult(null)
 
-    let consecutiveFailures = 0
     try {
-      while (Date.now() - stored.startedAt <= DRY_RUN_TIMEOUT_MS) {
-        const statusRes = await authFetch(`/api/scrape/status/${stored.jobId}`)
-        if (!statusRes.ok) {
-          consecutiveFailures += 1
-          if (consecutiveFailures >= 10) throw new Error(`Dry-runステータス取得失敗 (job_id: ${stored.jobId})`)
-          await new Promise(resolve => setTimeout(resolve, 3000))
-          continue
-        }
-
-        consecutiveFailures = 0
-        const statusData = await statusRes.json().catch(() => ({}))
-        if (statusData?.status === 'completed') {
-          const normalized = normalizeDryRunResult(statusData?.result)
-          localStorage.removeItem(ACTIVE_DRY_RUN_JOB_KEY)
-          setDryRunResult(normalized)
-          setDryRunResultReady(true)
-          setDryRunExecuted(true)
-          setToast({ visible: true, message: 'Dry-run完了（HTTPアクセスなし）', type: 'success' })
-          await loadFetchSummaryHistory()
-          return
-        }
-        if (statusData?.status === 'error' || statusData?.status === 'not_found') {
-          localStorage.removeItem(ACTIVE_DRY_RUN_JOB_KEY)
-          throw new Error(statusData?.error || `Dry-runジョブが見つかりません (job_id: ${stored.jobId})`)
-        }
-        await new Promise(resolve => setTimeout(resolve, 1000))
+      const normalized = await waitForDryRunResult(stored, signal)
+      if (signal.aborted || !dryRunStorageKey) return
+      removeStoredDryRunIfMatches(dryRunStorageKey, stored.jobId, stored.ownerUserId)
+      setDryRunStorageError('')
+      setActiveServerJob(current => current?.jobId === stored.jobId ? null : current)
+      if (stored.totalMonths === 1) {
+        setDryRunResult(normalized)
+        setDryRunResultReady(true)
+        setDryRunExecuted(true)
+        setToast({ visible: true, message: 'Dry-run完了（HTTPアクセスなし）', type: 'success' })
+      } else {
+        setDryRunResult(null)
+        setDryRunResultReady(false)
+        setDryRunExecuted(false)
+        setDryRunError(PARTIAL_DRY_RUN_RECOVERY_MESSAGE)
+        setToast({ visible: true, message: PARTIAL_DRY_RUN_RECOVERY_MESSAGE, type: 'error' })
       }
-      throw new Error('Dry-runが24時間以内に完了しませんでした。バックエンド状態を確認してください。')
+      await loadFetchSummaryHistory()
     } catch (error: any) {
-      localStorage.removeItem(ACTIVE_DRY_RUN_JOB_KEY)
+      if (isAbortError(error) || signal.aborted) return
+      if (error instanceof DryRunPollingError && error.terminal) {
+        if (dryRunStorageKey) {
+          removeStoredDryRunIfMatches(dryRunStorageKey, stored.jobId, stored.ownerUserId)
+        }
+        setActiveServerJob(current => current?.jobId === stored.jobId ? null : current)
+      } else {
+        setDryRunStorageError('Dry-runの状態を確認できません。ジョブIDを保持し、新しい処理を停止しています。')
+      }
       setDryRunResult(null)
       setDryRunResultReady(false)
       setDryRunExecuted(false)
@@ -812,23 +1187,45 @@ export default function DataCollectionPage() {
       setDryRunError(message)
       setToast({ visible: true, message: `Dry-runエラー: ${message}`, type: 'error' })
     } finally {
-      if (dryRunTrackingRef.current === stored.jobId) dryRunTrackingRef.current = null
-      setDryRunLoading(false)
-      setDryRunStartedAt(null)
+      if (!signal.aborted) {
+        setDryRunLoading(false)
+        setDryRunStartedAt(null)
+      }
     }
-  }, [loadFetchSummaryHistory])
+  }, [dryRunStorageKey, loadFetchSummaryHistory, waitForDryRunResult])
 
   useEffect(() => {
+    if (!dryRunStorageKey || !userId) return
+    let controller: AbortController | null = null
     try {
-      const raw = localStorage.getItem(ACTIVE_DRY_RUN_JOB_KEY)
-      const saved = raw ? JSON.parse(raw) : null
-      if (saved && typeof saved.jobId === 'string' && typeof saved.startedAt === 'number') {
-        void pollDryRunJob(saved as StoredDryRunJob)
+      const raw = localStorage.getItem(dryRunStorageKey)
+      if (!raw) {
+        setDryRunStorageError('')
+        return
       }
+      const saved = parseStoredDryRunJob(JSON.parse(raw), userId)
+      if (!saved) {
+        setDryRunStorageError('保存済みDry-runジョブの形式を確認できません。安全のため新しい処理を停止しています。')
+        return
+      }
+      setDryRunStorageError('')
+      dryRunPollingAbortRef.current?.abort()
+      controller = new AbortController()
+      dryRunPollingAbortRef.current = controller
+      void pollDryRunJob(saved, controller.signal).finally(() => {
+        if (dryRunPollingAbortRef.current === controller) {
+          dryRunPollingAbortRef.current = null
+        }
+      })
     } catch {
-      localStorage.removeItem(ACTIVE_DRY_RUN_JOB_KEY)
+      setDryRunStorageError('保存済みDry-runジョブを読み取れません。安全のため新しい処理を停止しています。')
     }
-  }, [pollDryRunJob])
+    return () => controller?.abort()
+  }, [dryRunStorageKey, pollDryRunJob, userId])
+
+  useEffect(() => () => {
+    dryRunPollingAbortRef.current?.abort()
+  }, [])
 
   const loadStats = async () => {
     try {
@@ -894,10 +1291,13 @@ export default function DataCollectionPage() {
       showToast(`取得完了 — ${result.stats.total_months}ヶ月 / ${result.races_collected}レース / 所要: ${result.elapsed_time}秒`)
       setRetrySnapshot(null)
       setReconcileMessage('')
-      loadStats()
-      loadFetchSummaryHistory()
+      void loadStats()
+      void loadFetchSummaryHistory()
     } catch (error: any) {
       const safeToRetry = error instanceof BatchScrapeError ? error.safeToRetry : false
+      if (error instanceof BatchScrapeError && error.kind === 'busy') {
+        await refreshActiveJobAfterConflict()
+      }
       if (error instanceof BatchScrapeError && (error.kind === 'monitoring' || error.kind === 'client_stop')) {
         persistUncertaintyLock(error.kind, activeJobId, target)
         if (error.kind === 'monitoring') {
@@ -1012,6 +1412,7 @@ export default function DataCollectionPage() {
   }
 
   const handleDryRun = async () => {
+    if (isOperationBusy || !dryRunStorageKey || !userId) return
     const validation = validatePeriodRange(startPeriod, endPeriod)
     if (!validation.ok) {
       const message = validation.message || '期間指定が不正です'
@@ -1030,12 +1431,17 @@ export default function DataCollectionPage() {
     setExecuteWarn('')
     setDryRunPendingMessage('')
     setDryRunErrorMessage('')
+    setDryRunError('')
+    dryRunPollingAbortRef.current?.abort()
+    const controller = new AbortController()
+    dryRunPollingAbortRef.current = controller
     try {
       setExecuteWarn('')
       const months = enumerateMonthDateRanges(startPeriod, endPeriod)
       const monthlyResults: ScrapeDryRunResult[] = []
 
       for (const [index, month] of months.entries()) {
+        if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError')
         setDryRunPendingMessage(`Dry-run見積もり中 (${index + 1}/${months.length}): ${month.label}`)
         const startRes = await authFetch('/api/scrape', {
           method: 'POST',
@@ -1046,11 +1452,17 @@ export default function DataCollectionPage() {
             force_rescrape: forceRescrape,
             dry_run: true,
           }),
+          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]),
         })
 
         if (!startRes.ok) {
           const err = await startRes.json().catch(() => ({}))
-          throw new Error(`${month.label}: ${formatApiErrorDetail(err?.detail ?? err, `HTTP ${startRes.status}`)}`)
+          const detail = formatApiErrorDetail(err?.detail ?? err, `HTTP ${startRes.status}`)
+          if (startRes.status === 409 && detail === 'owner-active-job') {
+            await refreshActiveJobAfterConflict()
+            throw new Error(OWNER_ACTIVE_JOB_MESSAGE)
+          }
+          throw new Error(`${month.label}: ${detail}`)
         }
 
         const startPayload = await startRes.json().catch(() => ({}))
@@ -1059,25 +1471,44 @@ export default function DataCollectionPage() {
           throw new Error(`${month.label}: Dry-run開始応答にjob_idがありません`)
         }
 
-        let resultPayload: unknown = null
-        for (let attempt = 0; attempt < 120; attempt += 1) {
-          await new Promise(resolve => setTimeout(resolve, 500))
-          const statusRes = await authFetch(`/api/scrape/status/${jobId}`)
-          if (!statusRes.ok) continue
-          const statusData = await statusRes.json().catch(() => ({}))
-          if (statusData?.status === 'completed') {
-            resultPayload = statusData?.result
-            break
-          }
-          if (statusData?.status === 'error' || statusData?.status === 'not_found') {
-            throw new Error(`${month.label}: ${formatApiErrorDetail(statusData?.error, 'Dry-run failed')}`)
-          }
+        const storedJob: StoredDryRunJob = {
+          ownerUserId: userId,
+          jobId,
+          startedAt: Date.now(),
+          startDate: month.startDateStr,
+          endDate: month.endDateStr,
+          batchStartPeriod: startPeriod,
+          batchEndPeriod: endPeriod,
+          monthIndex: index,
+          totalMonths: months.length,
         }
-
-        if (!resultPayload) {
-          throw new Error(`${month.label}: Dry-runが60秒以内に完了しませんでした`)
+        setActiveServerJob(activeJobFromStoredDryRun(storedJob))
+        setActiveJobHydrated(true)
+        setActiveJobCheckError('')
+        try {
+          localStorage.setItem(dryRunStorageKey, JSON.stringify(storedJob))
+          setDryRunStorageError('')
+        } catch {
+          setDryRunStorageError('Dry-runのジョブIDを保存できません。安全のため新しい処理を停止しています。')
+          throw new DryRunPollingError(
+            `Dry-runは開始されましたが、ジョブIDを保存できませんでした (job_id: ${jobId})`,
+            false,
+          )
         }
-        monthlyResults.push(normalizeDryRunResult(resultPayload))
+        try {
+          const monthlyResult = await waitForDryRunResult(storedJob, controller.signal)
+          removeStoredDryRunIfMatches(dryRunStorageKey, jobId, userId)
+          setActiveServerJob(current => current?.jobId === jobId ? null : current)
+          monthlyResults.push(monthlyResult)
+        } catch (error) {
+          if (error instanceof DryRunPollingError && error.terminal) {
+            removeStoredDryRunIfMatches(dryRunStorageKey, jobId, userId)
+            setActiveServerJob(current => current?.jobId === jobId ? null : current)
+          } else if (error instanceof DryRunPollingError) {
+            setDryRunStorageError('Dry-runの状態を確認できません。ジョブIDを保持し、新しい処理を停止しています。')
+          }
+          throw error
+        }
       }
 
       setDryRunResult(aggregateDryRunResults(monthlyResults))
@@ -1086,8 +1517,9 @@ export default function DataCollectionPage() {
       setDryRunPendingMessage('')
       setDryRunErrorMessage('')
       showToast(`Dry-run完了（${months.length}ヶ月、HTTPアクセスなし）`)
-      loadFetchSummaryHistory()
+      void loadFetchSummaryHistory()
     } catch (error: any) {
+      if (isAbortError(error) || controller.signal.aborted) return
       setDryRunResult(null)
       setDryRunResultReady(false)
       setDryRunExecuted(false)
@@ -1095,8 +1527,13 @@ export default function DataCollectionPage() {
       setDryRunErrorMessage(error?.message || 'Dry-run failed')
       showToast(`Dry-runエラー: ${error.message}`, 'error')
     } finally {
-      setDryRunLoading(false)
-      setDryRunStartedAt(null)
+      if (dryRunPollingAbortRef.current === controller) {
+        dryRunPollingAbortRef.current = null
+      }
+      if (!controller.signal.aborted) {
+        setDryRunLoading(false)
+        setDryRunStartedAt(null)
+      }
     }
   }
 
@@ -1194,6 +1631,76 @@ export default function DataCollectionPage() {
             Dry-run は HTTPアクセスを実行しません。取得件数と推定時間を事前確認するためのプレビューです。
           </div>
 
+          {activeServerJob && (
+            <div
+              className="space-y-2 rounded border border-[#1e3a5f] bg-[#081522] px-4 py-3 text-xs text-[#bfdbfe]"
+              role="status"
+              data-testid="active-scrape-job"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="font-medium text-white">
+                  {dryRunLoading && activeServerJob.dryRun
+                    ? 'Dry-runが実行中です'
+                    : activeServerJob.jobId === activeJobId
+                      ? 'データ取得が実行中です'
+                      : '別のデータ取得が実行中です'}
+                </div>
+                <span className="rounded bg-[#172554] px-2 py-0.5 text-[11px] text-[#bfdbfe]">
+                  {activeServerJob.status === 'queued' ? '開始待ち' : '実行中'}
+                </span>
+              </div>
+              <div className="grid grid-cols-1 gap-1 text-[#93a9bf] sm:grid-cols-2">
+                <div>
+                  対象期間: {formatSummaryDate(activeServerJob.startDate)} ～ {formatSummaryDate(activeServerJob.endDate)}
+                </div>
+                <div>
+                  {activeServerJob.status === 'queued' ? '受付時刻' : '開始時刻'}: {formatSummaryTimestamp(activeServerJob.startedAt) || '確認中'}
+                </div>
+              </div>
+              <div className="break-all text-[11px] text-[#64748b]">
+                {activeServerJob.dryRun ? 'Dry-run' : 'データ取得'} · job_id: {activeServerJob.jobId}
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-[11px] text-[#64748b]">
+                  {activeJobLastCheckedAt
+                    ? `自動再確認中 · 最終確認 ${formatSummaryTimestamp(activeJobLastCheckedAt)}`
+                    : '状態を自動確認しています'}
+                </span>
+                <button
+                  type="button"
+                  data-testid="refresh-active-job-button"
+                  onClick={() => void loadFetchSummaryHistory(false)}
+                  disabled={fetchHistoryLoading}
+                  className={`rounded px-3 py-1.5 text-xs font-medium ${
+                    fetchHistoryLoading
+                      ? 'bg-[#222] text-[#555] cursor-not-allowed'
+                      : 'bg-white text-black hover:bg-[#eee]'
+                  }`}
+                >
+                  {fetchHistoryLoading ? '確認中...' : '今すぐ再確認'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {!activeServerJob && (activeJobCheckError || dryRunStorageError) && (
+            <div
+              className="space-y-2 rounded border border-[#4a3b0f] bg-[#201a08] px-3 py-2 text-xs text-[#facc15]"
+              role="alert"
+              data-testid="active-job-check-error"
+            >
+              <div>{dryRunStorageError || activeJobCheckError}</div>
+              <button
+                type="button"
+                onClick={() => void loadFetchSummaryHistory(false)}
+                disabled={fetchHistoryLoading}
+                className="rounded bg-white px-3 py-1.5 font-medium text-black disabled:cursor-not-allowed disabled:bg-[#222] disabled:text-[#555]"
+              >
+                {fetchHistoryLoading ? '確認中...' : '状態を再確認'}
+              </button>
+            </div>
+          )}
+
           <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
             <button
               onClick={handleDryRun}
@@ -1226,7 +1733,19 @@ export default function DataCollectionPage() {
                   </svg>
                   取得中...
                 </>
-              ) : !uncertaintyHydrated || !reviewHydrated ? '状態確認中' : isApiUnavailable ? 'API確認不可' : !isPeriodValid ? '期間不正' : executeBlockedByUncertainty ? '実行確認待ち' : '取得開始'}
+              ) : !activeJobHydrated || !uncertaintyHydrated || !reviewHydrated || activeJobConflictPending
+                ? '状態確認中'
+                : activeServerJob
+                  ? '取得中...'
+                  : activeJobCheckError || dryRunStorageError
+                    ? '状態確認待ち'
+                    : isApiUnavailable
+                      ? 'API確認不可'
+                      : !isPeriodValid
+                        ? '期間不正'
+                        : executeBlockedByUncertainty
+                          ? '実行確認待ち'
+                          : '取得開始'}
             </button>
           </div>
 
@@ -1408,7 +1927,7 @@ export default function DataCollectionPage() {
             </div>
           )}
 
-          {!dryRunLoading && dryRunError && (
+          {dryRunError && (
             <div className="rounded border border-[#5b1e1e] bg-[#1f0d0d] px-3 py-2 text-xs text-[#fca5a5]">
               {dryRunError}
             </div>
@@ -1546,7 +2065,7 @@ export default function DataCollectionPage() {
               <h2 className="text-sm font-medium text-white">最新の実行結果</h2>
               <button
                 data-testid="refresh-history-button"
-                onClick={loadFetchSummaryHistory}
+                onClick={() => void loadFetchSummaryHistory(false)}
                 className="text-xs text-[#555] hover:text-[#888] transition-colors"
               >
                 {fetchHistoryLoading ? '更新中...' : '更新'}

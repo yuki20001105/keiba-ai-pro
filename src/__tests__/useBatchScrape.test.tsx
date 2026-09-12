@@ -590,4 +590,25 @@ describe('useBatchScrape', () => {
       expect(result.current.canRetry).toBe(true)
     })
   })
+
+  it('classifies owner-active-job as busy and does not offer a blind retry', async () => {
+    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/scrape' && init?.method === 'POST') {
+        return jsonResponse({ detail: 'owner-active-job' }, 409)
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    const { result } = await renderBatchHook()
+    const rejected = await result.current.start('2026-01', '2026-01', false).catch(error => error)
+
+    expect(rejected).toBeInstanceOf(BatchScrapeError)
+    expect((rejected as BatchScrapeError).message).toBe('別のデータ取得が実行中です。完了までお待ちください。')
+    expect((rejected as BatchScrapeError).kind).toBe('busy')
+    expect((rejected as BatchScrapeError).safeToRetry).toBe(false)
+    await waitFor(() => {
+      expect(result.current.canRetry).toBe(false)
+    })
+  })
 })

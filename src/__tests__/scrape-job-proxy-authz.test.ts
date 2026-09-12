@@ -52,7 +52,19 @@ describe('scrape job status/history proxy authorization', () => {
   })
 
   test('forwards a canonical UUID with only the verified bearer token', async () => {
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ job_id: JOB_ID, status: 'running' }), {
+    const backendPayload = {
+      job_id: JOB_ID,
+      status: 'running',
+      request_payload: {
+        start_date: '20200101',
+        end_date: '20200131',
+        dry_run: false,
+        force_rescrape: false,
+      },
+      created_at: '2026-09-11T17:27:04Z',
+      updated_at: '2026-09-11T17:28:04Z',
+    }
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(backendPayload), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     }))
@@ -62,6 +74,7 @@ describe('scrape job status/history proxy authorization', () => {
     })
 
     expect(response.status).toBe(200)
+    expect(await response.json()).toEqual(backendPayload)
     expect(response.headers.get('Cache-Control')).toBe('no-store')
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const [url, init] = fetchMock.mock.calls[0]

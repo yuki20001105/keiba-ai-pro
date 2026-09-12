@@ -21,16 +21,18 @@ test.describe('データ取得 最新実行結果 UI', () => {
               job_id: 'hist-job-exec-latest',
               status: 'completed',
               updated_at: '2026-07-07T10:10:00',
-              fetch_summary: {
-                mode: 'execute',
-                start_date: '20260701',
-                end_date: '20260731',
-                saved_races: 12,
-                saved_horses: 168,
-                elapsed_time_sec: 65,
-                metrics: {
-                  network_requests: 20,
-                  retry_count: 2,
+              result: {
+                fetch_summary: {
+                  mode: 'execute',
+                  start_date: '20260701',
+                  end_date: '20260731',
+                  saved_races: 12,
+                  saved_horses: 168,
+                  elapsed_time_sec: 65,
+                  metrics: {
+                    network_requests: 20,
+                    retry_count: 2,
+                  },
                 },
               },
             },
@@ -87,5 +89,17 @@ test.describe('データ取得 最新実行結果 UI', () => {
     await expect(page.getByTestId('latest-fetch-summary')).toHaveCount(0)
     await expect(page.getByText('履歴がありません（Dry-run または 取得実行後に表示されます）')).toHaveCount(0)
     await expect(page.getByText('取得済みデータ')).toBeVisible()
+  })
+
+  test('履歴応答が壊れている場合は新しい実行を安全側で停止する', async ({ page }) => {
+    await page.route('/api/scrape/history**', route =>
+      route.fulfill({ status: 200, json: { count: 1, jobs: [{ job_id: '', status: 'running' }] } })
+    )
+
+    await page.goto('/data-collection')
+
+    await expect(page.getByTestId('active-job-check-error')).toContainText('実行状態を確認できません')
+    await expect(page.getByTestId('dry-run-button')).toBeDisabled()
+    await expect(page.getByTestId('execute-button')).toBeDisabled()
   })
 })

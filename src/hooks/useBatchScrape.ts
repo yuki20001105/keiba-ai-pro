@@ -69,6 +69,7 @@ const DEFAULT_OPTIONS = {
 const PERIOD_PATTERN = /^(\d{4})-(0[1-9]|1[0-2])$/
 const CLIENT_STOP_MESSAGE = 'ブラウザ側の監視と次月投入を停止しました。開始済みのサーバージョブは継続している可能性があります。'
 const COMPLETED_CONTRACT_MESSAGE = '完了応答の形式を確認できないため、サーバージョブの状態確認が必要'
+const OWNER_ACTIVE_JOB_MESSAGE = '別のデータ取得が実行中です。完了までお待ちください。'
 
 function parsePeriod(input: string): ParsedPeriod | null {
   if (typeof input !== 'string') return null
@@ -225,13 +226,18 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
 
         if (!startRes.ok) {
           let detail = ''
+          let ownerActiveJob = false
           try {
             const err = await startRes.json()
             if (isRecord(err) && err.detail !== undefined) {
+              ownerActiveJob = err.detail === 'owner-active-job'
               detail = formatApiErrorDetail(err.detail, '')
             }
           } catch {
             // fall through to status code message
+          }
+          if (startRes.status === 409 && ownerActiveJob) {
+            fail(OWNER_ACTIVE_JOB_MESSAGE, 'busy', false)
           }
           fail(detail || `HTTP ${startRes.status}`, 'start_rejected', true)
         }

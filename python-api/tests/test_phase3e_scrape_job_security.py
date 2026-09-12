@@ -266,6 +266,14 @@ def test_status_requires_full_uuid_and_hides_cross_owner_jobs() -> None:
 
     visible = asyncio.run(scrape_router.scrape_status(JOB_A, {"user_id": OWNER_A, "role": "admin"}))
     assert visible["status"] == "queued"
+    assert visible["request_payload"] == {
+        "start_date": "2026-01-01",
+        "end_date": "2026-01-31",
+        "force_rescrape": False,
+        "dry_run": True,
+    }
+    assert visible["created_at"].endswith("Z")
+    assert visible["updated_at"].endswith("Z")
     assert "owner_user_id" not in visible
     assert "request_hash" not in visible
 
@@ -297,6 +305,13 @@ def test_history_is_owner_scoped_and_routes_require_admin() -> None:
     response = asyncio.run(scrape_router.scrape_history(limit=20, admin_user={"user_id": OWNER_A, "role": "admin"}))
     assert response["count"] == 1
     assert response["jobs"][0]["job_id"] == JOB_A
+    assert response["jobs"][0]["request_payload"] == {
+        "start_date": "2026-01-01",
+        "end_date": "2026-01-31",
+        "force_rescrape": False,
+        "dry_run": True,
+    }
+    assert response["jobs"][0]["created_at"].endswith("Z")
     assert "owner_user_id" not in response["jobs"][0]
     assert "request_hash" not in response["jobs"][0]
 

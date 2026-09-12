@@ -5,6 +5,9 @@ test.describe('データ取得ページ', () => {
   test.beforeEach(async ({ page }) => {
     await mockAuth(page)
     await mockDataStats(page)
+    await page.route('/api/scrape/history**', route =>
+      route.fulfill({ status: 200, json: { count: 0, jobs: [] } })
+    )
     // ローカルAPIヘルスチェック
     await page.route('/api/scrape/status/__health_check__**', route =>
       route.fulfill({ json: { status: 'ok' } })
@@ -83,14 +86,14 @@ test.describe('データ取得ページ', () => {
       if (route.request().method() === 'POST') {
         return route.fulfill({ json: { job_id: 'test-job-001' } })
       }
-      return route.continue()
+      return route.fallback()
     })
     // Also handle the exact POST url without trailing path
     await page.route('/api/scrape', route => {
       if (route.request().method() === 'POST') {
         return route.fulfill({ json: { job_id: 'test-job-001' } })
       }
-      return route.continue()
+      return route.fallback()
     })
     await page.route('/api/scrape/status/test-job-001**', route => {
       pollCount++

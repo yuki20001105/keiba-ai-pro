@@ -22,6 +22,7 @@ import tempfile
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping, Protocol
@@ -315,15 +316,21 @@ class SQLiteOperationalSagaStore:
 
     @staticmethod
     def _job(row: sqlite3.Row) -> dict[str, Any]:
+        def iso_timestamp(epoch: int) -> str:
+            return datetime.fromtimestamp(int(epoch), tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
         return {
             "job_id": row["job_id"],
             "operation_id": row["operation_id"],
             "owner_user_id": row["owner_user_id"],
             "request_hash": row["request_hash"],
+            "request_payload": json.loads(row["request_payload"] or "{}"),
             "status": row["status"],
             "progress": json.loads(row["progress"] or "{}"),
             "result": json.loads(row["result"]) if row["result"] else None,
             "error": json.loads(row["error"]) if row["error"] else None,
+            "created_at": iso_timestamp(row["created_at_epoch"]),
+            "updated_at": iso_timestamp(row["updated_at_epoch"]),
         }
 
     @staticmethod
@@ -578,6 +585,9 @@ class SQLiteOperationalSagaStore:
                     "progress": item["progress"],
                     "result": item["result"],
                     "error": item["error"],
+                    "request_payload": item["request_payload"],
+                    "created_at": item["created_at"],
+                    "updated_at": item["updated_at"],
                 }
                 for item in (self._job(row) for row in rows)
             ]
@@ -745,7 +755,10 @@ class SupabaseOperationalSagaStore:
         try:
             response = (
                 self._client.table("scrape_operational_jobs")
-                .select("job_id,operation_id,owner_user_id,request_hash,status,progress,result,error")
+                .select(
+                    "job_id,operation_id,owner_user_id,request_hash,request_payload,"
+                    "status,progress,result,error,created_at,updated_at"
+                )
                 .eq("job_id", job_id)
                 .eq("owner_user_id", owner_user_id)
                 .limit(1)
@@ -762,7 +775,9 @@ class SupabaseOperationalSagaStore:
         try:
             response = (
                 self._client.table("scrape_operational_jobs")
-                .select("job_id,status,progress,result,error,created_at,updated_at")
+                .select(
+                    "job_id,status,request_payload,progress,result,error,created_at,updated_at"
+                )
                 .eq("owner_user_id", owner_user_id)
                 .order("updated_at", desc=True)
                 .limit(max(1, min(int(limit), 100)))
