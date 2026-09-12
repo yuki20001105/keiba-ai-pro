@@ -1,6 +1,6 @@
 {
   "fastapi": {
-    "count": 63,
+    "count": 65,
     "routes": [
       {
         "endpoint": "/",
@@ -490,6 +490,17 @@
         "source": "python-api/routers/scrape.py"
       },
       {
+        "endpoint": "/api/scrape/cancel/{job_id}",
+        "method": "POST",
+        "policy": "Admin",
+        "dependency_names": [
+          "get_current_user",
+          "require_admin",
+          "scrape_cancel"
+        ],
+        "source": "python-api/routers/scrape.py"
+      },
+      {
         "endpoint": "/api/scrape/health",
         "method": "GET",
         "policy": "Authenticated",
@@ -592,21 +603,35 @@
       {
         "endpoint": "/api/train",
         "method": "POST",
-        "policy": "PremiumOrAdmin",
+        "policy": "Admin",
         "dependency_names": [
           "get_current_user",
-          "require_premium",
+          "require_admin",
+          "require_loopback_training_request",
           "train_model"
+        ],
+        "source": "python-api/routers/train.py"
+      },
+      {
+        "endpoint": "/api/train/capability",
+        "method": "GET",
+        "policy": "Admin",
+        "dependency_names": [
+          "get_current_user",
+          "require_admin",
+          "require_loopback_training_request",
+          "train_capability"
         ],
         "source": "python-api/routers/train.py"
       },
       {
         "endpoint": "/api/train/start",
         "method": "POST",
-        "policy": "PremiumOrAdmin",
+        "policy": "Admin",
         "dependency_names": [
           "get_current_user",
-          "require_premium",
+          "require_admin",
+          "require_loopback_training_request",
           "train_start"
         ],
         "source": "python-api/routers/train.py"
@@ -614,8 +639,11 @@
       {
         "endpoint": "/api/train/status/{job_id}",
         "method": "GET",
-        "policy": "Authenticated",
+        "policy": "Admin",
         "dependency_names": [
+          "get_current_user",
+          "require_admin",
+          "require_loopback_training_request",
           "train_job_status"
         ],
         "source": "python-api/routers/train.py"
@@ -634,7 +662,7 @@
     "duplicates": []
   },
   "next": {
-    "count": 83,
+    "count": 85,
     "routes": [
       {
         "route": "/api/admin/profiles",
@@ -925,12 +953,24 @@
         "source": "src/app/api/local-login/route.ts"
       },
       {
+        "route": "/api/ml/train/capability",
+        "method": "GET",
+        "policy": "Admin",
+        "backend_endpoint": "/api/train/capability",
+        "backend_method": "GET",
+        "backend_policy": "Admin",
+        "auth_header_forward": true,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/ml/train/capability/route.ts"
+      },
+      {
         "route": "/api/ml/train/start",
         "method": "POST",
-        "policy": "PremiumOrAdmin",
+        "policy": "Admin",
         "backend_endpoint": "/api/train/start",
         "backend_method": "POST",
-        "backend_policy": "PremiumOrAdmin",
+        "backend_policy": "Admin",
         "auth_header_forward": true,
         "status_propagation": true,
         "detail_error_passthrough": true,
@@ -939,10 +979,10 @@
       {
         "route": "/api/ml/train/status/[job_id]",
         "method": "GET",
-        "policy": "Authenticated",
+        "policy": "Admin",
         "backend_endpoint": "/api/train/status/{param}",
         "backend_method": "GET",
-        "backend_policy": "Authenticated",
+        "backend_policy": "Admin",
         "auth_header_forward": true,
         "status_propagation": true,
         "detail_error_passthrough": true,
@@ -1381,6 +1421,18 @@
         "source": "src/app/api/scrape/route.ts"
       },
       {
+        "route": "/api/scrape/cancel/[jobId]",
+        "method": "POST",
+        "policy": "Admin",
+        "backend_endpoint": "/api/scrape/cancel/{param}",
+        "backend_method": "POST",
+        "backend_policy": "Admin",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/scrape/cancel/[jobId]/route.ts"
+      },
+      {
         "route": "/api/scrape/health",
         "method": "GET",
         "policy": "Authenticated",
@@ -1634,7 +1686,7 @@
       }
     ],
     "unclassified": [],
-    "canonical_entries": 83,
+    "canonical_entries": 85,
     "gate_failures": []
   },
   "gate": {

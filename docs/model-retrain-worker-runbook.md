@@ -9,6 +9,14 @@ This runbook covers the one-job worker, the bounded dispatcher that invokes it, 
 
 The worker itself does not poll the queue. The separate dispatcher performs one bounded read-only queue scan and invokes the same fenced coordinator sequentially. Neither component evaluates or promotes a candidate, switches the active model, retires an old model, or authorizes Production. A successful worker or dispatch pass therefore ends at `artifact-registered`, not `Production READY`.
 
+### Local-only Coordinator reuse
+
+`local-admin-train` is not the two-person approval flow described by this runbook and must not be reported as approved execution, Staging evidence, or Production readiness. It is admitted only on loopback for an authenticated local Admin through its own mandatory bundle parser, fixed request factory, progress observer, snapshot materializer, and local durable ledger. The approved `staging-train` and `sandbox-train` paths do not accept those overrides.
+
+The local adapter still uses the same Coordinator invariants: an online SQLite backup is hashed and materialized read-only, every mutation is bound to the CAS version and live lease/fencing token with heartbeat, active-model and code identities are rechecked, and the output is registered by its content SHA-256. Snapshot preparation has its own expiring capability token, renewed only while backup or hashing advances; status polling or the next start fences an expired preparer, and its stale token cannot queue the job. The snapshot is hashed again after training and before result staging, upload, or registration. Completion leaves the artifact inactive and never changes the active-model pointer.
+
+Run the local adapter only through `start-keiba-ai-pro.bat`, which starts one FastAPI process. Do not start this local policy with `uvicorn --workers` greater than one: startup reconciliation is process-scoped and intentionally fail-closed for the supported single-process launcher.
+
 ## Required evidence before execution
 
 - The candidate full commit SHA is deployed and matches the approved dry-run payload.

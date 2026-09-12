@@ -392,7 +392,57 @@ async def scrape_status(job_id: str, admin_user: dict = Depends(require_admin)):
         "heartbeat_at": job.get("heartbeat_at"),
         "resume_count": int(job.get("resume_count", 0) or 0),
         "worker_pid": job.get("worker_pid"),
+        "cancel_requested_at": job.get("cancel_requested_at"),
     }
+
+
+@router.post("/api/scrape/cancel/{job_id}")
+async def scrape_cancel(job_id: str, admin_user: dict = Depends(require_admin)):
+    """Request owner-scoped cooperative cancellation of one scrape job."""
+    try:
+        canonical_job_id = str(uuid.UUID(job_id))
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=400, detail="job_id は完全なUUID形式で指定してください")
+    if canonical_job_id != job_id.lower():
+        raise HTTPException(status_code=400, detail="job_id は完全なUUID形式で指定してください")
+
+    owner_user_id = str(admin_user.get("user_id") or "").strip()
+    if not owner_user_id:
+        raise HTTPException(status_code=503, detail="管理者IDを確認できません")
+    runtime = get_operational_saga_runtime()
+    try:
+        mutation = await asyncio.to_thread(
+            runtime.request_cancel,
+            canonical_job_id,
+            owner_user_id,
+        )
+    except OperationalSagaUnavailable as exc:
+        raise HTTPException(status_code=503, detail="停止要求を安全に保存できません") from exc
+
+    if mutation.code is MutationCode.NOT_FOUND:
+        # Cross-owner and absent IDs intentionally share one response.
+        raise HTTPException(status_code=404, detail="ジョブが見つかりません")
+    if mutation.code is MutationCode.CONFLICT:
+        raise HTTPException(status_code=409, detail=mutation.reason or "ジョブを停止できません")
+    if mutation.code is MutationCode.UNAVAILABLE:
+        raise HTTPException(status_code=503, detail=mutation.reason or "停止機能を利用できません")
+    if mutation.code not in {MutationCode.APPLIED, MutationCode.DUPLICATE}:
+        raise HTTPException(status_code=503, detail="停止要求の状態を確認できません")
+
+    job = mutation.job or {}
+    status = str(job.get("status") or "")
+    if status not in {"cancelling", "cancelled"}:
+        raise HTTPException(status_code=503, detail="停止要求の保存状態を確認できません")
+    return JSONResponse(
+        status_code=202 if status == "cancelling" else 200,
+        content={
+            "job_id": canonical_job_id,
+            "status": status,
+            "cancel_requested_at": job.get("cancel_requested_at"),
+            "duplicate": mutation.code is MutationCode.DUPLICATE,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get("/api/scrape/history")

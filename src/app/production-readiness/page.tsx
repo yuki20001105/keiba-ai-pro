@@ -130,8 +130,8 @@ export default function ProductionReadinessPage() {
           {!authLoading && !canRun && (
             <div className="mt-4">
               <AdminRequiredNotice
-                title="本番前チェック画面は管理者モード専用です"
-                message="ホームで管理者パスワードを確認してから開いてください。チェック内容は read-only に限定されています。"
+                title="本番前チェック画面は管理者専用です"
+                message="管理操作の入口で現在のパスワードを確認してください。チェック内容は read-only に限定されています。"
               />
             </div>
           )}

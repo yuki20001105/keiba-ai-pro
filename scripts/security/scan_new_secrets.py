@@ -30,6 +30,11 @@ ALLOWLIST_EXACT: Dict[str, str] = {
     "e2e-dummy-anon-key": "E2E dummy credential value",
     "ci-dummy-service-role-key": "CI dummy credential value",
     "sk_test_e2e_dummy": "E2E dummy Stripe test placeholder",
+    "test-admin-mode-secret-that-is-at-least-32-characters": "Unit-test-only Admin signing placeholder",
+    "verified-admin-token": "Unit-test-only verified access token placeholder",
+    "new_preparation_token": "Preparation-token generator identifier, not a credential",
+    "PREVIOUS_ADMIN_SECRET": "Environment restoration variable identifier, not a credential",
+    "PREVIOUS_SERVICE_ROLE_KEY": "Environment restoration variable identifier, not a credential",
 }
 
 TOKEN_PATTERNS: List[Tuple[str, re.Pattern[str]]] = [

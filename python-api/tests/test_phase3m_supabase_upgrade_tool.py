@@ -50,7 +50,7 @@ def test_historical_manifest_loader_reads_immutable_ancestor_without_requiring_w
     applied, candidate = _manifests(module)
 
     assert len(applied.migrations) == 11
-    assert len(candidate.migrations) == 21
+    assert len(candidate.migrations) == 22
     assert [entry.path for entry in applied.migrations] == [
         entry.path for entry in candidate.migrations[:11]
     ]
@@ -114,11 +114,12 @@ def test_upgrade_sql_preserves_prior_rows_and_appends_only_the_manifest_suffix()
     assert sql.endswith("COMMIT;\n")
     assert "$phase3m_upgrade_preflight$" in sql
     assert "$phase3m_upgrade_postcondition$" in sql
-    assert sql.count("-- phase3m append migration ") == 10
+    assert sql.count("-- phase3m append migration ") == 11
     assert "-- phase3m append migration 20260802140000" in sql
     assert "-- phase3m append migration 20260802147000" in sql
     assert "-- phase3m append migration 20260802148000" in sql
     assert "-- phase3m append migration 20260802149000" in sql
+    assert "-- phase3m append migration 20260912150000" in sql
     assert "-- phase3m append migration 20260720143400" not in sql
     assert "UPDATE phase3m_internal.bootstrap_history" not in sql
     assert "DELETE FROM phase3m_internal.bootstrap_history" not in sql
@@ -160,7 +161,7 @@ def test_upgrade_history_rows_support_multiple_immutable_introduction_segments()
         ),
     )
 
-    assert len(rows) == 21
+    assert len(rows) == 22
     assert {row[-1] for row in rows[:11]} == {OLD_BOOTSTRAP_COMMIT}
     assert {row[-1] for row in rows[11:19]} == {current_commit}
     assert {row[-1] for row in rows[19:]} == {"f" * 40}

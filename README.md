@@ -587,9 +587,10 @@ Kelly % = (p × odds - 1) / (odds - 1)
 3. [Dry-run] → POST /api/scrape (`dry_run=true`、外部HTTPなし)
 4. [取得開始] → POST /api/scrape (`force_rescrape=false`固定でジョブ開始)
    → GET /api/scrape/status/{job_id} ポーリング (3秒間隔)
-5. 実行状態が不明な場合だけ同じstatus APIで安全に再確認（確認完了まで新規実行をロック）
-6. 最新fetch summary 1件 → GET /api/scrape/history
-7. 取得済み3指標 → GET /api/data-stats
+5. [取得を停止] → POST /api/scrape/cancel/{job_id}（保存済みデータを残し、安全な区切りで協調停止）
+6. 実行状態が不明な場合だけ同じstatus APIで安全に再確認（確認完了まで新規実行をロック）
+7. 最新fetch summary 1件 → GET /api/scrape/history
+8. 取得済み3指標 → GET /api/data-stats
 ```
 
 通常画面には上記だけを表示します。Refresh/P0/Targeted Refetch計画、Live Validation、Review Queue、全履歴、最近取得一覧/詳細、特徴量プロファイリングのページ/APIは保守用として存続しますが、通常のデータ収集画面からは非表示です。
@@ -597,7 +598,7 @@ Kelly % = (p × odds - 1) / (odds - 1)
 ### 本番前チェック画面 (`/production-readiness`)
 
 ```
-1. `/home` の管理者モードから [本番前チェック] を開く
+1. 保守用URL `/production-readiness` を直接開き、操作境界で本人確認
 2. Admin 権限で [本番前チェックを実行]
 3. POST /api/production-readiness
 4. read-only checks を順次実行
@@ -616,7 +617,7 @@ Kelly % = (p × odds - 1) / (odds - 1)
 ### 学習画面 (`/train`)
 
 ```
-1. `/home` の管理者モードから [モデル管理] を開く
+1. `/home` の [02 モデル作成] を開き、必要な場合は操作境界で本人確認
 2. 条件設定 (target: win / place3 / win_tie / speed_deviation / 期間 / Optuna試行数 / CV分割数)
 3. [学習開始] → POST /api/ml/train/start（Next API）
 4. GET /api/ml/train/status/{job_id} ポーリング（Next API）
@@ -652,26 +653,28 @@ Kelly % = (p × odds - 1) / (odds - 1)
 2. GET /api/purchase_history, GET /api/statistics
 ```
 
-### 管理者モード (`/home`)
+### 共通ホーム (`/home`)
 
 ```
-1. Adminロールの利用者だけ、ホーム右上に「管理者モード」を表示
-2. 現在のアカウントのパスワードを再確認して、同じホーム画面内で切り替え
-3. データ取得・モデル管理・本番前チェック・ユーザー管理を表示
-4. 管理者モードは15分有効で、再読み込み後も同一セッション内だけ復元
-5. ログアウト、「ユーザー画面に戻る」、権限喪失、または期限到来で解除
-6. 旧 `/admin` は管理モードを解除して `/home` へリダイレクト
-7. 管理ツール3画面は有効な管理者モードがなければ `/home` へ戻る
+1. Adminロールでは 01データ取得・02モデル作成・03予測実行・04成績確認・05ユーザー管理を表示
+2. 一般ユーザーには03予測実行・04成績確認だけを表示
+3. 画面モードの切り替え操作は設けない
+4. Admin専用機能を開く操作境界で、現在のアカウントのパスワードを確認
+5. 確認grantは15分有効で、再読み込み後も同一セッション内だけ復元
+6. 05ユーザー管理はread-onlyとし、Admin／Userロール変更UIは表示しない
+7. 旧 `/admin` は `/home` へリダイレクト
 ```
 
-画面は一般ユーザー（Premiumを含む）に表示しません。既存クライアントとの互換性のため、一部の運用APIに残る`PremiumOrAdmin`認可は別契約であり、管理者モード画面を開く権限には使用しません。
+Admin専用の01・02・05は一般ユーザー（Premiumを含む）に表示しません。既存クライアントとの互換性のため、一部の運用APIに残る`PremiumOrAdmin`認可は別契約であり、管理画面を開く権限には使用しません。
+
+操作境界のパスワード確認はページ表示前のUI pre-checkです。ユーザー一覧APIは短期grantも検証し、その他の操作APIは既存のロール認可・環境フラグ・承認状態を正本とします。
 
 ### 認証・権限
 
 | ロール | 権限 |
 |-------|------|
 | `user` | 一般ユーザー（予測・閲覧） |
-| `admin` | 管理者（パスワード再確認後に管理UIを表示。実行可否は各APIの認可・環境フラグ・承認状態にも従う）|
+| `admin` | 管理者（5機能を表示し、管理操作の入口で本人確認。実行可否は各APIの認可・環境フラグ・承認状態にも従う）|
 
 ---
 
@@ -682,6 +685,7 @@ Kelly % = (p × odds - 1) / (odds - 1)
 | POST | `/api/scrape` | スクレイプ同期実行（結果を直接返却、土日月のみ対応） |
 | POST | `/api/scrape/start` | Admin用スクレイプ開始（非同期ジョブ） |
 | GET | `/api/scrape/status/{job_id}` | スクレイプ進捗取得 |
+| POST | `/api/scrape/cancel/{job_id}` | 所有者Adminによる永続的な協調停止要求 |
 | GET | `/api/races/by_date?date=YYYYMMDD` | 指定日のレース一覧 |
 | GET | `/api/races/recent?limit=50` | 最近取得したレース一覧（軽量） |
 | GET | `/api/races/{race_id}/horses` | 出走馬一覧（ML推論なし） |
@@ -743,7 +747,7 @@ npm run dev
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
 SUPABASE_SERVICE_ROLE_KEY=
-# 管理者モードcookie専用（32文字以上を推奨。未設定時はservice role keyを使用）
+# 管理操作の短期確認cookie専用（32文字以上を推奨。未設定時はservice role keyを使用）
 ADMIN_MODE_SIGNING_SECRET=
 
 # FastAPI エンドポイント
@@ -754,8 +758,8 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 
 ```
 1. FastAPI 起動 (python-api/main.py)
-2. Adminロールで `/home` の管理者モードへ切り替え
-3. /data-collection ページでデータ取得（期間指定）
+2. Adminロールで `/home` の5機能を確認
+3. /data-collection を開き、操作境界の本人確認後にデータ取得（期間指定）
 4. /train ページでモデル状態を確認（通常のProduction環境では学習開始は無効）
 5. /predict-batch ページで当日レース予測
 ```
@@ -815,8 +819,8 @@ python scripts/smoke_analyze_race_api.py
 **UI での本番前チェック手順**
 
 ```
-1. `/home` で管理者モードへ切り替える
-2. /production-readiness を開く
+1. 保守用URL /production-readiness を直接開く
+2. 操作境界で現在のパスワードを確認
 3. [本番前チェックを実行] を押す
 4. fail/warn があるカードの summary を確認
 5. write flag が false であることを確認

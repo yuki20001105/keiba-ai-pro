@@ -11,49 +11,9 @@ import { useScrape } from '@/hooks/useScrape'
 import { useJobPoller } from '@/hooks/useJobPoller'
 import { CACHE_TTL_MS } from '@/hooks/useRaceCache'
 import { useAuth } from '@/contexts/AuthContext'
-
-// 馬番配列 + 券種 → 組み合わせ文字列配列を生成
-function genManualCombos(nos: number[], betType: string): string[] {
-  if (nos.length === 0) return []
-  if (betType === '単勝' || betType === '複勝') return nos.map(n => String(n))
-  if (betType === '馬連' || betType === 'ワイド') {
-    const r: string[] = []
-    for (let i = 0; i < nos.length; i++)
-      for (let j = i + 1; j < nos.length; j++)
-        r.push(`${nos[i]}-${nos[j]}`)
-    return r
-  }
-  if (betType === '馬単') {
-    const r: string[] = []
-    for (let i = 0; i < nos.length; i++)
-      for (let j = 0; j < nos.length; j++)
-        if (i !== j) r.push(`${nos[i]}-${nos[j]}`)
-    return r
-  }
-  if (betType === '三連複') {
-    const r: string[] = []
-    for (let i = 0; i < nos.length; i++)
-      for (let j = i + 1; j < nos.length; j++)
-        for (let k = j + 1; k < nos.length; k++)
-          r.push(`${nos[i]}-${nos[j]}-${nos[k]}`)
-    return r
-  }
-  if (betType === '三連単') {
-    const r: string[] = []
-    for (let i = 0; i < nos.length; i++)
-      for (let j = 0; j < nos.length; j++)
-        for (let k = 0; k < nos.length; k++)
-          if (i !== j && j !== k && i !== k)
-            r.push(`${nos[i]}-${nos[j]}-${nos[k]}`)
-    return r
-  }
-  return nos.map(n => String(n))
-}
-
-// 券種ごとに最低何頭必要か
-const MIN_HORSES: Record<string, number> = {
-  '単勝': 1, '複勝': 1, '馬連': 2, 'ワイド': 2, '馬単': 2, '三連複': 3, '三連単': 3,
-}
+import { formatModelOptionLabel, type ModelSummary } from '@/lib/model-display'
+import { RaceExplanationPanel } from '@/components/RaceExplanationPanel'
+import type { RacePredictResult } from '@/lib/race-analysis-types'
 
 export default function PredictBatchPage() {
   const { isPremium } = useAuth()
@@ -63,36 +23,19 @@ export default function PredictBatchPage() {
   const [racesLoading, setRacesLoading] = useState(false)
   const [racesError, setRacesError] = useState('')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
-  const [models, setModels] = useState<any[]>([])
+  const [models, setModels] = useState<ModelSummary[]>([])
   const [modelId, setModelId] = useState<string>('')
   const [predicting, setPredicting] = useState(false)
   const [predictProgress, setPredictProgress] = useState({ done: 0, total: 0, current: '' })
   const [results, setResults] = useState<Record<string, any>>({})
-  const [purchased, setPurchased] = useState<Set<string>>(new Set())
-  const [purchasing, setPurchasing] = useState<Set<string>>(new Set())
-  // 買い目編集 state
-  type BetEdit = { betType: string; selectedIdxs: number[]; unitPrice: number; manualNos?: number[]; manualSelCombos?: string[] | null }
-  const [betEdits, setBetEdits] = useState<Record<string, BetEdit>>({})
   const [bankroll, setBankroll] = useState(10000)
   const [riskMode, setRiskMode] = useState<'conservative' | 'balanced' | 'aggressive'>('balanced')
   const [expandedRace, setExpandedRace] = useState<string | null>(null)
+  const [explanationRaceId, setExplanationRaceId] = useState<string | null>(null)
   const [toast, setToast] = useState({ visible: false, message: '', type: 'success' as 'success' | 'error' })
   const [showBettingSettings, setShowBettingSettings] = useState(false)
   const showToast = (message: string, type: 'success' | 'error' = 'success') =>
     setToast({ visible: true, message, type })
-
-  // リアルタイムオッズ
-  const [realtimeOdds, setRealtimeOdds] = useState<Record<string, Record<string, number>>>({})
-  const [oddsRefreshing, setOddsRefreshing] = useState(false)
-  const [oddsLastUpdated, setOddsLastUpdated] = useState<Date | null>(null)
-
-  // 当日・未来レースかどうか（過去レースはリアルタイムオッズ不可）
-  const isCurrentOrFutureDate = date >= todayStr()
-
-  // 購入推奨エクスポート
-  const [exportLoading, setExportLoading] = useState(false)
-  const [exportMinEv, setExportMinEv] = useState(1.0)
-  const [exportMaxBets, setExportMaxBets] = useState(3)
 
   // スクレイプ（useScrape + useJobPoller）
   const scrape = useScrape()
@@ -139,9 +82,8 @@ export default function PredictBatchPage() {
       const res = await authFetch('/api/models?ultimate=true')
       if (res.ok) {
         const data = await res.json()
-        // model_id 降順（YYYYMMDD_HHMMSS 末尾）で最新モデルを先頭に
-        const sorted = (data.models || []).sort((a: any, b: any) => b.model_id.localeCompare(a.model_id))
-        setModels(sorted)
+        // API が bundle.created_at を正本として新しい順に返す。
+        setModels(Array.isArray(data.models) ? data.models : [])
       }
     } catch {}
   }
@@ -170,6 +112,7 @@ export default function PredictBatchPage() {
     setRaces([])
     setSelectedIds(new Set())
     setResults({})
+    setExplanationRaceId(null)
     scrape.reset()
     try {
       const res = await authFetch(`/api/races/by-date?date=${date}`)
@@ -250,6 +193,7 @@ export default function PredictBatchPage() {
     const ids = Array.from(selectedIds)
     setPredicting(true)
     setResults({})
+    setExplanationRaceId(null)
     setPredictProgress({ done: 0, total: ids.length, current: '' })
 
     let done = 0
@@ -268,7 +212,13 @@ export default function PredictBatchPage() {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               signal: AbortSignal.timeout(180000),  // 180s: 再スクレイプ込みで余裕を持たせる
-              body: JSON.stringify({ race_id: raceId, model_id: modelId || null, bankroll: bankroll, risk_mode: riskMode }),
+              body: JSON.stringify({
+                race_id: raceId,
+                model_id: modelId || null,
+                bankroll,
+                risk_mode: riskMode,
+                include_explanation: isPremium,
+              }),
             })
             const data = await res.json()
             const result: { success: boolean; data?: any; error?: string } = res.ok
@@ -280,9 +230,10 @@ export default function PredictBatchPage() {
                 const cachedAt = Date.now()
                 // モデルIDなしキー（決打）
                 localStorage.setItem(`ra-cache:${raceId}`, JSON.stringify({ data: result.data, cachedAt }))
-                // モデルIDありキー（モデル別予測結果分析ページで即利用）
-                if (modelId) {
-                  localStorage.setItem(`ra-cache:${raceId}__${modelId}`, JSON.stringify({ data: result.data, cachedAt }))
+                // API が実際に使用したモデルでも保存し、詳細画面で再予測しない。
+                const resolvedModelId = result.data.model_id || modelId
+                if (resolvedModelId) {
+                  localStorage.setItem(`ra-cache:${raceId}__${resolvedModelId}`, JSON.stringify({ data: result.data, cachedAt }))
                 }
               } catch {}
             }
@@ -300,199 +251,6 @@ export default function PredictBatchPage() {
     setPredictProgress(prev => ({ ...prev, done: ids.length, current: '' }))
     if (firstOk) setExpandedRace(firstOk)
     setPredicting(false)
-  }
-
-  const recordPurchase = async (raceId: string, venue: string, res: { success: boolean; data?: any; error?: string }) => {
-    if (!res.data) return
-    const rec = res.data.recommendation
-    const edit = betEdits[raceId]
-    const betType = edit?.betType ?? res.data.best_bet_type ?? '単勝'
-    const allCombos: any[] = res.data.bet_types?.[betType] ?? []
-    const selIdxs: number[] = edit?.selectedIdxs ?? Array.from(
-      { length: Math.min(rec?.purchase_count ?? 1, allCombos.length) }, (_, i) => i
-    )
-    const aiCombos = selIdxs.map(i => allCombos[i]).filter(Boolean)
-    const manualNos: number[] = edit?.manualNos ?? []
-    const allManualCombos = genManualCombos(manualNos, betType)
-    const manualCombos: string[] = edit?.manualSelCombos ?? allManualCombos
-    const unitPrice = edit?.unitPrice ?? rec?.unit_price ?? 100
-    const combinations = [
-      ...aiCombos.map((c: any) => String(c.combination ?? c)),
-      ...manualCombos
-    ]
-    const total_cost = unitPrice * Math.max(combinations.length, 1)
-    const topPred = res.data.predictions?.[0]
-    const ev: number = topPred?.expected_value ?? 1.0
-    setPurchasing(prev => new Set(prev).add(raceId))
-    try {
-      const body = {
-        race_id: raceId,
-        venue,
-        bet_type: betType,
-        combinations,
-        strategy_type: rec?.strategy_explanation || 'AI推奨',
-        purchase_count: combinations.length,
-        unit_price: unitPrice,
-        total_cost,
-        expected_value: ev,
-        expected_return: total_cost * ev,
-      }
-      const r = await authFetch('/api/purchase', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      })
-      if (r.ok) {
-        setPurchased(prev => new Set(prev).add(raceId))
-        showToast('購入を記録しました — ダッシュボードで結果を入力できます')
-      } else {
-        showToast('購入記録の保存に失敗しました', 'error')
-      }
-    } catch {
-      showToast('購入記録の保存に失敗しました', 'error')
-    } finally {
-      setPurchasing(prev => { const s = new Set(prev); s.delete(raceId); return s })
-    }
-  }
-
-  // 買い目編集ヘルパー
-  const changeBetType = (raceId: string, newType: string, data: any) => {
-    const combos: any[] = data?.bet_types?.[newType] ?? []
-    const rec = data?.recommendation
-    const count = Math.min(rec?.purchase_count ?? 1, combos.length)
-    setBetEdits(prev => ({
-      ...prev,
-      [raceId]: {
-        betType: newType,
-        selectedIdxs: Array.from({ length: count }, (_, i) => i),
-        unitPrice: prev[raceId]?.unitPrice ?? rec?.unit_price ?? 100,
-      }
-    }))
-  }
-  const toggleCombo = (raceId: string, idx: number) => {
-    setBetEdits(prev => {
-      const cur = prev[raceId]
-      if (!cur) return prev
-      const set = new Set(cur.selectedIdxs)
-      set.has(idx) ? set.delete(idx) : set.add(idx)
-      return { ...prev, [raceId]: { ...cur, selectedIdxs: [...set].sort((a, b) => a - b) } }
-    })
-  }
-  const setBetUnitPrice = (raceId: string, price: number) => {
-    setBetEdits(prev => prev[raceId]
-      ? { ...prev, [raceId]: { ...prev[raceId], unitPrice: price } }
-      : prev
-    )
-  }
-  const toggleManualNo = (raceId: string, no: number, ctx: { betType: string; selectedIdxs: number[]; unitPrice: number }) => {
-    setBetEdits(prev => {
-      const cur = prev[raceId] ?? { ...ctx, manualNos: [], manualSelCombos: null }
-      const set = new Set(cur.manualNos ?? [])
-      set.has(no) ? set.delete(no) : set.add(no)
-      // 馬番が変わったら組み合わせ選択をリセット(null=全選択)
-      return { ...prev, [raceId]: { ...cur, manualNos: [...set].sort((a, b) => a - b), manualSelCombos: null } }
-    })
-  }
-  const toggleManualCombo = (raceId: string, combo: string, allCombos: string[], ctx: { betType: string; selectedIdxs: number[]; unitPrice: number }) => {
-    setBetEdits(prev => {
-      const cur = prev[raceId] ?? { ...ctx, manualNos: [], manualSelCombos: null }
-      const current: string[] = cur.manualSelCombos ?? allCombos
-      const set = new Set(current)
-      set.has(combo) ? set.delete(combo) : set.add(combo)
-      return { ...prev, [raceId]: { ...cur, manualSelCombos: [...set] } }
-    })
-  }
-
-  const handleRefreshOdds = async () => {
-    const successIds = filteredRaces
-      .filter(r => results[r.race_id]?.success)
-      .map(r => r.race_id)
-    if (successIds.length === 0) { showToast('先に予測を実行してください', 'error'); return }
-    setOddsRefreshing(true)
-    try {
-      const res = await authFetch('/api/realtime-odds/refresh', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ race_ids: successIds, types: 'tansho,umaren' }),
-      })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      // 各レースの最新オッズを取得してstateに格納
-      const updated: Record<string, Record<string, number>> = { ...realtimeOdds }
-      await Promise.all(successIds.map(async (raceId) => {
-        try {
-          const r = await authFetch(`/api/realtime-odds/${raceId}?types=tansho`)
-          if (r.ok) {
-            const d = await r.json()
-            updated[raceId] = d.odds?.tansho || {}
-          }
-        } catch {}
-      }))
-      setRealtimeOdds(updated)
-      setOddsLastUpdated(new Date())
-      showToast(`${successIds.length}レースのオッズを更新しました`)
-    } catch (e: any) {
-      showToast(`オッズ更新失敗: ${e.message}`, 'error')
-    } finally {
-      setOddsRefreshing(false)
-    }
-  }
-
-  const handleExportJson = async () => {
-    const successResults = Object.entries(results)
-      .filter(([, r]) => r.success && r.data)
-      .map(([, r]) => r.data)
-    if (successResults.length === 0) { showToast('エクスポートできる予測結果がありません', 'error'); return }
-    setExportLoading(true)
-    try {
-      const res = await authFetch('/api/export/bet-list', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ results: successResults, bankroll, min_ev: exportMinEv, max_bets_per_race: exportMaxBets }),
-      })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = await res.json()
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `bet_list_${date}.json`
-      a.click()
-      URL.revokeObjectURL(url)
-      showToast(`${data.summary.bets}件の買い目をエクスポートしました`)
-    } catch (e: any) {
-      showToast(`エクスポート失敗: ${e.message}`, 'error')
-    } finally {
-      setExportLoading(false)
-    }
-  }
-
-  const handleExportCsv = async () => {
-    const successResults = Object.entries(results)
-      .filter(([, r]) => r.success && r.data)
-      .map(([, r]) => r.data)
-    if (successResults.length === 0) { showToast('エクスポートできる予測結果がありません', 'error'); return }
-    setExportLoading(true)
-    try {
-      const res = await authFetch('/api/export/bet-list?format=csv', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ results: successResults, bankroll, min_ev: exportMinEv, max_bets_per_race: exportMaxBets }),
-      })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const text = await res.text()
-      const blob = new Blob([new Uint8Array([0xEF, 0xBB, 0xBF]), text], { type: 'text/csv' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `bet_list_${date}.csv`
-      a.click()
-      URL.revokeObjectURL(url)
-      showToast('CSVをダウンロードしました')
-    } catch (e: any) {
-      showToast(`CSV出力失敗: ${e.message}`, 'error')
-    } finally {
-      setExportLoading(false)
-    }
   }
 
   const presentVenueCodes = new Set(races.map(r => r.venue_code))
@@ -531,15 +289,16 @@ export default function PredictBatchPage() {
               />
             </div>
             <div className="flex-1">
-              <label className="text-xs text-[#666] block mb-2">使用モデル</label>
+              <label htmlFor="prediction-model" className="text-xs text-[#666] block mb-2">使用モデル</label>
               <select
+                id="prediction-model"
                 value={modelId}
                 onChange={e => setModelId(e.target.value)}
                 className="w-full px-4 py-3 bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg text-white focus:outline-none focus:border-[#333] transition-colors"
               >
-                <option value="">最新モデルを自動選択</option>
-                {models.map((m, i) => (
-                  <option key={i} value={m.model_id}>{m.target ?? ''} / {m.model_id.slice(0, 16)}... (AUC: {m.auc?.toFixed(3)})</option>
+                <option value="">既定モデル（使用中）</option>
+                {models.map(m => (
+                  <option key={m.model_id} value={m.model_id}>{formatModelOptionLabel(m)}</option>
                 ))}
               </select>
             </div>
@@ -684,19 +443,6 @@ export default function PredictBatchPage() {
                 <span className="text-xs text-[#555]">{selectedIds.size} / {filteredRaces.length} 選択</span>
                 <button onClick={selectAll} className="text-xs text-[#888] hover:text-white transition-colors">全選択</button>
                 <button onClick={deselectAll} className="text-xs text-[#888] hover:text-white transition-colors">全解除</button>
-                {isCurrentOrFutureDate && (
-                  <button
-                    onClick={() => triggerScrape(true)}
-                    disabled={scrape.status === 'scraping'}
-                    title="DBのデータを強制上書きして最新オッズを取得"
-                    className="flex items-center gap-1 text-xs text-[#60a5fa] hover:text-[#93c5fd] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                  >
-                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                    </svg>
-                    オッズ更新
-                  </button>
-                )}
               </div>
             </div>
 
@@ -727,9 +473,6 @@ export default function PredictBatchPage() {
                       <span className={`text-xs px-2 py-0.5 rounded ${results[r.race_id].success ? 'bg-[#052e10] text-[#4ade80]' : 'bg-[#1a0505] text-[#f87171]'}`}>
                         {results[r.race_id].success ? '予測済' : 'エラー'}
                       </span>
-                    )}
-                    {purchased.has(r.race_id) && (
-                      <span className="text-xs text-[#4ade80]">✓記録済</span>
                     )}
                   </div>
                 </label>
@@ -872,258 +615,78 @@ export default function PredictBatchPage() {
 
                             {isPremium && (
                               <div className="flex justify-end px-5 py-3 border-t border-[#1a1a1a]">
-                                <Link
-                                  href={`/race-analysis?date=${date}&race_id=${encodeURIComponent(r.race_id)}&tab=features`}
+                                <button
+                                  type="button"
+                                  aria-expanded={explanationRaceId === r.race_id}
+                                  onClick={() => setExplanationRaceId(current => current === r.race_id ? null : r.race_id)}
                                   className="inline-flex items-center gap-1.5 text-xs text-[#7dd3fc] hover:text-[#bae6fd] transition-colors"
                                 >
-                                  特徴量・結果照合を詳しく見る
+                                  {explanationRaceId === r.race_id ? 'AIの判断を閉じる' : 'AIの判断を見る'}
                                   <span className="rounded border border-[#3b2f64] bg-[#211b36] px-1.5 py-0.5 text-[9px] text-[#c4b5fd]">
                                     Premium
                                   </span>
-                                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                                  </svg>
-                                </Link>
+                                </button>
                               </div>
                             )}
 
-                            {/* 購入セクション */}
+                            {isPremium && explanationRaceId === r.race_id && res.data && (
+                              <div className="border-t border-[#1a1a1a] bg-[#0d0d0d]">
+                                <RaceExplanationPanel result={res.data as RacePredictResult} />
+                              </div>
+                            )}
+
+                            {/* AIが決定した買い目の読み取り専用表示 */}
                             {res.success && (() => {
-                              const edit = betEdits[r.race_id]
-                              const activeBetType = edit?.betType ?? res.data?.best_bet_type ?? '単勝'
-                              const allBetTypeKeys: string[] = Object.keys(res.data?.bet_types ?? {})
-                                .filter((t: string) => (res.data.bet_types[t] ?? []).length > 0)
-                              const activeCombos: any[] = res.data?.bet_types?.[activeBetType] ?? []
-                              const selIdxs: number[] = edit?.selectedIdxs ?? Array.from(
-                                { length: Math.min(rec?.purchase_count ?? 1, activeCombos.length) }, (_, i) => i
-                              )
-                              const unitPrice: number = edit?.unitPrice ?? rec?.unit_price ?? 100
-                              const manualNos: number[] = edit?.manualNos ?? []
-                              const allManualCombos: string[] = genManualCombos(manualNos, activeBetType)
-                              const manualCombos: string[] = edit?.manualSelCombos ?? allManualCombos
-                              const manualComboSet = new Set(manualCombos)
-                              const numHorses: number = r.num_horses > 0 ? r.num_horses : 18
-                              const minNeeded: number = MIN_HORSES[activeBetType] ?? 1
-                              const totalCount = selIdxs.length + manualCombos.length
-                              const totalCost: number = unitPrice * Math.max(totalCount, 0)
-                              const selSet = new Set(selIdxs)
+                              const betType = String(res.data?.best_bet_type || '単勝')
+                              const candidates: any[] = res.data?.bet_types?.[betType] ?? []
+                              const requestedCount = Math.max(0, Number(rec?.purchase_count ?? 0))
+                              const selectedCombos = candidates.slice(0, Math.min(requestedCount, candidates.length))
+                              const unitPrice = Math.max(0, Number(rec?.unit_price ?? 0))
+                              const totalCost = unitPrice * selectedCombos.length
+                              const isSkip = raceLevel === 'skip' || selectedCombos.length === 0
                               return (
                                 <div className="border-t border-[#1a1a1a]">
 
-                                  {/* ── 券種 ── */}
-                                  <div className="px-5 pt-4 pb-3 border-b border-[#141414]">
-                                    <div className="flex items-center gap-2 mb-2">
-                                      <span className="text-[10px] font-semibold tracking-wider text-[#555] uppercase">券種</span>
-                                    </div>
-                                    <div className="flex flex-wrap gap-1.5">
-                                      {allBetTypeKeys.map((t: string) => (
-                                        <button
-                                          key={t}
-                                          onClick={() => changeBetType(r.race_id, t, res.data)}
-                                          className="text-xs px-3 py-1 rounded border transition-colors"
-                                          style={activeBetType === t
-                                            ? { background: '#facc15', color: '#000', borderColor: '#facc15', fontWeight: 600 }
-                                            : { background: 'transparent', color: '#666', borderColor: '#2a2a2a' }
-                                          }
-                                        >
-                                          {t}
-                                          {t === res.data?.best_bet_type && (
-                                            <span className="ml-1 text-[9px] opacity-60">AI推奨</span>
-                                          )}
-                                        </button>
-                                      ))}
-                                    </div>
+                                  <div className="px-5 pt-4 pb-3 border-b border-[#141414] flex items-center gap-3">
+                                    <span className="text-[10px] font-semibold tracking-wider text-[#facc15] uppercase">AI 買い目</span>
+                                    <span className="text-sm font-semibold text-white">{isSkip ? '見送り' : betType}</span>
                                   </div>
 
                                   <div className="divide-y divide-[#141414]">
 
-                                    {/* ── AI推奨買い目 ── */}
+                                    {/* ── AIが選んだ組み合わせ ── */}
                                     <div className="px-5 py-3 space-y-2">
-                                      <div className="flex items-center gap-2">
-                                        <span className="text-[10px] font-semibold tracking-wider text-[#facc15] uppercase">AI 推奨</span>
-                                        <span className="text-[10px] text-[#555]">{selIdxs.length}点選択中 — クリックで選択/解除</span>
-                                      </div>
-                                      {activeCombos.length > 0 ? (
+                                      {!isSkip ? (
                                         <div className="flex flex-wrap gap-1.5">
-                                          {activeCombos.map((c: any, ci: number) => {
-                                            const checked = selSet.has(ci)
+                                          {selectedCombos.map((combo: any, index: number) => {
+                                            const expectedValue = combo.expected_value ?? combo.ev
                                             return (
-                                              <button
-                                                key={ci}
-                                                onClick={() => {
-                                                  if (!edit) {
-                                                    setBetEdits(prev => ({
-                                                      ...prev,
-                                                      [r.race_id]: { betType: activeBetType, selectedIdxs: [...selIdxs], unitPrice }
-                                                    }))
-                                                  }
-                                                  toggleCombo(r.race_id, ci)
-                                                }}
-                                                className="text-xs px-2.5 py-1 rounded font-mono border transition-colors"
-                                                style={checked
-                                                  ? { background: '#1a2a10', color: '#facc15', borderColor: '#3a4a10' }
-                                                  : { background: '#0a0a0a', color: '#383838', borderColor: '#1a1a1a' }
-                                                }
+                                              <span
+                                                key={`${String(combo.combination ?? combo)}-${index}`}
+                                                className="text-xs px-2.5 py-1 rounded font-mono border bg-[#1a2a10] text-[#facc15] border-[#3a4a10]"
                                               >
-                                                {c.combination}
-                                                {c.ev != null && (
-                                                  <span className="ml-1 opacity-50 text-[10px]">{Number(c.ev).toFixed(2)}</span>
+                                                {String(combo.combination ?? combo)}
+                                                {expectedValue != null && (
+                                                  <span className="ml-1 opacity-50 text-[10px]">EV {Number(expectedValue).toFixed(2)}</span>
                                                 )}
-                                              </button>
+                                              </span>
                                             )
                                           })}
                                         </div>
                                       ) : (
-                                        <p className="text-xs text-[#333]">この券種の候補なし</p>
+                                        <p className="text-xs text-[#666]">購入条件に達していません</p>
                                       )}
                                     </div>
 
-                                    {/* ── 手動追加: 馬番ボタン → 組み合わせ個別選択 ── */}
-                                    <div className="px-5 py-3 space-y-2">
-                                      {/* ヘッダー行 */}
-                                      <div className="flex items-center gap-2 flex-wrap">
-                                        <span className="text-[10px] font-semibold tracking-wider text-[#818cf8] uppercase">手動追加</span>
-                                        {manualNos.length === 0 ? (
-                                          <span className="text-[10px] text-[#333]">① 馬番を選択 → ② 組み合わせを選択</span>
-                                        ) : manualNos.length < minNeeded ? (
-                                          <span className="text-[10px] text-[#555]">{activeBetType}はあと{minNeeded - manualNos.length}頭選択してください</span>
-                                        ) : (
-                                          <span className="text-[10px] text-[#818cf8]">{manualCombos.length}/{allManualCombos.length}点選択中</span>
-                                        )}
-                                        {manualNos.length >= minNeeded && (
-                                          <>
-                                            <button
-                                              onClick={() => setBetEdits(prev => ({ ...prev, [r.race_id]: { ...(prev[r.race_id] ?? { betType: activeBetType, selectedIdxs: [...selIdxs], unitPrice }), manualSelCombos: null } }))}
-                                              className="text-[10px] text-[#444] hover:text-[#818cf8] transition-colors"
-                                            >全選択</button>
-                                            <button
-                                              onClick={() => setBetEdits(prev => ({ ...prev, [r.race_id]: { ...(prev[r.race_id] ?? { betType: activeBetType, selectedIdxs: [...selIdxs], unitPrice }), manualSelCombos: [] } }))}
-                                              className="text-[10px] text-[#444] hover:text-[#f87171] transition-colors"
-                                            >全解除</button>
-                                          </>
-                                        )}
-                                        {manualNos.length > 0 && (
-                                          <button
-                                            onClick={() => setBetEdits(prev => ({
-                                              ...prev,
-                                              [r.race_id]: { betType: activeBetType, selectedIdxs: [...selIdxs], unitPrice, manualNos: [], manualSelCombos: null }
-                                            }))}
-                                            className="text-[10px] text-[#444] hover:text-[#f87171] ml-auto transition-colors"
-                                          >
-                                            クリア
-                                          </button>
-                                        )}
-                                      </div>
-                                      {/* ① 馬番グリッド */}
-                                      <div className="flex flex-wrap gap-1">
-                                        {Array.from({ length: numHorses }, (_, i) => i + 1).map(no => {
-                                          const isSelected = manualNos.includes(no)
-                                          return (
-                                            <button
-                                              key={no}
-                                              onClick={() => toggleManualNo(r.race_id, no, { betType: activeBetType, selectedIdxs: [...selIdxs], unitPrice })}
-                                              className="text-xs w-8 h-8 rounded font-mono font-bold border transition-all"
-                                              style={isSelected
-                                                ? { background: '#1a1a2e', color: '#818cf8', borderColor: '#818cf8', boxShadow: '0 0 6px #818cf844' }
-                                                : { background: '#0a0a0a', color: '#444', borderColor: '#1a1a1a' }
-                                              }
-                                            >
-                                              {no}
-                                            </button>
-                                          )
-                                        })}
-                                      </div>
-                                      {/* ② 組み合わせ個別トグル */}
-                                      {manualNos.length >= minNeeded && allManualCombos.length > 0 && (
-                                        <div className={`flex gap-1 flex-wrap pt-0.5${allManualCombos.length > 24 ? ' max-h-32 overflow-y-auto pr-1' : ''}`}>
-                                          {allManualCombos.map((c: string) => {
-                                            const isComboSel = manualComboSet.has(c)
-                                            return (
-                                              <button
-                                                key={c}
-                                                onClick={() => toggleManualCombo(r.race_id, c, allManualCombos, { betType: activeBetType, selectedIdxs: [...selIdxs], unitPrice })}
-                                                className="text-xs px-2 py-0.5 rounded font-mono border transition-colors"
-                                                style={isComboSel
-                                                  ? { background: '#1a1a2e', color: '#818cf8', borderColor: '#818cf8' }
-                                                  : { background: '#0a0a0a', color: '#252525', borderColor: '#111' }
-                                                }
-                                              >
-                                                {c}
-                                              </button>
-                                            )
-                                          })}
-                                        </div>
-                                      )}
-                                    </div>
                                   </div>
 
-                                  {/* ── フッター: 単価・合計・購入ボタン ── */}
-                                  <div className="px-5 py-3 border-t border-[#141414] flex flex-wrap items-center justify-between gap-3">
-                                    <div className="flex items-center gap-3 flex-wrap">
-                                      <div className="flex items-center gap-1.5">
-                                        <span className="text-xs text-[#555]">単価</span>
-                                        <span className="text-xs text-[#666]">¥</span>
-                                        <input
-                                          type="number"
-                                          min={100}
-                                          step={100}
-                                          value={unitPrice}
-                                          onChange={e => {
-                                            if (!edit) {
-                                              setBetEdits(prev => ({
-                                                ...prev,
-                                                [r.race_id]: { betType: activeBetType, selectedIdxs: [...selIdxs], unitPrice }
-                                              }))
-                                            }
-                                            setBetUnitPrice(r.race_id, Math.max(100, Number(e.target.value)))
-                                          }}
-                                          className="w-20 text-xs bg-[#0a0a0a] border border-[#333] rounded px-2 py-1 text-white text-right"
-                                        />
-                                      </div>
-                                      <div className="flex items-center gap-1.5 text-xs">
-                                        <span className="text-[#444]">×</span>
-                                        {selIdxs.length > 0 && (
-                                          <span className="text-[#facc15]">{selIdxs.length}点(AI)</span>
-                                        )}
-                                        {selIdxs.length > 0 && manualCombos.length > 0 && (
-                                          <span className="text-[#444]">+</span>
-                                        )}
-                                        {manualCombos.length > 0 && (
-                                          <span className="text-[#818cf8]">{manualCombos.length}点(手動)</span>
-                                        )}
-                                        {totalCount === 0 && <span className="text-[#444]">0点</span>}
-                                        <span className="text-[#444]">=</span>
-                                        <span className="text-white font-bold">¥{totalCost.toLocaleString()}</span>
-                                      </div>
-                                      {rec?.kelly_recommended_amount != null && (
-                                        <span className="text-xs text-[#444]">
-                                          ケリー推奨: <span className="text-[#555]">¥{rec.kelly_recommended_amount.toLocaleString()}</span>
-                                        </span>
-                                      )}
+                                  {!isSkip && (
+                                    <div className="px-5 py-3 border-t border-[#141414] flex flex-wrap items-center gap-2 text-xs">
+                                      <span className="text-[#888]">¥{unitPrice.toLocaleString()} × {selectedCombos.length}点</span>
+                                      <span className="text-[#444]">=</span>
+                                      <span className="text-white font-bold">合計 ¥{totalCost.toLocaleString()}</span>
                                     </div>
-
-                                    {purchased.has(r.race_id) ? (
-                                      <div className="flex items-center gap-3 text-xs">
-                                        <span className="text-[#4ade80] flex items-center gap-1">
-                                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                                          </svg>
-                                          購入記録済み
-                                        </span>
-                                        <Link href="/dashboard" className="text-[#7dd3fc] hover:underline">
-                                          ダッシュボードで結果入力 →
-                                        </Link>
-                                      </div>
-                                    ) : (
-                                      <button
-                                        onClick={() => recordPurchase(r.race_id, r.venue, res)}
-                                        disabled={purchasing.has(r.race_id) || totalCount === 0}
-                                        className="text-xs px-5 py-1.5 bg-[#facc15] text-black font-semibold rounded hover:bg-[#fde047] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                                      >
-                                        {purchasing.has(r.race_id) ? '保存中...' : `購入を記録する（¥${totalCost.toLocaleString()}）`}
-                                      </button>
-                                    )}
-                                  </div>
+                                  )}
                                 </div>
                               )
                             })()}
@@ -1137,160 +700,18 @@ export default function PredictBatchPage() {
           </div>
         )}
 
-        {/* ── Layer 4: リアルタイムオッズ & 購入リストエクスポート ── */}
-        {Object.values(results).some(r => r.success) && (
-          <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-6 space-y-5">
-            <h2 className="text-sm font-semibold text-white">④ リアルタイムオッズ更新 & 購入リスト出力</h2>
-
-            {/* リアルタイムオッズ（当日・未来レースのみ有効） */}
-            {isCurrentOrFutureDate ? (
-            <div className="p-4 bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg space-y-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-white">レース直前オッズ更新</p>
-                  <p className="text-xs text-[#555] mt-0.5">
-                    race.netkeiba.com から最新の単勝・馬連オッズを取得します（締切前のみ有効）
-                  </p>
-                </div>
-                <button
-                  onClick={handleRefreshOdds}
-                  disabled={oddsRefreshing}
-                  className="flex items-center gap-2 px-4 py-2 bg-[#1a3a5a] text-[#60a5fa] text-sm rounded-lg hover:bg-[#1e4a6a] disabled:opacity-50 disabled:cursor-not-allowed transition-colors border border-[#2a5a8a]"
-                >
-                  {oddsRefreshing ? (
-                    <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                    </svg>
-                  ) : (
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                    </svg>
-                  )}
-                  {oddsRefreshing ? '更新中...' : 'オッズを今すぐ更新'}
-                </button>
-              </div>
-              {oddsLastUpdated && (
-                <p className="text-xs text-[#4ade80]">
-                  最終更新: {oddsLastUpdated.toLocaleTimeString('ja-JP')} —{' '}
-                  {Object.keys(realtimeOdds).length}レース取得済み
-                </p>
-              )}
-              {Object.keys(realtimeOdds).length > 0 && (
-                <div className="space-y-2 max-h-48 overflow-y-auto">
-                  {filteredRaces
-                    .filter(r => realtimeOdds[r.race_id] && Object.keys(realtimeOdds[r.race_id]).length > 0)
-                    .map(r => {
-                      const odds = realtimeOdds[r.race_id]
-                      const sortedHorses = Object.entries(odds)
-                        .sort(([, a], [, b]) => a - b)
-                        .slice(0, 5)
-                      return (
-                        <div key={r.race_id} className="bg-[#111] border border-[#1a1a1a] rounded p-2">
-                          <span className="text-xs text-[#888] mr-2">{r.venue} {r.race_no}R</span>
-                          <span className="text-xs text-[#555]">単勝上位5頭:</span>
-                          <div className="flex flex-wrap gap-1 mt-1">
-                            {sortedHorses.map(([horseNo, od]) => (
-                              <span key={horseNo} className="text-xs px-1.5 py-0.5 bg-[#0a0a0a] border border-[#222] rounded font-mono">
-                                {horseNo}番 {od}倍
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      )
-                    })}
-                </div>
-              )}
-            </div>
-            ) : (
-              <div className="p-4 bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg">
-                <p className="text-xs text-[#555]">過去レースのため、リアルタイムオッズ更新は利用できません。確定オッズは予測時に自動取得されます。</p>
-              </div>
-            )}
-
-            {/* 購入リスト出力 */}
-            <div className="p-4 bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg space-y-4">
-              <div>
-                <p className="text-sm font-medium text-white">購入推奨リスト出力</p>
-                <p className="text-xs text-[#555] mt-0.5">
-                  予測結果から「このレース・この馬番・この金額で買え」を一覧化してJSON/CSV出力します
-                </p>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs text-[#666] block mb-1.5">最低期待値フィルタ</label>
-                  <input
-                    type="number"
-                    min={0.5}
-                    max={5.0}
-                    step={0.1}
-                    value={exportMinEv}
-                    onChange={e => setExportMinEv(parseFloat(e.target.value) || 1.0)}
-                    className="w-full px-3 py-2 bg-[#111] border border-[#1e1e1e] rounded text-white text-sm focus:outline-none focus:border-[#333]"
-                  />
-                  <p className="text-xs text-[#555] mt-1">期待値がこの値未満の買い目を除外</p>
-                </div>
-                <div>
-                  <label className="text-xs text-[#666] block mb-1.5">レースあたり最大買い目数</label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={10}
-                    step={1}
-                    value={exportMaxBets}
-                    onChange={e => setExportMaxBets(parseInt(e.target.value) || 3)}
-                    className="w-full px-3 py-2 bg-[#111] border border-[#1e1e1e] rounded text-white text-sm focus:outline-none focus:border-[#333]"
-                  />
-                </div>
-              </div>
-              <div className="flex gap-3">
-                <button
-                  onClick={handleExportJson}
-                  disabled={exportLoading}
-                  className="flex-1 py-2.5 bg-[#1a1a1a] border border-[#333] text-white text-sm rounded-lg hover:bg-[#222] disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
-                >
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                  </svg>
-                  JSON 出力
-                </button>
-                <button
-                  onClick={handleExportCsv}
-                  disabled={exportLoading}
-                  className="flex-1 py-2.5 bg-white text-black text-sm font-medium rounded-lg hover:bg-[#eee] disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
-                >
-                  {exportLoading ? (
-                    <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                    </svg>
-                  ) : (
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                    </svg>
-                  )}
-                  CSV 出力（IPAT入力用）
-                </button>
-              </div>
-              <p className="text-xs text-[#444]">
-                CSVには馬券種コード（tan/umaren等）・馬番組み合わせ・金額が含まれます。IPAT手入力の補助に使用できます。
-              </p>
-            </div>
-          </div>
-        )}
-
         {/* ── ナビ ── */}
         <div className="p-5 bg-[#111] border border-[#1e1e1e] rounded-lg flex items-center justify-between gap-4">
           <div>
             <div className="text-xs text-[#666] mb-0.5">次のステップ — 04</div>
-            <div className="text-sm font-medium">履歴・統計</div>
-            <div className="text-xs text-[#555] mt-0.5">購入履歴と成績を確認します</div>
+            <div className="text-sm font-medium">成績確認</div>
+            <div className="text-xs text-[#555] mt-0.5">予測結果と成績を確認します</div>
           </div>
           <Link
             href="/dashboard"
             className="shrink-0 flex items-center gap-1.5 bg-white text-black text-sm font-medium px-5 py-2.5 rounded hover:bg-[#eee] transition-colors"
           >
-            履歴・統計へ
+            成績確認へ
             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
             </svg>

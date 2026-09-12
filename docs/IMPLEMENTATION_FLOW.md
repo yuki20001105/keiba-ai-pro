@@ -62,14 +62,17 @@ keiba_ultimate.db (SQLite)        models/*.joblib
 ```
 [/data-collection ページ]
   ↓ API health確認
-  ↓ 期間指定（開始年月〜終了年月）
-  ↓ Dry-run（外部HTTPなし）
-  ↓ 通常取得（force_rescrape=false固定）
+  ↓ 期間（開始〜終了）
+  ↓ 事前確認（外部HTTPなし）
+  ↓ 取得開始（force_rescrape=false固定）
   ↓ useBatchScrape フック
     for month in months:
       POST /api/scrape  → { job_id }
       ↓ 3秒ポーリング
       GET /api/scrape/status/{job_id}  → { status, progress }
+      ├─ 停止操作 → POST /api/scrape/cancel/{job_id}
+      │              cancelling中は自動ポーリングと実行lockを継続
+      │              cancelledで終了（保存済みデータは保持）
       ↓ completed になったら次の月へ
 ```
 
@@ -88,7 +91,7 @@ routers/scrape.py
             └─ SQLite: races_ultimate + race_results_ultimate + return_tables_ultimate
 ```
 
-通常画面は進捗・完了・エラーに加え、実行状態が不明な場合だけ再確認操作を表示します。完了後は最新のfetch summary 1件と、総レース数・総出走馬数・最終取得日の3指標を表示します。修復/再取得計画、限定ライブ検証、監査キュー、全履歴、最近取得したレース詳細、プロファイリングは保守用のページ/APIとして存続しますが、通常画面からは非表示です。
+通常画面は進捗・完了・エラーに加え、実行状態が不明な場合だけ再確認操作を表示します。現在の結果がない場合は「最新」を1行で表示し、「保存済み」に「レース」「出走馬」「最終」の3指標を表示します。修復/再取得計画、限定ライブ検証、監査キュー、全履歴、最近取得したレース詳細、プロファイリングは保守用のページ/APIとして存続しますが、通常画面からは非表示です。
 
 ### 2-3. DB テーブル構成
 
@@ -503,7 +506,7 @@ src/app/
 ├─ page.tsx               ランディングページ
 ├─ home/page.tsx          ダッシュボードハブ（システム状態・ナビ）
 ├─ data-collection/       必要機能に限定した通常スクレイピング UI
-│   ├─ page.tsx           health / 期間 / Dry-run / 通常取得 / 状態 / 最新summary / 3指標
+│   ├─ page.tsx           health / 期間 / 事前確認 / 取得開始 / 状態 / 最新 / 保存済み
 │   └─ ...                保守用ページ（通常UIから非表示）
 ├─ train/page.tsx         モデル学習 UI
 ├─ predict-batch/page.tsx バッチ予測 UI

@@ -160,12 +160,40 @@ export async function mockAnalyzeRace(page: Page) {
     route.fulfill({
       json: {
         success: true,
+        model_id: 'abc123-def456',
+        explanation_method: 'tree_shap',
         race_id: '202604070101',
-        race_info: { race_name: 'テストレース1', venue: '東京', date: '2026-04-07', race_no: 1, track_type: '芝', distance: 1600, num_horses: 3 },
+        race_info: { race_id: '202604070101', race_name: 'テストレース1', venue: '東京', date: '2026-04-07', race_no: 1, track_type: '芝', distance: 1600, num_horses: 3 },
         predictions: [
-          { horse_number: 1, horse_name: 'テスト馬A', jockey_name: '騎手A', predicted_rank: 1, p_raw: 0.35, p_norm: 0.40, odds: 3.2, expected_value: 1.28, popularity: 1 },
-          { horse_number: 2, horse_name: 'テスト馬B', jockey_name: '騎手B', predicted_rank: 2, p_raw: 0.25, p_norm: 0.30, odds: 5.0, expected_value: 1.50, popularity: 2 },
-          { horse_number: 3, horse_name: 'テスト馬C', jockey_name: '騎手C', predicted_rank: 3, p_raw: 0.15, p_norm: 0.18, odds: 8.0, expected_value: 1.44, popularity: 3 },
+          {
+            horse_number: 1, horse_name: 'テスト馬A', jockey_name: '騎手A', predicted_rank: 1,
+            win_probability: 0.40, p_raw: 0.35, p_norm: 0.40, odds: 3.2, expected_value: 1.28, popularity: 1,
+            explanation: {
+              method: 'tree_shap', base_value: 0.1, features: [
+                { feature: 'jockey_win_rate', label: '騎手の勝率', description: '騎手の勝率', value: 0.15, contribution: 0.21, impact_pct: 34, direction: 'positive' },
+                { feature: 'prev_race_finish', label: '前走着順', description: '前走着順', value: 1, contribution: 0.15, impact_pct: 24, direction: 'positive' },
+                { feature: 'horse_weight_change', label: '馬体重変化', description: '前走からの馬体重変化', value: -8, contribution: -0.09, impact_pct: 15, direction: 'negative' },
+              ],
+            },
+          },
+          {
+            horse_number: 2, horse_name: 'テスト馬B', jockey_name: '騎手B', predicted_rank: 2,
+            win_probability: 0.30, p_raw: 0.25, p_norm: 0.30, odds: 5.0, expected_value: 1.50, popularity: 2,
+            explanation: {
+              method: 'tree_shap', base_value: 0.1, features: [
+                { feature: 'days_since_last_race', label: '前走からの日数', description: '前走からの経過日数', value: 28, contribution: 0.12, impact_pct: 30, direction: 'positive' },
+              ],
+            },
+          },
+          {
+            horse_number: 3, horse_name: 'テスト馬C', jockey_name: '騎手C', predicted_rank: 3,
+            win_probability: 0.18, p_raw: 0.15, p_norm: 0.18, odds: 8.0, expected_value: 1.44, popularity: 3,
+            explanation: {
+              method: 'tree_shap', base_value: 0.1, features: [
+                { feature: 'odds', label: '単勝オッズ', description: '単勝オッズ', value: 8, contribution: -0.1, impact_pct: 27, direction: 'negative' },
+              ],
+            },
+          },
         ],
         best_bet_type: '単勝',
         bet_types: { '単勝': [{ combination: '1', odds: 3.2 }, { combination: '2', odds: 5.0 }] },

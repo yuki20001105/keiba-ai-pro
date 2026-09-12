@@ -154,7 +154,7 @@ test.describe('Phase3B Data Collection workflow', () => {
     await page.getByTestId('execute-button').click()
 
     const panel = page.getByTestId('batch-status-panel')
-    await expect(panel).toContainText('取得完了: 0レース（0レース・正常完了）')
+    await expect(panel).toContainText('完了 · 0レース · 0頭')
     await expect(panel).not.toContainText('Dry-runはまだ処理中です')
     await expect(page.getByTestId('quality-bridge-card')).toHaveCount(0)
   })
@@ -243,7 +243,7 @@ test.describe('Phase3B Data Collection workflow', () => {
     await expect(page.getByTestId('dry-run-button')).toBeEnabled()
     await page.getByTestId('dry-run-button').click()
 
-    await expect(page.getByText('Dry-run 結果（実取得なし）')).toHaveCount(0)
+    await expect(page.getByTestId('dry-run-result')).toHaveCount(0)
     await expect(page.getByText('0レース・正常完了')).toHaveCount(0)
   })
 
@@ -294,8 +294,8 @@ test.describe('Phase3B Data Collection workflow', () => {
       await setSingleMonthRange(page, '2026-01')
       await page.getByTestId('dry-run-button').click()
 
-      await expect(page.getByRole('alert').filter({ hasText: 'Dry-run失敗:' }).first()).toBeVisible()
-      await expect(page.getByText('Dry-run 結果（実取得なし）')).toHaveCount(0)
+      await expect(page.getByRole('alert').filter({ hasText: '確認失敗:' }).first()).toBeVisible()
+      await expect(page.getByTestId('dry-run-result')).toHaveCount(0)
       await expect(page.getByText('0レース・正常完了')).toHaveCount(0)
       await expect(page.getByTestId('quality-bridge-card')).toHaveCount(0)
       expect(dryRunPostCount).toBe(1)
@@ -666,7 +666,7 @@ test.describe('Phase3B Data Collection workflow', () => {
     await page.getByTestId('reconcile-status-button').click()
     await expect(page.getByTestId('uncertainty-panel')).toHaveCount(0)
     await expect(page.getByTestId('quality-bridge-card')).toHaveCount(0)
-    await expect(page.getByTestId('batch-status-panel')).not.toContainText('取得完了: 3レース')
+    await expect(page.getByTestId('batch-status-panel')).not.toContainText('完了 · 3レース')
     expect(scrapePostCount).toBe(1)
 
     await page.getByTestId('execute-button').click()

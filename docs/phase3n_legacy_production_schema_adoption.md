@@ -1,5 +1,12 @@
 # Phase 3N legacy Production schema adoption
 
+> The 21-migration and 21-history-row values below are immutable facts about
+> the approved 2026-08-22 adoption candidate and its retained evidence. The
+> current repository candidate now appends ordinal 22 for operational scrape
+> cancellation. That new ordinal is not part of the recorded hosted history
+> unless a separately authorized append-only upgrade is applied; existing
+> history rows and evidence must not be rewritten.
+
 ## Decision and boundary
 
 Production Supabase project `grfwkutcsavqicaimssn` is a live legacy schema,

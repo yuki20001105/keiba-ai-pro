@@ -1,36 +1,25 @@
 [
   {
-    "route": "/api/ai-correct",
-    "method": "POST",
-    "policy": "Authenticated",
+    "route": "/api/admin/profiles",
+    "method": "GET",
+    "policy": "Admin",
     "auth_header_forward": false,
     "status_propagation": false,
     "detail_error_passthrough": false,
-    "auth_header_forward_reason": "/api/ai-correct does not proxy end-user Authorization header by design",
-    "status_propagation_reason": "/api/ai-correct returns normalized error/status mapping instead of raw upstream status passthrough",
-    "detail_error_passthrough_reason": "/api/ai-correct maps upstream detail into route-specific error payload"
+    "auth_header_forward_reason": "/api/admin/profiles uses a server-side service-role client only after verified Admin auth and never forwards the browser bearer token",
+    "status_propagation_reason": "/api/admin/profiles returns a bounded Admin profile-list contract with normalized status codes",
+    "detail_error_passthrough_reason": "/api/admin/profiles maps database errors to bounded route-specific detail"
   },
   {
-    "route": "/api/analyze-race",
-    "method": "POST",
-    "policy": "Authenticated",
-    "auth_header_forward": true,
-    "status_propagation": true,
-    "detail_error_passthrough": true,
-    "auth_header_forward_reason": "",
-    "status_propagation_reason": "",
-    "detail_error_passthrough_reason": ""
-  },
-  {
-    "route": "/api/analyze-races-batch",
-    "method": "POST",
-    "policy": "Authenticated",
-    "auth_header_forward": true,
-    "status_propagation": true,
-    "detail_error_passthrough": true,
-    "auth_header_forward_reason": "",
-    "status_propagation_reason": "",
-    "detail_error_passthrough_reason": ""
+    "route": "/api/admin/profiles/[userId]/role",
+    "method": "PATCH",
+    "policy": "Admin",
+    "auth_header_forward": false,
+    "status_propagation": false,
+    "detail_error_passthrough": false,
+    "auth_header_forward_reason": "/api/admin/profiles/[userId]/role uses a server-side service-role client only after verified Admin auth and never forwards the browser bearer token",
+    "status_propagation_reason": "/api/admin/profiles/[userId]/role returns a strict role-update contract with normalized status codes",
+    "detail_error_passthrough_reason": "/api/admin/profiles/[userId]/role maps database errors and missing targets to bounded route-specific detail"
   },
   {
     "route": "/api/admin/unlock",
@@ -66,26 +55,37 @@
     "detail_error_passthrough_reason": "/api/admin/unlock POST maps authentication, AMR, and configuration failures to bounded route-specific detail"
   },
   {
-    "route": "/api/admin/profiles",
-    "method": "GET",
-    "policy": "Admin",
+    "route": "/api/ai-correct",
+    "method": "POST",
+    "policy": "Authenticated",
     "auth_header_forward": false,
     "status_propagation": false,
     "detail_error_passthrough": false,
-    "auth_header_forward_reason": "/api/admin/profiles uses a server-side service-role client only after verified Admin auth and never forwards the browser bearer token",
-    "status_propagation_reason": "/api/admin/profiles returns a bounded Admin profile-list contract with normalized status codes",
-    "detail_error_passthrough_reason": "/api/admin/profiles maps database errors to bounded route-specific detail"
+    "auth_header_forward_reason": "/api/ai-correct does not proxy end-user Authorization header by design",
+    "status_propagation_reason": "/api/ai-correct returns normalized error/status mapping instead of raw upstream status passthrough",
+    "detail_error_passthrough_reason": "/api/ai-correct maps upstream detail into route-specific error payload"
   },
   {
-    "route": "/api/admin/profiles/[userId]/role",
-    "method": "PATCH",
-    "policy": "Admin",
-    "auth_header_forward": false,
-    "status_propagation": false,
-    "detail_error_passthrough": false,
-    "auth_header_forward_reason": "/api/admin/profiles/[userId]/role uses a server-side service-role client only after verified Admin auth and never forwards the browser bearer token",
-    "status_propagation_reason": "/api/admin/profiles/[userId]/role returns a strict role-update contract with normalized status codes",
-    "detail_error_passthrough_reason": "/api/admin/profiles/[userId]/role maps database errors and missing targets to bounded route-specific detail"
+    "route": "/api/analyze-race",
+    "method": "POST",
+    "policy": "Authenticated",
+    "auth_header_forward": true,
+    "status_propagation": true,
+    "detail_error_passthrough": true,
+    "auth_header_forward_reason": "",
+    "status_propagation_reason": "",
+    "detail_error_passthrough_reason": ""
+  },
+  {
+    "route": "/api/analyze-races-batch",
+    "method": "POST",
+    "policy": "Authenticated",
+    "auth_header_forward": true,
+    "status_propagation": true,
+    "detail_error_passthrough": true,
+    "auth_header_forward_reason": "",
+    "status_propagation_reason": "",
+    "detail_error_passthrough_reason": ""
   },
   {
     "route": "/api/backfill/coat-color",
@@ -264,9 +264,20 @@
     "detail_error_passthrough_reason": "/api/local-login maps authentication failures to fixed local_auto_login reason codes"
   },
   {
+    "route": "/api/ml/train/capability",
+    "method": "GET",
+    "policy": "Admin",
+    "auth_header_forward": true,
+    "status_propagation": false,
+    "detail_error_passthrough": false,
+    "auth_header_forward_reason": "",
+    "status_propagation_reason": "/api/ml/train/capability returns a route-owned capability status after combining loopback, local opt-in, Admin-mode, and FastAPI readiness checks",
+    "detail_error_passthrough_reason": "/api/ml/train/capability exposes only the bounded enabled/reason contract and does not pass through FastAPI detail"
+  },
+  {
     "route": "/api/ml/train/start",
     "method": "POST",
-    "policy": "PremiumOrAdmin",
+    "policy": "Admin",
     "auth_header_forward": true,
     "status_propagation": true,
     "detail_error_passthrough": true,
@@ -277,7 +288,7 @@
   {
     "route": "/api/ml/train/status/[job_id]",
     "method": "GET",
-    "policy": "Authenticated",
+    "policy": "Admin",
     "auth_header_forward": true,
     "status_propagation": true,
     "detail_error_passthrough": true,
@@ -682,6 +693,17 @@
     "detail_error_passthrough_reason": ""
   },
   {
+    "route": "/api/scrape/cancel/[jobId]",
+    "method": "POST",
+    "policy": "Admin",
+    "auth_header_forward": true,
+    "status_propagation": true,
+    "detail_error_passthrough": true,
+    "auth_header_forward_reason": "",
+    "status_propagation_reason": "",
+    "detail_error_passthrough_reason": ""
+  },
+  {
     "route": "/api/scrape/health",
     "method": "GET",
     "policy": "Authenticated",
@@ -781,6 +803,39 @@
     "detail_error_passthrough_reason": "/api/scrape/refresh-plan maps upstream detail into route-specific error payload"
   },
   {
+    "route": "/api/scrape/repair/[race_id]",
+    "method": "POST",
+    "policy": "Admin",
+    "auth_header_forward": true,
+    "status_propagation": true,
+    "detail_error_passthrough": true,
+    "auth_header_forward_reason": "",
+    "status_propagation_reason": "",
+    "detail_error_passthrough_reason": ""
+  },
+  {
+    "route": "/api/scrape/rescrape-incomplete",
+    "method": "POST",
+    "policy": "Admin",
+    "auth_header_forward": true,
+    "status_propagation": true,
+    "detail_error_passthrough": true,
+    "auth_header_forward_reason": "",
+    "status_propagation_reason": "",
+    "detail_error_passthrough_reason": ""
+  },
+  {
+    "route": "/api/scrape/status/[jobId]",
+    "method": "GET",
+    "policy": "Admin",
+    "auth_header_forward": true,
+    "status_propagation": true,
+    "detail_error_passthrough": true,
+    "auth_header_forward_reason": "",
+    "status_propagation_reason": "",
+    "detail_error_passthrough_reason": ""
+  },
+  {
     "route": "/api/scrape/targeted-refetch-plan",
     "method": "POST",
     "policy": "PremiumOrAdmin",
@@ -834,39 +889,6 @@
     "auth_header_forward_reason": "/api/scrape/uncertainty-review-requests/[requestId]/decision uses a server-side service-role RPC after verified Admin auth",
     "status_propagation_reason": "/api/scrape/uncertainty-review-requests/[requestId]/decision normalizes CAS and two-person decision outcomes",
     "detail_error_passthrough_reason": "/api/scrape/uncertainty-review-requests/[requestId]/decision maps database errors to bounded conflicts or availability errors"
-  },
-  {
-    "route": "/api/scrape/repair/[race_id]",
-    "method": "POST",
-    "policy": "Admin",
-    "auth_header_forward": true,
-    "status_propagation": true,
-    "detail_error_passthrough": true,
-    "auth_header_forward_reason": "",
-    "status_propagation_reason": "",
-    "detail_error_passthrough_reason": ""
-  },
-  {
-    "route": "/api/scrape/rescrape-incomplete",
-    "method": "POST",
-    "policy": "Admin",
-    "auth_header_forward": true,
-    "status_propagation": true,
-    "detail_error_passthrough": true,
-    "auth_header_forward_reason": "",
-    "status_propagation_reason": "",
-    "detail_error_passthrough_reason": ""
-  },
-  {
-    "route": "/api/scrape/status/[jobId]",
-    "method": "GET",
-    "policy": "Admin",
-    "auth_header_forward": true,
-    "status_propagation": true,
-    "detail_error_passthrough": true,
-    "auth_header_forward_reason": "",
-    "status_propagation_reason": "",
-    "detail_error_passthrough_reason": ""
   },
   {
     "route": "/api/statistics",

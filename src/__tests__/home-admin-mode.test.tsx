@@ -1,18 +1,14 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+import { beforeEach, describe, expect, test, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   authState: {
-    userId: 'admin-user-id' as string | null,
+    userId: 'test-user-id' as string | null,
     isAdmin: false,
     loading: false,
     refreshAuthorization: vi.fn(),
   },
-  getUser: vi.fn(),
-  signInWithPassword: vi.fn(),
   signOut: vi.fn(),
-  authFetch: vi.fn(),
-  workspaceMount: vi.fn(),
   routerReplace: vi.fn(),
 }))
 
@@ -23,178 +19,93 @@ vi.mock('@/contexts/AuthContext', () => ({
 vi.mock('@/lib/supabase', () => ({
   supabase: {
     auth: {
-      getUser: mocks.getUser,
-      signInWithPassword: mocks.signInWithPassword,
       signOut: mocks.signOut,
     },
   },
 }))
 
-vi.mock('@/lib/auth-fetch', () => ({ authFetch: mocks.authFetch }))
 vi.mock('next/navigation', () => ({ useRouter: () => ({ replace: mocks.routerReplace }) }))
 vi.mock('@/components/Logo', () => ({ Logo: () => <div>競馬AI Pro</div> }))
-vi.mock('@/components/AdminWorkspace', () => ({
-  AdminWorkspace: () => {
-    mocks.workspaceMount()
-    return <div>統合管理ワークスペース</div>
-  },
-}))
 
-function jsonResponse(value: unknown, status = 200): Response {
-  return new Response(JSON.stringify(value), {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  })
-}
-
-describe('Home Admin mode switch', () => {
+describe('Home unified five-step menu', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.authState.userId = 'test-user-id'
     mocks.authState.isAdmin = false
     mocks.authState.loading = false
-    mocks.authState.userId = 'admin-user-id'
-    mocks.getUser.mockResolvedValue({
-      data: { user: { id: 'admin-user-id', email: 'admin@example.com' } },
-      error: null,
-    })
-    mocks.signInWithPassword.mockResolvedValue({
-      data: { user: { id: 'admin-user-id', email: 'admin@example.com' }, session: {} },
-      error: null,
-    })
     mocks.signOut.mockResolvedValue({ error: null })
-    mocks.authFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url === '/api/data-stats') return jsonResponse({ total_races: 12, total_models: 3 })
-      if (url === '/api/admin/unlock' && init?.method === 'GET') {
-        return jsonResponse({ detail: 'Admin mode is locked' }, 403)
-      }
-      if (url === '/api/admin/unlock' && init?.method === 'POST') {
-        return jsonResponse({
-          version: 1,
-          unlocked: true,
-          expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
-        })
-      }
-      throw new Error(`unexpected request: ${url}`)
-    })
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ status: 'ok' })))
   })
 
-  afterEach(() => {
-    vi.unstubAllGlobals()
-  })
-
-  test('does not expose the Admin switch or workspace to a standard user', async () => {
+  test('shows only prediction and performance to a standard user without a mode switch', async () => {
     const { default: HomePage } = await import('@/app/home/page')
     render(<HomePage />)
 
+    expect(screen.getByText('利用できる機能 — 2件')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /予測実行/ })).toHaveAttribute('href', '/predict-batch')
+    expect(screen.getByRole('link', { name: /成績確認/ })).toHaveAttribute('href', '/dashboard')
+    expect(screen.queryByRole('link', { name: /データ取得/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /モデル作成/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /ユーザー管理/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '管理者モード' })).not.toBeInTheDocument()
-    expect(screen.queryByText('統合管理ワークスペース')).not.toBeInTheDocument()
-    expect(mocks.workspaceMount).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
-  test('keeps an Admin locked until the password dialog is completed', async () => {
+  test('does not flash role-specific links while authorization is loading', async () => {
+    mocks.authState.loading = true
+    mocks.authState.isAdmin = false
+    const { default: HomePage } = await import('@/app/home/page')
+    render(<HomePage />)
+
+    expect(screen.getByRole('status')).toHaveTextContent('利用できる機能を確認しています…')
+    expect(screen.queryByRole('link')).not.toBeInTheDocument()
+  })
+
+  test('shows the exact five ordered functions to an Admin without password switching', async () => {
     mocks.authState.isAdmin = true
     const { default: HomePage } = await import('@/app/home/page')
     render(<HomePage />)
 
-    expect(screen.getByText('AI競馬予測')).toBeInTheDocument()
-    expect(screen.queryByText('統合管理ワークスペース')).not.toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: '管理者モード' }))
-    expect(screen.getByRole('dialog', { name: '管理者パスワードの確認' })).toBeInTheDocument()
-    expect(screen.getByLabelText('管理者パスワード')).toHaveAttribute('type', 'password')
-    expect(mocks.workspaceMount).not.toHaveBeenCalled()
+    expect(screen.getByText('基本的な使い方 — 5ステップ')).toBeInTheDocument()
+    const links = screen.getAllByRole('link')
+    expect(links).toHaveLength(5)
+    expect(links.map(link => link.getAttribute('href'))).toEqual([
+      '/data-collection',
+      '/train',
+      '/predict-batch',
+      '/dashboard',
+      '/user-management',
+    ])
+    expect(links.map(link => link.textContent)).toEqual(expect.arrayContaining([
+      expect.stringContaining('01データ取得'),
+      expect.stringContaining('02モデル作成'),
+      expect.stringContaining('03予測実行'),
+      expect.stringContaining('04成績確認'),
+      expect.stringContaining('05ユーザー管理'),
+    ]))
+    expect(screen.queryByRole('button', { name: '管理者モード' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('管理者パスワード')).not.toBeInTheDocument()
+    expect(screen.queryByText('本番前チェック')).not.toBeInTheDocument()
   })
 
-  test('keeps the workspace hidden and clears the password after a failed check', async () => {
+  test('removes Admin-only links immediately when the current role changes', async () => {
     mocks.authState.isAdmin = true
-    mocks.signInWithPassword.mockResolvedValue({
-      data: { user: null, session: null },
-      error: { message: 'Invalid login credentials' },
-    })
+    const { default: HomePage } = await import('@/app/home/page')
+    const view = render(<HomePage />)
+    expect(screen.getByRole('link', { name: /データ取得/ })).toBeInTheDocument()
+
+    mocks.authState.isAdmin = false
+    view.rerender(<HomePage />)
+
+    expect(screen.queryByRole('link', { name: /データ取得/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /ユーザー管理/ })).not.toBeInTheDocument()
+  })
+
+  test('logs out from the shared header', async () => {
     const { default: HomePage } = await import('@/app/home/page')
     render(<HomePage />)
 
-    fireEvent.click(screen.getByRole('button', { name: '管理者モード' }))
-    const password = screen.getByLabelText('管理者パスワード')
-    fireEvent.change(password, { target: { value: 'wrong-password' } })
-    fireEvent.click(screen.getByRole('button', { name: '確認して切り替える' }))
-
-    expect(await screen.findByRole('alert')).toHaveTextContent('パスワードを確認できませんでした')
-    expect(password).toHaveValue('')
-    expect(screen.queryByText('統合管理ワークスペース')).not.toBeInTheDocument()
-    expect(mocks.authFetch.mock.calls.some(([input, init]) => (
-      String(input) === '/api/admin/unlock' && (init as RequestInit | undefined)?.method === 'POST'
-    ))).toBe(false)
-  })
-
-  test('switches views on the same page only after password and server verification', async () => {
-    mocks.authState.isAdmin = true
-    const { default: HomePage } = await import('@/app/home/page')
-    render(<HomePage />)
-
-    fireEvent.click(screen.getByRole('button', { name: '管理者モード' }))
-    fireEvent.change(screen.getByLabelText('管理者パスワード'), { target: { value: 'verified-password' } })
-    fireEvent.click(screen.getByRole('button', { name: '確認して切り替える' }))
-
-    expect(await screen.findByText('統合管理ワークスペース')).toBeInTheDocument()
-    expect(screen.queryByText('AI競馬予測')).not.toBeInTheDocument()
-    expect(mocks.signInWithPassword).toHaveBeenCalledWith({
-      email: 'admin@example.com',
-      password: 'verified-password',
-    })
-    expect(mocks.authFetch).toHaveBeenCalledWith('/api/admin/unlock', {
-      method: 'POST',
-      cache: 'no-store',
-    })
-
-    fireEvent.click(screen.getByRole('button', { name: 'ユーザー画面に戻る' }))
-    await waitFor(() => expect(screen.getByText('AI競馬予測')).toBeInTheDocument())
-    expect(screen.queryByText('統合管理ワークスペース')).not.toBeInTheDocument()
-  })
-
-  test('fails closed when the server refuses or returns an expired unlock', async () => {
-    mocks.authState.isAdmin = true
-    mocks.authFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url === '/api/data-stats') return jsonResponse({ total_races: 12, total_models: 3 })
-      if (url === '/api/admin/unlock' && init?.method === 'GET') return jsonResponse({}, 403)
-      if (url === '/api/admin/unlock' && init?.method === 'POST') {
-        return jsonResponse({
-          version: 1,
-          unlocked: true,
-          expires_at: new Date(Date.now() - 1).toISOString(),
-        })
-      }
-      throw new Error(`unexpected request: ${url}`)
-    })
-    const { default: HomePage } = await import('@/app/home/page')
-    render(<HomePage />)
-
-    fireEvent.click(screen.getByRole('button', { name: '管理者モード' }))
-    fireEvent.change(screen.getByLabelText('管理者パスワード'), { target: { value: 'verified-password' } })
-    fireEvent.click(screen.getByRole('button', { name: '確認して切り替える' }))
-
-    expect(await screen.findByRole('alert')).toHaveTextContent('パスワードを確認できませんでした')
-    expect(screen.queryByText('統合管理ワークスペース')).not.toBeInTheDocument()
-  })
-
-  test('locks an open workspace when the authenticated identity changes', async () => {
-    mocks.authState.isAdmin = true
-    const { default: HomePage } = await import('@/app/home/page')
-    const { rerender } = render(<HomePage />)
-
-    fireEvent.click(screen.getByRole('button', { name: '管理者モード' }))
-    fireEvent.change(screen.getByLabelText('管理者パスワード'), { target: { value: 'verified-password' } })
-    fireEvent.click(screen.getByRole('button', { name: '確認して切り替える' }))
-    expect(await screen.findByText('統合管理ワークスペース')).toBeInTheDocument()
-
-    mocks.authState.userId = 'different-admin-id'
-    rerender(<HomePage />)
-
-    expect(screen.queryByText('統合管理ワークスペース')).not.toBeInTheDocument()
-    expect(await screen.findByText('AI競馬予測')).toBeInTheDocument()
-    expect(screen.getByRole('status')).toHaveTextContent('ログイン状態が変わったため')
+    fireEvent.click(screen.getByRole('button', { name: 'ログアウト' }))
+    await waitFor(() => expect(mocks.signOut).toHaveBeenCalledTimes(1))
+    expect(mocks.routerReplace).toHaveBeenCalledWith('/login')
   })
 })

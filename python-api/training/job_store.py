@@ -26,11 +26,18 @@ def init_train_jobs_db(db_path: Path = DEFAULT_DB_PATH) -> None:
                 result TEXT DEFAULT 'null',
                 error TEXT DEFAULT 'null',
                 request_json TEXT DEFAULT 'null',
+                owner_id TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
+        columns = {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(train_jobs)").fetchall()
+        }
+        if "owner_id" not in columns:
+            conn.execute("ALTER TABLE train_jobs ADD COLUMN owner_id TEXT")
         conn.commit()
 
 
@@ -46,8 +53,8 @@ def persist_train_job(
         conn.execute(
             """
             INSERT INTO train_jobs (
-                job_id, status, progress, pct, result, error, request_json, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, 'null'), CURRENT_TIMESTAMP)
+                job_id, status, progress, pct, result, error, request_json, owner_id, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, 'null'), ?, CURRENT_TIMESTAMP)
             ON CONFLICT(job_id) DO UPDATE SET
                 status = excluded.status,
                 progress = excluded.progress,
@@ -58,6 +65,7 @@ def persist_train_job(
                     WHEN excluded.request_json = 'null' THEN train_jobs.request_json
                     ELSE excluded.request_json
                 END,
+                owner_id = COALESCE(excluded.owner_id, train_jobs.owner_id),
                 updated_at = CURRENT_TIMESTAMP
             """,
             (
@@ -68,6 +76,7 @@ def persist_train_job(
                 json.dumps(job.get("result"), ensure_ascii=False, default=str),
                 json.dumps(job.get("error"), ensure_ascii=False, default=str),
                 request_json,
+                str(job["owner_id"]) if job.get("owner_id") else None,
             ),
         )
         conn.commit()
@@ -77,18 +86,23 @@ def load_train_job(job_id: str, db_path: Path = DEFAULT_DB_PATH) -> dict[str, An
     init_train_jobs_db(db_path)
     with _LOCK, sqlite3.connect(str(db_path)) as conn:
         row = conn.execute(
-            "SELECT status, progress, pct, result, error FROM train_jobs WHERE job_id = ?",
+            "SELECT status, progress, pct, result, error, owner_id FROM train_jobs WHERE job_id = ?",
             (job_id,),
         ).fetchone()
     if row is None:
         return None
-    return {
+    job = {
         "status": str(row[0]),
         "progress": str(row[1] or ""),
         "pct": int(row[2] or 0),
         "result": json.loads(row[3] or "null"),
         "error": json.loads(row[4] or "null"),
     }
+    # Pre-owner records remain readable by migration tooling, but HTTP status
+    # handlers fail closed because they require a matching non-empty owner.
+    if row[5]:
+        job["owner_id"] = str(row[5])
+    return job
 
 
 def mark_interrupted_train_jobs(db_path: Path = DEFAULT_DB_PATH) -> int:

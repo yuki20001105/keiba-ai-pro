@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { authFetch } from '@/lib/auth-fetch'
 import { formatApiErrorDetail } from '@/lib/api-error'
 import type { JobStatus } from '@/lib/types'
@@ -25,11 +25,20 @@ export type BatchResult = {
   stats: { period: string; total_months: number }
 }
 
+export type BatchAcceptedJob = {
+  jobId: string
+  status: 'queued' | 'running'
+  startDate: string
+  endDate: string
+  acceptedAt: string
+}
+
 export type UseBatchScrapeOptions = {
   pollIntervalMs?: number
   maxPollAttempts?: number
   maxPollDurationMs?: number
   maxConsecutiveStatusFailures?: number
+  onJobAccepted?: (job: BatchAcceptedJob) => void
 }
 
 export type BatchFailureKind =
@@ -38,6 +47,7 @@ export type BatchFailureKind =
   | 'execution'
   | 'monitoring'
   | 'client_stop'
+  | 'cancelled'
   | 'busy'
   | null
 
@@ -68,6 +78,7 @@ const DEFAULT_OPTIONS = {
 
 const PERIOD_PATTERN = /^(\d{4})-(0[1-9]|1[0-2])$/
 const CLIENT_STOP_MESSAGE = 'ブラウザ側の監視と次月投入を停止しました。開始済みのサーバージョブは継続している可能性があります。'
+const SERVER_CANCELLED_MESSAGE = 'データ取得を停止しました。停止前に保存済みのデータは保持されています。'
 const COMPLETED_CONTRACT_MESSAGE = '完了応答の形式を確認できないため、サーバージョブの状態確認が必要'
 const OWNER_ACTIVE_JOB_MESSAGE = '別のデータ取得が実行中です。完了までお待ちください。'
 
@@ -104,13 +115,25 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
   const [progress, setProgress] = useState<BatchProgress>({ current: 0, total: 100, message: '', eta: '' })
   const [result, setResult] = useState<BatchResult | null>(null)
   const abortRef = useRef(false)
+  const batchStopRequestedRef = useRef(false)
   const startTimeRef = useRef(0)
   const inFlightRef = useRef(false)
   const executionLockedRef = useRef(false)
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      // Let the already accepted server job reach a durable terminal state, but
+      // never allow this detached hook instance to enqueue another month.
+      batchStopRequestedRef.current = true
+    }
+  }, [])
 
   const setExecutionLock = (locked: boolean) => {
     executionLockedRef.current = locked
-    setIsExecutionLocked(locked)
+    if (mountedRef.current) setIsExecutionLocked(locked)
   }
 
   const pollIntervalMs = Math.max(0, hookOptions?.pollIntervalMs ?? DEFAULT_OPTIONS.pollIntervalMs)
@@ -125,12 +148,16 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
     1,
     hookOptions?.maxConsecutiveStatusFailures ?? DEFAULT_OPTIONS.maxConsecutiveStatusFailures,
   )
+  const onJobAccepted = hookOptions?.onJobAccepted
 
   const start = useCallback(async (
     startPeriod: string,
     endPeriod: string,
     forceRescrape: boolean,
   ): Promise<BatchResult> => {
+    if (!mountedRef.current) {
+      throw new BatchScrapeError(CLIENT_STOP_MESSAGE, 'client_stop', false)
+    }
     if (inFlightRef.current) {
       throw new BatchScrapeError('前回の取得処理が進行中です', 'busy', false)
     }
@@ -192,6 +219,7 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
       setResult(null)
       setExecutionLock(false)
       abortRef.current = false
+      batchStopRequestedRef.current = false
       startTimeRef.current = Date.now()
 
       let totalRaces = 0
@@ -201,6 +229,12 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
       let completedMonths = 0
 
       for (const { year, month } of months) {
+        if (!mountedRef.current) {
+          fail(CLIENT_STOP_MESSAGE, 'client_stop', false)
+        }
+        if (batchStopRequestedRef.current) {
+          fail(SERVER_CANCELLED_MESSAGE, 'cancelled', false)
+        }
         if (abortRef.current) {
           fail(CLIENT_STOP_MESSAGE, 'client_stop', false)
         }
@@ -218,6 +252,15 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
         })
         setStatus('queued')
 
+        if (!mountedRef.current) {
+          fail(CLIENT_STOP_MESSAGE, 'client_stop', false)
+        }
+        if (batchStopRequestedRef.current) {
+          fail(SERVER_CANCELLED_MESSAGE, 'cancelled', false)
+        }
+        if (abortRef.current) {
+          fail(CLIENT_STOP_MESSAGE, 'client_stop', false)
+        }
         const startRes = await authFetch('/api/scrape', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -253,9 +296,26 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
           fail('ジョブ開始応答が不正です（job_id）', 'monitoring', false)
         }
         const currentJobId = currentJobIdRaw as string
+        const acceptedStatus = isRecord(startPayload) && startPayload.status === 'running'
+          ? 'running'
+          : 'queued'
+        const acceptedAt = isRecord(startPayload)
+          && typeof startPayload.created_at === 'string'
+          && Number.isFinite(Date.parse(startPayload.created_at))
+          ? startPayload.created_at
+          : new Date().toISOString()
 
-        setJobId(currentJobId)
-        setStatus('queued')
+        if (mountedRef.current) {
+          setJobId(currentJobId)
+          setStatus(acceptedStatus)
+          onJobAccepted?.({
+            jobId: currentJobId,
+            status: acceptedStatus,
+            startDate: startDateStr,
+            endDate: endDateStr,
+            acceptedAt,
+          })
+        }
 
         let done = false
         let pollAttempts = 0
@@ -304,7 +364,7 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
           }
 
           const rawStatus = typeof statusPayload.status === 'string' ? statusPayload.status : ''
-          if (rawStatus === 'queued' || rawStatus === 'running') {
+          if (rawStatus === 'queued' || rawStatus === 'running' || rawStatus === 'cancelling') {
             consecutiveNotFound = 0
           }
 
@@ -330,24 +390,30 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
             eta = remainingSec >= 60 ? `残り約${Math.ceil(remainingSec / 60)}分` : `残り約${remainingSec}秒`
           }
 
-          if (rawStatus === 'queued') {
-            setStatus('queued')
-          } else if (rawStatus === 'running') {
-            setStatus('running')
-          }
+          if (mountedRef.current) {
+            if (rawStatus === 'queued') {
+              setStatus('queued')
+            } else if (rawStatus === 'running') {
+              setStatus('running')
+            } else if (rawStatus === 'cancelling') {
+              setStatus('cancelling')
+            }
 
-          setProgress({
-            current: overallPct,
-            total: 100,
-            message: rawStatus === 'queued'
-              ? `${year}年${month}月 (${completedMonths + 1}/${totalMonths}ヶ月): 開始待ち`
-              : `${year}年${month}月 (${completedMonths + 1}/${totalMonths}ヶ月): ${typeof progressPayload.message === 'string' ? progressPayload.message : '取得実行中...'}`,
-            eta,
-            newSavedRaces: progressNumber('saved_races'),
-            newSavedHorses: progressNumber('saved_horses'),
-            existingRacesSkipped: progressNumber('existing_races_skipped'),
-            verifiedNoRaceDates: progressNumber('no_race_dates'),
-          })
+            setProgress({
+              current: overallPct,
+              total: 100,
+              message: rawStatus === 'queued'
+                ? `${year}年${month}月 (${completedMonths + 1}/${totalMonths}ヶ月): 開始待ち`
+                : rawStatus === 'cancelling'
+                  ? `${year}年${month}月 (${completedMonths + 1}/${totalMonths}ヶ月): 安全な区切りで停止中...`
+                  : `${year}年${month}月 (${completedMonths + 1}/${totalMonths}ヶ月): ${typeof progressPayload.message === 'string' ? progressPayload.message : '取得実行中...'}`,
+              eta,
+              newSavedRaces: progressNumber('saved_races'),
+              newSavedHorses: progressNumber('saved_horses'),
+              existingRacesSkipped: progressNumber('existing_races_skipped'),
+              verifiedNoRaceDates: progressNumber('no_race_dates'),
+            })
+          }
 
           if (rawStatus === 'completed') {
             if (!isRecord(statusPayload.result)) {
@@ -379,10 +445,12 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
               ? statusPayload.error
               : `${year}年${month}月のスクレイピングが失敗しました`
             fail(message, 'execution', true)
+          } else if (rawStatus === 'cancelled') {
+            fail(SERVER_CANCELLED_MESSAGE, 'cancelled', false)
           }
         }
 
-        if (abortRef.current) {
+        if (!mountedRef.current || abortRef.current) {
           fail(CLIENT_STOP_MESSAGE, 'client_stop', false)
         }
       }
@@ -392,8 +460,10 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
       }
 
       const elapsed = Math.round((Date.now() - startTimeRef.current) / 1000)
-      setProgress({ current: 100, total: 100, message: `完了: ${totalRaces}レース取得`, eta: '' })
-      setStatus('completed')
+      if (mountedRef.current) {
+        setProgress({ current: 100, total: 100, message: `完了: ${totalRaces}レース取得`, eta: '' })
+        setStatus('completed')
+      }
       const batchResult: BatchResult = {
         races_collected: totalRaces,
         saved_horses: totalSavedHorses,
@@ -402,9 +472,11 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
         elapsed_time: elapsed,
         stats: { period: `${startYear}年${startMonth}月〜${endYear}年${endMonth}月`, total_months: totalMonths },
       }
-      setResult(batchResult)
-      setFailureKind(null)
-      setCanRetry(false)
+      if (mountedRef.current) {
+        setResult(batchResult)
+        setFailureKind(null)
+        setCanRetry(false)
+      }
       setExecutionLock(false)
       return batchResult
     } catch (error: unknown) {
@@ -416,23 +488,39 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
           false,
         )
 
-      setProgress({ current: 0, total: 100, message: 'エラーが発生しました', eta: '' })
-      setStatus('error')
-      setError(normalized.message)
-      setFailureKind(normalized.kind)
-      setCanRetry(normalized.safeToRetry)
+      if (mountedRef.current) {
+        if (normalized.kind === 'cancelled') {
+          setProgress(current => ({ ...current, message: '停止しました', eta: '' }))
+          setStatus('cancelled')
+          setError(null)
+          setExecutionLock(false)
+        } else {
+          setProgress({ current: 0, total: 100, message: 'エラーが発生しました', eta: '' })
+          setStatus('error')
+          setError(normalized.message)
+        }
+        setFailureKind(normalized.kind)
+        setCanRetry(normalized.safeToRetry)
+      }
       if (normalized.kind === 'monitoring' || normalized.kind === 'client_stop') {
         setExecutionLock(true)
       }
       throw normalized
     } finally {
-      setLoading(false)
+      if (mountedRef.current) setLoading(false)
       inFlightRef.current = false
     }
-  }, [maxConsecutiveStatusFailures, maxPollAttempts, maxPollDurationMs, pollIntervalMs])
+  }, [maxConsecutiveStatusFailures, maxPollAttempts, maxPollDurationMs, onJobAccepted, pollIntervalMs])
 
   const abort = useCallback(() => {
     abortRef.current = true
+  }, [])
+
+  // Prevent a multi-month batch from enqueueing its next month after the user
+  // has requested server-side cancellation. Unlike abort(), status polling for
+  // the current server job continues until a durable terminal state is seen.
+  const requestBatchStop = useCallback(() => {
+    batchStopRequestedRef.current = true
   }, [])
 
   const clearExecutionLockAfterReconciliation = useCallback((): boolean => {
@@ -456,6 +544,7 @@ export function useBatchScrape(hookOptions?: UseBatchScrapeOptions) {
     result,
     start,
     abort,
+    requestBatchStop,
     clearExecutionLockAfterReconciliation,
   }
 }

@@ -496,9 +496,30 @@ BEGIN
        OR has_function_privilege('authenticated', 'public.record_phase3n_prediction_observation(jsonb)', 'EXECUTE')
        OR has_function_privilege('anon', 'public.apply_phase3n_ha_effect(uuid,text,bigint,text,text)', 'EXECUTE')
        OR has_function_privilege('authenticated', 'public.apply_phase3n_ha_effect(uuid,text,bigint,text,text)', 'EXECUTE')
+       OR has_function_privilege('anon', 'public.request_cancel_scrape_operational_job(uuid,uuid)', 'EXECUTE')
+       OR has_function_privilege('authenticated', 'public.request_cancel_scrape_operational_job(uuid,uuid)', 'EXECUTE')
        OR NOT has_function_privilege('service_role', 'public.record_phase3n_prediction_observation(jsonb)', 'EXECUTE')
-       OR NOT has_function_privilege('service_role', 'public.apply_phase3n_ha_effect(uuid,text,bigint,text,text)', 'EXECUTE') THEN
+       OR NOT has_function_privilege('service_role', 'public.apply_phase3n_ha_effect(uuid,text,bigint,text,text)', 'EXECUTE')
+       OR NOT has_function_privilege('service_role', 'public.request_cancel_scrape_operational_job(uuid,uuid)', 'EXECUTE') THEN
         RAISE EXCEPTION 'phase3n observation/HA function grants invalid';
+    END IF;
+    IF EXISTS (
+        SELECT 1
+        FROM (VALUES
+            ('scrape_operational_jobs', 'cancel_requested_at'),
+            ('scrape_operational_jobs', 'cancel_requested_by'),
+            ('scrape_operational_outbox', 'cancel_requested_at'),
+            ('scrape_operational_outbox', 'cancel_requested_by')
+        ) AS required(table_name, column_name)
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM information_schema.columns AS c
+            WHERE c.table_schema = 'public'
+              AND c.table_name = required.table_name
+              AND c.column_name = required.column_name
+        )
+    ) THEN
+        RAISE EXCEPTION 'scrape operational cancellation columns missing';
     END IF;
     IF has_table_privilege('service_role', 'public.phase3n_prediction_observations', 'INSERT')
        OR has_table_privilege('service_role', 'public.phase3n_result_observation_events', 'UPDATE')
@@ -1270,6 +1291,7 @@ FROM (VALUES
     ('phase3m_check:model_retrain_orphan_reconciliation'),
     ('phase3m_check:model_retrain_dispatch_queue'),
     ('phase3m_check:phase3n_observation_ha'),
+    ('phase3m_check:scrape_operational_cancellation'),
     ('phase3m_check:security_invoker_ml_view'),
     ('phase3m_check:storage_role_boundaries'),
     ('phase3m_check:required_triggers_enabled')

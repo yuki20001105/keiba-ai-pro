@@ -65,15 +65,15 @@ test('Step2: データ取得 2015-01〜2016-03 通常差分取得', async ({ pag
 
   await login(page)
   await page.goto('/data-collection')
-  await expect(page.getByText('期間指定一括取得')).toBeVisible({ timeout: 10_000 })
+  await expect(page.getByRole('heading', { name: '期間' })).toBeVisible({ timeout: 10_000 })
 
   // バックエンドAPI ステータス表示が出るまで待機（稼働中/停止中/確認中）
-  const apiStatusBadge = page.getByText(/バックエンドAPI/)
+  const apiStatusBadge = page.getByText(/^API (確認中|稼働中|不安定|停止中|確認不可)$/)
   await expect(apiStatusBadge).toBeVisible({ timeout: 10_000 })
   // API が起動中であることを確認（起動していない場合はテストスキップ）
   const apiStatus = await apiStatusBadge.textContent({ timeout: 5_000 }).catch(() => '')
-  if (apiStatus?.includes('停止中')) {
-    console.warn('[Step2] バックエンドAPI が停止中 — テストをスキップ')
+  if (apiStatus?.includes('停止中') || apiStatus?.includes('確認不可')) {
+    console.warn('[Step2] API を利用できないためテストをスキップ')
     test.skip()
     return
   }

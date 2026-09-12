@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
-import { AdminModeRouteGuard } from '@/components/AdminModeRouteGuard'
+import { AdminActionRouteGuard } from '@/components/AdminActionRouteGuard'
 
 export default function ProductionReadinessLayout({ children }: { children: ReactNode }) {
-  return <AdminModeRouteGuard>{children}</AdminModeRouteGuard>
+  return <AdminActionRouteGuard>{children}</AdminActionRouteGuard>
 }

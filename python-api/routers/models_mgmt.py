@@ -8,8 +8,12 @@ GET    /api/models/active
 """
 from __future__ import annotations
 
+from datetime import datetime
 import joblib
 import os
+from pathlib import Path
+from typing import Mapping
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from deps.auth import require_admin  # type: ignore
@@ -27,6 +31,24 @@ from app_config import (  # type: ignore
 
 router = APIRouter()
 _LOCAL_ENVIRONMENTS = frozenset({"local", "development", "dev", "test", "ci"})
+
+
+def _model_created_sort_key(model_path: Path, bundle: Mapping[str, object]) -> float:
+    """Return the actual model creation time, falling back to file mtime."""
+
+    raw_created_at = bundle.get("created_at")
+    if isinstance(raw_created_at, str):
+        value = raw_created_at.strip()
+        for date_format in ("%Y%m%d_%H%M%S", "%Y%m%d_%H%M"):
+            try:
+                return datetime.strptime(value, date_format).timestamp()
+            except ValueError:
+                pass
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            pass
+    return model_path.stat().st_mtime
 
 
 def _require_legacy_model_deletion_allowed() -> None:
@@ -70,7 +92,7 @@ async def list_models(ultimate: bool | None = None):
             latest = get_latest_model()
             active_id = latest.stem if latest else None
 
-        models = []
+        models_with_sort_keys: list[tuple[float, dict[str, object]]] = []
         for model_path in local_files:
             try:
                 bundle = joblib.load(model_path)
@@ -83,7 +105,7 @@ async def list_models(ultimate: bool | None = None):
                     or len(bundle.get("feature_cols_num") or []) + len(bundle.get("feature_cols_cat") or [])
                 )
                 model_id = model_path.stem
-                models.append({
+                model = {
                     "model_id": model_id,
                     "model_path": str(model_path),
                     "created_at": bundle.get("created_at", "unknown"),
@@ -98,14 +120,21 @@ async def list_models(ultimate: bool | None = None):
                     "n_rows": bundle.get("data_count", 0),
                     "feature_count": feat_count,
                     "is_active": model_id == active_id,
-                })
+                }
+                models_with_sort_keys.append(
+                    (_model_created_sort_key(model_path, bundle), model)
+                )
             except Exception as e:
                 print(f"モデル読み込みエラー {model_path}: {e}")
                 continue
 
-        # model_id は末尾に YYYYMMDD_HHMMSS を含む形式。
-        # 降順ソートで最新モデルが先頭に来る。
-        models.sort(key=lambda x: x.get("model_id", ""), reverse=True)
+        # 学習期間が先頭に入る model_id 順では、新しく作成した長期間モデルが
+        # 古く見えるため、bundle の作成日時を正本として最新順に並べる。
+        models_with_sort_keys.sort(
+            key=lambda item: (item[0], str(item[1].get("model_id", ""))),
+            reverse=True,
+        )
+        models = [model for _sort_key, model in models_with_sort_keys]
         return {"models": models, "count": len(models)}
 
     except Exception as e:

@@ -63,13 +63,14 @@ test.describe('データ取得 最新実行結果 UI', () => {
 
     const latest = page.getByTestId('latest-fetch-summary')
     await expect(latest).toBeVisible()
-    await expect(latest.getByText('最新の実行結果')).toBeVisible()
+    await expect(latest.getByText('最新', { exact: true })).toBeVisible()
     await expect(latest.getByRole('button', { name: '更新' })).toBeVisible()
 
     await expect(latest.getByText('取得', { exact: true })).toBeVisible()
-    await expect(latest).toContainText('保存レース 12')
-    await expect(latest).toContainText('保存出走馬 168')
-    await expect(latest).toContainText('所要時間 65 sec')
+    await expect(latest).toContainText('2026/07/01～2026/07/31')
+    await expect(latest).toContainText('12レース')
+    await expect(latest).toContainText('約2分')
+    await expect(page.getByText('168', { exact: true })).toHaveCount(0)
     await expect(page.getByText('9876', { exact: true })).toHaveCount(0)
     await expect(page.getByText('fetch summary 履歴')).toHaveCount(0)
 
@@ -88,7 +89,7 @@ test.describe('データ取得 最新実行結果 UI', () => {
 
     await expect(page.getByTestId('latest-fetch-summary')).toHaveCount(0)
     await expect(page.getByText('履歴がありません（Dry-run または 取得実行後に表示されます）')).toHaveCount(0)
-    await expect(page.getByText('取得済みデータ')).toBeVisible()
+    await expect(page.getByText('保存済み', { exact: true })).toBeVisible()
   })
 
   test('履歴応答が壊れている場合は新しい実行を安全側で停止する', async ({ page }) => {

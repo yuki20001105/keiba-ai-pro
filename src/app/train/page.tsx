@@ -1,7 +1,8 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import Link from 'next/link'
+import { formatModelCreatedAt } from '@/lib/model-display'
 import { Logo } from '@/components/Logo'
 import { Toast } from '@/components/Toast'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
@@ -10,11 +11,14 @@ import { useJobPoller } from '@/hooks/useJobPoller'
 
 const TRAIN_UI_STATE_KEY = 'keiba-ai-pro:train-ui:v1'
 const TRAIN_POLL_TIMEOUT_MS = 24 * 60 * 60 * 1000
+const TRAIN_JOB_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+type TrainingCapability = 'checking' | 'enabled' | 'disabled'
 
 export default function TrainPage() {
   const [loading, setLoading] = useState(false)
   const [target, setTarget] = useState<'win' | 'place3' | 'win_tie' | 'speed_deviation'>('win')
-  const [modelType, setModelType] = useState<'logistic_regression' | 'lightgbm'>('lightgbm')
+  const modelType = 'lightgbm' as const
   const [testSize, setTestSize] = useState(0.2)
   const [cvFolds, setCvFolds] = useState(5)
   const [useOptuna, setUseOptuna] = useState(false)
@@ -31,6 +35,26 @@ export default function TrainPage() {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [settingsHydrated, setSettingsHydrated] = useState(false)
+  const [trainingCapability, setTrainingCapability] = useState<TrainingCapability>('checking')
+
+  const loadTrainingCapability = useCallback(async () => {
+    setTrainingCapability('checking')
+    try {
+      const response = await authFetch('/api/ml/train/capability', {
+        cache: 'no-store',
+        signal: AbortSignal.timeout(6_000),
+      })
+      const payload: unknown = await response.json().catch(() => null)
+      const enabled = response.ok
+        && typeof payload === 'object'
+        && payload !== null
+        && !Array.isArray(payload)
+        && (payload as Record<string, unknown>).enabled === true
+      setTrainingCapability(enabled ? 'enabled' : 'disabled')
+    } catch {
+      setTrainingCapability('disabled')
+    }
+  }, [])
 
   const { progress: jobProgress, pct: jobPct } = useJobPoller({
     jobId,
@@ -57,13 +81,16 @@ export default function TrainPage() {
     setToast({ visible: true, message, type })
 
   useEffect(() => {
+    void loadTrainingCapability()
+  }, [loadTrainingCapability])
+
+  useEffect(() => {
     loadModels()
     try {
       const raw = localStorage.getItem(TRAIN_UI_STATE_KEY)
       const saved = raw ? JSON.parse(raw) : null
       if (saved && typeof saved === 'object') {
         if (['win', 'place3', 'win_tie', 'speed_deviation'].includes(saved.target)) setTarget(saved.target)
-        if (['logistic_regression', 'lightgbm'].includes(saved.modelType)) setModelType(saved.modelType)
         if (typeof saved.testSize === 'number') setTestSize(saved.testSize)
         if (typeof saved.cvFolds === 'number') setCvFolds(saved.cvFolds)
         if (typeof saved.useOptuna === 'boolean') setUseOptuna(saved.useOptuna)
@@ -72,7 +99,7 @@ export default function TrainPage() {
         if (typeof saved.trainingDateFrom === 'string') setTrainingDateFrom(saved.trainingDateFrom)
         if (typeof saved.trainingDateTo === 'string') setTrainingDateTo(saved.trainingDateTo)
         if (typeof saved.showAdvanced === 'boolean') setShowAdvanced(saved.showAdvanced)
-        if (typeof saved.activeJobId === 'string' && saved.activeJobId) {
+        if (typeof saved.activeJobId === 'string' && TRAIN_JOB_ID_PATTERN.test(saved.activeJobId)) {
           setJobId(saved.activeJobId)
           setLoading(true)
         }
@@ -144,11 +171,12 @@ export default function TrainPage() {
     setActivatingId(modelId)
     try {
       const res = await authFetch(`/api/models/${modelId}/activate`, { method: 'PUT' })
-      if (!res.ok) throw new Error('切り替え失敗')
-      loadModels()
-      showToast('使用モデルを切り替えました')
-    } catch {
-      showToast('モデルの切り替えに失敗しました', 'error')
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || '変更できません')
+      await loadModels()
+      showToast('既定モデルを変更しました')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '変更できません', 'error')
     } finally {
       setActivatingId(null)
     }
@@ -168,24 +196,6 @@ export default function TrainPage() {
     logistic_regression: 'Logistic Regression',
   }
 
-  /** model_id の末尾 YYYYMMDD_HHMM を "YYYY/MM/DD HH:MM" に変換 */
-  const parseCreatedDate = (modelId: string, createdAt?: string): string => {
-    if (createdAt && createdAt !== 'unknown') {
-      const d = new Date(createdAt)
-      if (!isNaN(d.getTime())) {
-        return d.toLocaleString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
-      }
-    }
-    // model_id 末尾パターン: _YYYYMMDD_HHMM
-    const m = modelId.match(/_(\d{8})_(\d{4})(?:_\d+)?\.?joblib?$/) ||
-              modelId.match(/_(\d{8})_(\d{4})$/)
-    if (m) {
-      const [, d, t] = m
-      return `${d.slice(0,4)}/${d.slice(4,6)}/${d.slice(6,8)} ${t.slice(0,2)}:${t.slice(2,4)}`
-    }
-    return '—'
-  }
-
   /** 学習期間を "YYYY/MM/DD 〜 YYYY/MM/DD" に整形 */
   const formatDateRange = (from?: string, to?: string): string => {
     const fmt = (s?: string) => {
@@ -197,7 +207,29 @@ export default function TrainPage() {
     return `${fmt(from)} 〜 ${fmt(to)}`
   }
 
+  const trackAcceptedJob = (acceptedJobId: string) => {
+    try {
+      localStorage.setItem(TRAIN_UI_STATE_KEY, JSON.stringify({
+        target,
+        modelType,
+        testSize,
+        cvFolds,
+        useOptuna,
+        optunaTrials,
+        optunaTimeout,
+        trainingDateFrom,
+        trainingDateTo,
+        showAdvanced,
+        activeJobId: acceptedJobId,
+      }))
+    } catch {
+      showToast('ジョブIDを保存できません', 'error')
+    }
+    setJobId(acceptedJobId)
+  }
+
   const handleTrain = async () => {
+    if (loading || trainingCapability !== 'enabled') return
     setLoading(true)
     setTrainResult(null)
     setJobId(null)
@@ -218,12 +250,44 @@ export default function TrainPage() {
       })
 
       if (!startRes.ok) {
-        const errorData = await startRes.json()
-        throw new Error(errorData.detail || errorData.error || `HTTP ${startRes.status}`)
+        const errorData: unknown = await startRes.json().catch(() => null)
+        const errorRecord = typeof errorData === 'object' && errorData !== null && !Array.isArray(errorData)
+          ? errorData as Record<string, unknown>
+          : null
+        const detail = errorRecord?.detail
+        const detailRecord = typeof detail === 'object' && detail !== null && !Array.isArray(detail)
+          ? detail as Record<string, unknown>
+          : null
+        const activeJobId = typeof detailRecord?.job_id === 'string' ? detailRecord.job_id : ''
+        if (
+          startRes.status === 409
+          && detailRecord?.code === 'train-job-active'
+          && TRAIN_JOB_ID_PATTERN.test(activeJobId)
+        ) {
+          trackAcceptedJob(activeJobId)
+          return
+        }
+        const message = typeof detail === 'string'
+          ? detail
+          : typeof detailRecord?.message === 'string'
+            ? detailRecord.message
+            : typeof errorRecord?.error === 'string'
+              ? errorRecord.error
+              : `HTTP ${startRes.status}`
+        throw new Error(message)
       }
 
-      const startData = await startRes.json()
-      setJobId(startData.job_id)
+      const startData: unknown = await startRes.json()
+      const acceptedJobId = typeof startData === 'object'
+        && startData !== null
+        && !Array.isArray(startData)
+        && typeof (startData as Record<string, unknown>).job_id === 'string'
+        ? (startData as Record<string, unknown>).job_id as string
+        : ''
+      if (!TRAIN_JOB_ID_PATTERN.test(acceptedJobId)) {
+        throw new Error('ジョブIDを確認できません')
+      }
+      trackAcceptedJob(acceptedJobId)
 
     } catch (error: any) {
       setLoading(false)
@@ -244,7 +308,7 @@ export default function TrainPage() {
             </svg>
             ホーム
           </Link>
-          <span className="text-sm text-[#888]">モデル学習</span>
+          <span className="text-sm text-[#888]">モデル作成</span>
           <Link
             href="/feature-lab"
             className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-[#2a2a2a] bg-[#111] text-xs text-[#aaa] hover:text-white hover:border-[#444] transition-colors"
@@ -273,10 +337,7 @@ export default function TrainPage() {
             </div>
             <div>
               <label className="text-xs text-[#666] block mb-2">モデルタイプ</label>
-              <select value={modelType} onChange={e => setModelType(e.target.value as any)} className={FLD}>
-                <option value="lightgbm">LightGBM（推奨）</option>
-                <option value="logistic_regression">Logistic Regression</option>
-              </select>
+              <div className={FLD}>LightGBM（推奨）</div>
             </div>
           </div>
 
@@ -353,12 +414,29 @@ export default function TrainPage() {
 
           <button
             onClick={handleTrain}
-            disabled
-            title="モデル学習には永続的な承認と承認済みジョブ実行基盤が必要です"
+            disabled={loading || trainingCapability !== 'enabled'}
             className="w-full py-3 bg-white text-black font-medium rounded-lg hover:bg-[#eee] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            {loading ? (jobProgress || '学習中...') : '承認済みジョブ実行基盤を準備中'}
+            {loading
+              ? '作成中…'
+              : trainingCapability === 'checking'
+                ? '確認中…'
+                : trainingCapability === 'enabled'
+                  ? 'モデル作成'
+                  : '利用不可'}
           </button>
+          {!loading && trainingCapability === 'disabled' && (
+            <div className="flex items-center justify-center gap-3 text-xs text-[#666]">
+              <span>ローカル管理者のみ</span>
+              <button
+                type="button"
+                onClick={() => void loadTrainingCapability()}
+                className="text-[#aaa] transition-colors hover:text-white"
+              >
+                再確認
+              </button>
+            </div>
+          )}
 
           {loading && jobId && (
             <div className="p-4 bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg space-y-2">
@@ -432,7 +510,7 @@ export default function TrainPage() {
                 {models.map((m, i) => {
                   const targetLabel = TARGET_LABELS[m.target] ?? m.target ?? '不明'
                   const typeLabel = MODEL_TYPE_LABELS[m.model_type] ?? m.model_type ?? '不明'
-                  const createdDate = parseCreatedDate(m.model_id, m.created_at)
+                  const createdDate = formatModelCreatedAt(m)
                   const dateRange = formatDateRange(m.training_date_from, m.training_date_to)
                   const aucVal = m.auc ? m.auc.toFixed(4) : '—'
                   const cvVal = m.cv_auc_mean && m.cv_auc_mean > 0 ? m.cv_auc_mean.toFixed(4) : '—'
@@ -450,7 +528,7 @@ export default function TrainPage() {
                           <span className="text-xs text-[#555]">{typeLabel}</span>
                           {m.is_active && (
                             <span className="shrink-0 text-xs px-1.5 py-0.5 rounded bg-[#0a2a0a] text-[#4ade80] border border-[#1a4a1a] font-medium">
-                              使用中
+                              既定
                             </span>
                           )}
                         </div>
@@ -477,11 +555,11 @@ export default function TrainPage() {
                         {!m.is_active && (
                           <button
                             onClick={() => handleActivateModel(m.model_id)}
-                            disabled
-                            title="active model切替には再学習承認とは別の永続的なAdmin承認が必要です"
+                            disabled={isActivating}
+                            title="モデル未指定の予測で使う"
                             className="text-xs px-3 py-1 rounded border border-[#333] text-[#aaa] hover:border-[#555] hover:text-white transition-colors disabled:opacity-40"
                           >
-                            {isActivating ? '切替中...' : '使用する'}
+                            {isActivating ? '変更中...' : '既定にする'}
                           </button>
                         )}
                         <div className="flex-1" />

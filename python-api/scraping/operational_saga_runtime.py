@@ -19,6 +19,7 @@ import os
 import re
 import sqlite3
 import tempfile
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -42,6 +43,13 @@ class OperationalSagaUnavailable(OperationalSagaError):
 
 class OperationalSagaConflict(OperationalSagaError):
     pass
+
+
+class OperationalEffectCancelled(OperationalSagaError):
+    """Raised after the scrape worker reaches a safe cancellation checkpoint."""
+
+
+CANCELLED_BY_OWNER = "cancelled-by-owner"
 
 
 class OperationalSagaMode(str, Enum):
@@ -251,6 +259,7 @@ class OperationalSagaStore(Protocol):
     def heartbeat(self, claim: OperationalClaim, now_epoch: int, lease_seconds: int) -> Mutation: ...
     def complete(self, claim: OperationalClaim, effect: EffectResult, now_epoch: int) -> Mutation: ...
     def fail(self, claim: OperationalClaim, reason: str, now_epoch: int) -> Mutation: ...
+    def request_cancel(self, job_id: str, owner_user_id: str, now_epoch: int) -> Mutation: ...
     def get_job(self, job_id: str, owner_user_id: str) -> dict[str, Any] | None: ...
     def list_jobs(self, owner_user_id: str, limit: int) -> list[dict[str, Any]]: ...
 
@@ -267,6 +276,8 @@ CREATE TABLE IF NOT EXISTS operational_scrape_jobs (
     progress TEXT NOT NULL DEFAULT '{}',
     result TEXT,
     error TEXT,
+    cancel_requested_at_epoch INTEGER,
+    cancel_requested_by TEXT,
     created_at_epoch INTEGER NOT NULL,
     updated_at_epoch INTEGER NOT NULL
 );
@@ -282,6 +293,8 @@ CREATE TABLE IF NOT EXISTS operational_scrape_outbox (
     attempt_count INTEGER NOT NULL DEFAULT 0,
     effect_receipt_hash TEXT UNIQUE,
     settlement_reason TEXT,
+    cancel_requested_at_epoch INTEGER,
+    cancel_requested_by TEXT,
     created_at_epoch INTEGER NOT NULL,
     updated_at_epoch INTEGER NOT NULL
 );
@@ -311,6 +324,23 @@ class SQLiteOperationalSagaStore:
         connection = self._connect()
         try:
             connection.executescript(_SQLITE_SCHEMA)
+            # The local operational database is intentionally durable across
+            # app restarts. Cancellation is an additive migration so an
+            # already-running v1 database can be upgraded without rebuilding
+            # tables or weakening their existing CHECK constraints.
+            for table_name in ("operational_scrape_jobs", "operational_scrape_outbox"):
+                columns = {
+                    str(row[1])
+                    for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+                }
+                if "cancel_requested_at_epoch" not in columns:
+                    connection.execute(
+                        f"ALTER TABLE {table_name} ADD COLUMN cancel_requested_at_epoch INTEGER"
+                    )
+                if "cancel_requested_by" not in columns:
+                    connection.execute(
+                        f"ALTER TABLE {table_name} ADD COLUMN cancel_requested_by TEXT"
+                    )
         finally:
             connection.close()
 
@@ -319,16 +349,29 @@ class SQLiteOperationalSagaStore:
         def iso_timestamp(epoch: int) -> str:
             return datetime.fromtimestamp(int(epoch), tz=timezone.utc).isoformat().replace("+00:00", "Z")
 
+        raw_status = str(row["status"])
+        raw_error = json.loads(row["error"]) if row["error"] else None
+        if raw_status == "running" and row["cancel_requested_at_epoch"] is not None:
+            status = "cancelling"
+        elif raw_status == "error" and raw_error == CANCELLED_BY_OWNER:
+            status = "cancelled"
+        else:
+            status = raw_status
         return {
             "job_id": row["job_id"],
             "operation_id": row["operation_id"],
             "owner_user_id": row["owner_user_id"],
             "request_hash": row["request_hash"],
             "request_payload": json.loads(row["request_payload"] or "{}"),
-            "status": row["status"],
+            "status": status,
             "progress": json.loads(row["progress"] or "{}"),
             "result": json.loads(row["result"]) if row["result"] else None,
-            "error": json.loads(row["error"]) if row["error"] else None,
+            "error": raw_error,
+            "cancel_requested_at": (
+                iso_timestamp(row["cancel_requested_at_epoch"])
+                if row["cancel_requested_at_epoch"] is not None
+                else None
+            ),
             "created_at": iso_timestamp(row["created_at_epoch"]),
             "updated_at": iso_timestamp(row["updated_at_epoch"]),
         }
@@ -412,8 +455,30 @@ class SQLiteOperationalSagaStore:
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
+            # A durable cancellation request always wins over crash recovery.
+            # Once the previous worker lease expires, terminalize the job
+            # instead of reclaiming it and repeating network/write effects.
+            cancelled = connection.execute(
+                "SELECT job_id FROM operational_scrape_outbox WHERE state='claimed' "
+                "AND cancel_requested_at_epoch IS NOT NULL AND lease_expires_at_epoch<=? "
+                "ORDER BY created_at_epoch,job_id LIMIT 1",
+                (now_epoch,),
+            ).fetchone()
+            if cancelled is not None:
+                connection.execute(
+                    "UPDATE operational_scrape_outbox SET state='blocked',worker_owner=NULL,"
+                    "lease_expires_at_epoch=NULL,settlement_reason=?,version=version+1,updated_at_epoch=? "
+                    "WHERE job_id=?",
+                    (CANCELLED_BY_OWNER, now_epoch, cancelled["job_id"]),
+                )
+                connection.execute(
+                    "UPDATE operational_scrape_jobs SET status='error',result=NULL,error=?,updated_at_epoch=? "
+                    "WHERE job_id=?",
+                    (json.dumps(CANCELLED_BY_OWNER), now_epoch, cancelled["job_id"]),
+                )
             exhausted = connection.execute(
                 "SELECT job_id FROM operational_scrape_outbox WHERE state='claimed' "
+                "AND cancel_requested_at_epoch IS NULL "
                 "AND lease_expires_at_epoch<=? AND attempt_count>=? "
                 "ORDER BY created_at_epoch,job_id LIMIT 1",
                 (now_epoch, self._max_attempts),
@@ -434,6 +499,7 @@ class SQLiteOperationalSagaStore:
                 "SELECT j.*,o.state,o.fencing_token,o.attempt_count FROM operational_scrape_outbox o "
                 "JOIN operational_scrape_jobs j ON j.job_id=o.job_id "
                 "WHERE (o.state='pending' OR (o.state='claimed' AND o.lease_expires_at_epoch<=?)) "
+                "AND o.cancel_requested_at_epoch IS NULL "
                 "AND o.attempt_count<? ORDER BY o.created_at_epoch,o.job_id LIMIT 1",
                 (now_epoch, self._max_attempts),
             ).fetchone()
@@ -479,8 +545,13 @@ class SQLiteOperationalSagaStore:
             )
             if cursor.rowcount != 1:
                 return Mutation(MutationCode.CONFLICT, "lease-lost")
+            row = connection.execute(
+                "SELECT cancel_requested_at_epoch FROM operational_scrape_outbox WHERE job_id=?",
+                (claim.job_id,),
+            ).fetchone()
             return Mutation(
                 MutationCode.APPLIED,
+                "cancel-requested" if row and row["cancel_requested_at_epoch"] is not None else None,
                 claim=OperationalClaim(**{**claim.__dict__, "lease_expires_at_epoch": expires}),
             )
         except sqlite3.Error as exc:
@@ -559,6 +630,76 @@ class SQLiteOperationalSagaStore:
         finally:
             connection.close()
 
+    def request_cancel(self, job_id: str, owner_user_id: str, now_epoch: int) -> Mutation:
+        """Durably request owner-scoped cancellation without killing a worker thread."""
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT j.*,o.state AS outbox_state,o.cancel_requested_at_epoch AS outbox_cancel_requested_at "
+                "FROM operational_scrape_jobs j JOIN operational_scrape_outbox o USING(job_id) "
+                "WHERE j.job_id=? AND j.owner_user_id=?",
+                (job_id, owner_user_id),
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                return Mutation(MutationCode.NOT_FOUND)
+
+            raw_error = json.loads(row["error"]) if row["error"] else None
+            if row["status"] == "error" and raw_error == CANCELLED_BY_OWNER:
+                connection.commit()
+                return Mutation(MutationCode.DUPLICATE, job=self._job(row))
+            if row["status"] in {"completed", "error"}:
+                connection.rollback()
+                return Mutation(MutationCode.CONFLICT, "job-terminal", job=self._job(row))
+            if row["outbox_cancel_requested_at"] is not None:
+                connection.commit()
+                return Mutation(MutationCode.DUPLICATE, job=self._job(row))
+
+            if row["status"] == "queued" and row["outbox_state"] == "pending":
+                connection.execute(
+                    "UPDATE operational_scrape_outbox SET state='blocked',settlement_reason=?,"
+                    "cancel_requested_at_epoch=?,cancel_requested_by=?,version=version+1,updated_at_epoch=? "
+                    "WHERE job_id=? AND state='pending'",
+                    (CANCELLED_BY_OWNER, now_epoch, owner_user_id, now_epoch, job_id),
+                )
+                connection.execute(
+                    "UPDATE operational_scrape_jobs SET status='error',result=NULL,error=?,"
+                    "cancel_requested_at_epoch=?,cancel_requested_by=?,updated_at_epoch=? WHERE job_id=?",
+                    (
+                        json.dumps(CANCELLED_BY_OWNER),
+                        now_epoch,
+                        owner_user_id,
+                        now_epoch,
+                        job_id,
+                    ),
+                )
+            elif row["status"] == "running" and row["outbox_state"] == "claimed":
+                connection.execute(
+                    "UPDATE operational_scrape_outbox SET cancel_requested_at_epoch=?,cancel_requested_by=?,"
+                    "version=version+1,updated_at_epoch=? WHERE job_id=? AND state='claimed'",
+                    (now_epoch, owner_user_id, now_epoch, job_id),
+                )
+                connection.execute(
+                    "UPDATE operational_scrape_jobs SET cancel_requested_at_epoch=?,cancel_requested_by=?,"
+                    "updated_at_epoch=? WHERE job_id=? AND status='running'",
+                    (now_epoch, owner_user_id, now_epoch, job_id),
+                )
+            else:
+                connection.rollback()
+                return Mutation(MutationCode.CONFLICT, "job-state-conflict")
+
+            updated = connection.execute(
+                "SELECT * FROM operational_scrape_jobs WHERE job_id=?", (job_id,)
+            ).fetchone()
+            connection.commit()
+            return Mutation(MutationCode.APPLIED, job=self._job(updated))
+        except sqlite3.Error as exc:
+            connection.rollback()
+            raise OperationalSagaUnavailable("operational-cancel-failed") from exc
+        finally:
+            connection.close()
+
     def get_job(self, job_id: str, owner_user_id: str) -> dict[str, Any] | None:
         connection = self._connect()
         try:
@@ -585,6 +726,7 @@ class SQLiteOperationalSagaStore:
                     "progress": item["progress"],
                     "result": item["result"],
                     "error": item["error"],
+                    "cancel_requested_at": item["cancel_requested_at"],
                     "request_payload": item["request_payload"],
                     "created_at": item["created_at"],
                     "updated_at": item["updated_at"],
@@ -621,6 +763,17 @@ class SupabaseOperationalSagaStore:
         except Exception as exc:
             raise OperationalSagaUnavailable(code) from exc
 
+    @staticmethod
+    def _project_job(job: dict[str, Any]) -> dict[str, Any]:
+        projected = dict(job)
+        raw_status = str(projected.get("status") or "")
+        raw_error = projected.get("error")
+        if raw_status == "running" and projected.get("cancel_requested_at"):
+            projected["status"] = "cancelling"
+        elif raw_status == "error" and raw_error == CANCELLED_BY_OWNER:
+            projected["status"] = "cancelled"
+        return projected
+
     def initialize(self) -> None:
         row = self._rpc("phase3n_operational_runtime_health", {}, "operational-schema-unavailable")
         if row.get("ready") is not True or row.get("schema_version") != 1:
@@ -648,7 +801,18 @@ class SupabaseOperationalSagaStore:
                 lease_expires_at_epoch=int(row["lease_expires_at_epoch"]),
                 attempt_count=int(row["attempt_count"]),
             )
-        return Mutation(MutationCode(code), str(row.get("reason") or "") or None, row.get("job"), claim)
+        job = row.get("job")
+        projected_job = (
+            SupabaseOperationalSagaStore._project_job(job)
+            if isinstance(job, dict)
+            else None
+        )
+        return Mutation(
+            MutationCode(code),
+            str(row.get("reason") or "") or None,
+            projected_job,
+            claim,
+        )
 
     def enqueue(self, request: EnqueueRequest, now_epoch: int) -> Mutation:
         required = (
@@ -751,13 +915,24 @@ class SupabaseOperationalSagaStore:
         )
         return self._mutation(row)
 
+    def request_cancel(self, job_id: str, owner_user_id: str, now_epoch: int) -> Mutation:
+        row = self._rpc(
+            "request_cancel_scrape_operational_job",
+            {
+                "p_job_id": job_id,
+                "p_owner_user_id": owner_user_id,
+            },
+            "operational-cancel-unavailable",
+        )
+        return self._mutation(row)
+
     def get_job(self, job_id: str, owner_user_id: str) -> dict[str, Any] | None:
         try:
             response = (
                 self._client.table("scrape_operational_jobs")
                 .select(
                     "job_id,operation_id,owner_user_id,request_hash,request_payload,"
-                    "status,progress,result,error,created_at,updated_at"
+                    "status,progress,result,error,cancel_requested_at,created_at,updated_at"
                 )
                 .eq("job_id", job_id)
                 .eq("owner_user_id", owner_user_id)
@@ -769,14 +944,14 @@ class SupabaseOperationalSagaStore:
         data = getattr(response, "data", None)
         if not isinstance(data, list):
             raise OperationalSagaUnavailable("operational-job-read-invalid")
-        return dict(data[0]) if len(data) == 1 and isinstance(data[0], dict) else None
+        return self._project_job(data[0]) if len(data) == 1 and isinstance(data[0], dict) else None
 
     def list_jobs(self, owner_user_id: str, limit: int) -> list[dict[str, Any]]:
         try:
             response = (
                 self._client.table("scrape_operational_jobs")
                 .select(
-                    "job_id,status,request_payload,progress,result,error,created_at,updated_at"
+                    "job_id,status,request_payload,progress,result,error,cancel_requested_at,created_at,updated_at"
                 )
                 .eq("owner_user_id", owner_user_id)
                 .order("updated_at", desc=True)
@@ -788,7 +963,7 @@ class SupabaseOperationalSagaStore:
         data = getattr(response, "data", None)
         if not isinstance(data, list) or not all(isinstance(item, dict) for item in data):
             raise OperationalSagaUnavailable("operational-history-invalid")
-        return [dict(item) for item in data]
+        return [self._project_job(item) for item in data]
 
 
 class OperationalEffectExecutor(Protocol):
@@ -809,6 +984,23 @@ class ScrapeJobEffectExecutor:
 
     def __init__(self, *, allow_unfenced_local_writes: bool = False) -> None:
         self._allow_unfenced_local_writes = allow_unfenced_local_writes
+        self._cancel_lock = threading.RLock()
+        self._cancel_events: dict[str, threading.Event] = {}
+        self._pending_cancellations: set[str] = set()
+
+    def request_cancel(self, job_id: str) -> None:
+        """Signal the local worker only after its durable marker has been stored."""
+        with self._cancel_lock:
+            self._pending_cancellations.add(job_id)
+            event = self._cancel_events.get(job_id)
+            if event is not None:
+                event.set()
+
+    def clear_cancel(self, job_id: str) -> None:
+        """Release cancellation state after the fenced claim is terminally settled."""
+        with self._cancel_lock:
+            self._cancel_events.pop(job_id, None)
+            self._pending_cancellations.discard(job_id)
 
     async def execute(self, claim: OperationalClaim) -> EffectResult:
         from scraping.jobs import _JOBS_LOCK, _run_scrape_job, _scrape_jobs
@@ -834,15 +1026,23 @@ class ScrapeJobEffectExecutor:
             if existing is not None and existing.get("request_hash") != claim.request_hash:
                 raise OperationalSagaConflict("scrape-job-binding-conflict")
             _scrape_jobs[claim.job_id] = job
+        cancel_event = threading.Event()
+        with self._cancel_lock:
+            self._cancel_events[claim.job_id] = cancel_event
+            if claim.job_id in self._pending_cancellations:
+                cancel_event.set()
         await _run_scrape_job(
             claim.job_id,
             str(payload["start_date"]),
             str(payload["end_date"]),
             bool(payload["force_rescrape"]),
             bool(payload["dry_run"]),
+            cancel_requested=cancel_event.is_set,
         )
         with _JOBS_LOCK:
             completed = dict(_scrape_jobs.get(claim.job_id) or {})
+        if completed.get("status") == "cancelled":
+            raise OperationalEffectCancelled(CANCELLED_BY_OWNER)
         if completed.get("status") != "completed" or not isinstance(completed.get("result"), dict):
             raise OperationalSagaError(str(completed.get("error") or "scrape-worker-failed"))
         result = dict(completed["result"])
@@ -904,6 +1104,20 @@ class OperationalSagaRuntime:
         assert self._store is not None
         return self._store.enqueue(request, int(time.time()))
 
+    def request_cancel(self, job_id: str, owner_user_id: str) -> Mutation:
+        if not self.enabled:
+            return Mutation(MutationCode.UNAVAILABLE, "operational-runtime-disabled")
+        assert self._store is not None
+        mutation = self._store.request_cancel(job_id, owner_user_id, int(time.time()))
+        if (
+            mutation.code in {MutationCode.APPLIED, MutationCode.DUPLICATE}
+            and (mutation.job or {}).get("status") == "cancelling"
+        ):
+            signal = getattr(self._executor, "request_cancel", None)
+            if callable(signal):
+                signal(job_id)
+        return mutation
+
     def get_job(self, job_id: str, owner_user_id: str) -> dict[str, Any] | None:
         if not self.enabled:
             raise OperationalSagaUnavailable("operational-runtime-disabled")
@@ -938,7 +1152,15 @@ class OperationalSagaRuntime:
             while True:
                 done, _ = await asyncio.wait({effect_task}, timeout=heartbeat_interval)
                 if effect_task in done:
-                    effect = effect_task.result()
+                    try:
+                        effect = effect_task.result()
+                    except OperationalEffectCancelled:
+                        return await asyncio.to_thread(
+                            self._store.fail,
+                            claim,
+                            CANCELLED_BY_OWNER,
+                            int(time.time()),
+                        )
                     return await asyncio.to_thread(
                         self._store.complete, claim, effect, int(time.time())
                     )
@@ -956,6 +1178,10 @@ class OperationalSagaRuntime:
                         pass
                     return Mutation(MutationCode.CONFLICT, "worker-lease-lost")
                 claim = renewed.claim
+                if renewed.reason == "cancel-requested":
+                    signal = getattr(self._executor, "request_cancel", None)
+                    if callable(signal):
+                        signal(claim.job_id)
         except asyncio.CancelledError:
             effect_task.cancel()
             raise
@@ -966,6 +1192,10 @@ class OperationalSagaRuntime:
                 f"worker-error-{type(exc).__name__.lower()}",
                 int(time.time()),
             )
+        finally:
+            clear = getattr(self._executor, "clear_cancel", None)
+            if callable(clear):
+                clear(claim.job_id)
 
     async def _loop(self) -> None:
         while not self._stop.is_set():

@@ -41,10 +41,12 @@ Observed mismatch from source document:
 ## 2. Implemented (As-Is)
 
 ### 2.1 Data Collection main page
-- The normal Admin-mode surface is intentionally compact: API health, month range, Dry-run, normal execute, progress/completion/error state, uncertainty reconciliation when required, the latest fetch summary, and three stored-data statistics.
+- The normal Admin action surface is intentionally compact: API health, month range, Dry-run, normal execute, owner-scoped cooperative stop, progress/completion/cancelling/cancelled/error state, uncertainty reconciliation when required, the latest fetch summary, and three stored-data statistics.
 - Dry-run posts through Next route `/api/scrape` with `dry_run: true` and does not perform external HTTP.
 - Normal execute uses `useBatchScrape()` and always submits `force_rescrape: false`; repair/refetch is not selectable from the normal surface.
 - Job polling and fail-closed uncertainty reconciliation use `/api/scrape/status/{jobId}`. The reconciliation control is shown only when an unresolved job could still be running.
+- An active owner-bound job can be stopped through `POST /api/scrape/cancel/{jobId}` after the short-lived Admin action confirmation. Queued jobs become `cancelled`; running jobs become `cancelling` and stop at a safe persistence boundary before `cancelled`. Existing saved race data is retained.
+- The browser remains locked while cancellation is pending, polls the authoritative status automatically, retains a Dry-run job ID until a terminal result, and does not enqueue the next month after cancellation.
 - `/api/scrape/history` remains available, while the normal surface renders only the latest summary rather than a full history console.
 - Health and the three stored-data statistics use `/api/scrape/health` and `/api/data-stats`.
 - Recent-race/detail inspection and profiling integrations remain implemented, but are maintenance capabilities and are not rendered on the normal surface.
@@ -99,6 +101,7 @@ Observed mismatch from source document:
 ### 2.6 FastAPI scrape contracts relevant to frontend
 - `POST /api/scrape/start`: starts one owner-bound async scrape job per Admin, using a complete UUID and durable pre-thread state.
 - `GET /api/scrape/status/{job_id}`: Admin-only, owner-scoped job status/progress/result.
+- `POST /api/scrape/cancel/{job_id}`: Admin-only, owner-scoped, idempotent cooperative cancellation. A running job returns `202` with `cancelling`; a job already cancelled returns `200` with `cancelled`.
 - `GET /api/scrape/history`: Admin-only, owner-scoped recent jobs; legacy ownerless rows are hidden.
 - `GET /api/scrape/health`: scrape health contract.
 - Legacy/specialized paths remain available (not all wired by UI):
@@ -176,6 +179,7 @@ Observed mismatch from source document:
 |---|---|---|---|---|---|---|---|
 | Data Collection | `/api/scrape` | FastAPI `/api/scrape/start` | POST | dry-run yes / execute no | dry-run: no, execute: yes | dry-run: no, execute: yes | implemented; normal UI fixes `force_rescrape=false` |
 | Data Collection | `/api/scrape/status/{jobId}` | FastAPI `/api/scrape/status/{job_id}` | GET | yes | no | no | implemented; Admin + owner scoped |
+| Data Collection | `/api/scrape/cancel/{jobId}` | FastAPI `/api/scrape/cancel/{job_id}` | POST | no | no new external request | cancellation marker/state only | implemented; short-lived Admin confirmation + owner scope; cooperative safe-boundary stop |
 | Data Collection | `/api/scrape/history` | FastAPI `/api/scrape/history` | GET | yes | no | no | implemented; Admin + owner scoped; normal UI shows latest item only |
 | Data Collection | `/api/scrape/health` | FastAPI `/api/scrape/health` | GET | yes | no | no | implemented |
 | Refresh Plan | `/api/scrape/refresh-plan` | `plan_scrape_refresh.py` | POST/GET | yes | no | no | implemented |

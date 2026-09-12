@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import sqlite3
 import sys
 import threading
 import time
@@ -17,11 +18,13 @@ sys.path.insert(0, "python-api")
 from models import ScrapeRequest  # type: ignore  # noqa: E402
 from routers import scrape as scrape_router  # type: ignore  # noqa: E402
 from scraping.operational_saga_runtime import (  # type: ignore  # noqa: E402
+    CANCELLED_BY_OWNER,
     EffectResult,
     EnqueueRequest,
     Mutation,
     MutationCode,
     OperationalClaim,
+    OperationalEffectCancelled,
     OperationalSagaConfig,
     OperationalSagaConfigError,
     OperationalSagaMode,
@@ -256,6 +259,132 @@ def test_heartbeat_extends_current_lease_and_refuses_an_expired_lease(tmp_path: 
     assert lost.reason == "lease-lost"
 
 
+def test_existing_local_database_is_upgraded_with_additive_cancel_markers(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "phase3n-operational.db"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE operational_scrape_jobs (
+                job_id TEXT PRIMARY KEY,
+                operation_id TEXT NOT NULL UNIQUE,
+                owner_user_id TEXT NOT NULL,
+                request_hash TEXT NOT NULL,
+                request_payload TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL CHECK(status IN ('queued','running','completed','error')),
+                progress TEXT NOT NULL DEFAULT '{}',
+                result TEXT,
+                error TEXT,
+                created_at_epoch INTEGER NOT NULL,
+                updated_at_epoch INTEGER NOT NULL
+            );
+            CREATE TABLE operational_scrape_outbox (
+                job_id TEXT PRIMARY KEY REFERENCES operational_scrape_jobs(job_id) ON DELETE RESTRICT,
+                state TEXT NOT NULL CHECK(state IN ('pending','claimed','acknowledged','blocked')),
+                worker_owner TEXT,
+                lease_expires_at_epoch INTEGER,
+                fencing_token INTEGER NOT NULL DEFAULT 0,
+                version INTEGER NOT NULL DEFAULT 1,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                effect_receipt_hash TEXT UNIQUE,
+                settlement_reason TEXT,
+                created_at_epoch INTEGER NOT NULL,
+                updated_at_epoch INTEGER NOT NULL
+            );
+            """
+        )
+
+    store = SQLiteOperationalSagaStore(_config(path))
+    store.initialize()
+    store.initialize()
+
+    with sqlite3.connect(path) as connection:
+        for table in ("operational_scrape_jobs", "operational_scrape_outbox"):
+            columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+            assert {"cancel_requested_at_epoch", "cancel_requested_by"}.issubset(columns)
+
+
+def test_queued_cancel_is_immediate_idempotent_and_unlocks_owner(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    assert store.enqueue(_request(), 100).code is MutationCode.APPLIED
+
+    cancelled = store.request_cancel(JOB, OWNER, 101)
+    assert cancelled.code is MutationCode.APPLIED
+    assert cancelled.job is not None
+    assert cancelled.job["status"] == "cancelled"
+    assert cancelled.job["error"] == CANCELLED_BY_OWNER
+    assert cancelled.job["cancel_requested_at"] == "1970-01-01T00:01:41Z"
+    assert store.claim_next("worker-a", 102, 5).code is MutationCode.NOT_FOUND
+
+    duplicate = store.request_cancel(JOB, OWNER, 103)
+    assert duplicate.code is MutationCode.DUPLICATE
+    assert duplicate.job is not None and duplicate.job["status"] == "cancelled"
+    assert store.enqueue(_request(job_id=JOB_2, operation_id=OPERATION_2), 104).code is MutationCode.APPLIED
+
+
+def test_running_cancel_is_durable_fenced_and_owner_scoped(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.enqueue(_request(), 100)
+    claim = store.claim_next("worker-a", 110, 5).claim
+    assert claim is not None
+
+    hidden = store.request_cancel(JOB, OWNER_2, 111)
+    assert hidden.code is MutationCode.NOT_FOUND
+    assert store.get_job(JOB, OWNER)["status"] == "running"  # type: ignore[index]
+
+    requested = store.request_cancel(JOB, OWNER, 111)
+    assert requested.code is MutationCode.APPLIED
+    assert requested.job is not None and requested.job["status"] == "cancelling"
+    assert store.get_job(JOB, OWNER)["status"] == "cancelling"  # type: ignore[index]
+    assert store.list_jobs(OWNER, 10)[0]["cancel_requested_at"] is not None
+
+    blocked = store.enqueue(_request(job_id=JOB_2, operation_id=OPERATION_2), 112)
+    assert blocked.code is MutationCode.CONFLICT
+    assert blocked.reason == "owner-active-job"
+
+    renewed = store.heartbeat(claim, 112, 5)
+    assert renewed.code is MutationCode.APPLIED
+    assert renewed.reason == "cancel-requested"
+    assert renewed.claim is not None
+    assert store.fail(renewed.claim, CANCELLED_BY_OWNER, 113).code is MutationCode.APPLIED
+    assert store.get_job(JOB, OWNER)["status"] == "cancelled"  # type: ignore[index]
+    assert store.enqueue(_request(job_id=JOB_2, operation_id=OPERATION_2), 114).code is MutationCode.APPLIED
+
+
+def test_completion_wins_when_effect_settles_after_cancel_request(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.enqueue(_request(), 100)
+    claim = store.claim_next("worker-a", 110, 5).claim
+    assert claim is not None
+    assert store.request_cancel(JOB, OWNER, 111).job["status"] == "cancelling"  # type: ignore[index]
+
+    effect = EffectResult({"success": True}, hashlib.sha256(b"completion-wins").hexdigest())
+    assert store.complete(claim, effect, 112).code is MutationCode.APPLIED
+    completed = store.get_job(JOB, OWNER)
+    assert completed is not None and completed["status"] == "completed"
+    assert store.request_cancel(JOB, OWNER, 113).code is MutationCode.CONFLICT
+
+
+def test_cancel_marker_survives_restart_and_expired_lease_is_never_reclaimed(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "phase3n-operational.db"
+    store = SQLiteOperationalSagaStore(_config(path))
+    store.initialize()
+    store.enqueue(_request(), 100)
+    assert store.claim_next("worker-a", 110, 5).claim is not None
+    assert store.request_cancel(JOB, OWNER, 111).job["status"] == "cancelling"  # type: ignore[index]
+
+    restarted = SQLiteOperationalSagaStore(_config(path))
+    restarted.initialize()
+    assert restarted.claim_next("worker-b", 115, 5).code is MutationCode.NOT_FOUND
+    recovered = restarted.get_job(JOB, OWNER)
+    assert recovered is not None and recovered["status"] == "cancelled"
+    assert recovered["error"] == CANCELLED_BY_OWNER
+
+
 def test_exhausted_crash_recovery_becomes_terminal_and_unlocks_owner(tmp_path: Path) -> None:
     config = OperationalSagaConfig(
         **{
@@ -337,6 +466,7 @@ def test_terminal_completion_unlocks_owner_for_a_new_job_only_after_durable_sett
             "progress": {},
             "result": None,
             "error": None,
+            "cancel_requested_at": None,
             "request_payload": PAYLOAD,
             "created_at": "1970-01-01T00:01:40Z",
             "updated_at": "1970-01-01T00:01:40Z",
@@ -413,6 +543,118 @@ def test_runtime_worker_claims_executes_and_durably_completes(tmp_path: Path) ->
     assert len(executor.claims) == 1
     job = runtime.get_job(JOB, OWNER)
     assert job is not None and job["status"] == "completed"
+
+
+class _CooperativeCancelExecutor:
+    idempotent = True
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.cancelled = threading.Event()
+        self.cleared: list[str] = []
+
+    async def execute(self, claim: OperationalClaim) -> EffectResult:
+        self.started.set()
+        while not self.cancelled.is_set():
+            await asyncio.sleep(0.01)
+        raise OperationalEffectCancelled(CANCELLED_BY_OWNER)
+
+    def request_cancel(self, job_id: str) -> None:
+        assert job_id == JOB
+        self.cancelled.set()
+
+    def clear_cancel(self, job_id: str) -> None:
+        self.cleared.append(job_id)
+
+
+def test_runtime_signals_cooperative_stop_then_settles_with_the_same_fence(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path / "phase3n-operational.db")
+    store = SQLiteOperationalSagaStore(config)
+    executor = _CooperativeCancelExecutor()
+    runtime = OperationalSagaRuntime(config, store, executor, worker_owner="worker-a")
+    runtime.initialize()
+    runtime.enqueue(_request())
+
+    async def scenario() -> Mutation:
+        worker = asyncio.create_task(runtime.run_once())
+        await asyncio.wait_for(executor.started.wait(), timeout=1)
+        requested = runtime.request_cancel(JOB, OWNER)
+        assert requested.code is MutationCode.APPLIED
+        assert requested.job is not None and requested.job["status"] == "cancelling"
+        return await asyncio.wait_for(worker, timeout=1)
+
+    settled = asyncio.run(scenario())
+    assert settled.code is MutationCode.APPLIED
+    job = runtime.get_job(JOB, OWNER)
+    assert job is not None and job["status"] == "cancelled"
+    assert executor.cleared == [JOB]
+
+
+class _CompletionRaceExecutor:
+    idempotent = True
+
+    def __init__(self) -> None:
+        self.pending: set[str] = set()
+        self.cleared: list[str] = []
+
+    async def execute(self, claim: OperationalClaim) -> EffectResult:
+        return EffectResult(
+            {"success": True},
+            hashlib.sha256((claim.idempotency_key + "|completion-race").encode()).hexdigest(),
+        )
+
+    def request_cancel(self, job_id: str) -> None:
+        self.pending.add(job_id)
+
+    def clear_cancel(self, job_id: str) -> None:
+        self.pending.discard(job_id)
+        self.cleared.append(job_id)
+
+
+class _BlockingCompleteStore(SQLiteOperationalSagaStore):
+    def __init__(self, config: OperationalSagaConfig) -> None:
+        super().__init__(config)
+        self.complete_entered = threading.Event()
+        self.complete_release = threading.Event()
+
+    def complete(
+        self,
+        claim: OperationalClaim,
+        effect: EffectResult,
+        now_epoch: int,
+    ) -> Mutation:
+        self.complete_entered.set()
+        assert self.complete_release.wait(timeout=2)
+        return super().complete(claim, effect, now_epoch)
+
+
+def test_completion_race_wins_and_terminal_settlement_clears_cancel_registry(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path / "phase3n-operational.db")
+    store = _BlockingCompleteStore(config)
+    executor = _CompletionRaceExecutor()
+    runtime = OperationalSagaRuntime(config, store, executor, worker_owner="worker-a")
+    runtime.initialize()
+    runtime.enqueue(_request())
+
+    async def scenario() -> Mutation:
+        worker = asyncio.create_task(runtime.run_once())
+        entered = await asyncio.to_thread(store.complete_entered.wait, 1)
+        assert entered is True
+        requested = runtime.request_cancel(JOB, OWNER)
+        assert requested.job is not None and requested.job["status"] == "cancelling"
+        assert executor.pending == {JOB}
+        store.complete_release.set()
+        return await asyncio.wait_for(worker, timeout=1)
+
+    settled = asyncio.run(scenario())
+    assert settled.code is MutationCode.APPLIED
+    assert runtime.get_job(JOB, OWNER)["status"] == "completed"  # type: ignore[index]
+    assert executor.pending == set()
+    assert executor.cleared == [JOB]
 
 
 def test_dry_run_sync_preprocessing_is_bounded_and_off_event_loop(
@@ -837,6 +1079,47 @@ def test_supabase_claim_binds_configured_retry_ceiling() -> None:
     ]
 
 
+def test_supabase_cancel_rpc_is_owner_scoped_and_projects_cancelling() -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class Query:
+        def execute(self):
+            return type(
+                "Response",
+                (),
+                {
+                    "data": [
+                        {
+                            "mutation_code": "applied",
+                            "reason": None,
+                            "job": {
+                                "job_id": JOB,
+                                "owner_user_id": OWNER,
+                                "status": "running",
+                                "error": None,
+                                "cancel_requested_at": "2026-09-12T08:00:00Z",
+                            },
+                        }
+                    ]
+                },
+            )()
+
+    class Client:
+        def rpc(self, name, params):
+            calls.append((name, params))
+            return Query()
+
+    result = SupabaseOperationalSagaStore(Client()).request_cancel(JOB, OWNER, 0)
+    assert result.code is MutationCode.APPLIED
+    assert result.job is not None and result.job["status"] == "cancelling"
+    assert calls == [
+        (
+            "request_cancel_scrape_operational_job",
+            {"p_job_id": JOB, "p_owner_user_id": OWNER},
+        )
+    ]
+
+
 def test_supabase_job_reads_project_display_metadata() -> None:
     selected_columns: list[str] = []
 
@@ -925,6 +1208,38 @@ def test_postgres_migration_has_shared_claim_fence_idempotency_and_service_role_
     assert "TO service_role" in sql
     assert "GRANT" not in "\n".join(
         line for line in sql.splitlines() if " TO anon" in line or " TO authenticated" in line
+    )
+
+
+def test_cancel_migration_is_additive_fenced_restart_safe_and_service_only() -> None:
+    sql = Path("supabase/migrations/20260912_scrape_operational_cancellation.sql").read_text(
+        encoding="utf-8"
+    )
+    for marker in (
+        "ADD COLUMN IF NOT EXISTS cancel_requested_at",
+        "request_cancel_scrape_operational_job",
+        "cancelled-by-owner",
+        "o.cancel_requested_at IS NULL",
+        "cancel-requested",
+        "FOR UPDATE SKIP LOCKED",
+    ):
+        assert marker in sql
+
+    cancel_rpc = sql.split(
+        "CREATE OR REPLACE FUNCTION public.request_cancel_scrape_operational_job", 1
+    )[1].split("CREATE OR REPLACE FUNCTION public.claim_scrape_operational_outbox", 1)[0]
+    assert cancel_rpc.index("FROM public.scrape_operational_outbox AS o") < cancel_rpc.index(
+        "FROM public.scrape_operational_jobs AS j"
+    )
+    assert "REVOKE ALL ON FUNCTION public.request_cancel_scrape_operational_job" in sql
+    assert "FROM PUBLIC, anon, authenticated, service_role" in sql
+    assert "GRANT EXECUTE ON FUNCTION public.request_cancel_scrape_operational_job" in sql
+    assert "TO service_role" in sql
+    assert "TO anon" not in "\n".join(
+        line for line in sql.splitlines() if "GRANT EXECUTE" in line
+    )
+    assert "TO authenticated" not in "\n".join(
+        line for line in sql.splitlines() if "GRANT EXECUTE" in line
     )
 
 

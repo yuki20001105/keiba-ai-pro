@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import sqlite3
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -211,6 +214,47 @@ def test_worker_stops_before_side_effects_when_running_state_is_not_durable(
         jobs.get_job(JOB_A, owner_user_id=OWNER_A)
 
 
+def test_worker_cooperatively_cancels_before_starting_the_next_effect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    jobs._scrape_jobs[JOB_A] = _job(OWNER_A)
+    persisted_statuses: list[str] = []
+
+    def persist(_job_id: str, job: dict) -> None:
+        persisted_statuses.append(str(job.get("status")))
+
+    monkeypatch.setattr(jobs, "_persist_job_or_raise", persist)
+    monkeypatch.setattr(
+        jobs,
+        "_init_sqlite_db",
+        lambda *_args, **_kwargs: pytest.fail("cancelled worker started a new DB effect"),
+    )
+
+    asyncio.run(
+        jobs._run_scrape_job(
+            JOB_A,
+            "2026-07-18",
+            "2026-07-18",
+            dry_run=True,
+            cancel_requested=lambda: True,
+        )
+    )
+
+    cancelled = jobs._scrape_jobs[JOB_A]
+    assert persisted_statuses == ["running", "cancelled"]
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["result"]["partial_results_preserved"] is True
+
+
+def test_cancelled_jobs_are_eligible_for_bounded_memory_purge() -> None:
+    store = {
+        JOB_A: _job(OWNER_A, status="cancelled"),
+        JOB_B: _job(OWNER_B, status="running"),
+    }
+    jobs._purge_old_jobs(store, max_keep=1)
+    assert store == {JOB_B: _job(OWNER_B, status="running")}
+
+
 def test_worker_converts_completion_persistence_failure_to_durable_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -295,6 +339,70 @@ def test_status_and_history_return_503_when_durable_state_cannot_be_read(
     assert history_exc.value.status_code == 503
 
 
+def test_cancel_route_is_owner_scoped_idempotent_and_updates_status_history() -> None:
+    request = ScrapeRequest(
+        start_date="2026-01-01", end_date="2026-01-31", dry_run=True, job_id=JOB_A
+    )
+    asyncio.run(scrape_router.scrape_start(request, {"user_id": OWNER_A, "role": "admin"}))
+
+    with pytest.raises(HTTPException) as hidden:
+        asyncio.run(scrape_router.scrape_cancel(JOB_A, {"user_id": OWNER_B, "role": "admin"}))
+    assert hidden.value.status_code == 404
+
+    response = asyncio.run(
+        scrape_router.scrape_cancel(JOB_A, {"user_id": OWNER_A, "role": "admin"})
+    )
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    payload = json.loads(response.body)
+    assert payload["status"] == "cancelled"
+    assert payload["duplicate"] is False
+    assert payload["cancel_requested_at"] is not None
+
+    duplicate = asyncio.run(
+        scrape_router.scrape_cancel(JOB_A, {"user_id": OWNER_A, "role": "admin"})
+    )
+    assert duplicate.status_code == 200
+    assert json.loads(duplicate.body)["duplicate"] is True
+    status = asyncio.run(
+        scrape_router.scrape_status(JOB_A, {"user_id": OWNER_A, "role": "admin"})
+    )
+    history = asyncio.run(
+        scrape_router.scrape_history(20, {"user_id": OWNER_A, "role": "admin"})
+    )
+    assert status["status"] == "cancelled"
+    assert status["cancel_requested_at"] is not None
+    assert history["jobs"][0]["status"] == "cancelled"
+    assert history["jobs"][0]["cancel_requested_at"] is not None
+
+
+def test_cancel_route_returns_202_while_running_and_409_after_completion() -> None:
+    runtime = operational.get_operational_saga_runtime()
+    request = ScrapeRequest(
+        start_date="2026-01-01", end_date="2026-01-31", dry_run=True, job_id=JOB_A
+    )
+    asyncio.run(scrape_router.scrape_start(request, {"user_id": OWNER_A, "role": "admin"}))
+    store = runtime._store
+    assert isinstance(store, operational.SQLiteOperationalSagaStore)
+    claim = store.claim_next("worker-a", int(time.time()), 30).claim
+    assert claim is not None
+
+    response = asyncio.run(
+        scrape_router.scrape_cancel(JOB_A, {"user_id": OWNER_A, "role": "admin"})
+    )
+    assert response.status_code == 202
+    assert json.loads(response.body)["status"] == "cancelling"
+
+    effect = operational.EffectResult(
+        {"success": True},
+        hashlib.sha256(b"route-completion-wins").hexdigest(),
+    )
+    assert store.complete(claim, effect, int(time.time())).code is operational.MutationCode.APPLIED
+    with pytest.raises(HTTPException) as terminal:
+        asyncio.run(scrape_router.scrape_cancel(JOB_A, {"user_id": OWNER_A, "role": "admin"}))
+    assert terminal.value.status_code == 409
+
+
 def test_history_is_owner_scoped_and_routes_require_admin() -> None:
     for job_id, owner in ((JOB_A, OWNER_A), (JOB_B, OWNER_B)):
         request = ScrapeRequest(
@@ -315,7 +423,11 @@ def test_history_is_owner_scoped_and_routes_require_admin() -> None:
     assert "owner_user_id" not in response["jobs"][0]
     assert "request_hash" not in response["jobs"][0]
 
-    guarded_paths = {"/api/scrape/status/{job_id}", "/api/scrape/history"}
+    guarded_paths = {
+        "/api/scrape/status/{job_id}",
+        "/api/scrape/cancel/{job_id}",
+        "/api/scrape/history",
+    }
     for route in scrape_router.router.routes:
         if getattr(route, "path", None) in guarded_paths:
             dependency_calls = {dependency.call for dependency in route.dependant.dependencies}

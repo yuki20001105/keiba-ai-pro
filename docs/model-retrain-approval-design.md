@@ -17,6 +17,12 @@ Non-goals in this phase:
 - No active model switch execution.
 - No production/base table write enablement.
 
+### Local Admin execution boundary
+
+`local-admin-train` is a separate, local-only policy for one authenticated Admin. It is not a two-person approval, an approved Staging/Sandbox retrain, trusted evidence, or Production authorization. The existing `staging-train` and `sandbox-train` contracts remain unchanged and reject local parser, request, progress, or snapshot overrides.
+
+The local policy reuses the same fenced Coordinator safety shape: a consistent online SQLite snapshot bound by SHA-256, CAS job version, bounded lease with monotonic fencing token and heartbeat, active-model and code identity binding, and a content-addressed artifact hash. A successful local run creates an inactive candidate only; it does not change `.active_model.json`, evaluate, promote, or activate the model.
+
 ## 2. Dry-run Payload Schema (Fixed)
 
 Entity name:
@@ -176,7 +182,7 @@ Before implementing actual retrain, the repository now enforces:
 
 Runtime still requires an applied and runtime-verified Staging approval ledger, atomic job state machine, isolated artifact store, real out-of-time evaluation, and separate promotion approval. `MODEL_RETRAIN_ARTIFACT_WRITE_POLICY` defaults to `disabled`; changing it only affects eligibility assessment and does not enable a writer.
 
-The pre-existing direct `/api/models/{model_id}/activate` path cannot serve as a bypass. Both proxy and FastAPI now reject it in Staging, Production, and unknown environments. Compatibility is available only when `APP_ENV` is local/test and `MODEL_ACTIVATION_LOCAL_ENABLED=true`; the default is false and the workbench does not set it.
+The pre-existing direct `/api/models/{model_id}/activate` path cannot serve as a bypass. Both proxy and FastAPI reject it in Staging, Production, and unknown environments. The one-click local launcher opts in only for loopback use with `APP_ENV=development` and `MODEL_ACTIVATION_LOCAL_ENABLED=true`; the Next proxy additionally requires the current-password Admin-mode grant and forwards only the verified Admin token.
 
 The pre-existing synchronous `/api/train` and asynchronous `/api/train/start` artifact writers also cannot serve as an approval bypass. The Next proxy rejects before forwarding, FastAPI rejects before allocating a job and again at the write-capable training boundary, and the normal `/train` UI action is disabled. Compatibility requires local/test `APP_ENV` plus exact `MODEL_TRAINING_LOCAL_ENABLED=true`; deployed and unknown environments reject even when that flag is set.
 

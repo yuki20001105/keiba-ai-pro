@@ -26,6 +26,7 @@
 | メソッド | パス | 説明 |
 |---|---|---|
 | `POST` | `/api/scrape/start` | スクレイプジョブを開始し `job_id` を即時返却 |
+| `POST` | `/api/scrape/cancel/{job_id}` | 所有者Adminが停止要求を永続化し、安全な処理境界で個別jobを停止 |
 | `GET` | `/api/scrape/status/{job_id}` | 進捗を返す（ポーリング用） |
 | `GET` | `/api/scrape/jobs` | 全ジョブ一覧 |
 | `DELETE` | `/api/scrape/jobs/{job_id}` | ジョブ削除 |
@@ -46,7 +47,7 @@ POST /api/scrape/start
 ```json
 {
   "job_id": "uuid-string",
-  "status": "running | completed | error",
+  "status": "queued | running | cancelling | cancelled | completed | error",
   "progress": {
     "done": 5,
     "total": 12,
@@ -80,6 +81,7 @@ POST /api/scrape/start
   │    └─ scrape_race_full() → race.py 参照
   ├─ _save_race_sqlite_only() で SQLite に保存
   ├─ scraped_dates に記録
+  ├─ 停止要求があれば、レース保存・品質台帳・進捗更新の一貫した区切り後に終了
   └─ sleep(_post_sleep)                         ← 過去: 2.0s / 直近: 8.0s
 ```
 

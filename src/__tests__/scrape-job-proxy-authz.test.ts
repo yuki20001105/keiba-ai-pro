@@ -120,4 +120,83 @@ describe('scrape job status/history proxy authorization', () => {
     expect(response.status).toBe(502)
     expect(await response.json()).toEqual({ detail: 'Scrape history service returned an invalid response' })
   })
+
+  test('requires a short-lived Admin verification grant before cancellation backend access', async () => {
+    verifyRequestAuthMock.mockResolvedValueOnce({
+      ok: false,
+      status: 403,
+      detail: 'Admin mode verification required',
+    })
+    const { POST } = await import('@/app/api/scrape/cancel/[jobId]/route')
+    const response = await POST(request(`/api/scrape/cancel/${JOB_ID}`), {
+      params: Promise.resolve({ jobId: JOB_ID }),
+    })
+
+    expect(response.status).toBe(403)
+    expect(response.headers.get('Cache-Control')).toBe('no-store')
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(verifyRequestAuthMock).toHaveBeenCalledWith(expect.anything(), { requireAdminMode: true })
+  })
+
+  test('rejects a malformed cancellation job id before backend access', async () => {
+    const { POST } = await import('@/app/api/scrape/cancel/[jobId]/route')
+    const response = await POST(request('/api/scrape/cancel/not-a-job'), {
+      params: Promise.resolve({ jobId: 'not-a-job' }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test('forwards cancellation with only the verified bearer token and preserves accepted status', async () => {
+    const backendPayload = {
+      job_id: JOB_ID,
+      status: 'cancelling',
+      cancel_requested_at: '2026-09-12T08:00:00Z',
+      duplicate: false,
+    }
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(backendPayload), {
+      status: 202,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    const { POST } = await import('@/app/api/scrape/cancel/[jobId]/route')
+    const response = await POST(request(`/api/scrape/cancel/${JOB_ID}`), {
+      params: Promise.resolve({ jobId: JOB_ID }),
+    })
+
+    expect(response.status).toBe(202)
+    expect(response.headers.get('Cache-Control')).toBe('no-store')
+    expect(await response.json()).toEqual(backendPayload)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(String(url)).toMatch(new RegExp(`/api/scrape/cancel/${JOB_ID}$`))
+    expect(init).toMatchObject({
+      method: 'POST',
+      headers: { Authorization: `Bearer ${VERIFIED_TOKEN}` },
+      cache: 'no-store',
+    })
+    expect(init.body).toBeUndefined()
+  })
+
+  test('propagates cancellation conflicts and fails closed on invalid backend JSON', async () => {
+    const { POST } = await import('@/app/api/scrape/cancel/[jobId]/route')
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ detail: 'job-already-terminal' }), {
+      status: 409,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    let response = await POST(request(`/api/scrape/cancel/${JOB_ID}`), {
+      params: Promise.resolve({ jobId: JOB_ID }),
+    })
+    expect(response.status).toBe(409)
+    expect(await response.json()).toEqual({ detail: 'job-already-terminal' })
+
+    fetchMock.mockResolvedValueOnce(new Response('not-json', { status: 200 }))
+    response = await POST(request(`/api/scrape/cancel/${JOB_ID}`), {
+      params: Promise.resolve({ jobId: JOB_ID }),
+    })
+    expect(response.status).toBe(502)
+    expect(await response.json()).toEqual({
+      detail: 'Scrape cancellation service returned an invalid response',
+    })
+  })
 })

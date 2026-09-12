@@ -85,6 +85,7 @@ async def lifespan(app: FastAPI):
     # local working cache; authoritative Phase 3N observations remain in
     # Supabase PostgreSQL.
     await asyncio.to_thread(_init_sqlite_db, ULTIMATE_DB)
+    await asyncio.to_thread(train.reconcile_interrupted_train_jobs)
     start_scheduler()
     await start_operational_saga_worker()
     try:
@@ -167,4 +168,5 @@ async def health():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
+    api_host = os.environ.get("API_HOST", "0.0.0.0").strip() or "0.0.0.0"
+    uvicorn.run("main:app", host=api_host, port=8000, reload=False)

@@ -8,7 +8,9 @@ from __future__ import annotations
 import json
 import gc
 import os
+import re
 import traceback
+from functools import lru_cache
 from pathlib import Path
 
 import pandas as pd
@@ -389,6 +391,94 @@ class ModelPredictor:
         proba_norm = (proba / s) if s > 0 else proba
         return raw, proba_norm
 
+    def explain_scores(
+        self,
+        X: "pd.DataFrame",
+        top_n: int = 6,
+    ) -> "list[dict]":
+        """LightGBM TreeSHAP で各行の予測スコアへの寄与を返す。
+
+        ``pred_contrib`` は通常の予測をやり直さず、同じ特徴量行に対する
+        TreeSHAP 寄与度だけを高速に計算する。未対応モデルでは例外を返し、
+        呼び出し側が説明なしで通常予測を継続する。
+        """
+        import numpy as _np_exp
+
+        booster = getattr(self.model, "booster_", None) or self.model
+        if not hasattr(booster, "predict"):
+            raise TypeError("このモデルは特徴量寄与度の計算に対応していません")
+
+        raw_contrib = booster.predict(X, pred_contrib=True)
+        contrib = _np_exp.asarray(raw_contrib, dtype=float)
+        expected_width = len(X.columns) + 1
+        if contrib.ndim != 2 or contrib.shape != (len(X), expected_width):
+            raise ValueError(
+                "特徴量寄与度の形が不正です: "
+                f"actual={contrib.shape}, expected=({len(X)}, {expected_width})"
+            )
+
+        descriptions = _feature_description_map()
+        explanations: list[dict] = []
+        for row_index in range(len(X)):
+            impacts = contrib[row_index, :-1]
+            total_abs = float(_np_exp.abs(impacts).sum()) or 1.0
+            ranked_indices = _np_exp.argsort(_np_exp.abs(impacts))[::-1]
+            features: list[dict] = []
+            for feature_index in ranked_indices:
+                impact = float(impacts[feature_index])
+                if not _np_exp.isfinite(impact) or abs(impact) < 1e-12:
+                    continue
+                feature_name = str(X.columns[int(feature_index)])
+                description = descriptions.get(feature_name, "")
+                raw_value = X.iloc[row_index, int(feature_index)]
+                if raw_value is None or not _np_exp.isscalar(raw_value):
+                    value: object | None = None
+                elif isinstance(raw_value, (str, bool)):
+                    value = raw_value
+                else:
+                    try:
+                        numeric_value = float(raw_value)
+                        value = round(numeric_value, 6) if _np_exp.isfinite(numeric_value) else None
+                    except (TypeError, ValueError):
+                        value = str(raw_value)[:80]
+                features.append({
+                    "feature": feature_name,
+                    "label": _public_feature_label(feature_name, description),
+                    "description": description,
+                    "value": value,
+                    "contribution": round(impact, 8),
+                    "impact_pct": round(abs(impact) / total_abs * 100.0, 2),
+                    "direction": "positive" if impact > 0 else "negative",
+                })
+                if len(features) >= max(1, min(top_n, 10)):
+                    break
+            explanations.append({
+                "method": "tree_shap",
+                "base_value": round(float(contrib[row_index, -1]), 8),
+                "features": features,
+            })
+        return explanations
+
+
+@lru_cache(maxsize=1)
+def _feature_description_map() -> "dict[str, str]":
+    """特徴量カタログの説明を、表示用ラベル生成に再利用する。"""
+    try:
+        from routers.feature_analysis import _build_desc_map, _get_catalog  # type: ignore
+
+        return _build_desc_map(_get_catalog())
+    except Exception as exc:
+        logger.warning(f"特徴量カタログの読み込みに失敗: {exc}")
+        return {}
+
+
+def _public_feature_label(feature_name: str, description: str) -> str:
+    """技術的な列名を、短い日本語ラベルへ変換する。"""
+    label = re.split(r"[（(]", description, maxsplit=1)[0].strip()
+    if not label or len(label) > 36:
+        label = feature_name.replace("_encoded", "").replace("_", " ").strip()
+    return label[:36]
+
 
 @router.post("/api/predict", response_model=PredictResponse)
 async def predict(request: PredictRequest, http_req: Request):
@@ -485,7 +575,10 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
     """レース分析と購入推奨エンドポイント"""
     _observation_started_at = _time.perf_counter()
     # ── キャッシュチェック（TTL=5分、bankroll/risk_mode が同一の場合のみ）
-    _cache_key = f"{request.race_id}:{request.model_id}:{request.bankroll}:{request.risk_mode}"
+    _cache_key = (
+        f"{request.race_id}:{request.model_id}:{request.bankroll}:"
+        f"{request.risk_mode}:{int(request.include_explanation)}"
+    )
     _now = _time.time()
     _cached = _ANALYZE_CACHE.get(_cache_key)
     if _cached and (_now - _cached[0]) < _ANALYZE_CACHE_TTL:
@@ -509,6 +602,7 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
         model_path = _resolve_model_path(request.model_id)
 
         bundle = load_model_bundle(model_path)
+        _row_explanations: list[dict] | None = None
 
         # Phase 0: 常に ultimate モードでデータを取得（87特徴量固定）
         if True:  # noqa (request.ultimate_mode は常に True)
@@ -904,6 +998,21 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
             _wp_sum = win_probs.sum()
             _wp_norm = (win_probs / _wp_sum) if _wp_sum > 0 else win_probs
 
+            # 説明性は Premium UI から明示要求された場合だけ計算する。
+            # 予測と同じ X_pred / model を再利用するため、二重予測は発生しない。
+            if request.include_explanation:
+                try:
+                    _row_explanations = await asyncio.to_thread(
+                        predictor.explain_scores,
+                        X_pred,
+                        6,
+                    )
+                except Exception as _explain_error:
+                    logger.warning(
+                        f"[explain] {request.race_id}: 特徴量寄与度の計算を省略: "
+                        f"{_explain_error}"
+                    )
+
             # ── place3 モデルによる複勝圏確率 ──────────────────────────────────
             _place3_probs: "_np2.ndarray | None" = None
             _place3_norm: "_np2.ndarray | None" = None
@@ -979,6 +1088,11 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
                     "p_place3": float(_place3_norm[i]) if _place3_norm is not None and i < len(_place3_norm) else None,
                     "p_ensemble": float(ensemble_probs[i]) if i < len(ensemble_probs) else float(_wp_norm[i]),
                     "expected_value": _ev,  # [A1] p_norm×odds（オッズ未取得時はNone）
+                    "explanation": (
+                        _row_explanations[i]
+                        if _row_explanations is not None and i < len(_row_explanations)
+                        else None
+                    ),
                 })
 
             # [A1] ソートは p_raw 降順、predicted_rank 割り当て
@@ -994,6 +1108,8 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
 
         _resp_data = dict(
             success=True,
+            model_id=model_path.stem,
+            explanation_method=("tree_shap" if _row_explanations else None),
             race_info=result["race_info"],
             pro_evaluation=result["pro_evaluation"],
             predictions=result["predictions"],
@@ -1101,6 +1217,7 @@ async def analyze_races_batch(request: BatchAnalyzeRequest, http_req: Request):
         req = AnalyzeRaceRequest(
             race_id=race_id,
             model_id=request.model_id,
+            include_explanation=request.include_explanation,
             bankroll=request.bankroll,
             risk_mode=request.risk_mode,
             use_kelly=request.use_kelly,

@@ -9,15 +9,16 @@ test.describe('データ取得ページ', () => {
       route.fulfill({ status: 200, json: { count: 0, jobs: [] } })
     )
     // ローカルAPIヘルスチェック
-    await page.route('/api/scrape/status/__health_check__**', route =>
-      route.fulfill({ json: { status: 'ok' } })
+    await page.route('/api/scrape/health**', route =>
+      route.fulfill({ json: { status: 'healthy' } })
     )
   })
 
   test('ページが正常に表示される', async ({ page }) => {
     await page.goto('/data-collection')
-    await expect(page.getByText('データ取得', { exact: true })).toBeVisible()
-    await expect(page.getByText('期間指定一括取得')).toBeVisible()
+    await expect(page.getByRole('heading', { name: '期間' })).toBeVisible()
+    await expect(page.getByTestId('dry-run-button')).toHaveText('事前確認')
+    await expect(page.getByTestId('execute-button')).toHaveText('取得開始')
   })
 
   test('開始年月・終了年月の入力欄（type=month）が2つある', async ({ page }) => {
@@ -26,10 +27,10 @@ test.describe('データ取得ページ', () => {
     await expect(monthInputs).toHaveCount(2)
   })
 
-  test('開始年月・終了年月のラベルが表示されている', async ({ page }) => {
+  test('開始・終了のラベルが表示されている', async ({ page }) => {
     await page.goto('/data-collection')
-    await expect(page.getByText('開始年月')).toBeVisible()
-    await expect(page.getByText('終了年月')).toBeVisible()
+    await expect(page.getByText('開始', { exact: true })).toBeVisible()
+    await expect(page.getByText('終了', { exact: true })).toBeVisible()
   })
 
   test('90日以内の期間では警告が表示されない', async ({ page }) => {
@@ -53,18 +54,18 @@ test.describe('データ取得ページ', () => {
     await endInput.fill('2026-04')
     await expect(startInput).toHaveValue('2025-01')
     await expect(endInput).toHaveValue('2026-04')
-    await expect(page.getByText('月単位で自動分割して順次取得')).toBeVisible()
     await expect(page.getByTestId('dry-run-button')).toBeEnabled()
     await expect(page.getByTestId('execute-button')).toBeEnabled()
   })
 
   test('ローカルAPI停止時はボタンが無効表示になる', async ({ page }) => {
-    await page.route('/api/scrape/status/__health_check__**', route =>
-      route.fulfill({ status: 503, json: { error: 'offline' } })
+    await page.route('/api/scrape/health**', route =>
+      route.fulfill({ status: 503, json: { status: 'unhealthy', reason: 'offline' } })
     )
     await page.goto('/data-collection')
-    const btn = page.getByRole('button', { name: /API停止中|取得開始/ })
-    await expect(btn).toBeVisible({ timeout: 5000 })
+    const btn = page.getByTestId('execute-button')
+    await expect(btn).toHaveText('API確認不可', { timeout: 5000 })
+    await expect(btn).toBeDisabled()
   })
 
   test('通常画面には保守・実験用の導線を表示しない', async ({ page }) => {

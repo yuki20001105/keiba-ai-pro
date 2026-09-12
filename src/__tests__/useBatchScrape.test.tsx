@@ -611,4 +611,150 @@ describe('useBatchScrape', () => {
       expect(result.current.canRetry).toBe(false)
     })
   })
+
+  it('keeps polling while server cancellation is pending and treats cancelled as terminal', async () => {
+    const statusDeferred: Array<ReturnType<typeof deferred<Response>>> = []
+    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/scrape' && init?.method === 'POST') {
+        return jsonResponse({ job_id: 'job-cancelled' })
+      }
+      if (url === '/api/scrape/status/job-cancelled') {
+        const pending = deferred<Response>()
+        statusDeferred.push(pending)
+        return pending.promise
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    const { result } = await renderBatchHook()
+    const promise = result.current.start('2026-01', '2026-01', false).catch(error => error)
+    await waitFor(() => expect(statusDeferred).toHaveLength(1))
+
+    await act(async () => {
+      statusDeferred.shift()?.resolve(jsonResponse({
+        status: 'cancelling',
+        progress: { done: 2, total: 10, message: 'cancel requested' },
+      }))
+    })
+    await waitFor(() => {
+      expect(result.current.status).toBe('cancelling')
+      expect(result.current.loading).toBe(true)
+      expect(result.current.progress.message).toContain('安全な区切りで停止中')
+    })
+    await waitFor(() => expect(statusDeferred).toHaveLength(1))
+
+    await act(async () => {
+      statusDeferred.shift()?.resolve(jsonResponse({ status: 'cancelled' }))
+    })
+    const rejected = await promise
+
+    expect(rejected).toBeInstanceOf(BatchScrapeError)
+    expect((rejected as BatchScrapeError).kind).toBe('cancelled')
+    expect((rejected as BatchScrapeError).safeToRetry).toBe(false)
+    await waitFor(() => {
+      expect(result.current.status).toBe('cancelled')
+      expect(result.current.loading).toBe(false)
+      expect(result.current.error).toBeNull()
+      expect(result.current.canRetry).toBe(false)
+    })
+  })
+
+  it('does not enqueue the next month once a server stop has been requested', async () => {
+    const firstStatus = deferred<Response>()
+    let postCount = 0
+    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/scrape' && init?.method === 'POST') {
+        postCount += 1
+        return jsonResponse({ job_id: `job-month-${postCount}` })
+      }
+      if (url === '/api/scrape/status/job-month-1') return firstStatus.promise
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    const { result } = await renderBatchHook()
+    const promise = result.current.start('2026-01', '2026-02', false).catch(error => error)
+    await waitFor(() => expect(postCount).toBe(1))
+
+    act(() => {
+      result.current.requestBatchStop()
+    })
+    await act(async () => {
+      firstStatus.resolve(jsonResponse({ status: 'completed', result: { races_collected: 1 } }))
+    })
+    const rejected = await promise
+
+    expect(postCount).toBe(1)
+    expect(rejected).toBeInstanceOf(BatchScrapeError)
+    expect((rejected as BatchScrapeError).kind).toBe('cancelled')
+    await waitFor(() => expect(result.current.status).toBe('cancelled'))
+  })
+
+  it('publishes accepted job id and exact monthly request before status polling completes', async () => {
+    const firstStatus = deferred<Response>()
+    const onJobAccepted = vi.fn()
+    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/scrape' && init?.method === 'POST') {
+        return jsonResponse({
+          job_id: 'job-visible-immediately',
+          status: 'queued',
+          created_at: '2026-09-12T08:00:00Z',
+        })
+      }
+      if (url === '/api/scrape/status/job-visible-immediately') return firstStatus.promise
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    const hook = renderHook(() => useBatchScrape({ ...FAST_OPTIONS, onJobAccepted }))
+    const promise = hook.result.current.start('2026-02', '2026-02', false)
+
+    await waitFor(() => expect(onJobAccepted).toHaveBeenCalledTimes(1))
+    expect(onJobAccepted).toHaveBeenCalledWith({
+      jobId: 'job-visible-immediately',
+      status: 'queued',
+      startDate: '20260201',
+      endDate: '20260228',
+      acceptedAt: '2026-09-12T08:00:00Z',
+    })
+
+    await act(async () => {
+      firstStatus.resolve(jsonResponse({ status: 'completed', result: { races_collected: 1 } }))
+      await promise
+    })
+  })
+
+  it('finishes the accepted month but never posts the next month while admin grant renewal unmounts the hook', async () => {
+    const firstStatus = deferred<Response>()
+    let postCount = 0
+    let statusCalls = 0
+    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/scrape' && init?.method === 'POST') {
+        postCount += 1
+        return jsonResponse({ job_id: `job-before-grant-renewal-${postCount}` })
+      }
+      if (url === '/api/scrape/status/job-before-grant-renewal-1') {
+        statusCalls += 1
+        return firstStatus.promise
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    const { result, unmount } = await renderBatchHook()
+    const promise = result.current.start('2026-01', '2026-02', false).catch(error => error)
+    await waitFor(() => {
+      expect(postCount).toBe(1)
+      expect(statusCalls).toBe(1)
+    })
+
+    unmount()
+    firstStatus.resolve(jsonResponse({ status: 'completed', result: { races_collected: 1 } }))
+    const rejected = await promise
+
+    expect(postCount).toBe(1)
+    expect(rejected).toBeInstanceOf(BatchScrapeError)
+    expect((rejected as BatchScrapeError).kind).toBe('client_stop')
+  })
 })

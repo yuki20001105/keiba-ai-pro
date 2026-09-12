@@ -290,6 +290,8 @@ def test_router_source_gates_legacy_side_effects_for_approved_execution() -> Non
     assert "is_training=False" in source
     assert "optimizer=optimizer" in source
     assert "X.iloc[:approved_train_count]" in source
-    assert 'approved_execution is None\n            and request.target not in ("speed_deviation", "rank")' in source
-    assert 'bundle["approved_execution"]' in source
+    assert 'allows_calibration\n            and request.target not in ("speed_deviation", "rank")' in source
+    assert "if uses_explicit_oot_split:" in source
+    assert '"approved_execution"' in source
+    assert "bundle[execution_binding_key] = execution_binding" in source
     assert '"active_model_id": approved_execution.active_model_id' in source

@@ -16,6 +16,23 @@ export type Prediction = {
   p_norm: number
   expected_value: number | null
   predicted_rank: number
+  explanation?: PredictionExplanation | null
+}
+
+export type FeatureContribution = {
+  feature: string
+  label: string
+  description: string
+  value: string | number | boolean | null
+  contribution: number
+  impact_pct: number
+  direction: 'positive' | 'negative'
+}
+
+export type PredictionExplanation = {
+  method: 'tree_shap'
+  base_value: number
+  features: FeatureContribution[]
 }
 
 export type RaceInfo = {
@@ -41,6 +58,8 @@ export type Recommendation = {
 
 export type RacePredictResult = {
   success: boolean
+  model_id?: string | null
+  explanation_method?: 'tree_shap' | null
   race_info: RaceInfo
   predictions: Prediction[]
   recommendation: Recommendation | null

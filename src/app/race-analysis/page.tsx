@@ -7,8 +7,8 @@ import type { RaceItem } from '@/lib/types'
 import { todayStr, toInputDate } from '@/lib/types'
 import { useRaceCache } from '@/hooks/useRaceCache'
 import { RacePredictionPanel } from '@/components/RacePredictionPanel'
-import { RaceFeaturePanel } from '@/components/RaceFeaturePanel'
-import type { RacePredictResult, FeatureData } from '@/lib/race-analysis-types'
+import { RaceExplanationPanel } from '@/components/RaceExplanationPanel'
+import type { RacePredictResult } from '@/lib/race-analysis-types'
 import { authFetch } from '@/lib/auth-fetch'
 import { useAuth } from '@/contexts/AuthContext'
 import { PremiumRequiredNotice } from '@/components/PremiumRequiredNotice'
@@ -52,15 +52,13 @@ function RaceAnalysisPageContent() {
   const searchParams = useSearchParams()
   const initialDate = toInputDate((searchParams.get('date') ?? todayStr()).replace(/-/g, ''))
   const initialRaceId = searchParams.get('race_id') ?? ''
-  const initialTab = searchParams.get('tab') === 'features' ? 'features' : 'predict'
+  const initialTab = ['features', 'explain'].includes(searchParams.get('tab') ?? '') ? 'explain' : 'predict'
 
   const [date, setDate] = useState(initialDate)
   const [races, setRaces] = useState<RaceItem[]>([])
   const [racesLoading, setRacesLoading] = useState(false)
   const [selectedRaceId, setSelectedRaceId] = useState('')
-  const [selectedModelId, setSelectedModelId] = useState<string>('')
-  const [models, setModels] = useState<{ model_id: string; target: string; cv_auc_mean: number }[]>([])
-  const [tab, setTab] = useState<'predict' | 'features' | 'result'>(initialTab)
+  const [tab, setTab] = useState<'predict' | 'explain' | 'result'>(initialTab)
 
   // 結果照合タブ
   const [resultData, setResultData] = useState<PredictionHistoryResult | null>(null)
@@ -68,7 +66,6 @@ function RaceAnalysisPageContent() {
   const [resultError, setResultError] = useState('')
 
   const [predictResult, setPredictResult] = useState<RacePredictResult | null>(null)
-  const [featData, setFeatData] = useState<FeatureData | null>(null)
   const [dataLoading, setDataLoading] = useState(false)
   const [error, setError] = useState('')
   const [fromCache, setFromCache] = useState(false)
@@ -108,28 +105,11 @@ function RaceAnalysisPageContent() {
     finally { setResultLoading(false) }
   }, [isPremium])
 
-  // モデル一覧を取得（初回のみ）
-  useEffect(() => {
-    authFetch('/api/models?ultimate=true')
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (data?.models?.length) {
-          // no_odds モデルは除外し、model_id 降順（最新が先頭）に並べる
-          const filtered = data.models
-            .filter((m: any) => !m.model_id.includes('no_odds'))
-            .sort((a: any, b: any) => b.model_id.localeCompare(a.model_id))
-          setModels(filtered)
-        }
-      })
-      .catch(() => {})
-  }, [])
-
   const loadRaces = useCallback(async () => {
     setRacesLoading(true)
     setRaces([])
     setSelectedRaceId('')
     setPredictResult(null)
-    setFeatData(null)
     setFallbackHorses(null)
     setFromCache(false)
     setCachedAt(null)
@@ -157,58 +137,41 @@ function RaceAnalysisPageContent() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [races, authLoading])
 
-  const loadRaceData = useCallback(async (raceId: string, forceRefresh = false, modelId?: string) => {
-    const effectiveModelId = modelId ?? selectedModelId
+  const loadRaceData = useCallback(async (raceId: string) => {
     setSelectedRaceId(raceId)
     setError('')
     setResultData(null)  // レース切り替え時に結果照合をリセット
 
-    // キャッシュキーにモデルIDを含めることで、モデル切り替え時は必ず再予測
-    const cacheKey = effectiveModelId ? `${raceId}__${effectiveModelId}` : raceId
-    if (!forceRefresh) {
-      const cached = raceCache.get(cacheKey)
-      if (cached) {
-        setPredictResult(cached.predictResult)
-        setFeatData(cached.featData)
-        setFromCache(true)
-        setCachedAt(cached.cachedAt)
-        if (isPremium && !cached.featData) {
-          authFetch(`/api/debug/race/${raceId}/features`)
-            .then(r => r.ok ? r.json() : null)
-            .then(feat => { if (feat) { setFeatData(feat); raceCache.updateFeat(cacheKey, feat) } })
-            .catch(() => {})
-        }
-        return
-      }
+    const cacheKey = raceId
+    const cached = raceCache.get(cacheKey)
+    if (cached) {
+      setPredictResult(cached.predictResult)
+      setFromCache(true)
+      setCachedAt(cached.cachedAt)
+      return
     }
 
     setDataLoading(true)
     setFromCache(false)
     setCachedAt(null)
     setPredictResult(null)
-    setFeatData(null)
     setFallbackHorses(null)
     try {
       const body: Record<string, unknown> = { race_id: raceId, bankroll: 10000, risk_mode: 'balanced' }
-      if (effectiveModelId) body.model_id = effectiveModelId
-      const [predRes, featRes] = await Promise.all([
-        authFetch('/api/analyze-race', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        }),
-        isPremium ? authFetch(`/api/debug/race/${raceId}/features`) : Promise.resolve(null),
-      ])
+      body.include_explanation = isPremium
+      const predRes = await authFetch('/api/analyze-race', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
       if (!predRes.ok) {
         const e = await predRes.json()
         throw new Error(e.detail || `HTTP ${predRes.status}`)
       }
       const pred = await predRes.json()
-      const feat = featRes && featRes.ok ? await featRes.json() : null
       const now = Date.now()
-      raceCache.set(cacheKey, { predictResult: pred, featData: feat, cachedAt: now })
+      raceCache.set(cacheKey, { predictResult: pred, featData: null, cachedAt: now })
       setPredictResult(pred)
-      setFeatData(feat)
       setFromCache(false)
       setCachedAt(now)
     } catch (e: unknown) {
@@ -222,7 +185,7 @@ function RaceAnalysisPageContent() {
         }
       } catch { }
     } finally { setDataLoading(false) }
-  }, [isPremium, raceCache, selectedModelId])
+  }, [isPremium, raceCache])
 
   const ri = predictResult?.race_info
   const preds = predictResult?.predictions ?? []
@@ -241,12 +204,6 @@ function RaceAnalysisPageContent() {
                   return mins < 1 ? 'たった今' : `${mins}分前`
                 })()}
               </span>
-              <button
-                onClick={() => loadRaceData(selectedRaceId, true)}
-                className="text-[10px] text-[#555] hover:text-[#888] border border-[#222] rounded px-2 py-0.5 hover:border-[#333] transition-colors"
-              >
-                再計算
-              </button>
             </div>
           )}
         </div>
@@ -261,7 +218,7 @@ function RaceAnalysisPageContent() {
       <div className="flex flex-1 overflow-hidden">
         {/* 左サイドバー: 日付ピッカー + レース一覧 */}
         <aside className="w-64 shrink-0 border-r border-[#1e1e1e] flex flex-col">
-          <div className="p-4 border-b border-[#1e1e1e] space-y-3">
+          <div className="p-4 border-b border-[#1e1e1e]">
             <div>
               <label className="text-xs text-[#666] block mb-2">日付</label>
               <input
@@ -270,26 +227,6 @@ function RaceAnalysisPageContent() {
                 onChange={e => setDate(e.target.value)}
                 className="w-full px-3 py-2 bg-[#111] border border-[#1e1e1e] rounded text-white text-sm focus:outline-none focus:border-[#333]"
               />
-            </div>
-            <div>
-              <label className="text-xs text-[#666] block mb-1.5">モデル</label>
-              <select
-                value={selectedModelId}
-                onChange={e => {
-                  setSelectedModelId(e.target.value)
-                  if (selectedRaceId) loadRaceData(selectedRaceId, true, e.target.value)
-                }}
-                className="w-full px-2 py-1.5 bg-[#111] border border-[#1e1e1e] rounded text-white text-xs focus:outline-none focus:border-[#333] truncate"
-              >
-                <option value="">
-                  最新モデル（自動）{models.length > 0 ? ` — ${models[0].model_id.replace(/_ultimate$/, '').replace(/^model_/, '')}` : ''}
-                </option>
-                {models.map(m => (
-                  <option key={m.model_id} value={m.model_id}>
-                    {m.model_id.replace(/_ultimate$/, '').replace(/^model_/, '')}
-                  </option>
-                ))}
-              </select>
             </div>
           </div>
           <div className="flex-1 overflow-y-auto">
@@ -427,14 +364,14 @@ function RaceAnalysisPageContent() {
               <div className="flex gap-0 border-b border-[#1e1e1e] shrink-0 px-6">
                 {([
                   { key: 'predict', label: `予測結果（${preds.length}頭）` },
-                  { key: 'features', label: `特徴量分析${featData ? `（${featData.feature_count}列）` : ''}` },
+                  { key: 'explain', label: 'AIの判断' },
                   { key: 'result', label: '結果照合' },
                 ] as const).map(t => (
                   <button
                     key={t.key}
-                    disabled={!isPremium && (t.key === 'features' || t.key === 'result')}
+                    disabled={!isPremium && (t.key === 'explain' || t.key === 'result')}
                     onClick={() => {
-                      if (!isPremium && (t.key === 'features' || t.key === 'result')) return
+                      if (!isPremium && (t.key === 'explain' || t.key === 'result')) return
                       setTab(t.key)
                       if (t.key === 'result' && !resultData && !resultLoading) {
                         loadResultData(selectedRaceId)
@@ -443,25 +380,23 @@ function RaceAnalysisPageContent() {
                     className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition-colors ${tab === t.key ? 'border-white text-white' : 'border-transparent text-[#555] hover:text-[#888]'} disabled:opacity-40 disabled:cursor-not-allowed`}
                   >
                     {t.label}
-                    {!isPremium && (t.key === 'features' || t.key === 'result') ? ' (Premium)' : ''}
+                    {!isPremium && (t.key === 'explain' || t.key === 'result') ? ' (Premium)' : ''}
                   </button>
                 ))}
               </div>
 
               {/* タブコンテンツ */}
               {tab === 'predict' && <RacePredictionPanel result={predictResult} />}
-              {tab === 'features' && (
+              {tab === 'explain' && (
                 !isPremium ? (
                   <div className="p-6">
                     <PremiumRequiredNotice
-                      title="特徴量分析は Premium 専用です"
-                      message="権限不足時はデバッグ特徴量 API を呼び出しません。"
+                      title="AIの判断は Premium 専用です"
+                      message="予測に影響した主な要素を確認できます。"
                     />
                   </div>
-                ) : featData ? (
-                  <RaceFeaturePanel featData={featData} predictions={preds} />
                 ) : (
-                  <div className="flex-1 flex items-center justify-center text-[#555] text-sm">特徴量データがありません</div>
+                  <RaceExplanationPanel result={predictResult} />
                 )
               )}
               {tab === 'result' && (

@@ -134,7 +134,9 @@ function Stop-StartedProcessTree([System.Diagnostics.Process]$Process) {
 
 function Test-ProductionBuildCurrent {
     $buildMarker = Join-Path $RepoRoot '.next\BUILD_ID'
-    if (-not (Test-Path -LiteralPath $buildMarker -PathType Leaf)) {
+    $standaloneServer = Join-Path $RepoRoot '.next\standalone\server.js'
+    if (-not (Test-Path -LiteralPath $buildMarker -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $standaloneServer -PathType Leaf)) {
         return $false
     }
     $buildTime = (Get-Item -LiteralPath $buildMarker).LastWriteTimeUtc
@@ -232,6 +234,11 @@ Import-DotEnv -Path (Join-Path $ConfigRoot 'python-api\.env')
 # Local mode is deliberately fail-closed for automatic jobs and real betting.
 $env:PYTHONPATH = $RepoRoot
 $env:APP_ENV = 'development'
+$env:MODEL_TRAINING_LOCAL_ENABLED = 'true'
+$env:MODEL_ACTIVATION_LOCAL_ENABLED = 'true'
+$env:API_HOST = '127.0.0.1'
+$env:HOSTNAME = '127.0.0.1'
+$env:NEXT_STANDALONE_BUILD = '1'
 $env:SCHEDULER_ENABLED = 'false'
 $env:SUPABASE_DATA_ENABLED = 'false'
 $env:NETKEIBA_RACE_WRITE_ENABLED = 'false'
@@ -275,7 +282,7 @@ try {
         Write-Step 'Next.js is already running; reusing it.'
     }
     else {
-        $WebCommand = 'npm run dev'
+        $WebCommand = 'npm run dev -- --hostname 127.0.0.1'
         $FrontendMode = 'development'
         if (-not $DevelopmentFrontend) {
             if (-not (Test-ProductionBuildCurrent)) {

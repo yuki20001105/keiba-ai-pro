@@ -101,8 +101,9 @@ test.describe('Phase2 AuthZ E2E', () => {
 
     await page.goto('/admin')
     await expect(page).toHaveURL(/\/home$/)
-    await expect(page.getByRole('button', { name: '管理者モード' })).toBeVisible()
-    await expect(page.getByText('ユーザー管理')).toHaveCount(0)
+    await expect(page.getByRole('link', { name: /データ取得/ })).toHaveAttribute('href', '/data-collection')
+    await expect(page.getByRole('link', { name: /ユーザー管理/ })).toHaveAttribute('href', '/user-management')
+    await expect(page.getByRole('button', { name: '管理者モード' })).toHaveCount(0)
     const status = await page.evaluate(async () => {
       const res = await fetch('/api/scrape', {
         method: 'POST',

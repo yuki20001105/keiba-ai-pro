@@ -80,18 +80,17 @@ test.describe('データ取得 Dry-run UI', () => {
 
     await page.goto('/data-collection')
 
-    await expect(page.getByRole('button', { name: 'Dry-run' })).toBeVisible()
-    await expect(page.getByText('Dry-run は HTTPアクセスを実行しません')).toBeVisible()
+    await expect(page.getByRole('button', { name: '事前確認' })).toBeVisible()
+    await expect(page.getByText('事前確認は通信なし')).toHaveCount(0)
     await page.getByTestId('start-period-input').fill('2026-01')
     await page.getByTestId('end-period-input').fill('2026-01')
 
-    await page.getByRole('button', { name: 'Dry-run' }).click()
+    await page.getByRole('button', { name: '事前確認' }).click()
 
-    await expect(page.getByText('Dry-run 実行中')).toBeVisible()
-    await expect(page.getByText('見積もり生成中')).toBeVisible()
-    await expect(page.getByText('HTTPアクセスは実行していません')).toBeVisible()
-    await expect(page.getByText(/経過秒:\s*\d+\s*sec/)).toBeVisible()
-    await expect(page.getByText('Dry-run 結果（実取得なし）')).not.toBeVisible()
+    const progress = page.getByTestId('dry-run-progress')
+    await expect(progress).toContainText('確認中 1/1')
+    await expect(progress).toContainText(/\d+秒/)
+    await expect(page.getByTestId('dry-run-result')).not.toBeVisible()
     await expect(page.getByTestId('execute-button')).toBeDisabled()
     await expect(page.locator('input[type="month"]').first()).toBeDisabled()
     await expect(page.locator('input[type="month"]').nth(1)).toBeDisabled()
@@ -103,11 +102,11 @@ test.describe('データ取得 Dry-run UI', () => {
 
     allowDryRunCompletion = true
     const result = page.getByTestId('dry-run-result')
-    await expect(result.getByText('Dry-run 結果（実取得なし）')).toBeVisible()
-    await expect(result.getByText('新規取得', { exact: true }).locator('..')).toContainText('8')
-    await expect(result.getByText('既存データ', { exact: true }).locator('..')).toContainText('26')
-    await expect(result.getByText('HTTP予定', { exact: true }).locator('..')).toContainText('8')
-    await expect(result.getByText('推定時間', { exact: true }).locator('..')).toContainText('8 sec')
+    await expect(result.getByText('事前確認', { exact: true })).toBeVisible()
+    await expect(result.getByText('新規', { exact: true }).locator('..')).toContainText('8')
+    await expect(result.getByText('既存', { exact: true }).locator('..')).toContainText('26')
+    await expect(result.getByText('HTTP', { exact: true })).toHaveCount(0)
+    await expect(result.getByText('時間', { exact: true }).locator('..')).toContainText('8秒')
     expect(dryRunRequestBody).toMatchObject({ dry_run: true, force_rescrape: false })
     await expect.poll(() => page.evaluate(key => localStorage.getItem(key), storageKey)).toBeNull()
     await expect(page.getByText('rate limit policy')).toHaveCount(0)
@@ -125,21 +124,26 @@ test.describe('データ取得 Dry-run UI', () => {
     })
 
     await page.goto('/data-collection')
-    await page.getByRole('button', { name: 'Dry-run' }).click()
+    await page.getByRole('button', { name: '事前確認' }).click()
 
     await expect(page.getByTestId('dry-run-error')).toContainText(
       'Dry-run結果を取得できませんでした。期間を短くするか、再実行してください。'
     )
-    await expect(page.getByText('Dry-run 結果（実取得なし）')).not.toBeVisible()
+    await expect(page.getByTestId('dry-run-result')).not.toBeVisible()
   })
 
-  test('Dry-run未実行で本実行するとwarnが表示される', async ({ page }) => {
-    page.on('dialog', dialog => dialog.dismiss())
+  test('事前確認が未完了なら確認ダイアログだけで知らせる', async ({ page }) => {
+    let dialogMessage = ''
+    page.once('dialog', dialog => {
+      dialogMessage = dialog.message()
+      void dialog.dismiss()
+    })
 
     await page.goto('/data-collection')
     await page.getByRole('button', { name: '取得開始' }).click()
 
-    await expect(page.getByText('Dry-run未実行です。本実行は可能ですが、推定アクセス数の確認を推奨します。')).toBeVisible()
+    expect(dialogMessage).toContain('事前確認は未完了です。')
+    await expect(page.getByText('事前確認が未完了です。')).toHaveCount(0)
   })
 
   test('owner-active-jobを日本語表示し、実行中情報を自動確認して完了後に解除する', async ({ page }) => {
@@ -209,12 +213,12 @@ test.describe('データ取得 Dry-run UI', () => {
     await expect(page.getByTestId('dry-run-button')).toBeEnabled()
     await page.getByTestId('dry-run-button').click()
 
-    await expect(page.getByTestId('dry-run-error')).toContainText('別のデータ取得が実行中です')
-    await expect(page.getByTestId('dry-run-error')).not.toContainText('owner-active-job')
     const active = page.getByTestId('active-scrape-job')
     await expect(active).toBeVisible()
-    await expect(active).toContainText('対象期間: 2020/01/01 ～ 2020/01/31')
-    await expect(active).toContainText('開始時刻: 2026/9/12 2:28:04')
+    await expect(active).toContainText('別の取得が実行中')
+    await expect(page.getByTestId('dry-run-error')).toHaveCount(0)
+    await expect(active).toContainText('期間: 2020/01/01～2020/01/31')
+    await expect(active).toContainText('開始: 2026/9/12 2:28:04')
     await expect(page.getByTestId('dry-run-button')).toBeDisabled()
     await expect(page.getByTestId('execute-button')).toBeDisabled()
 
@@ -227,8 +231,12 @@ test.describe('データ取得 Dry-run UI', () => {
 
   test('409より前の古い履歴確認を待った後、競合後の履歴を必ず再取得する', async ({ page }) => {
     let historyCalls = 0
+    let markStartRequestStarted!: () => void
+    let releaseStartResponse!: () => void
     let markStaleRequestStarted!: () => void
     let releaseStaleResponse!: () => void
+    const startRequestStarted = new Promise<void>(resolve => { markStartRequestStarted = resolve })
+    const startResponseGate = new Promise<void>(resolve => { releaseStartResponse = resolve })
     const staleRequestStarted = new Promise<void>(resolve => { markStaleRequestStarted = resolve })
     const staleResponseGate = new Promise<void>(resolve => { releaseStaleResponse = resolve })
 
@@ -277,22 +285,30 @@ test.describe('データ取得 Dry-run UI', () => {
         },
       })
     })
-    await page.route('/api/scrape', route => route.fulfill({
-      status: 409,
-      json: { detail: 'owner-active-job' },
-    }))
+    await page.route('/api/scrape', async route => {
+      if (route.request().method() !== 'POST') return route.fallback()
+      markStartRequestStarted()
+      await startResponseGate
+      return route.fulfill({
+        status: 409,
+        json: { detail: 'owner-active-job' },
+      })
+    })
 
     await page.goto('/data-collection')
-    await page.getByTestId('latest-fetch-summary').getByRole('button', { name: '更新' }).click()
-    await staleRequestStarted
-
     await page.getByTestId('dry-run-button').click()
+    await startRequestStarted
+
+    await page.getByTestId('refresh-history-button').click()
+    await staleRequestStarted
     await expect(page.getByTestId('execute-button')).toBeDisabled()
 
+    releaseStartResponse()
+    await expect.poll(() => historyCalls).toBe(2)
     releaseStaleResponse()
 
-    await expect(page.getByTestId('active-scrape-job')).toContainText('別のデータ取得が実行中です')
-    await expect(page.getByTestId('dry-run-error')).toContainText('別のデータ取得が実行中です')
+    await expect(page.getByTestId('active-scrape-job')).toContainText('別の取得が実行中')
+    await expect(page.getByTestId('dry-run-error')).toHaveCount(0)
     await expect(page.getByTestId('dry-run-button')).toBeDisabled()
     await expect(page.getByTestId('execute-button')).toBeDisabled()
     expect(historyCalls).toBeGreaterThanOrEqual(3)
@@ -420,7 +436,7 @@ test.describe('データ取得 Dry-run UI', () => {
 
     await page.goto('/data-collection')
 
-    await expect(page.getByRole('main').getByText('複数月の集計は完了していません')).toBeVisible()
+    await expect(page.getByRole('main').getByText('事前確認をやり直してください。', { exact: true })).toBeVisible()
     await expect(page.getByTestId('dry-run-result')).toHaveCount(0)
     expect(postCount).toBe(0)
     await expect.poll(() => page.evaluate(key => localStorage.getItem(key), storageKey)).toBeNull()
@@ -492,5 +508,461 @@ test.describe('データ取得 Dry-run UI', () => {
 
     expect(statusPolls).toBe(pollsAfterNavigation)
     await expect.poll(() => page.evaluate(key => localStorage.getItem(key), storageKey)).not.toBeNull()
+  })
+
+  test('履歴の空応答が確定するまでは開始を禁止し、その後の新規activeカードを維持する', async ({ page }) => {
+    const jobId = '66666666-6666-4666-8666-666666666666'
+    let historyCalls = 0
+    let postCount = 0
+    let jobStatus: 'running' | 'completed' = 'running'
+    let releasePendingHistory!: () => void
+    const pendingHistoryGate = new Promise<void>(resolve => {
+      releasePendingHistory = resolve
+    })
+
+    await page.route('/api/scrape/history**', async route => {
+      historyCalls += 1
+      if (historyCalls === 1) {
+        return route.fulfill({
+          status: 200,
+          json: {
+            count: 1,
+            jobs: [{
+              job_id: 'completed-before-pending-history',
+              status: 'completed',
+              result: {
+                fetch_summary: {
+                  mode: 'execute',
+                  start_date: '20251201',
+                  end_date: '20251231',
+                  saved_races: 1,
+                },
+              },
+            }],
+          },
+        })
+      }
+      if (historyCalls === 2) await pendingHistoryGate
+      if (postCount === 0) {
+        return route.fulfill({ status: 200, json: { count: 0, jobs: [] } })
+      }
+      return route.fulfill({
+        status: 200,
+        json: {
+          count: 1,
+          jobs: [{
+            job_id: jobId,
+            status: jobStatus,
+            created_at: '2026-09-12T08:00:00Z',
+            request_payload: {
+              start_date: '20260101',
+              end_date: '20260131',
+              force_rescrape: false,
+              dry_run: false,
+            },
+            ...(jobStatus === 'completed' ? { result: { races_collected: 1 } } : {}),
+          }],
+        },
+      })
+    })
+    await page.route('/api/scrape', route => {
+      if (route.request().method() !== 'POST') return route.fallback()
+      postCount += 1
+      return route.fulfill({ status: 200, json: { job_id: jobId, status: 'queued' } })
+    })
+    await page.route(`/api/scrape/status/${jobId}**`, route => route.fulfill({
+      status: 200,
+      json: jobStatus === 'completed'
+        ? { job_id: jobId, status: 'completed', result: { races_collected: 1 } }
+        : { job_id: jobId, status: 'running', progress: { done: 1, total: 10 } },
+    }))
+    page.on('dialog', dialog => dialog.accept())
+
+    await page.goto('/data-collection')
+    await page.getByTestId('start-period-input').fill('2026-01')
+    await page.getByTestId('end-period-input').fill('2026-01')
+    await page.getByTestId('latest-fetch-summary').getByRole('button', { name: '更新' }).click()
+    await expect.poll(() => historyCalls).toBe(2)
+
+    await expect(page.getByTestId('dry-run-button')).toBeDisabled()
+    await expect(page.getByTestId('execute-button')).toBeDisabled()
+    expect(postCount).toBe(0)
+
+    releasePendingHistory()
+    await expect(page.getByTestId('dry-run-button')).toBeEnabled()
+    await expect(page.getByTestId('execute-button')).toBeEnabled()
+    await page.getByTestId('execute-button').click()
+
+    const active = page.getByTestId('active-scrape-job')
+    await expect(active).toContainText(`ID: ${jobId}`)
+    await page.waitForTimeout(700)
+    await expect(active).toBeVisible()
+    expect(postCount).toBe(1)
+
+    jobStatus = 'completed'
+    await expect(active).toHaveCount(0)
+  })
+
+  test('同じ画面から開始した通常取得を履歴応答前から停止可能として表示する', async ({ page }) => {
+    const jobId = '33333333-3333-4333-8333-333333333333'
+    let postCount = 0
+    let historyCalls = 0
+    let jobStatus: 'running' | 'completed' = 'running'
+    let releaseHistoryAfterStart!: () => void
+    const historyAfterStartGate = new Promise<void>(resolve => {
+      releaseHistoryAfterStart = resolve
+    })
+
+    await page.route('/api/scrape/history**', async route => {
+      historyCalls += 1
+      if (postCount === 0) {
+        return route.fulfill({ status: 200, json: { count: 0, jobs: [] } })
+      }
+      await historyAfterStartGate
+      return route.fulfill({
+        status: 200,
+        json: {
+          count: 1,
+          jobs: [{
+            job_id: jobId,
+            status: jobStatus,
+            created_at: '2026-09-12T08:00:00Z',
+            request_payload: {
+              start_date: '20260101',
+              end_date: '20260131',
+              force_rescrape: false,
+              dry_run: false,
+            },
+            ...(jobStatus === 'completed' ? { result: { races_collected: 1 } } : {}),
+          }],
+        },
+      })
+    })
+    await page.route('/api/scrape', route => {
+      if (route.request().method() !== 'POST') return route.fallback()
+      postCount += 1
+      return route.fulfill({
+        status: 200,
+        json: {
+          job_id: jobId,
+          status: 'queued',
+          created_at: '2026-09-12T08:00:00Z',
+        },
+      })
+    })
+    await page.route(`/api/scrape/status/${jobId}**`, route => route.fulfill({
+      status: 200,
+      json: jobStatus === 'completed'
+        ? { job_id: jobId, status: 'completed', result: { races_collected: 1 } }
+        : { job_id: jobId, status: 'running', progress: { done: 1, total: 10 } },
+    }))
+    page.on('dialog', dialog => dialog.accept())
+
+    await page.goto('/data-collection')
+    await page.getByTestId('start-period-input').fill('2026-01')
+    await page.getByTestId('end-period-input').fill('2026-01')
+    await page.getByTestId('execute-button').click()
+
+    const active = page.getByTestId('active-scrape-job')
+    await expect(active).toBeVisible()
+    await expect(active).toContainText(`ID: ${jobId}`)
+    await expect(active).toContainText('期間: 2026/01/01～2026/01/31')
+    await expect(page.getByTestId('cancel-active-job-button')).toHaveText('取消')
+    await expect(page.getByTestId('cancel-active-job-button')).toBeEnabled()
+    await expect.poll(() => historyCalls).toBeGreaterThanOrEqual(2)
+    await expect(active).toBeVisible()
+
+    jobStatus = 'completed'
+    releaseHistoryAfterStart()
+    await expect(active).toHaveCount(0)
+    expect(postCount).toBe(1)
+  })
+
+  test('Dry-run停止と完了が競合した場合は完了結果を残して次月だけ停止する', async ({ page }) => {
+    const storageKey = 'keiba-ai-pro:active-dry-run-job:v2:e2e-user-id'
+    const jobId = '44444444-4444-4444-8444-444444444444'
+    let jobStatus: 'running' | 'completed' = 'running'
+    let postCount = 0
+    let cancelCalls = 0
+    const completedResult = {
+      success: true,
+      dry_run: true,
+      fetch_summary: {
+        dry_run: {
+          total_target_count: 12,
+          unique_url_count: 10,
+          estimated_request_count: 4,
+          cache_hit_count: 5,
+          cache_miss_count: 5,
+          resume_hit_count: 1,
+          skipped_count: 6,
+          db_existing_skip_count: 7,
+          db_existing_race_count: 3,
+          db_existing_horse_count: 48,
+          db_existing_result_count: 3,
+          db_existing_pedigree_count: 47,
+          new_fetch_required_count: 4,
+          already_covered_count: 13,
+          estimated_runtime_sec: 4,
+        },
+        rate_limit_policy: {},
+        retry_backoff_policy: {},
+        circuit_breaker_policy: {},
+      },
+    }
+
+    await page.route('/api/scrape', route => {
+      if (route.request().method() !== 'POST') return route.fallback()
+      postCount += 1
+      return route.fulfill({ status: 200, json: { job_id: jobId, status: 'queued', mode: 'dry-run' } })
+    })
+    await page.route(`/api/scrape/status/${jobId}**`, route => route.fulfill({
+      status: 200,
+      json: jobStatus === 'completed'
+        ? { job_id: jobId, status: 'completed', result: completedResult }
+        : { job_id: jobId, status: 'running', progress: 'planning' },
+    }))
+    await page.route('/api/scrape/history**', route => route.fulfill({
+      status: 200,
+      json: postCount === 0
+        ? { count: 0, jobs: [] }
+        : {
+          count: 1,
+          jobs: [{
+            job_id: jobId,
+            status: jobStatus,
+            created_at: '2026-09-12T08:00:00Z',
+            request_payload: {
+              start_date: '20260101',
+              end_date: '20260131',
+              force_rescrape: false,
+              dry_run: true,
+            },
+            ...(jobStatus === 'completed' ? { result: completedResult } : {}),
+          }],
+        },
+    }))
+    await page.route(`/api/scrape/cancel/${jobId}`, route => {
+      cancelCalls += 1
+      jobStatus = 'completed'
+      return route.fulfill({ status: 409, json: { detail: 'job-already-terminal' } })
+    })
+    page.on('dialog', dialog => dialog.accept())
+
+    await page.goto('/data-collection')
+    await page.getByTestId('start-period-input').fill('2026-01')
+    await page.getByTestId('end-period-input').fill('2026-02')
+    await page.getByTestId('dry-run-button').click()
+    await expect(page.getByTestId('active-scrape-job')).toBeVisible()
+
+    await page.getByTestId('cancel-active-job-button').click()
+    await expect.poll(() => cancelCalls).toBe(1)
+
+    const result = page.getByTestId('dry-run-result')
+    await expect(result).toBeVisible()
+    await expect(result).toContainText('新規')
+    await expect(result).toContainText('4')
+    await expect(page.getByText(
+      '一部確認済み（次月は未実行）',
+      { exact: true },
+    )).toBeVisible()
+    await page.waitForTimeout(1_200)
+    expect(postCount).toBe(1)
+    await expect.poll(() => page.evaluate(key => localStorage.getItem(key), storageKey)).toBeNull()
+  })
+
+  test('停止API失敗時は同じjobを保持して新規実行をlockし、自動再確認を続ける', async ({ page }) => {
+    const jobId = '55555555-5555-4555-8555-555555555555'
+    let historyCalls = 0
+    let cancelCalls = 0
+
+    await page.route('/api/scrape/history**', route => {
+      historyCalls += 1
+      return route.fulfill({
+        status: 200,
+        json: {
+          count: 1,
+          jobs: [{
+            job_id: jobId,
+            status: 'running',
+            created_at: '2026-09-12T08:00:00Z',
+            request_payload: {
+              start_date: '20260101',
+              end_date: '20260131',
+              force_rescrape: false,
+              dry_run: false,
+            },
+          }],
+        },
+      })
+    })
+    await page.route(`/api/scrape/cancel/${jobId}`, route => {
+      cancelCalls += 1
+      return route.fulfill({
+        status: 403,
+        json: { detail: 'Admin mode verification required' },
+      })
+    })
+    page.on('dialog', dialog => dialog.accept())
+
+    await page.goto('/data-collection')
+    const active = page.getByTestId('active-scrape-job')
+    await expect(active).toBeVisible()
+    await page.getByTestId('cancel-active-job-button').click()
+
+    await expect.poll(() => cancelCalls).toBe(1)
+    await expect(active.getByRole('alert')).toContainText('管理機能の確認期限が切れた可能性があります')
+    await expect(page.getByTestId('cancel-active-job-button')).toBeEnabled()
+    await expect(page.getByTestId('dry-run-button')).toBeDisabled()
+    await expect(page.getByTestId('execute-button')).toBeDisabled()
+    const callsAfterFailure = historyCalls
+    await expect.poll(() => historyCalls).toBeGreaterThan(callsAfterFailure)
+    await expect(active).toContainText(`ID: ${jobId}`)
+  })
+
+  test('実行中ジョブの停止を一度だけ送信し、終端確認まで新規実行をlockする', async ({ page }) => {
+    const jobId = '11111111-1111-4111-8111-111111111111'
+    let jobStatus: 'running' | 'cancelling' | 'cancelled' = 'running'
+    let historyCalls = 0
+    let cancelCalls = 0
+
+    await page.route('/api/scrape/history**', route => {
+      historyCalls += 1
+      return route.fulfill({
+        status: 200,
+        json: {
+          count: 1,
+          jobs: [{
+            job_id: jobId,
+            status: jobStatus,
+            created_at: '2026-09-12T07:46:12Z',
+            updated_at: '2026-09-12T07:47:40Z',
+            cancel_requested_at: jobStatus === 'cancelling' || jobStatus === 'cancelled'
+              ? '2026-09-12T07:50:00Z'
+              : null,
+            cancelled_at: jobStatus === 'cancelled' ? '2026-09-12T07:50:03Z' : null,
+            request_payload: {
+              start_date: '20250201',
+              end_date: '20250228',
+              force_rescrape: false,
+              dry_run: false,
+            },
+          }],
+        },
+      })
+    })
+    await page.route(`/api/scrape/cancel/${jobId}`, route => {
+      cancelCalls += 1
+      jobStatus = 'cancelling'
+      return route.fulfill({
+        status: 202,
+        json: {
+          job_id: jobId,
+          status: 'cancelling',
+          cancel_requested_at: '2026-09-12T07:50:00Z',
+          duplicate: false,
+        },
+      })
+    })
+    page.on('dialog', dialog => dialog.accept())
+
+    await page.goto('/data-collection')
+    const active = page.getByTestId('active-scrape-job')
+    await expect(active).toContainText('別の取得が実行中')
+    await page.getByTestId('cancel-active-job-button').click()
+
+    await expect.poll(() => cancelCalls).toBe(1)
+    await expect(page.getByTestId('cancel-active-job-button')).toHaveCount(0)
+    await expect(active).toContainText('保存済みデータは残ります')
+    await expect(page.getByTestId('dry-run-button')).toBeDisabled()
+    await expect(page.getByTestId('execute-button')).toBeDisabled()
+
+    jobStatus = 'cancelled'
+    await expect(active).toHaveCount(0)
+    await expect(page.getByTestId('dry-run-button')).toBeEnabled()
+    await expect(page.getByTestId('execute-button')).toBeEnabled()
+    expect(cancelCalls).toBe(1)
+    expect(historyCalls).toBeGreaterThanOrEqual(2)
+  })
+
+  test('Dry-runの停止中はjob IDを保持し、cancelled確認後だけ削除する', async ({ page }) => {
+    const storageKey = 'keiba-ai-pro:active-dry-run-job:v2:e2e-user-id'
+    const jobId = '22222222-2222-4222-8222-222222222222'
+    let jobStatus: 'running' | 'cancelling' | 'cancelled' = 'running'
+    let postCount = 0
+    let cancelCalls = 0
+
+    await page.route('/api/scrape', route => {
+      if (route.request().method() !== 'POST') return route.fallback()
+      postCount += 1
+      return route.fulfill({ status: 200, json: { job_id: jobId, status: 'queued', mode: 'dry-run' } })
+    })
+    await page.route(`/api/scrape/status/${jobId}**`, route => route.fulfill({
+      status: 200,
+      json: {
+        job_id: jobId,
+        status: jobStatus,
+        created_at: '2026-09-12T07:46:12Z',
+        cancel_requested_at: jobStatus === 'cancelling' ? '2026-09-12T07:50:00Z' : null,
+        request_payload: {
+          start_date: '20260101',
+          end_date: '20260131',
+          force_rescrape: false,
+          dry_run: true,
+        },
+      },
+    }))
+    await page.route('/api/scrape/history**', route => route.fulfill({
+      status: 200,
+      json: postCount === 0
+        ? { count: 0, jobs: [] }
+        : {
+          count: 1,
+          jobs: [{
+            job_id: jobId,
+            status: jobStatus,
+            created_at: '2026-09-12T07:46:12Z',
+            cancel_requested_at: jobStatus === 'cancelling' ? '2026-09-12T07:50:00Z' : null,
+            request_payload: {
+              start_date: '20260101',
+              end_date: '20260131',
+              force_rescrape: false,
+              dry_run: true,
+            },
+          }],
+        },
+    }))
+    await page.route(`/api/scrape/cancel/${jobId}`, route => {
+      cancelCalls += 1
+      jobStatus = 'cancelling'
+      return route.fulfill({
+        status: 202,
+        json: {
+          job_id: jobId,
+          status: 'cancelling',
+          cancel_requested_at: '2026-09-12T07:50:00Z',
+          duplicate: false,
+        },
+      })
+    })
+    page.on('dialog', dialog => dialog.accept())
+
+    await page.goto('/data-collection')
+    await page.getByTestId('start-period-input').fill('2026-01')
+    await page.getByTestId('end-period-input').fill('2026-02')
+    await page.getByTestId('dry-run-button').click()
+    await expect.poll(() => page.evaluate(key => localStorage.getItem(key), storageKey)).not.toBeNull()
+
+    await page.getByTestId('cancel-active-job-button').click()
+    await expect.poll(() => cancelCalls).toBe(1)
+    await expect(page.getByTestId('cancel-active-job-button')).toHaveCount(0)
+    await expect(page.getByTestId('active-scrape-job')).toContainText('保存済みデータは残ります')
+    await expect.poll(() => page.evaluate(key => localStorage.getItem(key), storageKey)).not.toBeNull()
+
+    jobStatus = 'cancelled'
+    await expect.poll(() => page.evaluate(key => localStorage.getItem(key), storageKey)).toBeNull()
+    await expect(page.getByTestId('active-scrape-job')).toHaveCount(0)
+    expect(postCount).toBe(1)
+    expect(cancelCalls).toBe(1)
   })
 })
