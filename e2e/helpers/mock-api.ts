@@ -147,7 +147,23 @@ export async function mockModels(page: Page) {
     route.fulfill({
       json: {
         models: [
-          { model_id: 'abc123-def456', model_type: 'lightgbm', target: 'win', auc: 0.7234, cv_auc_mean: 0.710, created_at: '2026-04-01T10:00:00Z', is_active: true, n_rows: 5000, training_date_from: '2024-01-01', training_date_to: '2025-12-31' },
+          {
+            model_id: 'abc123-def456', model_type: 'lightgbm', target: 'speed_deviation',
+            auc: 0.7234, cv_auc_mean: 0.710, created_at: '2026-04-01T10:00:00Z',
+            is_active: true, n_rows: 5000, training_date_from: '2024-01-01', training_date_to: '2025-12-31',
+            evaluation: {
+              primary: {
+                rank_correlation: 0.7234, rmse: 0.681,
+                top_pick_win_rate: 0.352, favorite_win_rate: 0.410,
+                top_pick_win_rate_delta: -0.058, win_roi: 84.6,
+              },
+              details: {
+                mae: 0.512, r2: 0.573, evaluation_date_from: '2025-07-19',
+                evaluation_date_to: '2026-04-01', evaluation_race_count: 412,
+              },
+              time_slices: [],
+            },
+          },
         ],
       },
     })

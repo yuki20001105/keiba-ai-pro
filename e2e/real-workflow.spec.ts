@@ -176,7 +176,7 @@ test('Step3: モデル学習 speed_deviation LightGBM Optuna100回', async ({ pa
   //        ため、「学習中」よりも「学習完了」を先に検知するケースがある。
   await expect(
     page.locator('button[disabled]').first()
-      .or(page.locator('text=/学習中|学習完了|AUC:/').first())
+      .or(page.locator('text=/学習中|学習完了|順位相関:/').first())
   ).toBeVisible({ timeout: 30_000 })
     .catch(() => {
       console.log('[Step3] 警告: 学習開始確認タイムアウト（高速完了の可能性）')

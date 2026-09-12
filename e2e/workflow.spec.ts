@@ -100,6 +100,18 @@ async function mockTraining(page: Page) {
           model_id: 'wf-model-001',
           model_path: 'models/wf-model-001.joblib',
           metrics: { auc: 0.758, cv_auc_mean: 0.741, logloss: 0.45 },
+          evaluation: {
+            primary: {
+              rank_correlation: 0.758, rmse: 0.45,
+              top_pick_win_rate: 0.365, favorite_win_rate: 0.410,
+              top_pick_win_rate_delta: -0.045, win_roi: 91.2,
+            },
+            details: {
+              mae: 0.34, r2: 0.61, evaluation_date_from: '2026-01-01',
+              evaluation_date_to: '2026-04-01', evaluation_race_count: 100,
+            },
+            time_slices: [],
+          },
           data_count: 8500,
           race_count: 100,
           feature_count: 61,
@@ -173,15 +185,16 @@ test.describe('【Step 2】モデル学習フロー', () => {
     await expect(page.getByText('学習設定')).toBeVisible()
   })
 
-  test('2-2: 保存済みモデル一覧が表示される（AUC付き）', async ({ page }) => {
+  test('2-2: 保存済みモデル一覧に5つの主要指標が表示される', async ({ page }) => {
     await page.goto('/train')
     await expect(page.getByText('保存済みモデル')).toBeVisible()
     await expect(page.getByText('abc123-def456')).toBeVisible({ timeout: 5000 })
-    // AUC値が表示される
-    await expect(page.getByText(/AUC.*0\.7/)).toBeVisible({ timeout: 5000 })
+    await expect(page.getByText('順位相関').first()).toBeVisible({ timeout: 5000 })
+    await expect(page.getByText('0.723').first()).toBeVisible()
+    await expect(page.getByText('回収率').first()).toBeVisible()
   })
 
-  test('2-3: 学習実行 → プログレス → 完了とAUCが表示される', async ({ page }) => {
+  test('2-3: 学習実行 → プログレス → 完了と順位相関が表示される', async ({ page }) => {
     await page.goto('/train')
 
     // モデル作成ボタンをクリック
@@ -190,7 +203,7 @@ test.describe('【Step 2】モデル学習フロー', () => {
     // プログレス表示
     await expect(page.getByText(/学習中|実行中/).first()).toBeVisible({ timeout: 5000 })
 
-    // 完了後のAUC表示
+    // 完了後の順位相関表示
     await expect(page.getByText(/0\.758|0\.741|完了/).first()).toBeVisible({ timeout: 20000 })
   })
 
@@ -400,7 +413,7 @@ test.describe('【Step 5】予測スコア詳細フロー', () => {
     await explainTab.click()
 
     await expect(page.getByText('騎手の勝率').first()).toBeVisible({ timeout: 5000 })
-    await expect(page.getByText('評価を上げた要素')).toBeVisible()
+    await expect(page.getByText('速度スコアを上げた要素')).toBeVisible()
   })
 
   test('5-6: 文章解説はユーザー操作時だけ取得する', async ({ page }) => {
@@ -430,7 +443,7 @@ test.describe('【Step 5】予測スコア詳細フロー', () => {
     await page.goto('/race-analysis?date=20260407&race_id=202604070101&tab=features')
 
     await expect(page.locator('input[type="date"]')).toHaveValue('2026-04-07')
-    await expect(page.getByText('評価を上げた要素')).toBeVisible({ timeout: 5000 })
+    await expect(page.getByText('速度スコアを上げた要素')).toBeVisible({ timeout: 5000 })
   })
 })
 

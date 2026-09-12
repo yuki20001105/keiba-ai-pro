@@ -303,6 +303,22 @@ ALLOWLIST_EXACT: Dict[str, str] = {
     "src/__tests__/legacy-model-training-route-guard.test.ts:it('keeps explicit local/test compatibility behind the FastAPI Premium boundary', async () => {": "replaced by integrated local-admin action guards and fail-closed coverage",
     "src/__tests__/legacy-model-training-route-guard.test.ts:it('keeps the normal training UI disabled until the durable runner exists', () => {": "replaced by integrated local-admin action guards and fail-closed coverage",
     "src/__tests__/model-activation-route-guard.test.ts:it('keeps explicit local/test compatibility behind the FastAPI Admin boundary', async () => {": "replaced by integrated local-admin action guards and fail-closed coverage",
+    # Regression-model evaluation now uses regression/ranking terminology.
+    # Every deleted assertion is replaced by an exact metric or SHAP wording check.
+    "e2e/predict-batch.spec.ts:await expect(page.getByText('評価を上げた要素')).toBeVisible()": "replaced by the exact speed-score contribution heading assertion",
+    "e2e/race-analysis.spec.ts:test('評価を上げた要素と下げた要素を分けて表示する', async ({ page }) => {": "renamed while preserving both positive and negative contribution assertions",
+    "e2e/race-analysis.spec.ts:await expect(page.getByText('評価を上げた要素')).toBeVisible()": "replaced by the exact positive speed-score contribution assertion",
+    "e2e/race-analysis.spec.ts:await expect(page.getByText('評価を下げた要素')).toBeVisible()": "replaced by the exact negative speed-score contribution assertion",
+    "e2e/train.spec.ts:await expect(page.getByText('AUC 0.7234')).toBeVisible({ timeout: 5000 })": "replaced by exact regression rank-correlation display coverage",
+    "e2e/train.spec.ts:await expect(page.getByText(/学習完了.*AUC/)).toBeVisible({ timeout: 15000 })": "replaced by the exact completed rank-correlation toast assertion",
+    "e2e/train.spec.ts:await expect(page.getByText(/学習完了.*AUC/)).toBeVisible({ timeout: 10000 })": "replaced by completed rank-correlation assertions for reconnect paths",
+    "e2e/workflow.spec.ts:test('2-2: 保存済みモデル一覧が表示される（AUC付き）', async ({ page }) => {": "renamed and strengthened to assert the five primary model-evaluation metrics",
+    "e2e/workflow.spec.ts:await expect(page.getByText(/AUC.*0\\.7/)).toBeVisible({ timeout: 5000 })": "replaced by exact rank-correlation value and recovery-rate label assertions",
+    "e2e/workflow.spec.ts:test('2-3: 学習実行 → プログレス → 完了とAUCが表示される', async ({ page }) => {": "renamed while preserving progress and completed-result assertions",
+    "e2e/workflow.spec.ts:await expect(page.getByText('評価を上げた要素')).toBeVisible()": "replaced by the exact positive speed-score contribution assertion",
+    "e2e/workflow.spec.ts:await expect(page.getByText('評価を上げた要素')).toBeVisible({ timeout: 5000 })": "replaced by the exact positive speed-score contribution assertion with the same timeout coverage",
+    "src/__tests__/race-explanation-panel.test.tsx:expect(screen.getByText('評価を上げた要素')).toBeInTheDocument()": "replaced by an exact positive speed-score contribution assertion",
+    "src/__tests__/race-explanation-panel.test.tsx:expect(screen.getByText('評価を下げた要素')).toBeInTheDocument()": "replaced by an exact negative speed-score contribution assertion",
 }
 
 

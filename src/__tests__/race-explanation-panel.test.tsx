@@ -73,8 +73,9 @@ describe('RaceExplanationPanel', () => {
   test('shows contribution bars without calling the LLM endpoint', () => {
     render(<RaceExplanationPanel result={result} />)
 
-    expect(screen.getByText('評価を上げた要素')).toBeInTheDocument()
-    expect(screen.getByText('評価を下げた要素')).toBeInTheDocument()
+    expect(screen.getByText('速度スコアを上げた要素')).toBeInTheDocument()
+    expect(screen.getByText('速度スコアを下げた要素')).toBeInTheDocument()
+    expect(screen.getByText('速度スコアへの寄与')).toBeInTheDocument()
     expect(screen.getAllByText('騎手の勝率').length).toBeGreaterThan(0)
     expect(authFetch).not.toHaveBeenCalled()
   })

@@ -6,6 +6,7 @@ import { formatModelCreatedAt } from '@/lib/model-display'
 import { Logo } from '@/components/Logo'
 import { Toast } from '@/components/Toast'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { ModelEvaluationSummary } from '@/components/ModelEvaluationSummary'
 import { authFetch } from '@/lib/auth-fetch'
 import { useJobPoller } from '@/hooks/useJobPoller'
 
@@ -17,7 +18,7 @@ type TrainingCapability = 'checking' | 'enabled' | 'disabled'
 
 export default function TrainPage() {
   const [loading, setLoading] = useState(false)
-  const [target, setTarget] = useState<'win' | 'place3' | 'win_tie' | 'speed_deviation'>('win')
+  const [target, setTarget] = useState<'win' | 'place3' | 'win_tie' | 'speed_deviation'>('speed_deviation')
   const modelType = 'lightgbm' as const
   const [testSize, setTestSize] = useState(0.2)
   const [cvFolds, setCvFolds] = useState(5)
@@ -65,12 +66,19 @@ export default function TrainPage() {
       const result = statusData.result || {}
       setTrainResult({
         model_id: result.model_id,
+        target,
         auc: result.metrics?.auc,
         logloss: result.metrics?.logloss,
+        evaluation: result.evaluation,
         n_rows: result.data_count,
         message: result.message,
       })
-      showToast(`学習完了 — AUC: ${result.metrics?.auc?.toFixed(4) ?? '?'}`)
+      const correlation = result.evaluation?.primary?.rank_correlation
+      showToast(
+        target === 'speed_deviation'
+          ? `学習完了 — 順位相関: ${typeof correlation === 'number' ? correlation.toFixed(3) : '未計測'}`
+          : '学習が完了しました',
+      )
       loadModels()
     },
     onError: msg => { setLoading(false); setJobId(null); showToast(msg, 'error') },
@@ -461,30 +469,18 @@ export default function TrainPage() {
 
         {trainResult && (
           <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-6">
-            <div className="flex items-center gap-3 mb-4">
+            <div className="mb-4 flex items-center justify-between gap-3">
               <div className="text-sm font-medium text-white">学習結果</div>
-              {trainResult.auc != null && (
-                <span className={`text-xs px-2 py-0.5 rounded font-medium ${
-                  trainResult.auc >= 0.75 ? 'bg-[#0a2a0a] text-[#4ade80] border border-[#1a4a1a]' :
-                  trainResult.auc >= 0.70 ? 'bg-[#0a1a2a] text-[#60a5fa] border border-[#1a3a5a]' :
-                  'bg-[#1a1a0a] text-[#facc15] border border-[#3a3a1a]'
-                }`}>
-                  {trainResult.auc >= 0.75 ? '優秀' : trainResult.auc >= 0.70 ? '良好' : '要改善'}
-                </span>
-              )}
+              <div className="text-xs text-[#555]">{trainResult.n_rows?.toLocaleString()}件</div>
             </div>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              {[
-                { label: 'AUC', value: trainResult.auc?.toFixed(4) },
-                { label: 'Log Loss', value: trainResult.logloss?.toFixed(4) },
-                { label: '学習データ数', value: trainResult.n_rows?.toLocaleString() },
-                { label: 'モデルID', value: trainResult.model_id, small: true },
-              ].map(s => (
-                <div key={s.label} className="bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg p-4">
-                  <div className="text-xs text-[#555] mb-1">{s.label}</div>
-                  <div className={`font-bold ${s.small ? 'text-xs text-[#4ade80] break-all' : 'text-xl'}`}>{s.value}</div>
-                </div>
-              ))}
+            <ModelEvaluationSummary
+              evaluation={trainResult.evaluation}
+              target={trainResult.target}
+              legacyAuc={trainResult.auc}
+              legacyLogloss={trainResult.logloss}
+            />
+            <div className="mt-3 truncate text-[10px] font-mono text-[#333]" title={trainResult.model_id}>
+              {trainResult.model_id}
             </div>
           </div>
         )}
@@ -512,8 +508,6 @@ export default function TrainPage() {
                   const typeLabel = MODEL_TYPE_LABELS[m.model_type] ?? m.model_type ?? '不明'
                   const createdDate = formatModelCreatedAt(m)
                   const dateRange = formatDateRange(m.training_date_from, m.training_date_to)
-                  const aucVal = m.auc ? m.auc.toFixed(4) : '—'
-                  const cvVal = m.cv_auc_mean && m.cv_auc_mean > 0 ? m.cv_auc_mean.toFixed(4) : '—'
                   const isActivating = activatingId === m.model_id
                   const isDeleting = deletingId === m.model_id
                   return (
@@ -521,7 +515,7 @@ export default function TrainPage() {
                       key={i}
                       className={`px-5 py-4 hover:bg-[#161616] transition-colors ${m.is_active ? 'border-l-2 border-[#4ade80]' : ''}`}
                     >
-                      {/* 1行目: ターゲット名 + アクティブバッジ + AUC */}
+                      {/* 1行目: モデル名と状態 */}
                       <div className="flex items-start justify-between gap-4">
                         <div className="flex items-center gap-2 min-w-0">
                           <span className="text-sm font-medium text-white">{targetLabel}</span>
@@ -532,16 +526,6 @@ export default function TrainPage() {
                             </span>
                           )}
                         </div>
-                        <div className="text-right shrink-0">
-                          <div className={`text-sm font-medium tabular-nums ${
-                            !m.auc ? 'text-[#555]' :
-                            m.auc >= 0.80 ? 'text-[#4ade80]' :
-                            m.auc >= 0.70 ? 'text-[#60a5fa]' : 'text-[#facc15]'
-                          }`}>AUC {aucVal}</div>
-                          {cvVal !== '—' && (
-                            <div className="text-xs text-[#555] tabular-nums">CV {cvVal}</div>
-                          )}
-                        </div>
                       </div>
                       {/* 2行目: 作成日時 + 学習期間 */}
                       <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-[#555]">
@@ -549,6 +533,13 @@ export default function TrainPage() {
                         {dateRange && <span>学習期間: {dateRange}</span>}
                         {m.feature_count > 0 && <span>特徴量: {m.feature_count}個</span>}
                         {m.n_rows > 0 && <span>{m.n_rows.toLocaleString()}件</span>}
+                      </div>
+                      <div className="mt-3">
+                        <ModelEvaluationSummary
+                          evaluation={m.evaluation}
+                          target={m.target}
+                          legacyAuc={m.auc}
+                        />
                       </div>
                       {/* 3行目: アクション */}
                       <div className="mt-3 flex items-center gap-2">

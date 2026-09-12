@@ -38,12 +38,12 @@ test.describe('予測結果確認ページ（Race Analysis）', () => {
     await expect(page.getByText('騎手の勝率').first()).toBeVisible({ timeout: 5000 })
   })
 
-  test('評価を上げた要素と下げた要素を分けて表示する', async ({ page }) => {
+  test('速度スコアを上げた要素と下げた要素を分けて表示する', async ({ page }) => {
     await page.goto('/race-analysis')
     await page.getByText('テストレース1').click()
     await page.getByRole('button', { name: 'AIの判断' }).click()
-    await expect(page.getByText('評価を上げた要素')).toBeVisible()
-    await expect(page.getByText('評価を下げた要素')).toBeVisible()
+    await expect(page.getByText('速度スコアを上げた要素')).toBeVisible()
+    await expect(page.getByText('速度スコアを下げた要素')).toBeVisible()
   })
 
   test('予測上位3頭の説明を切り替えられる', async ({ page }) => {

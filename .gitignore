@@ -98,6 +98,7 @@ keiba.db
 *.parquet
 *.h5
 *.pkl
+python-api/models/*.evaluation.json
 *.pickle
 
 # Models (ローカル開発用)

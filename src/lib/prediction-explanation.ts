@@ -20,8 +20,8 @@ export function buildLocalPredictionExplanation(prediction: Prediction): string 
   const negative = featureNames(features, 'negative', 1)
   const parts = [`AIは${prediction.horse_name}を${prediction.predicted_rank}位と予測しました。`]
 
-  if (positive.length > 0) parts.push(`${positive.join('・')}が評価を上げています。`)
-  if (negative.length > 0) parts.push(`${negative.join('・')}は評価を下げています。`)
+  if (positive.length > 0) parts.push(`${positive.join('・')}が速度スコアを上げています。`)
+  if (negative.length > 0) parts.push(`${negative.join('・')}は速度スコアを下げています。`)
   if (positive.length === 0 && negative.length === 0) {
     parts.push('この予測には説明データがありません。')
   }

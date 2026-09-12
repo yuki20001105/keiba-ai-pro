@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import sys
 from pathlib import Path
 
@@ -64,3 +65,45 @@ def test_model_creation_sort_key_falls_back_to_file_mtime(tmp_path: Path) -> Non
         model_path,
         {"created_at": "unknown"},
     ) == model_path.stat().st_mtime
+
+
+def test_model_evaluation_loads_matching_sidecar(tmp_path: Path) -> None:
+    model_path = tmp_path / "model_speed_deviation_lightgbm_current.joblib"
+    model_path.write_bytes(b"model")
+    expected = {
+        "primary": {
+            "rank_correlation": 0.76,
+            "rmse": 0.68,
+            "top_pick_win_rate": 0.35,
+            "top_pick_win_rate_delta": -0.05,
+            "win_roi": 86.4,
+        }
+    }
+    model_path.with_suffix(".evaluation.json").write_text(
+        json.dumps({"model_id": model_path.stem, "evaluation": expected}),
+        encoding="utf-8",
+    )
+
+    assert models_mgmt._model_evaluation(
+        model_path,
+        {"target": "speed_deviation", "metrics": {"auc": 0.1}},
+    ) == expected
+
+
+def test_legacy_regression_metrics_are_relabelled_without_inventing_values(
+    tmp_path: Path,
+) -> None:
+    model_path = tmp_path / "model_speed_deviation_lightgbm_legacy.joblib"
+    model_path.write_bytes(b"model")
+
+    evaluation = models_mgmt._model_evaluation(
+        model_path,
+        {
+            "target": "speed_deviation",
+            "metrics": {"auc": 0.7595, "logloss": 0.6754},
+        },
+    )
+
+    assert evaluation["primary"]["rank_correlation"] == pytest.approx(0.7595)
+    assert evaluation["primary"]["rmse"] == pytest.approx(0.6754)
+    assert evaluation["primary"]["win_roi"] is None

@@ -37,7 +37,7 @@ test.describe('一括予測ページ', () => {
     const modelSelect = page.getByLabel('使用モデル')
     await expect(modelSelect.getByRole('option').first()).toHaveText('既定モデル（使用中）')
     await expect(modelSelect.getByRole('option', {
-      name: '速度偏差｜2026/09/12 21:59｜学習 2018/01–2026/07｜AUC 0.760',
+      name: '速度偏差｜2026/09/12 21:59｜学習 2018/01–2026/07｜相関 0.760',
     })).toHaveAttribute('value', newestModelId)
 
     await modelSelect.selectOption(newestModelId)
@@ -101,7 +101,7 @@ test.describe('一括予測ページ', () => {
     await explanationButton.click()
     await expect(page.getByTestId('race-explanation-panel')).toBeVisible()
     await expect(page.getByText('騎手の勝率').first()).toBeVisible()
-    await expect(page.getByText('評価を上げた要素')).toBeVisible()
+    await expect(page.getByText('速度スコアを上げた要素')).toBeVisible()
   })
 
   test('予測結果に確率バーが表示される', async ({ page }) => {

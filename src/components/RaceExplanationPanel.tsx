@@ -95,7 +95,6 @@ export function RaceExplanationPanel({ result }: Props) {
           race_name: result.race_info.race_name,
           horse_name: prediction.horse_name,
           predicted_rank: prediction.predicted_rank,
-          win_probability: prediction.win_probability,
           features: features.slice(0, 6).map(feature => ({
             label: feature.label,
             direction: feature.direction,
@@ -119,7 +118,7 @@ export function RaceExplanationPanel({ result }: Props) {
     <div className="p-5 space-y-5" data-testid="race-explanation-panel">
       <div>
         <h3 className="text-sm font-semibold text-white">AIの判断</h3>
-        <p className="mt-1 text-xs text-[#666]">予測スコアに影響した主な要素</p>
+        <p className="mt-1 text-xs text-[#666]">速度スコアへの寄与</p>
       </div>
 
       <div className="flex flex-wrap gap-2" aria-label="説明する馬を選択">
@@ -147,8 +146,8 @@ export function RaceExplanationPanel({ result }: Props) {
           </p>
 
           <div className="grid gap-5 md:grid-cols-2">
-            <ContributionList title="評価を上げた要素" features={positive} tone="positive" />
-            <ContributionList title="評価を下げた要素" features={negative} tone="negative" />
+            <ContributionList title="速度スコアを上げた要素" features={positive} tone="positive" />
+            <ContributionList title="速度スコアを下げた要素" features={negative} tone="negative" />
           </div>
 
           <div className="flex flex-wrap items-center gap-3 border-t border-[#1e1e1e] pt-4">
@@ -180,7 +179,7 @@ export function RaceExplanationPanel({ result }: Props) {
       )}
 
       <p className="text-[10px] text-[#555]">
-        影響度はこの馬の予測スコア内の相対値です。結果を保証するものではありません。
+        影響度はこの馬の速度スコア内の相対値です。勝率や結果を保証するものではありません。
       </p>
     </div>
   )

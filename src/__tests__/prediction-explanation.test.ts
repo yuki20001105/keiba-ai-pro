@@ -46,7 +46,7 @@ const prediction: Prediction = {
 describe('prediction explanation', () => {
   test('builds a short explanation from actual contribution directions', () => {
     expect(buildLocalPredictionExplanation(prediction)).toBe(
-      'AIはテストホースを1位と予測しました。「騎手の勝率」が評価を上げています。「馬体重変化」は評価を下げています。',
+      'AIはテストホースを1位と予測しました。「騎手の勝率」が速度スコアを上げています。「馬体重変化」は速度スコアを下げています。',
     )
   })
 

@@ -21,7 +21,7 @@ describe('model display names', () => {
 
   it('builds a short but identifiable prediction option', () => {
     expect(formatModelOptionLabel(NEW_MODEL)).toBe(
-      '速度偏差｜2026/09/12 21:59｜学習 2018/01–2026/07｜AUC 0.760',
+      '速度偏差｜2026/09/12 21:59｜学習 2018/01–2026/07｜相関 0.760',
     )
   })
 })

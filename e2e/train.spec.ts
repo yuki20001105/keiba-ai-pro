@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 import { mockAuth } from './helpers/mock-api'
 
 const MODELS_MOCK = [
-  { model_id: 'abc123-def456', model_type: 'lightgbm', target: 'win', auc: 0.7234, cv_auc_mean: 0.710, created_at: '2026-04-01T10:00:00Z', is_active: true, n_rows: 5000, training_date_from: '2024-01-01', training_date_to: '2025-12-31' },
+  { model_id: 'abc123-def456', model_type: 'lightgbm', target: 'speed_deviation', auc: 0.7234, created_at: '2026-04-01T10:00:00Z', is_active: true, n_rows: 5000, training_date_from: '2024-01-01', training_date_to: '2025-12-31', evaluation: { primary: { rank_correlation: 0.7234, rmse: 0.68, top_pick_win_rate: 0.35, top_pick_win_rate_delta: -0.04, win_roi: 92.1 }, details: { mae: 0.51, r2: 0.57, evaluation_date_from: '2025-01-01', evaluation_date_to: '2025-12-31', evaluation_race_count: 500 } } },
   { model_id: 'candidate-model-001', model_type: 'lightgbm', target: 'speed_deviation', auc: 0.7595, created_at: '20260912_2159', is_active: false, n_rows: 112921, training_date_from: '20180106', training_date_to: '20260706' },
 ]
 const TRAIN_JOB_ID = '11111111-1111-4111-8111-111111111111'
@@ -38,7 +38,7 @@ test.describe('モデル学習ページ', () => {
     await expect(page.getByText('保存済みモデル')).toBeVisible()
     // モックのモデルが表示される
     await expect(page.getByText('abc123-def456')).toBeVisible({ timeout: 5000 })
-    await expect(page.getByText('AUC 0.7234')).toBeVisible({ timeout: 5000 })
+    await expect(page.getByText('0.723')).toBeVisible({ timeout: 5000 })
   })
 
   test('既定モデルの操作意味が分かり、ローカル管理者は変更できる', async ({ page }) => {
@@ -71,14 +71,14 @@ test.describe('モデル学習ページ', () => {
       if (pollCount < 2) {
         return route.fulfill({ json: { status: 'running', progress: '学習中...' } })
       }
-      return route.fulfill({ json: { status: 'completed', result: { metrics: { auc: 0.7345 }, model_id: 'new-model-001' }, data_count: 5000 } })
+      return route.fulfill({ json: { status: 'completed', result: { metrics: { auc: 0.7345, logloss: 0.68 }, evaluation: { primary: { rank_correlation: 0.7345, rmse: 0.68 } }, model_id: 'new-model-001' }, data_count: 5000 } })
     })
 
     await page.goto('/train')
     await page.getByRole('button', { name: 'モデル作成' }).click()
 
     // 完了後トーストが表示される
-    await expect(page.getByText(/学習完了.*AUC/)).toBeVisible({ timeout: 15000 })
+    await expect(page.getByText(/学習完了.*順位相関/)).toBeVisible({ timeout: 15000 })
   })
 
   test('既に実行中の学習ジョブへ再接続できる', async ({ page }) => {
@@ -103,7 +103,7 @@ test.describe('モデル学習ページ', () => {
         json: {
           status: 'completed',
           progress: '完了',
-          result: { metrics: { auc: 0.7345 }, model_id: 'existing-model-001' },
+          result: { metrics: { auc: 0.7345, logloss: 0.68 }, evaluation: { primary: { rank_correlation: 0.7345, rmse: 0.68 } }, model_id: 'existing-model-001' },
           data_count: 5000,
         },
       })
@@ -112,7 +112,7 @@ test.describe('モデル学習ページ', () => {
     await page.goto('/train')
     await page.getByRole('button', { name: 'モデル作成' }).click()
 
-    await expect(page.getByText(/学習完了.*AUC/)).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText(/学習完了.*順位相関/)).toBeVisible({ timeout: 10000 })
     expect(startRequests).toBe(1)
     expect(statusRequests).toBeGreaterThan(0)
   })
@@ -132,7 +132,7 @@ test.describe('モデル学習ページ', () => {
           ? {
               status: 'completed',
               progress: '完了',
-              result: { metrics: { auc: 0.7345 }, model_id: 'restored-model-001' },
+              result: { metrics: { auc: 0.7345, logloss: 0.68 }, evaluation: { primary: { rank_correlation: 0.7345, rmse: 0.68 } }, model_id: 'restored-model-001' },
             }
           : { status: 'running', progress: '学習中...', pct: 40 },
       })
@@ -145,7 +145,7 @@ test.describe('モデル学習ページ', () => {
     reloaded = true
     await page.reload()
 
-    await expect(page.getByText(/学習完了.*AUC/)).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText(/学習完了.*順位相関/)).toBeVisible({ timeout: 10000 })
     expect(startRequests).toBe(1)
     expect(statusRequests).toBeGreaterThan(0)
     await expect.poll(() => page.evaluate(() => {

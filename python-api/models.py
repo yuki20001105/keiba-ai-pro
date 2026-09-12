@@ -62,6 +62,7 @@ class TrainResponse(BaseModel):
     model_id: str
     model_path: str
     metrics: Dict[str, float]
+    evaluation: Dict[str, Any] = Field(default_factory=dict)
     data_count: int
     race_count: int
     feature_count: int

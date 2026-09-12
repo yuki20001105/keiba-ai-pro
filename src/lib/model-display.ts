@@ -6,6 +6,9 @@ export type ModelSummary = {
   training_date_from?: string | null
   training_date_to?: string | null
   auc?: number | null
+  evaluation?: {
+    primary?: { rank_correlation?: number | null }
+  } | null
   cv_auc_mean?: number | null
   n_rows?: number | null
   feature_count?: number | null
@@ -70,8 +73,15 @@ export function formatModelOptionLabel(model: ModelSummary): string {
   const target = TARGET_LABELS[model.target || ''] || model.target || 'モデル'
   const created = formatModelCreatedAt(model)
   const period = formatModelPeriod(model)
-  const auc = typeof model.auc === 'number' && Number.isFinite(model.auc)
-    ? `AUC ${model.auc.toFixed(3)}`
-    : ''
-  return [target, created, period ? `学習 ${period}` : '', auc].filter(Boolean).join('｜')
+  const rankCorrelation = model.evaluation?.primary?.rank_correlation
+  const score = model.target === 'speed_deviation'
+    ? typeof rankCorrelation === 'number' && Number.isFinite(rankCorrelation)
+      ? `相関 ${rankCorrelation.toFixed(3)}`
+      : typeof model.auc === 'number' && Number.isFinite(model.auc)
+        ? `相関 ${model.auc.toFixed(3)}`
+        : ''
+    : typeof model.auc === 'number' && Number.isFinite(model.auc)
+      ? `AUC ${model.auc.toFixed(3)}`
+      : ''
+  return [target, created, period ? `学習 ${period}` : '', score].filter(Boolean).join('｜')
 }

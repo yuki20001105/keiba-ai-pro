@@ -54,6 +54,7 @@ from training.local_feature_contract import (  # type: ignore
     filter_training_period,
     prepare_lightgbm_feature_frame,
 )
+from training.model_evaluation import evaluate_speed_deviation_predictions  # type: ignore
 from training.local_retrain import (  # type: ignore
     LOCAL_EXECUTION_POLICY,
     LocalExecutionBundle,
@@ -590,6 +591,19 @@ async def _do_train(
                 detail=f"訓練データが見つかりません。DB: {db_path}",
             )
 
+        evaluation_frame = pd.DataFrame(index=df.index)
+        for evaluation_column in (
+            "race_id",
+            "race_date",
+            "finish",
+            "popularity",
+            "odds",
+            "tansho_payout",
+        ):
+            evaluation_frame[evaluation_column] = (
+                df[evaluation_column] if evaluation_column in df.columns else pd.NA
+            )
+
         # ターゲット変数を先に取得（FUTURE_FIELDSのdrop前にfinish列が必要）
         from keiba_ai.train import _make_target  # type: ignore
         y = _make_target(df, request.target)
@@ -703,6 +717,13 @@ async def _do_train(
                         [df_train_source, df_validation_source],
                         ignore_index=True,
                     )
+                    evaluation_frame = pd.concat(
+                        [
+                            evaluation_frame.loc[train_mask],
+                            evaluation_frame.loc[validation_mask],
+                        ],
+                        ignore_index=True,
+                    )
                     df_optimized = pd.concat(
                         [df_train_optimized, df_validation_optimized],
                         ignore_index=True,
@@ -743,6 +764,7 @@ async def _do_train(
                 # 時系列分割（ランダム分割より汎化性能検証に適切）
                 X = X.reset_index(drop=True)
                 y = y.reset_index(drop=True)
+                evaluation_frame = evaluation_frame.reset_index(drop=True)
 
                 _is_regression = request.target == "speed_deviation"
                 _is_ranking    = request.target == "rank"
@@ -760,6 +782,9 @@ async def _do_train(
                         )
                         X = X.loc[_pre_valid].reset_index(drop=True)
                         y = y.loc[_pre_valid].reset_index(drop=True)
+                        evaluation_frame = (
+                            evaluation_frame.loc[_pre_valid].reset_index(drop=True)
+                        )
                         # df のインデックスを同期（race_date が時系列分割に使用される）
                         df = df.reset_index(drop=True).loc[_pre_valid].reset_index(drop=True)
 
@@ -1097,6 +1122,20 @@ async def _do_train(
             except Exception as _cal_err:
                 logger.warning(f"キャリブレーション学習失敗: {_cal_err}")
 
+        evaluation: dict = {}
+        if request.target == "speed_deviation":
+            evaluation_test = evaluation_frame.loc[X_test.index].reset_index(drop=True)
+            evaluation = evaluate_speed_deviation_predictions(
+                actual=y_test.reset_index(drop=True),
+                predicted=y_pred_proba,
+                race_ids=evaluation_test["race_id"],
+                finish_positions=evaluation_test["finish"],
+                race_dates=evaluation_test["race_date"],
+                popularity=evaluation_test["popularity"],
+                odds=evaluation_test["odds"],
+                payouts=evaluation_test["tansho_payout"],
+            )
+
         # モデル保存 — IDはデータ日付範囲 + 作成日時（一意性を保証）
         progress_cb("モデルを保存中...", 93)
         date_from_8 = _get_date8_from(df)
@@ -1142,6 +1181,7 @@ async def _do_train(
                 "logloss_calibrated": float(logloss_calibrated),
                 "cv_auc_mean": float(cv_auc_mean), "cv_auc_std": float(cv_auc_std),
             },
+            "evaluation": evaluation,
             "data_count": len(df),
             "race_count": df["race_id"].nunique() if "race_id" in df.columns else 0,
             "created_at": saved_at,
@@ -1234,6 +1274,14 @@ async def _do_train(
 
         progress_cb("学習完了", 98)
         training_time = (datetime.now() - start_time).total_seconds()
+        completion_message = (
+            f"モデル学習完了 (順位相関: {auc:.4f}, RMSE: {logloss:.4f})"
+            if request.target == "speed_deviation"
+            else (
+                f"モデル学習完了 (AUC: {auc:.4f}, LogLoss: {logloss:.4f}, "
+                f"LogLoss(Cal): {logloss_calibrated:.4f})"
+            )
+        )
         return TrainResponse(
             success=True,
             model_id=model_id,
@@ -1243,11 +1291,12 @@ async def _do_train(
                 "logloss_calibrated": float(logloss_calibrated),
                 "cv_auc_mean": float(cv_auc_mean), "cv_auc_std": float(cv_auc_std),
             },
+            evaluation=evaluation,
             data_count=len(df),
             race_count=df["race_id"].nunique() if "race_id" in df.columns else 0,
             feature_count=feature_count,
             training_time=training_time,
-            message=f"モデル学習完了 (AUC: {auc:.4f}, LogLoss: {logloss:.4f}, LogLoss(Cal): {logloss_calibrated:.4f})",
+            message=completion_message,
             optuna_executed=optuna_executed,
             optuna_error=optuna_error,
             feature_columns=_all_feature_columns,

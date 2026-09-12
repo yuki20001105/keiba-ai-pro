@@ -15,7 +15,6 @@ type ExplanationInput = {
   race_name: string
   horse_name: string
   predicted_rank: number
-  win_probability: number | null
   features: ExplanationFeature[]
 }
 
@@ -25,7 +24,6 @@ function sanitizeInput(raw: unknown): ExplanationInput | null {
   const horseName = typeof value.horse_name === 'string' ? value.horse_name.trim().slice(0, 80) : ''
   const raceName = typeof value.race_name === 'string' ? value.race_name.trim().slice(0, 100) : ''
   const rank = Number(value.predicted_rank)
-  const probability = value.win_probability == null ? null : Number(value.win_probability)
   const rawFeatures = Array.isArray(value.features) ? value.features.slice(0, 6) : []
   const features = rawFeatures.flatMap(item => {
     if (!item || typeof item !== 'object') return []
@@ -42,7 +40,6 @@ function sanitizeInput(raw: unknown): ExplanationInput | null {
     race_name: raceName,
     horse_name: horseName,
     predicted_rank: rank,
-    win_probability: probability !== null && Number.isFinite(probability) ? probability : null,
     features,
   }
 }
@@ -51,8 +48,8 @@ function fallbackExplanation(input: ExplanationInput): string {
   const positive = input.features.filter(feature => feature.direction === 'positive').slice(0, 2)
   const negative = input.features.filter(feature => feature.direction === 'negative').slice(0, 1)
   const parts = [`${input.horse_name}を${input.predicted_rank}位と予測。`]
-  if (positive.length > 0) parts.push(`${positive.map(feature => feature.label).join('・')}が評価を上げています。`)
-  if (negative.length > 0) parts.push(`${negative.map(feature => feature.label).join('・')}は評価を下げています。`)
+  if (positive.length > 0) parts.push(`${positive.map(feature => feature.label).join('・')}が速度スコアを上げています。`)
+  if (negative.length > 0) parts.push(`${negative.map(feature => feature.label).join('・')}は速度スコアを下げています。`)
   return parts.join('')
 }
 
@@ -60,7 +57,8 @@ function buildPrompt(input: ExplanationInput): string {
   return [
     '以下のTreeSHAP寄与度だけを根拠に、競馬予測の説明を日本語で作成してください。',
     '専門用語を避け、2文・140文字以内にしてください。予測の保証や購入推奨はしないでください。',
-    'positiveはAI評価を上げた要素、negativeは下げた要素です。数値や事実を推測で追加しないでください。',
+    'positiveは速度スコアを上げた要素、negativeは下げた要素です。勝率への寄与とは表現しないでください。',
+    '予測順位は速度スコアのレース内比較です。数値や事実を推測で追加しないでください。',
     JSON.stringify(input),
   ].join('\n')
 }

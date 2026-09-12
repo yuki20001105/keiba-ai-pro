@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import joblib
+import json
 import os
 from pathlib import Path
 from typing import Mapping
@@ -31,6 +32,47 @@ from app_config import (  # type: ignore
 
 router = APIRouter()
 _LOCAL_ENVIRONMENTS = frozenset({"local", "development", "dev", "test", "ci"})
+
+
+def _model_evaluation(model_path: Path, bundle: Mapping[str, object]) -> dict[str, object]:
+    """Return persisted evaluation data without recalculating a model on page load."""
+
+    embedded = bundle.get("evaluation")
+    if isinstance(embedded, Mapping):
+        return dict(embedded)
+
+    sidecar_path = model_path.with_suffix(".evaluation.json")
+    try:
+        if sidecar_path.is_file() and 0 < sidecar_path.stat().st_size <= 256 * 1024:
+            sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+            if (
+                isinstance(sidecar, dict)
+                and sidecar.get("model_id") == model_path.stem
+                and isinstance(sidecar.get("evaluation"), dict)
+            ):
+                return sidecar["evaluation"]
+    except (OSError, ValueError, TypeError):
+        pass
+
+    metrics = bundle.get("metrics")
+    if bundle.get("target") == "speed_deviation" and isinstance(metrics, Mapping):
+        # Older regression bundles used classification-shaped field names.
+        # Keep them readable while clearly leaving unmeasured fields empty.
+        return {
+            "schema": "model-evaluation-v1",
+            "target": "speed_deviation",
+            "primary": {
+                "rank_correlation": metrics.get("auc"),
+                "rmse": metrics.get("logloss"),
+                "top_pick_win_rate": None,
+                "favorite_win_rate": None,
+                "top_pick_win_rate_delta": None,
+                "win_roi": None,
+            },
+            "details": {},
+            "time_slices": [],
+        }
+    return {}
 
 
 def _model_created_sort_key(model_path: Path, bundle: Mapping[str, object]) -> float:
@@ -105,6 +147,7 @@ async def list_models(ultimate: bool | None = None):
                     or len(bundle.get("feature_cols_num") or []) + len(bundle.get("feature_cols_cat") or [])
                 )
                 model_id = model_path.stem
+                evaluation = _model_evaluation(model_path, bundle)
                 model = {
                     "model_id": model_id,
                     "model_path": str(model_path),
@@ -115,9 +158,11 @@ async def list_models(ultimate: bool | None = None):
                     "use_optimizer": bundle.get("use_optimizer", False),
                     "auc": bundle.get("metrics", {}).get("auc", 0.0),
                     "cv_auc_mean": bundle.get("metrics", {}).get("cv_auc_mean", 0.0),
+                    "evaluation": evaluation,
                     "training_date_from": bundle.get("training_date_from"),
                     "training_date_to": bundle.get("training_date_to"),
                     "n_rows": bundle.get("data_count", 0),
+                    "race_count": bundle.get("race_count", 0),
                     "feature_count": feat_count,
                     "is_active": model_id == active_id,
                 }
@@ -180,6 +225,7 @@ async def get_model_info(model_id: str):
             "target": bundle.get("target", "unknown"),
             "model_type": bundle.get("model_type", "unknown"),
             "metrics": bundle.get("metrics", {}),
+            "evaluation": _model_evaluation(model_files[0], bundle),
             "data_count": bundle.get("data_count", 0),
             "race_count": bundle.get("race_count", 0),
                 "feature_count": (
@@ -222,6 +268,7 @@ async def get_active_model():
             "training_date_to": bundle.get("training_date_to"),
             "auc": bundle.get("metrics", {}).get("auc", 0.0),
             "cv_auc_mean": bundle.get("metrics", {}).get("cv_auc_mean", 0.0),
+            "evaluation": _model_evaluation(model_path, bundle),
             "feature_count": feat_count,
             "n_rows": bundle.get("data_count", 0),
         }
