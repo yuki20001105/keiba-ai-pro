@@ -71,6 +71,7 @@ class TrainResponse(BaseModel):
     optuna_executed: bool = False
     optuna_error: Optional[str] = None
     feature_columns: List[str] = []
+    training_eligibility: Dict[str, Any] = Field(default_factory=dict)
 
 
 class PredictRequest(BaseModel):

@@ -287,9 +287,15 @@ def test_router_source_gates_legacy_side_effects_for_approved_execution() -> Non
     assert "approved_execution.prepare_artifact_directory()" in source
     assert "df_train_source" in source
     assert "df_validation_source" in source
-    assert "is_training=False" in source
-    assert "optimizer=optimizer" in source
-    assert "X.iloc[:approved_train_count]" in source
+    assert "prepare_lightgbm_feature_split(" in source
+    assert "prepared_split.train.optimizer" in source
+    assert "build_training_cv_plan(" in source
+    assert "folds=cv_fold_pairs" in source
+    assert "stable_race_order(" in source
+    assert "ranking_group_sizes(" in source
+    assert "full_history_frame=history_df" in source
+    assert "request.use_optuna and not (_is_regression or _is_ranking)" in source
+    assert "X.iloc[:train_count]" in source
     assert 'allows_calibration\n            and request.target not in ("speed_deviation", "rank")' in source
     assert "if uses_explicit_oot_split:" in source
     assert '"approved_execution"' in source

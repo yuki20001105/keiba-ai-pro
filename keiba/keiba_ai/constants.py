@@ -18,6 +18,7 @@ from __future__ import annotations
 FUTURE_FIELDS: frozenset = frozenset({
     # 走破タイム系
     "time_seconds",
+    "finish_time_seconds",
     "finish_time",
     # Result-page-only time figure. This is not known at prediction time.
     "time_index",
@@ -75,6 +76,11 @@ FUTURE_FIELDS: frozenset = frozenset({
     "finish",
     "finish_position",
     "actual_finish",
+    # 実走タイムから計算した教師値。別ターゲット学習時も入力にはしない。
+    "speed_deviation",
+    # 当該レースのコーナー通過順から算出される脚質。予測時点では未確定。
+    "running_style",
+    "running_style_num",
 })
 
 # ---------------------------------------------------------------------------

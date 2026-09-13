@@ -272,6 +272,145 @@ def _dist_band(distance) -> str:
 # ベクトル化 expanding window ヘルパー（モジュールレベル）
 # =========================================================
 
+def _sort_history_chronologically(history_df: pd.DataFrame) -> pd.DataFrame:
+    """Sort history by observed date, using race ID only as a tie breaker.
+
+    Provider race IDs are not a reliable chronology because their venue code
+    may precede the race number.  ``_history_event`` groups every valid date so
+    result-derived features can exclude the whole target date.  Legacy rows
+    without a valid date fall back to a race-level boundary.
+    """
+
+    ordered = history_df.copy()
+    if "race_date" in ordered.columns:
+        date_text = (
+            ordered["race_date"]
+            .astype("string")
+            .str.strip()
+            .str.replace("-", "", regex=False)
+            .str.replace("/", "", regex=False)
+        )
+        observed_date = pd.to_datetime(date_text, format="%Y%m%d", errors="coerce")
+    else:
+        date_text = pd.Series("", index=ordered.index, dtype="string")
+        observed_date = pd.Series(pd.NaT, index=ordered.index, dtype="datetime64[ns]")
+    if "race_id" in ordered.columns:
+        race_key = ordered["race_id"].astype("string").fillna("")
+    else:
+        race_key = pd.Series(ordered.index.astype(str), index=ordered.index, dtype="string")
+
+    race_date_fallback = pd.to_datetime(
+        race_key.str[:8],
+        format="%Y%m%d",
+        errors="coerce",
+    )
+    observed_date = observed_date.fillna(race_date_fallback)
+    observed_event = observed_date.dt.strftime("%Y%m%d").astype("string")
+
+    ordered["_history_date"] = observed_date
+    ordered["_history_race"] = race_key
+    ordered["_history_event"] = observed_event.where(
+        observed_date.notna(),
+        "race:" + race_key,
+    )
+    ordered["_history_original_order"] = np.arange(len(ordered), dtype=np.int64)
+    return ordered.sort_values(
+        ["_history_date", "_history_race", "_history_original_order"],
+        kind="mergesort",
+        na_position="last",
+    )
+
+
+def _prior_cumulative_values(
+    ordered: pd.DataFrame,
+    group_columns: list[str],
+    value_columns: list[str],
+) -> tuple[pd.Series, dict[str, pd.Series]]:
+    """Count and sum values strictly before the row's date/fallback race."""
+
+    event_grouping = group_columns + ["_history_event"]
+    total_count = ordered.groupby(group_columns, sort=False, dropna=False).cumcount() + 1
+    event_count = ordered.groupby(event_grouping, sort=False, dropna=False).cumcount() + 1
+    prior_count = total_count - event_count
+    prior_values: dict[str, pd.Series] = {}
+    for column in value_columns:
+        total = ordered.groupby(group_columns, sort=False, dropna=False)[column].cumsum()
+        event = ordered.groupby(event_grouping, sort=False, dropna=False)[column].cumsum()
+        prior_values[column] = total - event
+    return prior_count, prior_values
+
+
+def _prior_rolling_mean(
+    ordered: pd.DataFrame,
+    *,
+    group_column: str,
+    value_column: str,
+    window: int,
+    min_periods: int,
+) -> pd.Series:
+    """Return a last-N mean using only completed dates/fallback races."""
+
+    inclusive = (
+        ordered.groupby(group_column, sort=False, dropna=False)[value_column]
+        .rolling(window, min_periods=min_periods)
+        .mean()
+        .droplevel(0)
+        .reindex(ordered.index)
+    )
+    state = ordered[[group_column, "_history_event"]].copy()
+    state["_inclusive"] = inclusive
+    state = state.groupby(
+        [group_column, "_history_event"],
+        sort=False,
+        dropna=False,
+        as_index=False,
+    ).tail(1)
+    state["_prior"] = state.groupby(group_column, sort=False, dropna=False)[
+        "_inclusive"
+    ].shift(1)
+    lookup = state.set_index([group_column, "_history_event"])["_prior"]
+    row_index = pd.MultiIndex.from_arrays(
+        [ordered[group_column], ordered["_history_event"]],
+        names=[group_column, "_history_event"],
+    )
+    return pd.Series(lookup.reindex(row_index).to_numpy(), index=ordered.index, dtype=float)
+
+
+def _prior_rolling_std(
+    ordered: pd.DataFrame,
+    *,
+    group_column: str,
+    value_column: str,
+    window: int,
+    min_periods: int,
+) -> pd.Series:
+    """Return a sample standard deviation at the same strict boundary."""
+
+    inclusive = (
+        ordered.groupby(group_column, sort=False, dropna=False)[value_column]
+        .rolling(window, min_periods=min_periods)
+        .std(ddof=1)
+        .droplevel(0)
+        .reindex(ordered.index)
+    )
+    state = ordered[[group_column, "_history_event"]].copy()
+    state["_inclusive"] = inclusive
+    state = state.groupby(
+        [group_column, "_history_event"],
+        sort=False,
+        dropna=False,
+        as_index=False,
+    ).tail(1)
+    state["_prior"] = state.groupby(group_column, sort=False, dropna=False)[
+        "_inclusive"
+    ].shift(1)
+    lookup = state.set_index([group_column, "_history_event"])["_prior"]
+    row_index = pd.MultiIndex.from_arrays(
+        [ordered[group_column], ordered["_history_event"]],
+        names=[group_column, "_history_event"],
+    )
+    return pd.Series(lookup.reindex(row_index).to_numpy(), index=ordered.index, dtype=float)
+
 def _expanding_win_rate_by_group(
     history_df: pd.DataFrame,
     id_col: str,
@@ -281,21 +420,19 @@ def _expanding_win_rate_by_group(
 ) -> pd.DataFrame:
     """id_col × group_col でグループ化した expanding window 勝率を計算。
 
-    各行には「その行より前のレース（race_id 昇順）」だけを使った勝率をセットする。
+    各行には「その開催日より前のレース」だけを使った勝率をセットする。
     horse_surface_win_rate, jockey_course_win_rate 等の計算に使用。
     """
     if id_col not in history_df.columns or group_col not in history_df.columns:
         return history_df
     orig_idx = history_df.index.copy()
-    s = history_df.sort_values('race_id', kind='mergesort').copy()
+    s = _sort_history_chronologically(history_df)
     fin_num  = pd.to_numeric(s['finish'], errors='coerce').fillna(0)
     win_flag = (fin_num == 1).astype(float)
-    grp      = s[[id_col, group_col]].astype(str).apply('|'.join, axis=1)
-    race_cnt = s.groupby(grp, sort=False).cumcount()
+    s['_history_group'] = s[[id_col, group_col]].astype(str).apply('|'.join, axis=1)
     s['_w']  = win_flag
-    cum_wins = s.groupby(grp, sort=False)['_w'].cumsum() - s['_w']
-    s.drop(columns=['_w'], inplace=True)
-    s[out_rate] = (cum_wins / race_cnt.clip(1)).fillna(0.0)
+    race_cnt, prior = _prior_cumulative_values(s, ['_history_group'], ['_w'])
+    s[out_rate] = (prior['_w'] / race_cnt.clip(1)).fillna(0.0)
     s[out_cnt]  = race_cnt
     s_back = s.reindex(orig_idx)
     history_df = history_df.copy()
@@ -319,18 +456,15 @@ def _expanding_grouped_stats(
     if any(c not in history_df.columns for c in needed):
         return history_df
     orig_idx = history_df.index.copy()
-    s = history_df.sort_values('race_id', kind='mergesort').copy()
+    s = _sort_history_chronologically(history_df)
     fin_num  = pd.to_numeric(s['finish'], errors='coerce').fillna(0)
     win_flag = (fin_num == 1).astype(float)
-    grp      = s[[id_col, group_col]].astype(str).apply('|'.join, axis=1)
-    race_cnt = s.groupby(grp, sort=False).cumcount()
+    s['_history_group'] = s[[id_col, group_col]].astype(str).apply('|'.join, axis=1)
     s['_w'] = win_flag
     s['_f'] = fin_num
-    cum_wins = s.groupby(grp, sort=False)['_w'].cumsum() - s['_w']
-    cum_fin  = s.groupby(grp, sort=False)['_f'].cumsum() - s['_f']
-    s.drop(columns=['_w', '_f'], inplace=True)
-    s[f'{out_prefix}_win_rate']   = (cum_wins / race_cnt.clip(1)).fillna(0.0)
-    s[f'{out_prefix}_avg_finish'] = (cum_fin  / race_cnt.clip(1)).fillna(0.0)
+    race_cnt, prior = _prior_cumulative_values(s, ['_history_group'], ['_w', '_f'])
+    s[f'{out_prefix}_win_rate']   = (prior['_w'] / race_cnt.clip(1)).fillna(0.0)
+    s[f'{out_prefix}_avg_finish'] = (prior['_f'] / race_cnt.clip(1)).fillna(0.0)
     s[f'{out_prefix}_races']      = race_cnt
     s_back = s.reindex(orig_idx)
     history_df = history_df.copy()
@@ -355,22 +489,18 @@ def _expanding_stats(
     if eid_col not in history_df.columns:
         return history_df
     orig_idx   = history_df.index.copy()
-    s          = history_df.sort_values('race_id', kind='mergesort').copy()
+    s          = _sort_history_chronologically(history_df)
     fin_num    = pd.to_numeric(s['finish'], errors='coerce').fillna(0)
     win_flag   = (fin_num == 1).astype(float)
     place_flag = (fin_num <= 3).astype(float)   # 3着以内
     show_flag  = (fin_num <= 2).astype(float)   # 2着以内
-    race_cnt   = s.groupby(eid_col, sort=False).cumcount()
     s['_w']  = win_flag
     s['_pl'] = place_flag
     s['_sh'] = show_flag
-    cum_w  = s.groupby(eid_col, sort=False)['_w'].cumsum()  - s['_w']
-    cum_pl = s.groupby(eid_col, sort=False)['_pl'].cumsum() - s['_pl']
-    cum_sh = s.groupby(eid_col, sort=False)['_sh'].cumsum() - s['_sh']
-    s.drop(columns=['_w', '_pl', '_sh'], inplace=True)
-    s[f'{prefix}_win_rate']        = (cum_w  / race_cnt.clip(1)).fillna(0.0)
-    s[f'{prefix}_show_rate']       = (cum_pl / race_cnt.clip(1)).fillna(0.0)
-    s[f'{prefix}_place_rate_top2'] = (cum_sh / race_cnt.clip(1)).fillna(0.0)
+    race_cnt, prior = _prior_cumulative_values(s, [eid_col], ['_w', '_pl', '_sh'])
+    s[f'{prefix}_win_rate']        = (prior['_w'] / race_cnt.clip(1)).fillna(0.0)
+    s[f'{prefix}_show_rate']       = (prior['_pl'] / race_cnt.clip(1)).fillna(0.0)
+    s[f'{prefix}_place_rate_top2'] = (prior['_sh'] / race_cnt.clip(1)).fillna(0.0)
     s_back = s.reindex(orig_idx)
     history_df = history_df.copy()
     for col in [f'{prefix}_win_rate', f'{prefix}_show_rate', f'{prefix}_place_rate_top2']:
@@ -654,15 +784,18 @@ def _fe_prev_race(df: pd.DataFrame) -> pd.DataFrame:
         _wins = pd.to_numeric(df['horse_total_wins'], errors='coerce')
         df['horse_win_rate'] = np.where(_runs > 0, _wins / _runs, np.nan)
 
-    # スピード指数（前走タイム ÷ 距離、同条件 z-score）
+    # スピード指数（前走タイム ÷ 距離、同一レース内 z-score）
+    #
+    # 全期間の surface/距離別平均で標準化すると、将来の検証期間の分布が
+    # 過去の学習行へ逆流する。同じレースに出走する馬同士の比較なら、入力は
+    # すべて予測時点で既知であり、期間をまたぐ fitted state も持たない。
     if 'prev_race_time' in df.columns and 'prev_race_distance' in df.columns:
         df['prev_race_time_seconds'] = df['prev_race_time'].apply(parse_race_time_to_seconds)
         _pt = df['prev_race_time_seconds']
         _pd2 = pd.to_numeric(df['prev_race_distance'], errors='coerce')
         df['prev_speed_index'] = np.where((_pt > 0) & (_pd2 > 0), _pd2 / _pt, np.nan)
-        _grp = [c for c in ('surface', 'prev_race_distance') if c in df.columns]
-        if _grp:
-            df['prev_speed_zscore'] = df.groupby(_grp, sort=False, dropna=False)['prev_speed_index'].transform(
+        if 'race_id' in df.columns:
+            df['prev_speed_zscore'] = df.groupby('race_id', sort=False, dropna=False)['prev_speed_index'].transform(
                 lambda x: (x - x.mean()) / (x.std() + 1e-8) if len(x) > 1 else 0.0
             )
         else:
@@ -673,9 +806,8 @@ def _fe_prev_race(df: pd.DataFrame) -> pd.DataFrame:
         _p2t = pd.to_numeric(df['prev2_race_time'], errors='coerce')
         _p2d = pd.to_numeric(df['prev2_race_distance'], errors='coerce')
         df['prev2_speed_index'] = np.where((_p2t > 0) & (_p2d > 0), _p2d / _p2t, np.nan)
-        _grp2 = [c for c in ('surface', 'prev2_race_distance') if c in df.columns]
-        if _grp2:
-            df['prev2_speed_zscore'] = df.groupby(_grp2, sort=False, dropna=False)['prev2_speed_index'].transform(
+        if 'race_id' in df.columns:
+            df['prev2_speed_zscore'] = df.groupby('race_id', sort=False, dropna=False)['prev2_speed_index'].transform(
                 lambda x: (x - x.mean()) / (x.std() + 1e-8) if len(x) > 1 else 0.0
             )
         else:
@@ -950,28 +1082,34 @@ def _feh_horse_aptitude(
 def _feh_gate_bias(
     df: pd.DataFrame, h: pd.DataFrame
 ) -> tuple:
-    """枠番バイアス（会場×距離帯×馬場）を静的集計で付与する。"""
+    """枠番バイアスを対象日より前の確定結果だけで付与する。"""
     if not all(c in h.columns for c in ('bracket_number', 'finish', 'venue')):
         return df, h
 
-    _hg = h.copy()
+    _hg = _sort_history_chronologically(h)
     _hg['_is_inner'] = (pd.to_numeric(_hg['bracket_number'], errors='coerce') <= 3).astype(int)
     _hg['_is_win']   = (pd.to_numeric(_hg['finish'],         errors='coerce') == 1).astype(int)
     _hg['_dist_band'] = _hg['distance'].apply(_dist_band) if 'distance' in _hg.columns else 'unknown'
     _gate_keys = ['venue', '_dist_band'] + (['surface'] if 'surface' in _hg.columns else [])
-    _gate_agg = (
-        _hg.groupby(_gate_keys + ['_is_inner'], sort=False)
-        .agg(_cnt=('_is_win', 'count'), _wins=('_is_win', 'sum'))
-        .reset_index()
+    _prior_count, _prior = _prior_cumulative_values(
+        _hg,
+        _gate_keys + ['_is_inner'],
+        ['_is_win'],
     )
-    _gate_agg['_gate_wr'] = np.where(_gate_agg['_cnt'] >= 10,
-                                      _gate_agg['_wins'] / _gate_agg['_cnt'], 0.5)
+    _hg['_gate_wr'] = np.where(
+        _prior_count >= 10,
+        _prior['_is_win'] / _prior_count.clip(1),
+        0.5,
+    )
+    _gate_history = _hg[
+        _gate_keys + ['_is_inner', 'race_id', '_gate_wr']
+    ].drop_duplicates(subset=_gate_keys + ['_is_inner', 'race_id'])
     df['_dist_band'] = df['distance'].apply(_dist_band) if 'distance' in df.columns else 'unknown'
     df['_is_inner']  = (
         pd.to_numeric(df.get('bracket_number', pd.Series([None] * len(df))), errors='coerce') <= 3
     ).fillna(True).astype(int)
-    _merge_keys = _gate_keys + ['_is_inner']
-    df = df.merge(_gate_agg[_merge_keys + ['_gate_wr']], on=_merge_keys, how='left')
+    _merge_keys = _gate_keys + ['_is_inner', 'race_id']
+    df = df.merge(_gate_history, on=_merge_keys, how='left')
     df['gate_win_rate'] = df['_gate_wr'].fillna(0.5)
     df = df.drop(columns=['_dist_band', '_is_inner', '_gate_wr'], errors='ignore')
 
@@ -986,13 +1124,12 @@ def _feh_jt_combo(
         return df, h
 
     _orig = h.index.copy()
-    _s    = h.sort_values('race_id', kind='mergesort').copy()
+    _s    = _sort_history_chronologically(h)
     _fin  = pd.to_numeric(_s['finish'], errors='coerce').fillna(0)
-    _grp  = _s['jockey_id'].astype(str) + '|' + _s['trainer_id'].astype(str)
-    _cnt  = _s.groupby(_grp, sort=False).cumcount()
+    _s['_history_group'] = _s['jockey_id'].astype(str) + '|' + _s['trainer_id'].astype(str)
     _s['_w'] = (_fin == 1).astype(float)
-    _wins = _s.groupby(_grp, sort=False)['_w'].cumsum() - _s['_w']
-    _s.drop(columns=['_w'], inplace=True)
+    _cnt, _prior = _prior_cumulative_values(_s, ['_history_group'], ['_w'])
+    _wins = _prior['_w']
     _wr     = (_wins / _cnt.clip(1)).fillna(0.0)
     _smooth = (_cnt * _wr + 5 * 0.075) / (_cnt + 5)   # ベイズ平滑化 (K=5, global_wr=0.075)
     _s[['jt_combo_races', 'jt_combo_win_rate', 'jt_combo_win_rate_smooth']] = (
@@ -1051,23 +1188,27 @@ def _feh_recent_form_legacy(
         return df, h
 
     _oi   = h.index.copy()
-    _s    = h.sort_values('race_id', kind='mergesort').copy()
+    _s    = _sort_history_chronologically(h)
     _fin  = pd.to_numeric(_s['finish'], errors='coerce')
     _win  = (_fin == 1).astype(float)
     _s['_fin'], _s['_win'] = _fin, _win
     # transform(lambda) の代わりに shift + groupby.rolling でベクトル化
-    _fin_sh = _s.groupby('horse_id')['_fin'].shift(1)
-    _win_sh = _s.groupby('horse_id')['_win'].shift(1)
     for _n, _sfx in [(3, 'past3'), (5, 'past5'), (10, 'past10')]:
-        _s[f'{_sfx}_avg_finish'] = (
-            _fin_sh.groupby(_s['horse_id'])
-            .rolling(_n, min_periods=1).mean()
-            .droplevel(0).reindex(_s.index))
+        _s[f'{_sfx}_avg_finish'] = _prior_rolling_mean(
+            _s,
+            group_column='horse_id',
+            value_column='_fin',
+            window=_n,
+            min_periods=1,
+        )
     for _n, _sfx in [(3, 'past3'), (5, 'past5')]:
-        _s[f'{_sfx}_win_rate'] = (
-            _win_sh.groupby(_s['horse_id'])
-            .rolling(_n, min_periods=1).mean()
-            .droplevel(0).reindex(_s.index))
+        _s[f'{_sfx}_win_rate'] = _prior_rolling_mean(
+            _s,
+            group_column='horse_id',
+            value_column='_win',
+            window=_n,
+            min_periods=1,
+        )
     _s.drop(columns=['_fin', '_win'], inplace=True)
     _past_cols = ['past3_avg_finish', 'past5_avg_finish', 'past10_avg_finish',
                   'past3_win_rate', 'past5_win_rate']
@@ -1102,15 +1243,17 @@ def _feh_entity_recent30(
         if _eid not in h.columns or _eid not in df.columns:
             continue
         _oi   = h.index.copy()
-        _s    = h.sort_values('race_id', kind='mergesort').copy()
+        _s    = _sort_history_chronologically(h)
         _fin  = pd.to_numeric(_s['finish'], errors='coerce').fillna(0)
         _s['_win'] = (_fin == 1).astype(float)
         _rc  = f'{_pfx}_recent30_win_rate'
-        _win_sh = _s.groupby(_eid)['_win'].shift(1)
-        _s[_rc] = (
-            _win_sh.groupby(_s[_eid])
-            .rolling(30, min_periods=5).mean()
-            .droplevel(0).reindex(_s.index))
+        _s[_rc] = _prior_rolling_mean(
+            _s,
+            group_column=_eid,
+            value_column='_win',
+            window=30,
+            min_periods=5,
+        )
         _s.drop(columns=['_win'], inplace=True)
         h[_rc] = _s.reindex(_oi)[_rc].values
         df = df.merge(
@@ -1131,15 +1274,17 @@ def _feh_last_3f(
         if _src_col not in h.columns or 'horse_id' not in h.columns:
             continue
         _oi  = h.index.copy()
-        _s   = h.sort_values('race_id', kind='mergesort').copy()
+        _s   = _sort_history_chronologically(h)
         _val = pd.to_numeric(_s[_src_col], errors='coerce')
         _s['_val'] = _val
-        _val_sh = _s.groupby('horse_id')['_val'].shift(1)
         for _n, _oc in zip([3, 5] if len(_out_cols) > 1 else [3], _out_cols):
-            _s[_oc] = (
-                _val_sh.groupby(_s['horse_id'])
-                .rolling(_n, min_periods=1).mean()
-                .droplevel(0).reindex(_s.index))
+            _s[_oc] = _prior_rolling_mean(
+                _s,
+                group_column='horse_id',
+                value_column='_val',
+                window=_n,
+                min_periods=1,
+            )
         _s.drop(columns=['_val'], inplace=True)
         _back = _s.reindex(_oi)
         for _oc in _out_cols:
@@ -1160,13 +1305,15 @@ def _feh_payout_history(
         return df, h
 
     _oi  = h.index.copy()
-    _s   = h.sort_values('race_id', kind='mergesort').copy()
+    _s   = _sort_history_chronologically(h)
     _s['_tpv'] = np.log1p(pd.to_numeric(_s['tansho_payout'], errors='coerce').fillna(0))
-    _tpv_sh = _s.groupby('horse_id')['_tpv'].shift(1)
-    _s['past5_avg_tansho_log'] = (
-        _tpv_sh.groupby(_s['horse_id'])
-        .rolling(5, min_periods=1).mean()
-        .droplevel(0).reindex(_s.index))
+    _s['past5_avg_tansho_log'] = _prior_rolling_mean(
+        _s,
+        group_column='horse_id',
+        value_column='_tpv',
+        window=5,
+        min_periods=1,
+    )
     _s.drop(columns=['_tpv'], inplace=True)
     h['past5_avg_tansho_log'] = _s.reindex(_oi)['past5_avg_tansho_log'].values
     df = df.merge(
@@ -1185,19 +1332,23 @@ def _feh_running_style(
         return df, h
 
     _oi  = h.index.copy()
-    _s   = h.sort_values('race_id', kind='mergesort').copy()
+    _s   = _sort_history_chronologically(h)
     _val = pd.to_numeric(_s['running_style_num'], errors='coerce')
     _s['_rsv'] = _val
-    _rsv_sh = _s.groupby('horse_id')['_rsv'].shift(1)
-    _s['running_style_mean_5'] = (
-        _rsv_sh.groupby(_s['horse_id'])
-        .rolling(5, min_periods=1).mean()
-        .droplevel(0).reindex(_s.index))
-    _s['running_style_std_5'] = (
-        _rsv_sh.groupby(_s['horse_id'])
-        .rolling(5, min_periods=2).std()
-        .droplevel(0).reindex(_s.index)
-        .fillna(0.0))
+    _s['running_style_mean_5'] = _prior_rolling_mean(
+        _s,
+        group_column='horse_id',
+        value_column='_rsv',
+        window=5,
+        min_periods=1,
+    )
+    _s['running_style_std_5'] = _prior_rolling_std(
+        _s,
+        group_column='horse_id',
+        value_column='_rsv',
+        window=5,
+        min_periods=2,
+    ).fillna(0.0)
     _s.drop(columns=['_rsv'], inplace=True)
     _back = _s.reindex(_oi)
     for _c in ['running_style_mean_5', 'running_style_std_5']:

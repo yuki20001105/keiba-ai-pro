@@ -153,13 +153,13 @@ engineered_features:
 - name: running_style
   stage: horse_category
   type: categorical
-  enabled: true
-  description: 脚質分類 (逃げ/先行/差し/追込)
+  enabled: false
+  description: 当該レースのコーナー通過順から算出する結果情報（学習入力から除外）
 - name: running_style_num
   stage: horse_category
   type: numeric
-  enabled: true
-  description: 脚質数値エンコード
+  enabled: false
+  description: 当該レース脚質の数値表現（学習入力から除外）
 - name: rest_short
   stage: horse_category
   type: binary

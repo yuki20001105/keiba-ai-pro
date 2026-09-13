@@ -49,12 +49,26 @@ from training.job_store import (  # type: ignore
     mark_interrupted_train_jobs,
 )
 from training.local_feature_contract import (  # type: ignore
+    build_training_cv_plan,
     derive_local_feature_schema,
     engineer_training_features,
+    filter_history_through_last_target,
     filter_training_period,
-    prepare_lightgbm_feature_frame,
+    prepare_lightgbm_feature_split,
+    prepare_training_target,
+    ranking_group_sizes,
+    select_training_holdout,
+    stable_race_order,
 )
-from training.model_evaluation import evaluate_speed_deviation_predictions  # type: ignore
+from training.eligibility import (  # type: ignore
+    TrainingEligibilityError,
+    load_recorded_quality_states,
+    select_training_eligible_rows,
+)
+from training.model_evaluation import (  # type: ignore
+    evaluate_ranking_predictions,
+    evaluate_speed_deviation_predictions,
+)
 from training.local_retrain import (  # type: ignore
     LOCAL_EXECUTION_POLICY,
     LocalExecutionBundle,
@@ -507,18 +521,16 @@ async def _do_train(
         approved_execution is not None
         and getattr(approved_execution, "uses_explicit_oot_split", True)
     )
-    allows_calibration = bool(
-        approved_execution is None
-        or getattr(approved_execution, "allows_calibration", False)
-    )
+    # The only available calibration data is also the untouched evaluation
+    # set.  Fitting and scoring a calibrator on those same rows is optimistic,
+    # so calibration stays disabled until a separate calibration partition is
+    # part of the execution contract.
+    allows_calibration = False
     if progress_cb is None:
         def progress_cb(msg: str, pct: int = None): pass  # noqa: F811
     try:
         import pandas as pd
         from keiba_ai.db_ultimate_loader import load_ultimate_training_frame  # type: ignore
-        from keiba_ai.lightgbm_feature_optimizer import (  # type: ignore
-            prepare_for_lightgbm_ultimate,
-        )
         from keiba_ai.optuna_optimizer import OptunaLightGBMOptimizer  # type: ignore
 
         # Phase 0: 87特徴量モード固定（入力値に関わらず常に ultimate LightGBM）
@@ -569,18 +581,18 @@ async def _do_train(
 
         # データ読み辿み（常に ultimate モード）
         progress_cb("学習データ読み込み中...", 8)
-        df = load_ultimate_training_frame(
+        loaded_df = load_ultimate_training_frame(
             db_path,
             read_only=approved_execution is not None,
         )
 
-        print(f"DEBUG: Loaded {len(df)} rows from database")
-        progress_cb(f"データ読み込み完了 ({len(df):,} 行)", 15)
+        print(f"DEBUG: Loaded {len(loaded_df)} rows from database")
+        progress_cb(f"データ読み込み完了 ({len(loaded_df):,} 行)", 15)
 
         # Preparation and execution share this exact period selector so the
         # immutable local feature contract cannot drift from runtime.
         df = filter_training_period(
-            df,
+            loaded_df,
             training_date_from=request.training_date_from,
             training_date_to=request.training_date_to,
         )
@@ -590,6 +602,51 @@ async def _do_train(
                 status_code=400,
                 detail=f"訓練データが見つかりません。DB: {db_path}",
             )
+
+        quality_states = load_recorded_quality_states(db_path)
+        try:
+            eligibility = select_training_eligible_rows(
+                df,
+                target=request.target,
+                training_date_from=request.training_date_from,
+                training_date_to=request.training_date_to,
+                recorded_quality_states=quality_states,
+            )
+        except TrainingEligibilityError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"学習可能データの判定に失敗しました: {exc}",
+            ) from exc
+        df = eligibility.frame
+        eligibility_manifest = eligibility.manifest.as_dict()
+        if df.empty:
+            raise HTTPException(
+                status_code=400,
+                detail="品質条件と目的変数を満たす学習可能データがありません",
+            )
+        try:
+            history_source = filter_history_through_last_target(loaded_df, df)
+            history_eligibility = (
+                eligibility
+                if not request.training_date_from
+                and not request.training_date_to
+                and len(history_source) == len(loaded_df)
+                else select_training_eligible_rows(
+                    history_source,
+                    target=request.target,
+                    recorded_quality_states=quality_states,
+                )
+            )
+        except (TrainingEligibilityError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"学習履歴データの判定に失敗しました: {exc}",
+            ) from exc
+        history_df = history_eligibility.frame
+        progress_cb(
+            f"学習可能データを確認 ({len(df):,} 行)",
+            18,
+        )
 
         evaluation_frame = pd.DataFrame(index=df.index)
         for evaluation_column in (
@@ -604,15 +661,73 @@ async def _do_train(
                 df[evaluation_column] if evaluation_column in df.columns else pd.NA
             )
 
-        # ターゲット変数を先に取得（FUTURE_FIELDSのdrop前にfinish列が必要）
-        from keiba_ai.train import _make_target  # type: ignore
-        y = _make_target(df, request.target)
+        # Freeze the evaluation boundary before target normalization or
+        # optimizer fitting.  This keeps all holdout distributions invisible
+        # to fitted training state.
+        _is_regression = request.target == "speed_deviation"
+        _is_ranking = request.target == "rank"
+        if uses_explicit_oot_split:
+            if "race_date" not in df.columns:
+                raise ApprovedExecutionError("approved-period-column-unavailable")
+            approved_dates = pd.to_datetime(
+                df["race_date"].astype(str).str.strip(),
+                format="%Y%m%d",
+                errors="coerce",
+            )
+            train_mask = approved_dates.between(
+                pd.Timestamp(approved_execution.train_period_start),
+                pd.Timestamp(approved_execution.train_period_end),
+            )
+            validation_mask = approved_dates.between(
+                pd.Timestamp(approved_execution.validation_period_start),
+                pd.Timestamp(approved_execution.validation_period_end),
+            )
+            train_positions = tuple(np.flatnonzero(train_mask.to_numpy()).tolist())
+            validation_positions = tuple(
+                np.flatnonzero(validation_mask.to_numpy()).tolist()
+            )
+            holdout_is_time_based = True
+            if len(train_positions) < 200 or len(validation_positions) < 50:
+                raise ApprovedExecutionError("approved-period-observations-insufficient")
+        else:
+            try:
+                holdout = select_training_holdout(
+                    df,
+                    target=request.target,
+                    test_size=request.test_size,
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"学習・評価データを分割できません: {exc}",
+                ) from exc
+            train_positions = holdout.train_positions
+            validation_positions = holdout.validation_positions
+            holdout_is_time_based = holdout.time_based
 
-        if request.target != "speed_deviation" and len(y.unique()) < 2:
-            raise HTTPException(status_code=400, detail="2クラス以上が必要です")
+        # Build any target normalization strictly from training outcomes.
+        prepared_target = prepare_training_target(
+            df,
+            target=request.target,
+            train_positions=train_positions,
+        )
+        y = prepared_target.values
+        speed_deviation_baseline = prepared_target.speed_deviation_baseline
+        if not _is_regression:
+            if y.nunique() < 2:
+                raise HTTPException(status_code=400, detail="2クラス以上が必要です")
+            if uses_explicit_oot_split and (
+                y.iloc[list(train_positions)].nunique() < 2
+                or y.iloc[list(validation_positions)].nunique() < 2
+            ):
+                raise ApprovedExecutionError("approved-period-target-classes-insufficient")
+
         # 特徴量エンジニアリング（finish等を使うのでdrop前に実施）
         progress_cb("特徴量エンジニアリング中...", 20)
-        df = engineer_training_features(df)
+        df = engineer_training_features(
+            df,
+            full_history_frame=history_df,
+        )
 
         _all_feature_columns: List[str] = []
         optimizer = None
@@ -627,66 +742,81 @@ async def _do_train(
             try:
                 print("\n=== LightGBM最適化モード ===")
                 progress_cb("特徴量選択・最適化中...", 28)
-                exclude_cols = [
-                    request.target, "race_id", "horse_id", "jockey_id",
-                    "trainer_id", "owner_id", "finish_position",
-                ]
-                if uses_explicit_oot_split:
-                    if "race_date" not in df.columns:
-                        raise ApprovedExecutionError("approved-period-column-unavailable")
-                    approved_dates = pd.to_datetime(
-                        df["race_date"].astype(str).str.strip(),
-                        format="%Y%m%d",
-                        errors="coerce",
+                train_position_list = list(train_positions)
+                validation_position_list = list(validation_positions)
+                df_train_source = df.iloc[train_position_list].copy()
+                df_validation_source = df.iloc[validation_position_list].copy()
+                y_train_source = y.iloc[train_position_list].reset_index(drop=True)
+                y_validation_source = y.iloc[validation_position_list].reset_index(drop=True)
+                if not _is_regression and (
+                    y_train_source.nunique() < 2
+                    or y_validation_source.nunique() < 2
+                ):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="学習・評価の両方に2クラス以上が必要です",
                     )
-                    train_mask = approved_dates.between(
-                        pd.Timestamp(approved_execution.train_period_start),
-                        pd.Timestamp(approved_execution.train_period_end),
-                    )
-                    validation_mask = approved_dates.between(
-                        pd.Timestamp(approved_execution.validation_period_start),
-                        pd.Timestamp(approved_execution.validation_period_end),
-                    )
-                    if int(train_mask.sum()) < 200 or int(validation_mask.sum()) < 50:
-                        raise ApprovedExecutionError("approved-period-observations-insufficient")
-                    df_train_source = df.loc[train_mask].copy()
-                    df_validation_source = df.loc[validation_mask].copy()
-                    y_train_source = y.loc[train_mask].reset_index(drop=True)
-                    y_validation_source = y.loc[validation_mask].reset_index(drop=True)
-                    if y_train_source.nunique() < 2 or y_validation_source.nunique() < 2:
-                        raise ApprovedExecutionError("approved-period-target-classes-insufficient")
+                evaluation_train = evaluation_frame.iloc[train_position_list].copy()
+                evaluation_validation = evaluation_frame.iloc[
+                    validation_position_list
+                ].copy()
 
-                    df_train_optimized, optimizer, categorical_features = (
-                        prepare_for_lightgbm_ultimate(
-                            df_train_source,
-                            target_col=request.target,
-                            is_training=True,
-                        )
+                prepared_split = prepare_lightgbm_feature_split(
+                    df_train_source,
+                    df_validation_source,
+                    target=request.target,
+                )
+                optimizer = prepared_split.train.optimizer
+                categorical_features = list(
+                    prepared_split.train.categorical_features
+                )
+                X_train_source = prepared_split.train.features
+                X_validation_source = prepared_split.validation.features
+                df_train_optimized = prepared_split.train.optimized
+                df_validation_optimized = prepared_split.validation.optimized
+
+                if _is_ranking:
+                    # LightGBM ranking query sizes describe contiguous row
+                    # blocks.  Stabilize every aligned object by race before
+                    # constructing those sizes.
+                    train_order = list(stable_race_order(df_train_source))
+                    validation_order = list(
+                        stable_race_order(df_validation_source)
                     )
-                    df_validation_optimized, _, _ = prepare_for_lightgbm_ultimate(
-                        df_validation_source,
-                        target_col=request.target,
-                        is_training=False,
-                        optimizer=optimizer,
+                    df_train_source = df_train_source.iloc[train_order].reset_index(
+                        drop=True
                     )
-                    X_train_source = df_train_optimized.drop(
-                        [c for c in exclude_cols if c in df_train_optimized.columns],
-                        axis=1,
+                    df_validation_source = df_validation_source.iloc[
+                        validation_order
+                    ].reset_index(drop=True)
+                    y_train_source = y_train_source.iloc[train_order].reset_index(
+                        drop=True
                     )
-                    X_validation_source = df_validation_optimized.drop(
-                        [c for c in exclude_cols if c in df_validation_optimized.columns],
-                        axis=1,
+                    y_validation_source = y_validation_source.iloc[
+                        validation_order
+                    ].reset_index(drop=True)
+                    evaluation_train = evaluation_train.iloc[
+                        train_order
+                    ].reset_index(drop=True)
+                    evaluation_validation = evaluation_validation.iloc[
+                        validation_order
+                    ].reset_index(drop=True)
+                    X_train_source = X_train_source.iloc[train_order].reset_index(
+                        drop=True
                     )
-                    train_objects = X_train_source.select_dtypes(include=["object"]).columns.tolist()
-                    validation_objects = X_validation_source.select_dtypes(
-                        include=["object"]
-                    ).columns.tolist()
-                    if train_objects:
-                        X_train_source = X_train_source.drop(columns=train_objects)
-                    if validation_objects:
-                        X_validation_source = X_validation_source.drop(columns=validation_objects)
+                    X_validation_source = X_validation_source.iloc[
+                        validation_order
+                    ].reset_index(drop=True)
+                    df_train_optimized = df_train_optimized.iloc[
+                        train_order
+                    ].reset_index(drop=True)
+                    df_validation_optimized = df_validation_optimized.iloc[
+                        validation_order
+                    ].reset_index(drop=True)
+
+                if approved_execution is not None:
                     try:
-                        approved_columns = approved_execution.select_feature_columns(
+                        bound_columns = approved_execution.select_feature_columns(
                             X_train_source.columns.tolist(),
                             future_fields=FUTURE_FIELDS,
                         )
@@ -695,168 +825,100 @@ async def _do_train(
                             future_fields=FUTURE_FIELDS,
                         )
                     except ApprovedExecutionError as exc:
+                        mismatch_detail = (
+                            "approved training contract mismatch"
+                            if uses_explicit_oot_split
+                            else "local training contract mismatch"
+                        )
                         raise HTTPException(
                             status_code=409,
-                            detail="approved training contract mismatch",
+                            detail=mismatch_detail,
                         ) from exc
-                    X_train_source = X_train_source.loc[:, list(approved_columns)]
-                    X_validation_source = X_validation_source.loc[:, list(approved_columns)]
+                    X_train_source = X_train_source.loc[:, list(bound_columns)]
+                    X_validation_source = X_validation_source.loc[:, list(bound_columns)]
                     categorical_features = [
-                        feature for feature in categorical_features if feature in approved_columns
+                        feature
+                        for feature in categorical_features
+                        if feature in bound_columns
                     ]
-                    approved_train_count = len(X_train_source)
-                    X = pd.concat(
-                        [X_train_source, X_validation_source],
-                        ignore_index=True,
-                    )
-                    y = pd.concat(
-                        [y_train_source, y_validation_source],
-                        ignore_index=True,
-                    )
-                    df = pd.concat(
-                        [df_train_source, df_validation_source],
-                        ignore_index=True,
-                    )
-                    evaluation_frame = pd.concat(
-                        [
-                            evaluation_frame.loc[train_mask],
-                            evaluation_frame.loc[validation_mask],
-                        ],
-                        ignore_index=True,
-                    )
-                    df_optimized = pd.concat(
-                        [df_train_optimized, df_validation_optimized],
-                        ignore_index=True,
-                    )
-                else:
-                    prepared_features = prepare_lightgbm_feature_frame(
-                        df,
-                        target=request.target,
-                    )
-                    df_optimized = prepared_features.optimized
-                    optimizer = prepared_features.optimizer
-                    categorical_features = list(
-                        prepared_features.categorical_features
-                    )
-                    X = prepared_features.features
-                    if approved_execution is not None:
-                        try:
-                            bound_columns = approved_execution.select_feature_columns(
-                                X.columns.tolist(),
-                                future_fields=FUTURE_FIELDS,
-                            )
-                        except ApprovedExecutionError as exc:
-                            raise HTTPException(
-                                status_code=409,
-                                detail="local training contract mismatch",
-                            ) from exc
-                        X = X.loc[:, list(bound_columns)]
-                        categorical_features = [
-                            feature for feature in categorical_features if feature in bound_columns
-                        ]
+
+                train_count = len(X_train_source)
+                X = pd.concat(
+                    [X_train_source, X_validation_source],
+                    ignore_index=True,
+                )
+                y = pd.concat(
+                    [y_train_source, y_validation_source],
+                    ignore_index=True,
+                )
+                df = pd.concat(
+                    [df_train_source, df_validation_source],
+                    ignore_index=True,
+                )
+                evaluation_frame = pd.concat(
+                    [evaluation_train, evaluation_validation],
+                    ignore_index=True,
+                )
+                df_optimized = pd.concat(
+                    [df_train_optimized, df_validation_optimized],
+                    ignore_index=True,
+                )
                 feature_count = len(X.columns)
                 _all_feature_columns = X.columns.tolist()
 
-                from sklearn.model_selection import train_test_split
                 from sklearn.metrics import roc_auc_score, log_loss
                 import lightgbm as lgb
 
-                # 時系列分割（ランダム分割より汎化性能検証に適切）
                 X = X.reset_index(drop=True)
                 y = y.reset_index(drop=True)
                 evaluation_frame = evaluation_frame.reset_index(drop=True)
-
-                _is_regression = request.target == "speed_deviation"
-                _is_ranking    = request.target == "rank"
-
-                # regression 前処理: finish_time NaN 行を分割前に除去
-                # race_results_ultimate に出馬表(shutuba)データが混在すると
-                # 時系列分割でテストセットが全 NaN になり model.predict が失敗する
-                if _is_regression:
-                    _pre_valid = y.notna().values
-                    if not _pre_valid.all():
-                        n_removed = int((~_pre_valid).sum())
-                        logger.info(
-                            f"speed_deviation 前処理: finish_time NaN {n_removed} 行を除去 "
-                            f"({int(_pre_valid.sum())} 行が有効)"
-                        )
-                        X = X.loc[_pre_valid].reset_index(drop=True)
-                        y = y.loc[_pre_valid].reset_index(drop=True)
-                        evaluation_frame = (
-                            evaluation_frame.loc[_pre_valid].reset_index(drop=True)
-                        )
-                        # df のインデックスを同期（race_date が時系列分割に使用される）
-                        df = df.reset_index(drop=True).loc[_pre_valid].reset_index(drop=True)
-
-                _time_split = uses_explicit_oot_split
-                if uses_explicit_oot_split:
-                    X_train = X.iloc[:approved_train_count]
-                    X_test = X.iloc[approved_train_count:]
-                    y_train = y.iloc[:approved_train_count]
-                    y_test = y.iloc[approved_train_count:]
-                    logger.info(
-                        "Approved out-of-time split: train=%s validation=%s",
-                        len(X_train),
-                        len(X_test),
-                    )
-                elif "race_date" in df.columns:
-                    _dates = pd.to_datetime(
-                        df["race_date"].reset_index(drop=True).astype(str).str[:8],
-                        format="%Y%m%d", errors="coerce",
-                    )
-                    _cutoff = _dates.quantile(1.0 - request.test_size)
-                    _tr_mask = (_dates <= _cutoff).values
-                    _te_mask = ~_tr_mask
-                    if int(_tr_mask.sum()) >= 200 and int(_te_mask.sum()) >= 50:
-                        X_train = X.loc[_tr_mask]
-                        X_test = X.loc[_te_mask]
-                        y_train = y.loc[_tr_mask]
-                        y_test = y.loc[_te_mask]
-                        _time_split = True
-                        logger.info(f"時系列分割: 学習 {_tr_mask.sum()}行, テスト {_te_mask.sum()}行")
-                if not _time_split:
-                    if _is_regression:
-                        X_train, X_test, y_train, y_test = train_test_split(
-                            X, y, test_size=request.test_size, random_state=42
-                        )
-                    elif _is_ranking:
-                        X_train, X_test, y_train, y_test = train_test_split(
-                            X, y, test_size=request.test_size, random_state=42
-                        )
-                    else:
-                        X_train, X_test, y_train, y_test = train_test_split(
-                            X, y, test_size=request.test_size, random_state=42, stratify=y
-                        )
-                # speed_deviation: NaN行を除外（タイム欠損馬）
-                if _is_regression:
-                    _valid_train = y_train.notna()
-                    _valid_test  = y_test.notna()
-                    X_train, y_train = X_train.loc[_valid_train], y_train.loc[_valid_train]
-                    X_test,  y_test  = X_test.loc[_valid_test],   y_test.loc[_valid_test]
+                X_train = X.iloc[:train_count]
+                X_test = X.iloc[train_count:]
+                y_train = y.iloc[:train_count]
+                y_test = y.iloc[train_count:]
+                logger.info(
+                    "%s split: train=%s validation=%s",
+                    "Out-of-time" if holdout_is_time_based else "Race-group",
+                    len(X_train),
+                    len(X_test),
+                )
 
                 categorical_indices = [X.columns.get_loc(c) for c in categorical_features if c in X.columns]
 
+                cv_fold_pairs = None
+                cv_plan = None
+                if not _is_ranking:
+                    try:
+                        cv_plan = build_training_cv_plan(
+                            df_train_source,
+                            n_splits=request.cv_folds,
+                        )
+                    except ValueError as exc:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"内部CVを構成できません: {exc}",
+                        ) from exc
+                    cv_fold_pairs = [
+                        (
+                            np.asarray(train_fold, dtype=np.int64),
+                            np.asarray(validation_fold, dtype=np.int64),
+                        )
+                        for train_fold, validation_fold in cv_plan.folds
+                    ]
+                    logger.info(
+                        "%s internal CV: folds=%s",
+                        "Forward-time" if cv_plan.time_based else "Race-group",
+                        len(cv_fold_pairs),
+                    )
+
                 if _is_ranking:
                     # ─── LambdaRank パス ─────────────────────────────────────
-                    # race_id ごとのグループサイズを計算（train/test 分割後の df を参照）
-                    _df_for_groups = df.reset_index(drop=True)
-                    _y_full = y.reset_index(drop=True)
-                    _tr_idx = X_train.index if hasattr(X_train, 'index') else range(len(X_train))
-                    _te_idx = X_test.index  if hasattr(X_test,  'index') else range(len(X_test))
-                    _race_ids_full = df_optimized["race_id"].reset_index(drop=True) if "race_id" in df_optimized.columns else pd.Series(["0"] * len(df_optimized))
-                    _race_ids_tr   = _race_ids_full.loc[list(_tr_idx)].values
-                    _race_ids_te   = _race_ids_full.loc[list(_te_idx)].values
-                    from collections import Counter as _Counter
-                    _ctr_tr = list(_Counter(_race_ids_tr).values())
-                    _ctr_te = list(_Counter(_race_ids_te).values())
+                    _race_ids_tr = df.iloc[:train_count]["race_id"].astype(str)
+                    _ctr_tr = list(ranking_group_sizes(_race_ids_tr))
                     _max_label = int(y_train.max()) if len(y_train) > 0 else 18
                     train_data = lgb.Dataset(
                         X_train.values, label=y_train.values,
                         group=_ctr_tr,
-                    )
-                    valid_data = lgb.Dataset(
-                        X_test.values, label=y_test.values,
-                        group=_ctr_te,
                     )
                     params = {
                         "objective":        "lambdarank",
@@ -876,22 +938,16 @@ async def _do_train(
                     model = lgb.train(
                         params, train_data,
                         num_boost_round=500,
-                        valid_sets=[valid_data],
-                        callbacks=[
-                            lgb.early_stopping(stopping_rounds=50, verbose=False),
-                            lgb.log_evaluation(100),
-                        ],
+                        callbacks=[lgb.log_evaluation(100)],
                     )
                     _scores = model.predict(X_test.values)
-                    from scipy.stats import spearmanr as _spr
-                    import numpy as _np_loc_r
-                    _sp, _ = _spr(y_test.values, _scores)
-                    auc = float(_sp) if not _np_loc_r.isnan(_sp) else 0.0
+                    # A global Spearman score is invalid here because rank
+                    # relevance depends on each race's field size.  Per-race
+                    # metrics are computed after this block and macro-averaged.
+                    auc = 0.0
                     logloss = 0.0
-                    cv_auc_mean = auc
+                    cv_auc_mean = 0.0
                     cv_auc_std  = 0.0
-                    best_round_cv = model.num_trees()
-                    best_round_final = best_round_cv
                     y_pred_proba = _scores
                     _is_ranker_model = True
                 else:
@@ -934,8 +990,9 @@ async def _do_train(
                     _cv_lgb_cb.order = 100
                     cv_result = lgb.cv(
                         params, train_data,
-                        num_boost_round=1000, nfold=request.cv_folds,
-                        stratified=(not _is_regression), return_cvbooster=True,
+                        num_boost_round=1000,
+                        folds=cv_fold_pairs,
+                        return_cvbooster=True,
                         callbacks=[
                             lgb.early_stopping(stopping_rounds=50, verbose=False),
                             lgb.log_evaluation(period=0),
@@ -954,7 +1011,7 @@ async def _do_train(
                         best_round_cv = len(cv_result["valid binary_logloss-mean"])
                         cv_auc_mean = 1.0 - cv_logloss_mean
                         cv_auc_std  = cv_logloss_std
-                    best_round_final = int(best_round_cv * request.cv_folds / (request.cv_folds - 1))
+                    best_round_final = best_round_cv
 
                     progress_cb("最終モデル学習中...", 60)
                     full_train_data = lgb.Dataset(X_train, y_train, categorical_feature=categorical_indices)
@@ -977,7 +1034,6 @@ async def _do_train(
                         _sp, _ = _spearmanr(y_test, y_pred_proba)
                         auc = float(_sp) if not _np_loc.isnan(_sp) else 0.0
                         logloss = float(_np_loc.sqrt(_np_loc.nanmean((y_test.values - y_pred_proba) ** 2)))
-                        cv_auc_mean = auc
                     else:
                         auc = roc_auc_score(y_test, y_pred_proba)
                         logloss = log_loss(y_test, y_pred_proba)
@@ -988,7 +1044,7 @@ async def _do_train(
                 raise
 
             # Optuna
-            if request.use_optuna:
+            if request.use_optuna and not (_is_regression or _is_ranking):
                 optuna_executed = True
                 try:
                     print("\n=== Optunaハイパーパラメータ最適化 ===")
@@ -1000,7 +1056,10 @@ async def _do_train(
                             random_state=42, timeout=request.optuna_timeout,
                         )
                         best_params, best_optuna_score = optuna_optimizer.optimize(
-                            X, y, categorical_features=categorical_indices,
+                            X_train,
+                            y_train,
+                            categorical_features=categorical_indices,
+                            folds=cv_fold_pairs,
                         )
                         optimized_params = optuna_optimizer.get_best_model_params()
                         optuna_num_rounds = optimized_params.pop("n_estimators", 1000)
@@ -1017,8 +1076,8 @@ async def _do_train(
                         _opt_cv_lgb_cb.order = 100
                         cv_result_opt = lgb.cv(
                             optimized_params, train_data_opt,
-                            num_boost_round=optuna_num_rounds, nfold=request.cv_folds,
-                            stratified=(not _is_regression),
+                            num_boost_round=optuna_num_rounds,
+                            folds=cv_fold_pairs,
                             callbacks=[
                                 lgb.early_stopping(stopping_rounds=50, verbose=False),
                                 lgb.log_evaluation(period=0),
@@ -1044,7 +1103,7 @@ async def _do_train(
                             cv_auc_mean = 0.0
                             cv_auc_std = 0.0
                             best_round_opt = optuna_num_rounds
-                        best_round_opt_final = int(best_round_opt * request.cv_folds / (request.cv_folds - 1))
+                        best_round_opt_final = best_round_opt
                         progress_cb("Optunaパラメータでモデル再学習中...", 82)
                         _opt_final_rounds = best_round_opt_final
                         def _opt_final_lgb_cb(env,
@@ -1064,7 +1123,6 @@ async def _do_train(
                             _sp2, _ = _spearmanr2(y_test, y_pred_proba)
                             auc = float(_sp2) if not _np_loc2.isnan(_sp2) else 0.0
                             logloss = float(_np_loc2.sqrt(_np_loc2.nanmean((y_test.values - y_pred_proba) ** 2)))
-                            cv_auc_mean = auc
                         else:
                             auc = roc_auc_score(y_test, y_pred_proba)
                             logloss = log_loss(y_test, y_pred_proba)
@@ -1076,13 +1134,20 @@ async def _do_train(
                             "gradient_boosting": "gradient_boosting",
                         }
                         optimize_model(
-                            model_type_map[request.model_type], X.values, y.values,
+                            model_type_map[request.model_type],
+                            X_train.values,
+                            y_train.values,
                             n_trials=request.optuna_trials, timeout=request.optuna_timeout,
                         )
                 except Exception as e:
                     optuna_error = f"{type(e).__name__}: {str(e)}"
                     print(f"❌ Optuna最適化エラー: {optuna_error}")
                     traceback.print_exc()
+            elif request.use_optuna:
+                optuna_error = (
+                    "Optunaは二値分類ターゲット（win/place3/win_tie）のみ対応しています"
+                )
+                logger.info("Optuna skipped: %s", optuna_error)
 
         else:
             # Phase 0: 標準モード削除。use_optimizer=True/model_type='lightgbm' のみサポート。
@@ -1135,6 +1200,27 @@ async def _do_train(
                 odds=evaluation_test["odds"],
                 payouts=evaluation_test["tansho_payout"],
             )
+            if not evaluation or evaluation["primary"].get("rank_correlation") is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="速度モデルのレース内順位相関を評価できません",
+                )
+            auc = float(evaluation["primary"]["rank_correlation"])
+            logloss = float(evaluation["primary"]["rmse"])
+        elif request.target == "rank":
+            evaluation_test = evaluation_frame.loc[X_test.index].reset_index(drop=True)
+            evaluation = evaluate_ranking_predictions(
+                actual_relevance=y_test.reset_index(drop=True),
+                predicted=y_pred_proba,
+                race_ids=evaluation_test["race_id"],
+                race_dates=evaluation_test["race_date"],
+            )
+            if not evaluation:
+                raise HTTPException(
+                    status_code=400,
+                    detail="ランキング評価に必要な複数頭レースがありません",
+                )
+            auc = float(evaluation["primary"]["ndcg_at_3"])
 
         # モデル保存 — IDはデータ日付範囲 + 作成日時（一意性を保証）
         progress_cb("モデルを保存中...", 93)
@@ -1170,6 +1256,9 @@ async def _do_train(
                 "use_optimizer": request.use_optimizer,
                 "optimizer_type": type(optimizer).__name__ if optimizer is not None else None,
                 "requires_full_history": True,
+                "holdout_kind": (
+                    "out_of_time" if holdout_is_time_based else "race_group"
+                ),
                 "feature_engineering_hash": __import__("hashlib").md5(
                     __import__("inspect").getsource(
                         __import__("keiba_ai.feature_engineering", fromlist=["add_derived_features"])
@@ -1182,6 +1271,8 @@ async def _do_train(
                 "cv_auc_mean": float(cv_auc_mean), "cv_auc_std": float(cv_auc_std),
             },
             "evaluation": evaluation,
+            "training_eligibility": eligibility_manifest,
+            "speed_deviation_baseline": speed_deviation_baseline,
             "data_count": len(df),
             "race_count": df["race_id"].nunique() if "race_id" in df.columns else 0,
             "created_at": saved_at,
@@ -1278,8 +1369,12 @@ async def _do_train(
             f"モデル学習完了 (順位相関: {auc:.4f}, RMSE: {logloss:.4f})"
             if request.target == "speed_deviation"
             else (
-                f"モデル学習完了 (AUC: {auc:.4f}, LogLoss: {logloss:.4f}, "
-                f"LogLoss(Cal): {logloss_calibrated:.4f})"
+                f"モデル学習完了 (NDCG@3: {auc:.4f})"
+                if request.target == "rank"
+                else (
+                    f"モデル学習完了 (AUC: {auc:.4f}, LogLoss: {logloss:.4f}, "
+                    f"LogLoss(Cal): {logloss_calibrated:.4f})"
+                )
             )
         )
         return TrainResponse(
@@ -1300,6 +1395,7 @@ async def _do_train(
             optuna_executed=optuna_executed,
             optuna_error=optuna_error,
             feature_columns=_all_feature_columns,
+            training_eligibility=eligibility_manifest,
         )
 
     except HTTPException:
@@ -1504,6 +1600,7 @@ async def _prepare_and_execute_local_retrain(
             target=request.target,
             training_date_from=request.training_date_from,
             training_date_to=request.training_date_to,
+            test_size=request.test_size,
             observe_phase=feature_contract_progress,
         )
         renew_preparation(force=True)
