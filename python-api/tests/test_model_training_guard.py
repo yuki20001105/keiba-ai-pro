@@ -199,6 +199,68 @@ def test_capability_requires_exact_local_flag_database_and_model_storage(
     )
 
 
+def test_capability_allows_legacy_active_schema_only_as_hashed_baseline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "keiba.db"
+    model_directory = tmp_path / "models"
+    database.write_bytes(b"sqlite-data")
+    model_directory.mkdir()
+    active_model_id = "model_legacy_active"
+    train.joblib.dump(
+        {
+            "feature_columns": [
+                "odds",
+                "running_style_num",
+                "time_index",
+            ]
+        },
+        model_directory / f"{active_model_id}.joblib",
+    )
+    monkeypatch.setattr(train, "ULTIMATE_DB", database)
+    monkeypatch.setattr(train, "MODELS_DIR", model_directory)
+    monkeypatch.setattr(train, "get_active_model_id", lambda: active_model_id)
+    monkeypatch.setattr(
+        train,
+        "_LOCAL_RETRAIN_SNAPSHOT_CATALOG",
+        (tmp_path / "snapshots").resolve(),
+    )
+    monkeypatch.setattr(train, "_LOCAL_RETRAIN_STARTUP_ERROR", None)
+    monkeypatch.setattr(train, "_get_local_retrain_runtime", lambda: (object(), object()))
+    monkeypatch.setattr(train, "_candidate_commit_sha", lambda: "a" * 40)
+    monkeypatch.setattr(train, "compute_source_tree_sha256", lambda _root: "b" * 64)
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("MODEL_TRAINING_LOCAL_ENABLED", "true")
+
+    assert {"running_style_num", "time_index"}.issubset(train.FUTURE_FIELDS)
+    assert train._training_capability_state() == {
+        "enabled": True,
+        "mode": "local-admin",
+        "reason": None,
+    }
+
+
+def test_active_baseline_still_rejects_malformed_feature_schema(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    model_directory = tmp_path / "models"
+    model_directory.mkdir()
+    active_model_id = "model_invalid_active"
+    model_path = model_directory / f"{active_model_id}.joblib"
+    train.joblib.dump(
+        {"feature_columns": ["odds", "odds"]},
+        model_path,
+    )
+    monkeypatch.setattr(train, "MODELS_DIR", model_directory)
+    monkeypatch.setattr(train, "get_active_model_id", lambda: active_model_id)
+
+    binding = train._active_model_binding()
+    with pytest.raises(local_retrain.LocalRetrainError, match="features-invalid"):
+        train._active_model_features(binding)
+
+
 def test_start_is_single_active_and_status_is_owner_bound(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -168,7 +168,15 @@ def _active_model_binding() -> tuple[str, str]:
 
 
 def _active_model_features(expected_binding: tuple[str, str]) -> tuple[str, ...]:
-    """Read the trusted active bundle and recheck it after deserialization."""
+    """Validate the trusted active baseline without reusing its old schema.
+
+    The active artifact is bound into the local authorization contract so a
+    concurrent model switch cannot change the baseline during preparation.
+    Its feature list may predate the current leakage policy, however, and is
+    never used to select candidate features.  Candidate training derives a new
+    schema from the immutable data snapshot and rejects ``FUTURE_FIELDS`` at
+    both contract creation and execution time.
+    """
 
     model_id, _digest = expected_binding
     path = MODELS_DIR / f"{model_id}.joblib"
@@ -187,7 +195,6 @@ def _active_model_features(expected_binding: tuple[str, str]) -> tuple[str, ...]
         or len(features) > 2_048
         or any(not isinstance(value, str) or not value for value in features)
         or len(set(features)) != len(features)
-        or set(features).intersection(FUTURE_FIELDS)
     ):
         raise LocalRetrainError("local-active-model-features-invalid")
     if _active_model_binding() != expected_binding:
