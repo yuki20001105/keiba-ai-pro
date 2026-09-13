@@ -66,15 +66,16 @@ async def _scrape_date(date_str: str) -> int:
     from app_config import ULTIMATE_DB, SUPABASE_DATA_ENABLED, get_supabase_client  # type: ignore
 
     import aiohttp
-    import httpx
+    from scraping.fetch_pipeline import FetchAccessBlocked, fetch_text
     from bs4 import BeautifulSoup
 
     url = f"https://race.netkeiba.com/top/race_list.html?kaisai_date={date_str}"
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.get(url, follow_redirects=True)
-            resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "lxml")
+        async with aiohttp.ClientSession(headers=get_random_headers(), timeout=aiohttp.ClientTimeout(total=20.0)) as session:
+            resp, html = await fetch_text(session, url, use_cache=False, force_refresh=True)
+            if resp.status != 200:
+                raise RuntimeError(f"race list HTTP {resp.status}")
+        soup = BeautifulSoup(html, "lxml")
         # result.html（確定済み）と shutuba.html（出走表）の両方からrace_idを抽出
         race_ids: list[str] = []
         seen: set[str] = set()
@@ -83,6 +84,8 @@ async def _scrape_date(date_str: str) -> int:
             if m and m.group(1) not in seen:
                 seen.add(m.group(1))
                 race_ids.append(m.group(1))
+    except FetchAccessBlocked:
+        raise
     except Exception as e:
         logger.warning(f"レース一覧取得失敗 {date_str}: {e}")
         return 0
@@ -92,7 +95,7 @@ async def _scrape_date(date_str: str) -> int:
     async with aiohttp.ClientSession(headers=get_random_headers(), timeout=_timeout) as session:
         for race_id in race_ids:
             try:
-                await asyncio.sleep(1.0)  # INV-07: 1秒以上のインターバル
+                # Each actual request is paced by the shared provider limiter.
                 race_data = await scrape_race_full(session, race_id, date_hint=date_str)
                 if race_data and race_data.get("horses"):
                     _save_race_to_ultimate_db(race_data, ULTIMATE_DB, overwrite=True)
@@ -100,6 +103,8 @@ async def _scrape_date(date_str: str) -> int:
                         from app_config import save_race_to_supabase  # type: ignore
                         save_race_to_supabase(race_data)
                     count += 1
+            except FetchAccessBlocked:
+                raise
             except Exception as e:
                 logger.warning(f"cron scrape {race_id}: {e}")
     return count

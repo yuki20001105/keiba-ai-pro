@@ -62,6 +62,20 @@ test.describe('一括予測ページ', () => {
     await expect(page.getByText(/レース一覧を取得/)).toBeVisible()
   })
 
+  test('DBにレースがない場合はエラーではなくデータ未取得と表示する', async ({ page }) => {
+    await page.unroute('/api/races/by-date**')
+    await page.route('/api/races/by-date**', route => route.fulfill({
+      json: { races: [], count: 0, date: '20260913' },
+    }))
+
+    await page.goto('/predict-batch')
+    await page.getByRole('button', { name: /レース一覧を取得/ }).click()
+
+    await expect(page.getByText('この日のデータはまだ取得されていません。')).toBeVisible()
+    await expect(page.getByText(/DBに見つかりません/)).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'この日付をスクレイプして取得' })).toBeVisible()
+  })
+
   test('レースを選択せずに予測ボタンを押すとトースト警告が出る', async ({ page }) => {
     await page.goto('/predict-batch')
     // レース一覧を取得してから予測ボタンを押す

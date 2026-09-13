@@ -91,6 +91,32 @@ describe('running 遷移', () => {
     await tick(1000)
     expect(result.current.progress).toBe('学習中... 20%')
   })
+
+  it('waiting_resources の詳細メッセージを表示して監視を継続する', async () => {
+    const payload = {
+      status: 'waiting_resources',
+      progress: { message: 'メモリ解放待ち。自動再開します。' },
+    }
+    const fetchSpy = mockFetch(payload)
+    const onProgress = vi.fn()
+
+    const { result } = renderHook(() =>
+      useJobPoller({
+        jobId: 'job-001',
+        getStatusUrl: id => `/api/status/${id}`,
+        intervalMs: 1000,
+        onProgress,
+      })
+    )
+    await tick(1000)
+
+    expect(result.current.status).toBe('waiting_resources')
+    expect(result.current.progress).toBe('メモリ解放待ち。自動再開します。')
+    expect(onProgress).toHaveBeenCalledWith(payload.progress.message, payload)
+
+    await tick(1000)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+  })
 })
 
 // ─────────────────────────────────────────────────────────
@@ -252,6 +278,25 @@ describe('タイムアウト', () => {
     )
     await tick(2000) // 2秒 — まだ範囲内
     expect(result.current.status).toBe('running')
+  })
+
+  it('maxMs 未指定なら10分を超えても終端状態まで監視する', async () => {
+    const fetchSpy = mockFetch({ status: 'running', progress: '作成中' })
+    const onError = vi.fn()
+
+    const { result } = renderHook(() =>
+      useJobPoller({
+        jobId: 'job-001',
+        getStatusUrl: id => `/api/status/${id}`,
+        intervalMs: 60_000,
+        onError,
+      })
+    )
+    await tick(11 * 60_000)
+
+    expect(result.current.status).toBe('running')
+    expect(fetchSpy.mock.calls.length).toBeGreaterThanOrEqual(10)
+    expect(onError).not.toHaveBeenCalled()
   })
 })
 

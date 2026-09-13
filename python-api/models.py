@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from scraping.scrape_request_contract import parse_scrape_date, validate_scrape_date_range
+from scraping.scrape_request_contract import build_scrape_months, parse_scrape_date, validate_scrape_date_range
 
 
 class TrainRequest(BaseModel):
@@ -181,6 +181,7 @@ class ScrapeRequest(BaseModel):
     end_date: str
     force_rescrape: bool = False
     dry_run: bool = False
+    server_batch: bool = False
     # Phase 3N operational execution binding. Deployed environments require
     # the complete tuple; explicit local/test mode may generate the two IDs.
     job_id: Optional[str] = None
@@ -202,7 +203,10 @@ class ScrapeRequest(BaseModel):
 
     @model_validator(mode="after")
     def _validate_scrape_date_range(self) -> "ScrapeRequest":
-        validate_scrape_date_range(self.start_date, self.end_date)
+        if self.server_batch:
+            build_scrape_months(self.start_date, self.end_date)
+        else:
+            validate_scrape_date_range(self.start_date, self.end_date)
         return self
 
 

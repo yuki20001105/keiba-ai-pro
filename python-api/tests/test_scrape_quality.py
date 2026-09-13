@@ -1,11 +1,15 @@
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from scraping.quality import (
     classify_race_quality,
+    completed_quality_dates,
+    defer_unconfirmed_no_race_date,
     evaluate_date_completeness,
     excluded_standard_dates,
     excluded_standard_race_ids,
+    invalidate_verified_no_race_dates,
     record_date_expectation,
     record_date_failure,
     record_verified_no_race_dates,
@@ -271,6 +275,107 @@ def test_verified_no_race_date_is_a_successful_checkpoint(tmp_path: Path) -> Non
         ).fetchone()
     assert completeness == (0, "complete")
     assert repair == ("completed", None)
+
+
+def test_verified_no_race_checkpoint_expires_and_is_rechecked(tmp_path: Path) -> None:
+    db_path = tmp_path / "ultimate.db"
+    race_date = "20250106"
+    record_verified_no_race_dates(db_path, [race_date])
+
+    assert race_date in completed_quality_dates(
+        db_path,
+        no_race_ttl_seconds=3600,
+    )
+
+    expired_at = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "UPDATE scrape_date_completeness SET updated_at=? WHERE race_date=?",
+            (expired_at, race_date),
+        )
+
+    assert race_date not in completed_quality_dates(
+        db_path,
+        no_race_ttl_seconds=3600,
+    )
+
+
+def test_real_complete_date_never_expires_as_no_race(tmp_path: Path) -> None:
+    db_path = tmp_path / "ultimate.db"
+    race_date = "20250105"
+    record_date_expectation(db_path, race_date, ["202501050101"])
+    expired_at = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "UPDATE scrape_date_completeness SET status='complete', updated_at=? "
+            "WHERE race_date=?",
+            (expired_at, race_date),
+        )
+
+    assert race_date in completed_quality_dates(
+        db_path,
+        no_race_ttl_seconds=3600,
+    )
+    assert invalidate_verified_no_race_dates(db_path, [race_date]) == 0
+
+
+def test_calendar_confirmation_invalidates_stale_no_race_state(tmp_path: Path) -> None:
+    db_path = tmp_path / "ultimate.db"
+    race_date = "20250106"
+    record_verified_no_race_dates(db_path, [race_date])
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "CREATE TABLE scraped_dates (date TEXT PRIMARY KEY, race_count INTEGER, no_race INTEGER)"
+        )
+        conn.execute(
+            "INSERT INTO scraped_dates (date, race_count, no_race) VALUES (?, 0, 1)",
+            (race_date,),
+        )
+
+    assert invalidate_verified_no_race_dates(db_path, [race_date]) == 2
+
+    with sqlite3.connect(str(db_path)) as conn:
+        completeness = conn.execute(
+            "SELECT status FROM scrape_date_completeness WHERE race_date=?",
+            (race_date,),
+        ).fetchone()
+        coverage = conn.execute(
+            "SELECT race_count, no_race FROM scraped_dates WHERE date=?",
+            (race_date,),
+        ).fetchone()
+    assert completeness == ("partial",)
+    assert coverage is None
+    assert race_date not in completed_quality_dates(db_path)
+
+
+def test_recent_empty_response_remains_retryable_without_attempt_growth(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "ultimate.db"
+    race_date = "20250106"
+    record_verified_no_race_dates(db_path, [race_date])
+
+    for _ in range(7):
+        defer_unconfirmed_no_race_date(
+            db_path,
+            race_date=race_date,
+            source_status="ok:mobile:verified-empty",
+        )
+
+    with sqlite3.connect(str(db_path)) as conn:
+        completeness = conn.execute(
+            "SELECT expected_race_count, status FROM scrape_date_completeness "
+            "WHERE race_date=?",
+            (race_date,),
+        ).fetchone()
+        repair = conn.execute(
+            "SELECT status, attempt_count, last_error FROM scrape_repair_queue "
+            "WHERE entity_type='date' AND entity_id=? AND repair_kind='race_list'",
+            (race_date,),
+        ).fetchone()
+    assert completeness == (0, "partial")
+    assert repair == ("pending", 0, "recent_race_list_empty_recheck")
+    assert race_date not in completed_quality_dates(db_path)
 
 
 def test_post_job_audit_queues_only_missing_races(tmp_path: Path) -> None:

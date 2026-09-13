@@ -1,4 +1,4 @@
-import { expect, Page, test } from '@playwright/test'
+import { expect, Page, Route, test } from '@playwright/test'
 import { mockSupabaseIdentity, setSupabaseTestSession } from './helpers/mock-api'
 
 type BatchScenario = {
@@ -7,6 +7,43 @@ type BatchScenario = {
 }
 
 const SUPABASE_ORIGIN = process.env.NEXT_PUBLIC_SUPABASE_URL || 'http://127.0.0.1:54321'
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const acceptedParentIds = new Set<string>()
+let acceptedParentPostCount = 0
+const PARENT_STORAGE_KEY = 'keiba-ai-pro:server-scrape-batch:v1:e2e-user-id'
+
+function acceptedParent(route: Route) {
+  const body = route.request().postDataJSON() as Record<string, unknown>
+  expect(body.server_batch).toBe(true)
+  expect(body.job_id).toMatch(UUID)
+  expect(body.operation_id).toMatch(UUID)
+  expect(body.job_id).not.toBe(body.operation_id)
+  acceptedParentIds.add(String(body.job_id))
+  acceptedParentPostCount += 1
+  return { job_id: body.job_id, operation_id: body.operation_id, server_batch: true, status: 'queued' }
+}
+
+function parentStatus(route: Route, payload: Record<string, unknown>) {
+  const jobId = new URL(route.request().url()).pathname.split('/').pop() || ''
+  expect(acceptedParentIds.has(jobId)).toBe(true)
+  return { ...payload, job_id: jobId }
+}
+
+async function expectStoredParentLock(page: Page) {
+  const jobId = [...acceptedParentIds].at(-1)
+  expect(jobId).toMatch(UUID)
+  await expect(page.getByTestId('execute-button')).toBeDisabled()
+  await expect.poll(() => page.evaluate(key => {
+    const stored = localStorage.getItem(key)
+    return stored ? JSON.parse(stored).jobId : null
+  }, PARENT_STORAGE_KEY)).toBe(jobId)
+  expect(acceptedParentPostCount).toBe(1)
+}
+
+async function expectParentLockCleared(page: Page) {
+  await expect.poll(() => page.evaluate(key => localStorage.getItem(key), PARENT_STORAGE_KEY)).toBeNull()
+  await expect(page.getByTestId('execute-button')).toBeEnabled()
+}
 
 async function setupAuthorizedPage(page: Page, baseURL: string) {
   await setSupabaseTestSession(page, {
@@ -44,6 +81,7 @@ async function mockBatchWorkflow(
 ) {
   let postIndex = 0
   const pollCount: Record<string, number> = {}
+  const acceptedScenarios = new Map<string, BatchScenario>()
 
   await page.route('**/api/scrape', async route => {
     if (route.request().method() !== 'POST') return route.fallback()
@@ -68,7 +106,9 @@ async function mockBatchWorkflow(
       })
     }
 
-    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ job_id: scenario.jobId }) })
+    const accepted = acceptedParent(route)
+    acceptedScenarios.set(String(accepted.job_id), scenario)
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(accepted) })
   })
 
   await page.route('**/api/scrape/status/**', route => {
@@ -80,14 +120,14 @@ async function mockBatchWorkflow(
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(payload) })
     }
 
-    const scenario = scenarios.find(s => s.jobId === jobId)
+    const scenario = acceptedScenarios.get(jobId)
     if (!scenario) {
       return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ status: 'not_found' }) })
     }
 
     pollCount[jobId] = (pollCount[jobId] || 0) + 1
     const idx = Math.min(pollCount[jobId] - 1, scenario.polls.length - 1)
-    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(scenario.polls[idx]) })
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(parentStatus(route, scenario.polls[idx])) })
   })
 }
 
@@ -111,6 +151,8 @@ test.describe('Phase3B Data Collection workflow', () => {
 
     unexpectedExternalRequests = []
     unexpectedAppApiRequests = []
+    acceptedParentIds.clear()
+    acceptedParentPostCount = 0
 
     await page.route('**/*', route => {
       const url = route.request().url()
@@ -163,17 +205,15 @@ test.describe('Phase3B Data Collection workflow', () => {
     if (!baseURL) throw new Error('Playwright baseURL is required')
 
     await setupAuthorizedPage(page, baseURL)
-    const febScenario: BatchScenario = {
-      jobId: 'job-feb',
+    const parentScenario: BatchScenario = {
+      jobId: 'two-month-parent',
       polls: [
-        { status: 'running', progress: { done: 4, total: 10, message: 'running feb' } },
+        { status: 'queued', progress: { done: 0, total: 2000, completed_months: 0, total_months: 2 } },
+        { status: 'running', progress: { done: 1400, total: 2000, completed_months: 1, total_months: 2, current_month: '2026-02', saved_races: 2, message: 'running feb' } },
       ],
     }
-
-    await mockBatchWorkflow(page, [
-      { jobId: 'job-jan', polls: [{ status: 'completed', result: { races_collected: 2 } }] },
-      febScenario,
-    ])
+    const requests: Record<string, unknown>[] = []
+    await mockBatchWorkflow(page, [parentScenario], { onExecuteBody: body => requests.push(body) })
 
     page.on('dialog', dialog => dialog.accept())
 
@@ -185,16 +225,20 @@ test.describe('Phase3B Data Collection workflow', () => {
 
     const statusPanel = page.getByTestId('batch-status-panel')
     await expect(statusPanel).toContainText('開始待ち')
-    await expect(statusPanel).not.toContainText('取得完了')
+    await expect(statusPanel).not.toContainText('完了 ·')
     await expect(page.getByTestId('quality-bridge-card')).toHaveCount(0)
 
     await expect(statusPanel).toContainText('取得実行中')
-    await expect(statusPanel).not.toContainText('取得完了')
+    await expect(statusPanel).not.toContainText('完了 ·')
     await expect(page.getByTestId('quality-bridge-card')).toHaveCount(0)
+    await expect(statusPanel).toContainText('2026-02')
+    expect(requests).toHaveLength(1)
+    expect(requests[0]).toMatchObject({ start_date: '20260101', end_date: '20260228', server_batch: true })
 
-    febScenario.polls.push({ status: 'completed', result: { races_collected: 3 } })
-    await expect(statusPanel).toContainText('取得完了')
+    parentScenario.polls.push({ status: 'completed', result: { races_collected: 5, completed_months: 2, total_months: 2 } })
+    await expect(statusPanel).toContainText('完了 ·')
     await expect(statusPanel).toContainText('5レース')
+    expect(requests).toHaveLength(1)
   })
 
   test('実行中はフォーム入力と実行系ボタンをlockする', async ({ page, baseURL }) => {
@@ -225,9 +269,9 @@ test.describe('Phase3B Data Collection workflow', () => {
     await expect(page.getByTestId('dry-run-button')).toBeDisabled()
     await expect(page.getByTestId('execute-button')).toBeDisabled()
     await expect(page.getByTestId('quality-bridge-card')).toHaveCount(0)
-    await expect(page.getByTestId('batch-status-panel')).not.toContainText('取得完了')
+    await expect(page.getByTestId('batch-status-panel')).not.toContainText('完了 ·')
 
-    await expect(page.getByTestId('batch-status-panel')).toContainText('取得完了')
+    await expect(page.getByTestId('batch-status-panel')).toContainText('完了 ·')
   })
 
   test('Dry-runが非終端のまま上限到達時は0件カードを表示しない', async ({ page, baseURL }) => {
@@ -320,8 +364,8 @@ test.describe('Phase3B Data Collection workflow', () => {
     await setSingleMonthRange(page, '2026-01')
     await page.getByTestId('execute-button').click()
 
-    await expect(page.getByTestId('batch-status-panel')).toContainText('取得完了')
-    expect(executeBody).toMatchObject({ force_rescrape: false })
+    await expect(page.getByTestId('batch-status-panel')).toContainText('完了 ·')
+    expect(executeBody).toMatchObject({ force_rescrape: false, server_batch: true })
     await expect(page.getByTestId('force-rescrape-input')).toHaveCount(0)
     await expect(page.getByTestId('quality-bridge-card')).toHaveCount(0)
     for (const name of ['Refresh Plan', 'P0 Repair Plan', 'Targeted Refetch Plan', 'Live Validation', 'Review Queue']) {
@@ -345,16 +389,16 @@ test.describe('Phase3B Data Collection workflow', () => {
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ job_id: postCount === 1 ? 'job-error' : 'job-retry' }),
+        body: JSON.stringify(acceptedParent(route)),
       })
     })
 
-    await page.route('**/api/scrape/status/job-error', route =>
-      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'error', error: 'backend failed detail' }) })
-    )
-    await page.route('**/api/scrape/status/job-retry', route =>
-      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'completed', result: { races_collected: 2 } }) })
-    )
+    await page.route('**/api/scrape/status/**', route => route.fulfill({
+      status: 200,
+      json: parentStatus(route, postCount === 1
+        ? { status: 'error', error: 'backend failed detail' }
+        : { status: 'completed', result: { races_collected: 2 } }),
+    }))
 
     page.on('dialog', dialog => dialog.accept())
 
@@ -366,9 +410,15 @@ test.describe('Phase3B Data Collection workflow', () => {
     await expect(page.getByTestId('retry-button')).toBeVisible()
 
     await page.getByTestId('retry-button').click()
-    await expect(page.getByTestId('batch-status-panel')).toContainText('取得完了')
+    await expect(page.getByTestId('batch-status-panel')).toContainText('完了 ·')
     expect(postBodies).toHaveLength(2)
-    expect(postBodies[0]).toEqual(postBodies[1])
+    const { job_id: firstJob, operation_id: firstOperation, ...firstSettings } = postBodies[0]
+    const { job_id: secondJob, operation_id: secondOperation, ...secondSettings } = postBodies[1]
+    expect(firstSettings).toEqual(secondSettings)
+    // An explicitly failed parent is settled; a user-requested new run gets
+    // new IDs instead of retrying the already-terminal idempotency key.
+    expect(firstJob).not.toBe(secondJob)
+    expect(firstOperation).not.toBe(secondOperation)
   })
 
   test('invalid period is fail-closed and sends zero POST requests', async ({ page, baseURL }) => {
@@ -400,14 +450,14 @@ test.describe('Phase3B Data Collection workflow', () => {
 
       await page.route('**/api/scrape', async route => {
         if (route.request().method() !== 'POST') return route.fallback()
-        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ job_id: 'job-malformed' }) })
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(acceptedParent(route)) })
       })
 
-      await page.route('**/api/scrape/status/job-malformed', route =>
+      await page.route('**/api/scrape/status/**', route =>
         route.fulfill({
           status: 200,
           contentType: 'application/json',
-          body: JSON.stringify({ status: 'completed', result: { races_collected: invalidValue } }),
+          body: JSON.stringify(parentStatus(route, { status: 'completed', result: { races_collected: invalidValue } })),
         })
       )
 
@@ -417,11 +467,13 @@ test.describe('Phase3B Data Collection workflow', () => {
       await setSingleMonthRange(page, '2026-01')
       await page.getByTestId('execute-button').click()
 
-      await expect(page.getByTestId('batch-status-panel')).not.toContainText('取得完了')
+      await expect(page.getByTestId('batch-status-panel')).not.toContainText('完了 ·')
       await expect(page.getByText('0レース・正常完了')).toHaveCount(0)
       await expect(page.getByTestId('quality-bridge-card')).toHaveCount(0)
-      await expect(page.getByTestId('uncertainty-panel')).toBeVisible()
-      await expect(page.getByTestId('execute-button')).toBeDisabled()
+      await expect(page.getByTestId('batch-status-panel')).toContainText('完了結果を確認できません')
+      await expect(page.getByTestId('reconnect-batch-button')).toBeVisible()
+      await expect(page.getByTestId('uncertainty-panel')).toHaveCount(0)
+      await expectStoredParentLock(page)
     })
   }
 
@@ -432,11 +484,11 @@ test.describe('Phase3B Data Collection workflow', () => {
 
     await page.route('**/api/scrape', async route => {
       if (route.request().method() !== 'POST') return route.fallback()
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ job_id: 'job-reload' }) })
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(acceptedParent(route)) })
     })
 
-    await page.route('**/api/scrape/status/job-reload', route =>
-      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'completed', result: { races_collected: '8' } }) })
+    await page.route('**/api/scrape/status/**', route =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(parentStatus(route, { status: 'completed', result: { races_collected: '8' } })) })
     )
 
     page.on('dialog', dialog => dialog.accept())
@@ -445,11 +497,15 @@ test.describe('Phase3B Data Collection workflow', () => {
     await setSingleMonthRange(page, '2026-01')
     await page.getByTestId('execute-button').click()
 
-    await expect(page.getByTestId('uncertainty-panel')).toBeVisible()
+    await expect(page.getByTestId('reconnect-batch-button')).toBeVisible()
+    await expectStoredParentLock(page)
+    const originalStoredParent = await page.evaluate(key => localStorage.getItem(key), PARENT_STORAGE_KEY)
     await page.reload()
-    await expect(page.getByTestId('uncertainty-panel')).toBeVisible()
+    await expect(page.getByTestId('reconnect-batch-button')).toBeVisible()
+    await expect(page.getByTestId('batch-status-panel')).toContainText('完了結果を確認できません')
+    await expect.poll(() => page.evaluate(key => localStorage.getItem(key), PARENT_STORAGE_KEY)).toBe(originalStoredParent)
     await expect(page.getByTestId('retry-button')).toHaveCount(0)
-    await expect(page.getByTestId('execute-button')).toBeDisabled()
+    await expectStoredParentLock(page)
   })
 
   test('status再確認がqueued/runningならlock維持し、新規POSTしない', async ({ page, baseURL }) => {
@@ -462,15 +518,15 @@ test.describe('Phase3B Data Collection workflow', () => {
     await page.route('**/api/scrape', async route => {
       if (route.request().method() !== 'POST') return route.fallback()
       scrapePostCount += 1
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ job_id: 'job-reconcile-qr' }) })
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(acceptedParent(route)) })
     })
 
-    await page.route('**/api/scrape/status/job-reconcile-qr', route => {
+    await page.route('**/api/scrape/status/**', route => {
       statusCallCount += 1
       if (statusCallCount === 1) {
-        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'completed', result: { races_collected: '8' } }) })
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(parentStatus(route, { status: 'completed', result: { races_collected: '8' } })) })
       }
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'queued' }) })
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(parentStatus(route, { status: 'queued' })) })
     })
 
     page.on('dialog', dialog => dialog.accept())
@@ -479,10 +535,11 @@ test.describe('Phase3B Data Collection workflow', () => {
     await setSingleMonthRange(page, '2026-01')
     await page.getByTestId('execute-button').click()
 
-    await expect(page.getByTestId('uncertainty-panel')).toBeVisible()
-    await page.getByTestId('reconcile-status-button').click()
-    await expect(page.getByTestId('uncertainty-panel')).toContainText('lockを維持')
-    await expect(page.getByTestId('execute-button')).toBeDisabled()
+    await expect(page.getByTestId('reconnect-batch-button')).toBeVisible()
+    await page.getByTestId('reconnect-batch-button').click()
+    await expect.poll(() => statusCallCount).toBeGreaterThan(1)
+    await expect(page.getByTestId('batch-status-panel')).toContainText('開始待ち')
+    await expectStoredParentLock(page)
     expect(scrapePostCount).toBe(1)
   })
 
@@ -496,15 +553,15 @@ test.describe('Phase3B Data Collection workflow', () => {
     await page.route('**/api/scrape', async route => {
       if (route.request().method() !== 'POST') return route.fallback()
       scrapePostCount += 1
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ job_id: 'job-reconcile-running' }) })
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(acceptedParent(route)) })
     })
 
-    await page.route('**/api/scrape/status/job-reconcile-running', route => {
+    await page.route('**/api/scrape/status/**', route => {
       statusCallCount += 1
       if (statusCallCount === 1) {
-        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'completed', result: { races_collected: '8' } }) })
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(parentStatus(route, { status: 'completed', result: { races_collected: '8' } })) })
       }
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'running', progress: { done: 2, total: 10, message: 'running' } }) })
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(parentStatus(route, { status: 'running', progress: { done: 2, total: 10, message: 'running' } })) })
     })
 
     page.on('dialog', dialog => dialog.accept())
@@ -513,10 +570,11 @@ test.describe('Phase3B Data Collection workflow', () => {
     await setSingleMonthRange(page, '2026-01')
     await page.getByTestId('execute-button').click()
 
-    await expect(page.getByTestId('uncertainty-panel')).toBeVisible()
-    await page.getByTestId('reconcile-status-button').click()
-    await expect(page.getByTestId('uncertainty-panel')).toContainText('lockを維持')
-    await expect(page.getByTestId('execute-button')).toBeDisabled()
+    await expect(page.getByTestId('reconnect-batch-button')).toBeVisible()
+    await page.getByTestId('reconnect-batch-button').click()
+    await expect(page.getByTestId('batch-status-panel')).toContainText('取得実行中')
+    await expect(page.getByTestId('batch-status-panel')).toContainText('running')
+    await expectStoredParentLock(page)
     expect(scrapePostCount).toBe(1)
   })
 
@@ -530,15 +588,15 @@ test.describe('Phase3B Data Collection workflow', () => {
     await page.route('**/api/scrape', async route => {
       if (route.request().method() !== 'POST') return route.fallback()
       scrapePostCount += 1
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ job_id: 'job-reconcile-notfound' }) })
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(acceptedParent(route)) })
     })
 
-    await page.route('**/api/scrape/status/job-reconcile-notfound', route => {
+    await page.route('**/api/scrape/status/**', route => {
       statusCallCount += 1
       if (statusCallCount === 1) {
-        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'completed', result: { races_collected: '8' } }) })
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(parentStatus(route, { status: 'completed', result: { races_collected: '8' } })) })
       }
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'not_found' }) })
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(parentStatus(route, { status: 'not_found' })) })
     })
 
     page.on('dialog', dialog => dialog.accept())
@@ -546,9 +604,11 @@ test.describe('Phase3B Data Collection workflow', () => {
     await page.goto('/data-collection')
     await setSingleMonthRange(page, '2026-01')
     await page.getByTestId('execute-button').click()
-    await page.getByTestId('reconcile-status-button').click()
-
-    await expect(page.getByTestId('uncertainty-panel')).toContainText('lockを維持')
+    await expect(page.getByTestId('reconnect-batch-button')).toBeVisible()
+    await page.getByTestId('reconnect-batch-button').click()
+    await expect.poll(() => statusCallCount).toBeGreaterThan(1)
+    await expectStoredParentLock(page)
+    await expect(page.getByTestId('batch-status-panel')).not.toContainText('完了 ·')
     expect(scrapePostCount).toBe(1)
   })
 
@@ -562,15 +622,15 @@ test.describe('Phase3B Data Collection workflow', () => {
     await page.route('**/api/scrape', async route => {
       if (route.request().method() !== 'POST') return route.fallback()
       scrapePostCount += 1
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ job_id: 'job-reconcile-malformed-completed' }) })
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(acceptedParent(route)) })
     })
 
-    await page.route('**/api/scrape/status/job-reconcile-malformed-completed', route => {
+    await page.route('**/api/scrape/status/**', route => {
       statusCallCount += 1
       if (statusCallCount === 1) {
-        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'completed', result: { races_collected: '8' } }) })
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(parentStatus(route, { status: 'completed', result: { races_collected: '8' } })) })
       }
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'completed', result: { races_collected: 'bad' } }) })
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(parentStatus(route, { status: 'completed', result: { races_collected: 'bad' } })) })
     })
 
     page.on('dialog', dialog => dialog.accept())
@@ -578,10 +638,12 @@ test.describe('Phase3B Data Collection workflow', () => {
     await page.goto('/data-collection')
     await setSingleMonthRange(page, '2026-01')
     await page.getByTestId('execute-button').click()
-    await page.getByTestId('reconcile-status-button').click()
-
-    await expect(page.getByTestId('uncertainty-panel')).toContainText('状態確認が必要')
-    await expect(page.getByTestId('execute-button')).toBeDisabled()
+    await expect(page.getByTestId('reconnect-batch-button')).toBeVisible()
+    await page.getByTestId('reconnect-batch-button').click()
+    await expect.poll(() => statusCallCount).toBeGreaterThan(1)
+    await expect(page.getByTestId('batch-status-panel')).toContainText('完了結果を確認できません')
+    await expect(page.getByTestId('reconnect-batch-button')).toBeVisible()
+    await expectStoredParentLock(page)
     expect(scrapePostCount).toBe(1)
   })
 
@@ -595,21 +657,19 @@ test.describe('Phase3B Data Collection workflow', () => {
     await page.route('**/api/scrape', async route => {
       if (route.request().method() !== 'POST') return route.fallback()
       scrapePostCount += 1
-      const jobId = scrapePostCount === 1 ? 'job-reconcile-error' : 'job-reconcile-error-new'
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ job_id: jobId }) })
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(acceptedParent(route)) })
     })
 
-    await page.route('**/api/scrape/status/job-reconcile-error', route => {
+    await page.route('**/api/scrape/status/**', route => {
+      if (scrapePostCount > 1) {
+        return route.fulfill({ status: 200, json: parentStatus(route, { status: 'completed', result: { races_collected: 2 } }) })
+      }
       statusCallCount += 1
       if (statusCallCount === 1) {
-        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'completed', result: { races_collected: '8' } }) })
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(parentStatus(route, { status: 'completed', result: { races_collected: '8' } })) })
       }
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'error', error: 'terminal failed' }) })
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(parentStatus(route, { status: 'error', error: 'terminal failed' })) })
     })
-
-    await page.route('**/api/scrape/status/job-reconcile-error-new', route =>
-      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'completed', result: { races_collected: 2 } }) })
-    )
 
     page.on('dialog', dialog => dialog.accept())
 
@@ -617,18 +677,20 @@ test.describe('Phase3B Data Collection workflow', () => {
     await setSingleMonthRange(page, '2026-01')
     await page.getByTestId('execute-button').click()
 
-    await expect(page.getByTestId('uncertainty-panel')).toBeVisible()
+    await expect(page.getByTestId('reconnect-batch-button')).toBeVisible()
+    await expectStoredParentLock(page)
     expect(scrapePostCount).toBe(1)
-    await page.getByTestId('reconcile-status-button').click()
-    await expect(page.getByTestId('uncertainty-panel')).toHaveCount(0)
-    await expect(page.getByTestId('execute-button')).toBeEnabled()
+    await page.getByTestId('reconnect-batch-button').click()
+    await expect(page.getByTestId('batch-status-panel')).toContainText('terminal failed')
+    await expect(page.getByTestId('reconnect-batch-button')).toHaveCount(0)
+    await expectParentLockCleared(page)
 
     await page.getByTestId('execute-button').click()
-    await expect(page.getByTestId('batch-status-panel')).toContainText('取得完了')
+    await expect(page.getByTestId('batch-status-panel')).toContainText('完了 ·')
     expect(scrapePostCount).toBe(2)
   })
 
-  test('status再確認がvalid terminal completedならlock解除し、自動昇格せず次回execute可能', async ({ page, baseURL }) => {
+  test('status再確認がvalid terminal completedなら結果を表示してlock解除し、次回execute可能', async ({ page, baseURL }) => {
     if (!baseURL) throw new Error('Playwright baseURL is required')
 
     let scrapePostCount = 0
@@ -638,21 +700,19 @@ test.describe('Phase3B Data Collection workflow', () => {
     await page.route('**/api/scrape', async route => {
       if (route.request().method() !== 'POST') return route.fallback()
       scrapePostCount += 1
-      const jobId = scrapePostCount === 1 ? 'job-reconcile-completed' : 'job-reconcile-completed-new'
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ job_id: jobId }) })
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(acceptedParent(route)) })
     })
 
-    await page.route('**/api/scrape/status/job-reconcile-completed', route => {
+    await page.route('**/api/scrape/status/**', route => {
+      if (scrapePostCount > 1) {
+        return route.fulfill({ status: 200, json: parentStatus(route, { status: 'completed', result: { races_collected: 1 } }) })
+      }
       statusCallCount += 1
       if (statusCallCount === 1) {
-        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'completed', result: { races_collected: '8' } }) })
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(parentStatus(route, { status: 'completed', result: { races_collected: '8' } })) })
       }
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'completed', result: { races_collected: 3 } }) })
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(parentStatus(route, { status: 'completed', result: { races_collected: 3 } })) })
     })
-
-    await page.route('**/api/scrape/status/job-reconcile-completed-new', route =>
-      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'completed', result: { races_collected: 1 } }) })
-    )
 
     page.on('dialog', dialog => dialog.accept())
 
@@ -660,17 +720,19 @@ test.describe('Phase3B Data Collection workflow', () => {
     await setSingleMonthRange(page, '2026-01')
     await page.getByTestId('execute-button').click()
 
-    await expect(page.getByTestId('uncertainty-panel')).toBeVisible()
+    await expect(page.getByTestId('reconnect-batch-button')).toBeVisible()
+    await expectStoredParentLock(page)
     expect(scrapePostCount).toBe(1)
 
-    await page.getByTestId('reconcile-status-button').click()
-    await expect(page.getByTestId('uncertainty-panel')).toHaveCount(0)
+    await page.getByTestId('reconnect-batch-button').click()
+    await expect(page.getByTestId('reconnect-batch-button')).toHaveCount(0)
     await expect(page.getByTestId('quality-bridge-card')).toHaveCount(0)
-    await expect(page.getByTestId('batch-status-panel')).not.toContainText('完了 · 3レース')
+    await expect(page.getByTestId('batch-status-panel')).toContainText('完了 · 3レース')
+    await expectParentLockCleared(page)
     expect(scrapePostCount).toBe(1)
 
     await page.getByTestId('execute-button').click()
-    await expect(page.getByTestId('batch-status-panel')).toContainText('取得完了')
+    await expect(page.getByTestId('batch-status-panel')).toContainText('完了 ·')
     expect(scrapePostCount).toBe(2)
   })
 })

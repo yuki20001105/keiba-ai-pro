@@ -11,10 +11,12 @@ export interface JobPollerOptions {
   onCompleted?: (statusData: any) => void
   /** エラー時コールバック */
   onError?: (message: string) => void
+  /** 進捗更新時コールバック */
+  onProgress?: (message: string, statusData: any) => void
   /** ポーリング間隔 (ms) — デフォルト 3000 */
   intervalMs?: number
-  /** タイムアウト上限 (ms) — デフォルト 10分 */
-  maxMs?: number
+  /** 任意の監視上限。未指定/null はサーバーの終端状態まで監視する。 */
+  maxMs?: number | null
 }
 
 export interface JobPollerResult {
@@ -45,8 +47,9 @@ export function useJobPoller({
   getStatusUrl,
   onCompleted,
   onError,
+  onProgress,
   intervalMs = 3000,
-  maxMs = 10 * 60 * 1000,
+  maxMs = null,
 }: JobPollerOptions): JobPollerResult {
   const [status, setStatus] = useState<JobStatus>('idle')
   const [progress, setProgress] = useState('')
@@ -56,8 +59,11 @@ export function useJobPoller({
   // stableな参照でコールバックを保持（re-render のたびに setInterval が再生成されないように）
   const onCompletedRef = useRef(onCompleted)
   const onErrorRef = useRef(onError)
+  const onProgressRef = useRef(onProgress)
+  const requestInFlightRef = useRef(false)
   useEffect(() => { onCompletedRef.current = onCompleted }, [onCompleted])
   useEffect(() => { onErrorRef.current = onError }, [onError])
+  useEffect(() => { onProgressRef.current = onProgress }, [onProgress])
 
   const stop = useCallback(() => {
     if (timerRef.current) {
@@ -71,6 +77,7 @@ export function useJobPoller({
     setStatus('idle')
     setProgress('')
     setPct(0)
+    requestInFlightRef.current = false
   }, [stop])
 
   useEffect(() => {
@@ -79,22 +86,35 @@ export function useJobPoller({
     startRef.current = Date.now()
 
     timerRef.current = setInterval(async () => {
-      // タイムアウト判定
-      if (Date.now() - startRef.current > maxMs) {
+      // Durable jobs are monitored until the backend reports a terminal state.
+      // A finite cap remains available only for explicitly bounded callers.
+      if (typeof maxMs === 'number' && maxMs > 0 && Date.now() - startRef.current > maxMs) {
         stop()
         setStatus('error')
         setProgress('タイムアウト')
         onErrorRef.current?.('ジョブがタイムアウトしました')
         return
       }
+      if (requestInFlightRef.current) return
+      requestInFlightRef.current = true
 
       try {
         const res = await authFetch(getStatusUrl(jobId))
         if (!res.ok) return // 一時的エラーはスキップ
         const data = await res.json()
 
-        const msg: string = data.progress || data.message || ''
-        if (msg) setProgress(msg)
+        const rawProgress = data?.progress
+        const msg = typeof rawProgress === 'string'
+          ? rawProgress
+          : rawProgress && typeof rawProgress === 'object' && typeof rawProgress.message === 'string'
+            ? rawProgress.message
+            : typeof data?.message === 'string'
+              ? data.message
+              : ''
+        if (msg) {
+          setProgress(msg)
+          onProgressRef.current?.(msg, data)
+        }
         if (typeof data.pct === 'number') setPct(data.pct)
 
         if (data.status === 'completed') {
@@ -111,9 +131,19 @@ export function useJobPoller({
           setStatus('error')
           setProgress('ジョブが見つかりません')
           onErrorRef.current?.('ジョブが見つかりません（サーバーが再起動した可能性があります）')
+        } else if (data.status === 'waiting_resources') {
+          setStatus('waiting_resources')
+        } else if (data.status === 'recovering') {
+          setStatus('recovering')
+        } else if (data.status === 'queued') {
+          setStatus('queued')
+        } else if (data.status === 'running') {
+          setStatus('running')
         }
       } catch {
         // ネットワーク一時エラーは無視
+      } finally {
+        requestInFlightRef.current = false
       }
     }, intervalMs)
 

@@ -31,7 +31,7 @@ def test_successful_resume_returns_cached_body(monkeypatch) -> None:
         )
     )
 
-    assert result.source == "cache"
+    assert result.source == "resume-cache"
     assert result.body == b"<html>cached race</html>"
 
 

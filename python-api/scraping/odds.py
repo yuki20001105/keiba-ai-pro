@@ -1,7 +1,11 @@
 """Point-in-time win-odds retrieval for netkeiba race pages."""
 from __future__ import annotations
 
+import json
 from typing import Any
+from urllib.parse import urlencode
+
+from scraping.fetch_pipeline import FetchAccessBlocked, fetch_text
 
 try:
     from app_config import logger  # type: ignore
@@ -76,11 +80,17 @@ async def fetch_tansho_odds_api(
         "X-Requested-With": "XMLHttpRequest",
     }
     try:
-        async with session.get(url, params=params, headers=headers) as response:
-            if response.status != 200:
-                logger.warning(f"[odds_api] HTTP {response.status}: {race_id}")
-                return {}, {}, f"http-{response.status}"
-            payload = await response.json(content_type=None)
+        response, body = await fetch_text(
+            session, f"{url}?{urlencode(params)}", request_headers=headers,
+            use_cache=False, force_refresh=True, max_retries=1,
+            max_body_bytes=2 * 1024 * 1024,
+        )
+        if response.status != 200:
+            logger.warning(f"[odds_api] HTTP {response.status}: {race_id}")
+            return {}, {}, f"http-{response.status}"
+        payload = json.loads(body)
+    except FetchAccessBlocked:
+        raise
     except Exception as exc:
         logger.warning(f"[odds_api] 取得失敗 {race_id}: {exc}")
         return {}, {}, "error"

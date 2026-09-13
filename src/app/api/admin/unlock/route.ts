@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyRequestAuth } from '@/lib/server-auth'
+import { usesLocalAdminSession } from '@/lib/local-admin-session-policy'
 import {
   ADMIN_MODE_COOKIE_NAME,
   ADMIN_MODE_TTL_SECONDS,
@@ -63,6 +64,10 @@ function cookieOptions(expires?: Date, maxAge?: number) {
 export async function GET(request: NextRequest) {
   const authz = await verifyRequestAuth(request, { requireAdmin: true })
   if (!authz.ok) return noStoreJson({ detail: authz.detail }, authz.status)
+
+  if (usesLocalAdminSession(request)) {
+    return noStoreJson({ version: 2, unlocked: true, mode: 'local-session', expires_at: null }, 200)
+  }
 
   const grant = verifyAdminModeRequest(request, authz.context.user.id, authz.context.token)
   if (!grant) return noStoreJson({ detail: 'Admin mode is locked' }, 403)

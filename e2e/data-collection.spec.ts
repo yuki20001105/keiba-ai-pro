@@ -79,29 +79,38 @@ test.describe('データ取得ページ', () => {
 
   test('スクレイピング実行中はプログレスバーが表示される', async ({ page }) => {
     let pollCount = 0
+    let postCount = 0
+    let jobId = ''
     await page.route('/api/scrape/**', route => {
       const url = route.request().url()
       if (url.includes('__health_check__')) {
         return route.fulfill({ json: { status: 'ok' } })
       }
       if (route.request().method() === 'POST') {
-        return route.fulfill({ json: { job_id: 'test-job-001' } })
+        throw new Error('Unexpected scrape endpoint: the UI must submit the parent once')
       }
       return route.fallback()
     })
     // Also handle the exact POST url without trailing path
     await page.route('/api/scrape', route => {
       if (route.request().method() === 'POST') {
-        return route.fulfill({ json: { job_id: 'test-job-001' } })
+        const body = route.request().postDataJSON()
+        expect(body.server_batch).toBe(true)
+        expect(body.job_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i)
+        expect(body.operation_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i)
+        jobId = body.job_id
+        postCount += 1
+        return route.fulfill({ json: { job_id: jobId, operation_id: body.operation_id, status: 'queued' } })
       }
       return route.fallback()
     })
-    await page.route('/api/scrape/status/test-job-001**', route => {
+    await page.route('/api/scrape/status/**', route => {
+      expect(new URL(route.request().url()).pathname.split('/').pop()).toBe(jobId)
       pollCount++
       if (pollCount < 2) {
-        return route.fulfill({ json: { status: 'running', progress: { current: 5, total: 20, message: '取得中...', eta: '30秒' } } })
+        return route.fulfill({ json: { job_id: jobId, status: 'running', progress: { done: 5, total: 20, message: '取得中...' } } })
       }
-      return route.fulfill({ json: { status: 'completed', races_collected: 15, elapsed_time: 12 } })
+      return route.fulfill({ json: { job_id: jobId, status: 'completed', result: { races_collected: 15, elapsed_time: 12 } } })
     })
 
     // Accept the confirm() dialog that appears before scraping starts
@@ -110,5 +119,7 @@ test.describe('データ取得ページ', () => {
     await page.goto('/data-collection')
     await page.getByRole('button', { name: /取得開始/ }).click()
     await expect(page.getByText(/取得中|スクレイピング|完了/).first()).toBeVisible({ timeout: 10000 })
+    await expect(page.getByTestId('batch-status-panel')).toContainText('完了 · 15レース')
+    expect(postCount).toBe(1)
   })
 })

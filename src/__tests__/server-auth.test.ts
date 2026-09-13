@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 const mockCreateClient = vi.fn()
 
@@ -30,7 +30,9 @@ describe('server-auth fail-closed contract', () => {
     delete process.env.SUPABASE_SERVICE_KEY
     process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-role-key'
     process.env.ADMIN_MODE_SIGNING_SECRET = 'test-admin-mode-secret-that-is-at-least-32-characters'
+    vi.stubEnv('LOCAL_ADMIN_SESSION_ENABLED', '')
   })
+  afterEach(() => vi.unstubAllEnvs())
 
   test('tokenなしは401', async () => {
     const { verifyRequestAuth } = await import('@/lib/server-auth')
@@ -47,7 +49,7 @@ describe('server-auth fail-closed contract', () => {
       if (key === 'anon-key') {
         return {
           auth: {
-            getUser: vi.fn().mockResolvedValue({ data: { user: null }, error: { message: 'expired' } }),
+            getUser: vi.fn().mockResolvedValue({ data: { user: null }, error: { status: 401, message: 'expired' } }),
           },
         }
       }
@@ -295,5 +297,39 @@ describe('server-auth fail-closed contract', () => {
       expect(res.context.profile.role).toBe('user')
       expect(res.context.profile.subscription_tier).toBe('free')
     }
+  })
+
+  test('local session still checks current authentication and role on every write request', async () => {
+    vi.stubEnv('LOCAL_ADMIN_SESSION_ENABLED', 'true')
+    vi.stubEnv('APP_ENV', 'development')
+    vi.stubEnv('ML_API_URL', 'http://127.0.0.1:8000')
+    vi.stubEnv('SCRAPE_API_URL', 'http://127.0.0.1:8000')
+    const getUser = vi.fn().mockResolvedValue({ data: { user: { id: 'u1' } }, error: null })
+    const maybeSingle = vi.fn().mockResolvedValue({ data: { role: 'admin' }, error: null })
+    mockCreateClient.mockImplementation((_url: string, key: string) => key === 'anon-key'
+      ? { auth: { getUser } }
+      : { from: () => ({ select: () => ({ eq: () => ({ maybeSingle }) }) }) })
+    const { verifyRequestAuth } = await import('@/lib/server-auth')
+
+    expect((await verifyRequestAuth(makeAuthRequest('valid-token'), { requireAdminMode: true })).ok).toBe(true)
+    maybeSingle.mockResolvedValue({ data: { role: 'user' }, error: null })
+    expect(await verifyRequestAuth(makeAuthRequest('valid-token'), { requireAdminMode: true }))
+      .toEqual({ ok: false, status: 403, detail: 'Admin role required' })
+    getUser.mockResolvedValue({ data: { user: null }, error: { status: 401 } })
+    expect(await verifyRequestAuth(makeAuthRequest('invalid-token'), { requireAdminMode: true }))
+      .toEqual({ ok: false, status: 401, detail: 'Authentication required' })
+    expect(getUser).toHaveBeenCalledTimes(3)
+    expect(maybeSingle).toHaveBeenCalledTimes(2)
+    expect(await verifyRequestAuth(makeAuthRequest(), { requireAdminMode: true }))
+      .toEqual({ ok: false, status: 401, detail: 'Authentication required' })
+  })
+
+  test.each([503, 0, 429, undefined])('an auth backend failure %s is unavailable, not a logout', async status => {
+    mockCreateClient.mockImplementation((_url: string, key: string) => key === 'anon-key'
+      ? { auth: { getUser: vi.fn().mockResolvedValue({ data: { user: null }, error: { status } }) } }
+      : { from: vi.fn() })
+    const { verifyRequestAuth } = await import('@/lib/server-auth')
+    expect(await verifyRequestAuth(makeAuthRequest('valid-token'), { requireAdminMode: true }))
+      .toEqual({ ok: false, status: 503, detail: 'Authentication backend unavailable' })
   })
 })

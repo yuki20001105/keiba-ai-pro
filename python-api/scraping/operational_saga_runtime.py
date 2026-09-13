@@ -298,6 +298,14 @@ CREATE TABLE IF NOT EXISTS operational_scrape_outbox (
     created_at_epoch INTEGER NOT NULL,
     updated_at_epoch INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS operational_scrape_batch_months (
+    parent_job_id TEXT NOT NULL REFERENCES operational_scrape_jobs(job_id) ON DELETE RESTRICT,
+    month_index INTEGER NOT NULL,
+    child_job_id TEXT NOT NULL UNIQUE,
+    result TEXT NOT NULL,
+    completed_at_epoch INTEGER NOT NULL,
+    PRIMARY KEY(parent_job_id, month_index)
+);
 """
 
 
@@ -982,8 +990,14 @@ class ScrapeJobEffectExecutor:
 
     idempotent = True
 
-    def __init__(self, *, allow_unfenced_local_writes: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        allow_unfenced_local_writes: bool = False,
+        batch_store: SQLiteOperationalSagaStore | None = None,
+    ) -> None:
         self._allow_unfenced_local_writes = allow_unfenced_local_writes
+        self._batch_store = batch_store
         self._cancel_lock = threading.RLock()
         self._cancel_events: dict[str, threading.Event] = {}
         self._pending_cancellations: set[str] = set()
@@ -1003,10 +1017,33 @@ class ScrapeJobEffectExecutor:
             self._pending_cancellations.discard(job_id)
 
     async def execute(self, claim: OperationalClaim) -> EffectResult:
+        if self._allow_unfenced_local_writes and self._batch_store is not None:
+            from scraping.server_batch import BatchCheckpointStore, _local_effect_lock
+
+            # Legacy single-month and durable multi-month effects share the
+            # same owner lock, including when a cancelled lease expires.
+            async with _local_effect_lock(BatchCheckpointStore(self._batch_store, claim)):
+                return await self._execute_owned(claim)
+        return await self._execute_owned(claim)
+
+    async def _execute_owned(self, claim: OperationalClaim) -> EffectResult:
         from scraping.jobs import _JOBS_LOCK, _run_scrape_job, _scrape_jobs
 
         payload = claim.request_payload
         required = {"start_date", "end_date", "force_rescrape", "dry_run"}
+        if payload.get("server_batch") is True:
+            if set(payload) != required | {"server_batch"}:
+                raise OperationalSagaError("scrape-payload-contract-invalid")
+            if not self._allow_unfenced_local_writes or self._batch_store is None:
+                raise OperationalSagaUnavailable("server-batch-local-runtime-required")
+            from scraping.server_batch import execute_server_batch
+
+            cancel_event = threading.Event()
+            with self._cancel_lock:
+                self._cancel_events[claim.job_id] = cancel_event
+                if claim.job_id in self._pending_cancellations:
+                    cancel_event.set()
+            return await execute_server_batch(claim, self._batch_store, cancel_event)
         if set(payload) != required:
             raise OperationalSagaError("scrape-payload-contract-invalid")
         if payload.get("dry_run") is not True and not self._allow_unfenced_local_writes:
@@ -1031,14 +1068,26 @@ class ScrapeJobEffectExecutor:
             self._cancel_events[claim.job_id] = cancel_event
             if claim.job_id in self._pending_cancellations:
                 cancel_event.set()
-        await _run_scrape_job(
+        runner_task = asyncio.create_task(_run_scrape_job(
             claim.job_id,
             str(payload["start_date"]),
             str(payload["end_date"]),
             bool(payload["force_rescrape"]),
             bool(payload["dry_run"]),
             cancel_requested=cancel_event.is_set,
-        )
+        ))
+        try:
+            await asyncio.shield(runner_task)
+        finally:
+            if not runner_task.done():
+                cancel_event.set()
+            while not runner_task.done():
+                try:
+                    await asyncio.shield(runner_task)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
         with _JOBS_LOCK:
             completed = dict(_scrape_jobs.get(claim.job_id) or {})
         if completed.get("status") == "cancelled":
@@ -1067,9 +1116,6 @@ class OperationalSagaRuntime:
     ) -> None:
         self.config = config
         self._store = store
-        self._executor = executor or ScrapeJobEffectExecutor(
-            allow_unfenced_local_writes=config.mode is OperationalSagaMode.LOCAL_SQLITE
-        )
         self._worker_owner = worker_owner or f"worker-{os.getpid()}-{uuid.uuid4().hex[:12]}"
         self._task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
@@ -1087,6 +1133,10 @@ class OperationalSagaRuntime:
                     raise OperationalSagaUnavailable("supabase-operational-client-unavailable") from exc
         if not config.enabled and store is not None:
             raise OperationalSagaConfigError("disabled-runtime-store-forbidden")
+        self._executor = executor or ScrapeJobEffectExecutor(
+            allow_unfenced_local_writes=config.mode is OperationalSagaMode.LOCAL_SQLITE,
+            batch_store=self._store if isinstance(self._store, SQLiteOperationalSagaStore) else None,
+        )
 
     @property
     def enabled(self) -> bool:
@@ -1102,6 +1152,14 @@ class OperationalSagaRuntime:
         if not self.enabled:
             return Mutation(MutationCode.UNAVAILABLE, "operational-runtime-disabled")
         assert self._store is not None
+        if request.request_payload.get("server_batch") is True:
+            if self.config.mode is not OperationalSagaMode.LOCAL_SQLITE:
+                return Mutation(MutationCode.UNAVAILABLE, "server-batch-local-runtime-required")
+            from scraping.scrape_request_contract import build_scrape_months
+
+            build_scrape_months(
+                request.request_payload.get("start_date"), request.request_payload.get("end_date")
+            )
         return self._store.enqueue(request, int(time.time()))
 
     def request_cancel(self, job_id: str, owner_user_id: str) -> Mutation:
@@ -1184,8 +1242,23 @@ class OperationalSagaRuntime:
                         signal(claim.job_id)
         except asyncio.CancelledError:
             effect_task.cancel()
+            # Do not leave a monthly child running after the owning runtime
+            # has released its task (including graceful backend shutdown).
+            try:
+                await effect_task
+            except (asyncio.CancelledError, Exception):
+                pass
             raise
         except Exception as exc:
+            # A heartbeat/store exception can occur while the effect still
+            # owns an in-flight local write. Drain it before terminalizing
+            # the parent and releasing the per-owner active-job constraint.
+            if not effect_task.done():
+                effect_task.cancel()
+            try:
+                await effect_task
+            except (asyncio.CancelledError, Exception):
+                pass
             return await asyncio.to_thread(
                 self._store.fail,
                 claim,

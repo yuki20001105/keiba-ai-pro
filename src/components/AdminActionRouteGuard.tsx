@@ -8,19 +8,26 @@ import { useAuth } from '@/contexts/AuthContext'
 import { authFetch } from '@/lib/auth-fetch'
 import { supabase } from '@/lib/supabase'
 
-function readExpiry(value: unknown): number | null {
+type Grant = { mode: 'local-session' | 'step-up'; expiresAt: number | null }
+type GrantCheck = { state: 'allowed'; grant: Grant } | { state: 'denied' } | { state: 'unavailable' }
+
+function readGrant(value: unknown): Grant | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
   const record = value as Record<string, unknown>
+  if (record.version === 2 && record.unlocked === true && record.mode === 'local-session' && record.expires_at === null) {
+    return { mode: 'local-session', expiresAt: null }
+  }
   if (record.version !== 1 || record.unlocked !== true || typeof record.expires_at !== 'string') return null
   const expiresAt = Date.parse(record.expires_at)
-  return Number.isFinite(expiresAt) && expiresAt > Date.now() ? expiresAt : null
+  return Number.isFinite(expiresAt) && expiresAt > Date.now() ? { mode: 'step-up', expiresAt } : null
 }
 
 export function AdminActionRouteGuard({ children }: { children: ReactNode }) {
   const router = useRouter()
-  const { userId, isAdmin, loading, refreshAuthorization } = useAuth()
+  const { userId, isAdmin, loading, authorizationUnavailable, refreshAuthorization } = useAuth()
   const [allowedUserId, setAllowedUserId] = useState<string | null>(null)
-  const [expiresAt, setExpiresAt] = useState<number | null>(null)
+  const [grant, setGrant] = useState<Grant | null>(null)
+  const [temporarilyUnavailable, setTemporarilyUnavailable] = useState(false)
   const [checking, setChecking] = useState(true)
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
@@ -28,22 +35,27 @@ export function AdminActionRouteGuard({ children }: { children: ReactNode }) {
 
   const clearGrant = useCallback((message = '') => {
     setAllowedUserId(null)
-    setExpiresAt(null)
+    setGrant(null)
+    setTemporarilyUnavailable(false)
     setPassword('')
     setError(message)
   }, [])
 
-  const readCurrentGrant = useCallback(async () => {
-    if (!isAdmin || !userId) return null
+  const readCurrentGrant = useCallback(async (): Promise<GrantCheck> => {
+    if (!isAdmin || !userId) return { state: 'denied' }
     try {
       const response = await authFetch('/api/admin/unlock', {
         method: 'GET',
         cache: 'no-store',
+        signal: AbortSignal.timeout(10_000),
       })
       const payload: unknown = await response.json().catch(() => null)
-      return response.ok ? readExpiry(payload) : null
+      if (response.status === 401 || response.status === 403) return { state: 'denied' }
+      if (!response.ok) return { state: 'unavailable' }
+      const verifiedGrant = readGrant(payload)
+      return verifiedGrant ? { state: 'allowed', grant: verifiedGrant } : { state: 'unavailable' }
     } catch {
-      return null
+      return { state: 'unavailable' }
     }
   }, [isAdmin, userId])
 
@@ -58,13 +70,14 @@ export function AdminActionRouteGuard({ children }: { children: ReactNode }) {
 
     let active = true
     setChecking(true)
-    void readCurrentGrant().then(expiry => {
+    void readCurrentGrant().then(result => {
       if (!active) return
-      if (expiry === null) {
-        clearGrant()
+      if (result.state !== 'allowed') {
+        clearGrant(result.state === 'unavailable' ? '接続を確認しています。少し待って再読み込みしてください。' : '')
       } else {
         setAllowedUserId(userId)
-        setExpiresAt(expiry)
+        setGrant(result.grant)
+        setTemporarilyUnavailable(false)
         setError('')
       }
       setChecking(false)
@@ -74,27 +87,39 @@ export function AdminActionRouteGuard({ children }: { children: ReactNode }) {
   }, [clearGrant, isAdmin, loading, readCurrentGrant, router, userId])
 
   useEffect(() => {
-    if (allowedUserId !== userId || expiresAt === null) return
+    if (allowedUserId !== userId || grant?.expiresAt == null) return
     const timer = window.setTimeout(() => {
       clearGrant('管理機能の確認期限が切れました。もう一度パスワードを入力してください。')
-    }, Math.max(0, expiresAt - Date.now()))
+    }, Math.max(0, grant.expiresAt - Date.now()))
     return () => window.clearTimeout(timer)
-  }, [allowedUserId, clearGrant, expiresAt, userId])
+  }, [allowedUserId, clearGrant, grant, userId])
 
   useEffect(() => {
-    if (allowedUserId !== userId) return
+    if (!userId || allowedUserId !== userId) return
+    let active = true
+    let inFlight = false
     const pollTimer = window.setInterval(() => {
-      void readCurrentGrant().then(expiry => {
-        if (expiry === null) {
+      if (inFlight) return
+      inFlight = true
+      void readCurrentGrant().then(result => {
+        if (!active) return
+        if (result.state === 'denied') {
           clearGrant('管理機能の認証を再確認できませんでした。')
           void refreshAuthorization()
           return
         }
-        setExpiresAt(expiry)
-      })
+        if (result.state === 'unavailable') {
+          // Keep the job/progress component mounted, but block new interactions.
+          setTemporarilyUnavailable(true)
+          return
+        }
+        setTemporarilyUnavailable(false)
+        setGrant(result.grant)
+        if (authorizationUnavailable) void refreshAuthorization()
+      }).finally(() => { inFlight = false })
     }, 30_000)
-    return () => window.clearInterval(pollTimer)
-  }, [allowedUserId, clearGrant, readCurrentGrant, refreshAuthorization, userId])
+    return () => { active = false; window.clearInterval(pollTimer) }
+  }, [allowedUserId, authorizationUnavailable, clearGrant, readCurrentGrant, refreshAuthorization, userId])
 
   const verifyPassword = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -122,14 +147,15 @@ export function AdminActionRouteGuard({ children }: { children: ReactNode }) {
         cache: 'no-store',
       })
       const payload: unknown = await response.json().catch(() => null)
-      const expiry = response.ok ? readExpiry(payload) : null
-      if (expiry === null) {
+      const verifiedGrant = response.ok ? readGrant(payload) : null
+      if (verifiedGrant === null) {
         if (response.status === 401 || response.status === 403) void refreshAuthorization()
         throw new Error('admin-action-unlock-rejected')
       }
 
       setAllowedUserId(currentUser.id)
-      setExpiresAt(expiry)
+      setGrant(verifiedGrant)
+      setTemporarilyUnavailable(false)
       setPassword('')
       setError('')
     } catch {
@@ -153,7 +179,15 @@ export function AdminActionRouteGuard({ children }: { children: ReactNode }) {
     )
   }
 
-  if (allowedUserId === userId && expiresAt !== null) return children
+  if (allowedUserId === userId && grant !== null) {
+    const paused = temporarilyUnavailable || authorizationUnavailable
+    return (
+      <div>
+        {paused && <p role="status" className="bg-[#1e1e1e] px-4 py-2 text-sm text-[#ccc]">認証の接続を再確認中です。操作は接続回復後に再開できます。</p>}
+        <div inert={paused}>{children}</div>
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-white">

@@ -224,7 +224,6 @@ if (-not (Test-Path -LiteralPath (Join-Path $ConfigRoot '.env.local') -PathType 
 }
 
 Assert-PortAvailableOrHealthy -Port 8000 -HealthUrl $ApiHealthUrl
-Assert-PortAvailableOrHealthy -Port 3000 -HealthUrl $WebHealthUrl
 
 # Load local configuration into child processes without printing values.
 Import-DotEnv -Path (Join-Path $ConfigRoot '.env')
@@ -234,6 +233,7 @@ Import-DotEnv -Path (Join-Path $ConfigRoot 'python-api\.env')
 # Local mode is deliberately fail-closed for automatic jobs and real betting.
 $env:PYTHONPATH = $RepoRoot
 $env:APP_ENV = 'development'
+$env:LOCAL_ADMIN_SESSION_ENABLED = 'true'
 $env:MODEL_TRAINING_LOCAL_ENABLED = 'true'
 $env:MODEL_ACTIVATION_LOCAL_ENABLED = 'true'
 $env:API_HOST = '127.0.0.1'
@@ -278,6 +278,9 @@ try {
     }
     Wait-Endpoint -Name 'FastAPI' -Url $ApiHealthUrl -TimeoutSeconds $ApiTimeoutSeconds -StartedProcess $ApiProcess
 
+    # The frontend health endpoint depends on FastAPI. During an API-only
+    # restart it can legitimately return 503 until the backend is ready.
+    Assert-PortAvailableOrHealthy -Port 3000 -HealthUrl $WebHealthUrl
     if (Test-Endpoint -Url $WebHealthUrl) {
         Write-Step 'Next.js is already running; reusing it.'
     }

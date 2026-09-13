@@ -511,7 +511,7 @@ test.describe('データ取得 Dry-run UI', () => {
   })
 
   test('履歴の空応答が確定するまでは開始を禁止し、その後の新規activeカードを維持する', async ({ page }) => {
-    const jobId = '66666666-6666-4666-8666-666666666666'
+    let jobId = ''
     let historyCalls = 0
     let postCount = 0
     let jobStatus: 'running' | 'completed' = 'running'
@@ -559,6 +559,7 @@ test.describe('データ取得 Dry-run UI', () => {
               end_date: '20260131',
               force_rescrape: false,
               dry_run: false,
+              server_batch: true,
             },
             ...(jobStatus === 'completed' ? { result: { races_collected: 1 } } : {}),
           }],
@@ -567,15 +568,23 @@ test.describe('データ取得 Dry-run UI', () => {
     })
     await page.route('/api/scrape', route => {
       if (route.request().method() !== 'POST') return route.fallback()
+      const body = route.request().postDataJSON()
+      expect(body.server_batch).toBe(true)
+      expect(body.job_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i)
+      expect(body.operation_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i)
+      jobId = body.job_id
       postCount += 1
-      return route.fulfill({ status: 200, json: { job_id: jobId, status: 'queued' } })
+      return route.fulfill({ status: 200, json: { job_id: jobId, operation_id: body.operation_id, status: 'queued' } })
     })
-    await page.route(`/api/scrape/status/${jobId}**`, route => route.fulfill({
-      status: 200,
-      json: jobStatus === 'completed'
-        ? { job_id: jobId, status: 'completed', result: { races_collected: 1 } }
-        : { job_id: jobId, status: 'running', progress: { done: 1, total: 10 } },
-    }))
+    await page.route('/api/scrape/status/**', route => {
+      expect(new URL(route.request().url()).pathname.split('/').pop()).toBe(jobId)
+      return route.fulfill({
+        status: 200,
+        json: jobStatus === 'completed'
+          ? { job_id: jobId, status: 'completed', result: { races_collected: 1 } }
+          : { job_id: jobId, status: 'running', progress: { done: 1, total: 10 } },
+      })
+    })
     page.on('dialog', dialog => dialog.accept())
 
     await page.goto('/data-collection')
@@ -604,7 +613,7 @@ test.describe('データ取得 Dry-run UI', () => {
   })
 
   test('同じ画面から開始した通常取得を履歴応答前から停止可能として表示する', async ({ page }) => {
-    const jobId = '33333333-3333-4333-8333-333333333333'
+    let jobId = ''
     let postCount = 0
     let historyCalls = 0
     let jobStatus: 'running' | 'completed' = 'running'
@@ -632,6 +641,7 @@ test.describe('データ取得 Dry-run UI', () => {
               end_date: '20260131',
               force_rescrape: false,
               dry_run: false,
+              server_batch: true,
             },
             ...(jobStatus === 'completed' ? { result: { races_collected: 1 } } : {}),
           }],
@@ -640,22 +650,31 @@ test.describe('データ取得 Dry-run UI', () => {
     })
     await page.route('/api/scrape', route => {
       if (route.request().method() !== 'POST') return route.fallback()
+      const body = route.request().postDataJSON()
+      expect(body.server_batch).toBe(true)
+      expect(body.job_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i)
+      expect(body.operation_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i)
+      jobId = body.job_id
       postCount += 1
       return route.fulfill({
         status: 200,
         json: {
           job_id: jobId,
+          operation_id: body.operation_id,
           status: 'queued',
           created_at: '2026-09-12T08:00:00Z',
         },
       })
     })
-    await page.route(`/api/scrape/status/${jobId}**`, route => route.fulfill({
-      status: 200,
-      json: jobStatus === 'completed'
-        ? { job_id: jobId, status: 'completed', result: { races_collected: 1 } }
-        : { job_id: jobId, status: 'running', progress: { done: 1, total: 10 } },
-    }))
+    await page.route('/api/scrape/status/**', route => {
+      expect(new URL(route.request().url()).pathname.split('/').pop()).toBe(jobId)
+      return route.fulfill({
+        status: 200,
+        json: jobStatus === 'completed'
+          ? { job_id: jobId, status: 'completed', result: { races_collected: 1 } }
+          : { job_id: jobId, status: 'running', progress: { done: 1, total: 10 } },
+      })
+    })
     page.on('dialog', dialog => dialog.accept())
 
     await page.goto('/data-collection')

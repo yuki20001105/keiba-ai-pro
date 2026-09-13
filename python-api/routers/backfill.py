@@ -16,6 +16,7 @@ from app_config import SUPABASE_ENABLED, get_supabase_client, logger  # type: ig
 from deps.auth import require_admin  # type: ignore
 from scraping.constants import SCRAPE_HEADERS, HTML_STRAINER  # type: ignore
 from scraping.horse import _parse_blood_table, extract_coat_color  # type: ignore
+from scraping.fetch_pipeline import FetchAccessBlocked, fetch_text  # type: ignore
 
 router = APIRouter()
 
@@ -67,28 +68,28 @@ async def backfill_nar_pedigree(limit: int = 100, _: dict = Depends(require_admi
             ped_url = f"https://db.netkeiba.com/horse/ped/{hid}/"
             for attempt in range(3):
                 try:
-                    await asyncio.sleep(0.5 + attempt * 1.5)
-                    async with session.get(ped_url) as resp:
-                        if resp.status == 200:
-                            content = await resp.read()
-                            html = content.decode("euc-jp", errors="ignore")
-                            # SoupStrainer を使用してメモリ効率を改善（Bug #2 修正）
-                            soup_p = BeautifulSoup(html, "lxml", parse_only=HTML_STRAINER)
-                            bt = soup_p.find("table", class_="blood_table")
-                            pedigree_map[hid] = {}
-                            if bt:
-                                _parse_blood_table(bt, pedigree_map[hid])
-                            if pedigree_map[hid].get("sire"):
-                                logger.info(f"  /ped/ 成功: {hid} sire={pedigree_map[hid]['sire']}")
-                            else:
-                                logger.debug(f"  /ped/ 200 だが blood_table 未取得: {hid}")
-                            break
-                        elif resp.status == 429:
-                            await asyncio.sleep(5.0 + attempt * 3.0)
-                            continue
+                    resp, html = await fetch_text(
+                        session, ped_url, use_cache=False, force_refresh=True, max_retries=1,
+                    )
+                    if resp.status == 200:
+                        # SoupStrainer を使用してメモリ効率を改善（Bug #2 修正）
+                        soup_p = BeautifulSoup(html, "lxml", parse_only=HTML_STRAINER)
+                        bt = soup_p.find("table", class_="blood_table")
+                        pedigree_map[hid] = {}
+                        if bt:
+                            _parse_blood_table(bt, pedigree_map[hid])
+                        if pedigree_map[hid].get("sire"):
+                            logger.info(f"  /ped/ 成功: {hid} sire={pedigree_map[hid]['sire']}")
                         else:
-                            logger.debug(f"  /ped/ HTTP {resp.status}: {hid}")
-                            break
+                            logger.debug(f"  /ped/ 200 だが blood_table 未取得: {hid}")
+                        break
+                    elif resp.status == 429:
+                        continue  # Shared Retry-After gates the next attempt.
+                    else:
+                        logger.debug(f"  /ped/ HTTP {resp.status}: {hid}")
+                        break
+                except FetchAccessBlocked:
+                    raise
                 except Exception as e:
                     logger.debug(f"  /ped/ エラー 試行{attempt+1} {hid}: {e}")
                     if attempt < 2:
@@ -198,25 +199,25 @@ async def backfill_coat_color(limit: int = 200, _: dict = Depends(require_admin)
             for url in urls_to_try:
                 for attempt in range(2):
                     try:
-                        await asyncio.sleep(0.4 + attempt * 1.5)
-                        async with session.get(url) as resp:
-                            if resp.status == 200:
-                                content = await resp.read()
-                                html = content.decode("euc-jp", errors="ignore")
-                                # SoupStrainer を使用してメモリ効率を改善（Bug #2 修正）
-                                soup_h = BeautifulSoup(html, "lxml", parse_only=HTML_STRAINER)
-                                coat = extract_coat_color(soup_h, html)
-                                if coat:
-                                    logger.info(f"  coat_color 取得: {hid} → {coat} ({url})")
-                                else:
-                                    logger.debug(f"  coat_color 未取得: {hid} ({url})")
-                                break
-                            elif resp.status == 429:
-                                await asyncio.sleep(5.0 + attempt * 3.0)
-                                continue
+                        resp, html = await fetch_text(
+                            session, url, use_cache=False, force_refresh=True, max_retries=1,
+                        )
+                        if resp.status == 200:
+                            # SoupStrainer を使用してメモリ効率を改善（Bug #2 修正）
+                            soup_h = BeautifulSoup(html, "lxml", parse_only=HTML_STRAINER)
+                            coat = extract_coat_color(soup_h, html)
+                            if coat:
+                                logger.info(f"  coat_color 取得: {hid} → {coat} ({url})")
                             else:
-                                logger.debug(f"  coat_color HTTP {resp.status}: {hid} ({url})")
-                                break
+                                logger.debug(f"  coat_color 未取得: {hid} ({url})")
+                            break
+                        elif resp.status == 429:
+                            continue
+                        else:
+                            logger.debug(f"  coat_color HTTP {resp.status}: {hid} ({url})")
+                            break
+                    except FetchAccessBlocked:
+                        raise
                     except Exception as e:
                         logger.debug(f"  coat_color エラー 試行{attempt+1} {hid}: {e}")
                         if attempt < 1:

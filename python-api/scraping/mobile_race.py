@@ -237,9 +237,9 @@ async def parse_mobile_race(
         )
         for horse, detail in zip(chunk, details):
             horse.update(detail)
-        if start + 4 < len(values):
-            await asyncio.sleep(1.0)
-        gc.collect()
+    # Requests are paced centrally, including concurrent horse enrichment.
+    # Cache-only chunks should not incur a separate one-second delay.
+    gc.collect()
 
     class_match = re.search(r"\b(G[1-3]|L|OP)\b", header_text)
     if class_match:

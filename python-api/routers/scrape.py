@@ -30,7 +30,7 @@ from app_config import (  # type: ignore
     APP_ENV,
     logger,
 )
-from deps.auth import require_admin  # type: ignore
+from deps.auth import require_admin, require_current_admin  # type: ignore
 from models import ScrapeRequest, ScrapeResponse, RescrapeResponse  # type: ignore
 from scraping.constants import SCRAPE_HEADERS  # type: ignore
 from scraping.fetch_pipeline import fetch_text  # type: ignore
@@ -38,6 +38,8 @@ from scraping.jobs import (  # type: ignore
     _JOBS_LOCK,
     _purge_old_jobs,
     _scrape_jobs,
+    JobStoreUnavailable,
+    get_job as get_legacy_scrape_job,
     get_scrape_runtime_health,
 )
 from scraping.operational_saga_runtime import (  # type: ignore
@@ -281,6 +283,10 @@ async def scrape_start(request: ScrapeRequest, admin_user: dict = Depends(requir
     runtime = get_operational_saga_runtime()
     if not runtime.enabled:
         raise HTTPException(status_code=503, detail="operational scrape runtime is disabled")
+    if request.server_batch and runtime.config.mode is not OperationalSagaMode.LOCAL_SQLITE:
+        raise HTTPException(status_code=403, detail="server batch is available only in local mode")
+    if request.server_batch:
+        await require_current_admin(admin_user)
 
     required_binding = (
         request.job_id,
@@ -310,6 +316,8 @@ async def scrape_start(request: ScrapeRequest, admin_user: dict = Depends(requir
         "force_rescrape": bool(request.force_rescrape),
         "dry_run": bool(request.dry_run),
     }
+    if request.server_batch:
+        request_payload["server_batch"] = True
     request_hash = hashlib.sha256(
         json.dumps(
             request_payload,
@@ -350,6 +358,7 @@ async def scrape_start(request: ScrapeRequest, admin_user: dict = Depends(requir
         "status": str((queued.job or {}).get("status") or "queued"),
         "mode": "dry-run" if request.dry_run else "execute",
         "duplicate": queued.code is MutationCode.DUPLICATE,
+        "server_batch": request.server_batch,
     }
 
 
@@ -380,6 +389,38 @@ async def scrape_status(job_id: str, admin_user: dict = Depends(require_admin)):
             "result": None,
             "error": f"ジョブ {job_id} が見つかりません（サーバー再起動の可能性）",
         }
+    # The saga ledger owns authorization and terminal settlement, while the
+    # durable local runner has the detailed active phase/progress. Project the
+    # latter only for an already authorized active job; terminal saga state is
+    # never overridden by a stale runner checkpoint.
+    if str(job.get("status") or "") in {"queued", "running"}:
+        try:
+            runner_job = await asyncio.to_thread(
+                get_legacy_scrape_job,
+                job_id,
+                owner_user_id=owner_user_id,
+            )
+        except JobStoreUnavailable:
+            runner_job = None
+        runner_status = str((runner_job or {}).get("status") or "")
+        if runner_status in {
+            "queued",
+            "running",
+            "recovering",
+            "waiting_resources",
+            "paused_resource",
+        }:
+            job = dict(job)
+            job["status"] = (
+                "waiting_resources" if runner_status == "paused_resource" else runner_status
+            )
+            runner_progress = (runner_job or {}).get("progress")
+            if isinstance(runner_progress, dict):
+                job["progress"] = runner_progress
+            for field in ("heartbeat_at", "worker_pid", "resume_count"):
+                value = (runner_job or {}).get(field)
+                if value is not None:
+                    job[field] = value
     return {
         "job_id": job_id,
         "status": job["status"],

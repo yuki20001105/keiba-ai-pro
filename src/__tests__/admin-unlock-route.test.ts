@@ -43,11 +43,13 @@ describe('POST /api/admin/unlock', () => {
     vi.useFakeTimers()
     vi.setSystemTime(NOW)
     process.env.ADMIN_MODE_SIGNING_SECRET = 'test-admin-mode-secret-that-is-at-least-32-characters'
+    vi.stubEnv('LOCAL_ADMIN_SESSION_ENABLED', '')
   })
 
   afterEach(() => {
     vi.useRealTimers()
     delete process.env.ADMIN_MODE_SIGNING_SECRET
+    vi.unstubAllEnvs()
   })
 
   test('requires a currently authorized Admin', async () => {
@@ -144,5 +146,36 @@ describe('POST /api/admin/unlock', () => {
     expect(await deleteResponse.json()).toEqual({ version: 1, unlocked: false })
     expect(deleteResponse.headers.get('set-cookie')).toContain('keiba_admin_mode=;')
     expect(deleteResponse.headers.get('set-cookie')).toContain('Max-Age=0')
+  })
+
+  test('local GET uses the currently verified admin session without a permanent grant or cookie', async () => {
+    vi.stubEnv('LOCAL_ADMIN_SESSION_ENABLED', 'true')
+    vi.stubEnv('APP_ENV', 'development')
+    vi.stubEnv('ML_API_URL', 'http://127.0.0.1:8000')
+    vi.stubEnv('SCRAPE_API_URL', 'http://127.0.0.1:8000')
+    allowWith({ amr: [{ method: 'password', timestamp: 1 }] })
+    const { GET } = await import('@/app/api/admin/unlock/route')
+
+    const response = await GET(request())
+
+    expect(await response.json()).toEqual({ version: 2, unlocked: true, mode: 'local-session', expires_at: null })
+    expect(response.headers.get('set-cookie')).toBeNull()
+    expect(response.headers.get('Cache-Control')).toBe('no-store')
+    expect(verifyRequestAuthMock).toHaveBeenCalledWith(expect.any(NextRequest), { requireAdmin: true })
+
+    verifyRequestAuthMock.mockResolvedValue({ ok: false, status: 403, detail: 'Admin role required' })
+    expect((await GET(request())).status).toBe(403)
+    verifyRequestAuthMock.mockResolvedValue({ ok: false, status: 401, detail: 'Authentication required' })
+    expect((await GET(request())).status).toBe(401)
+  })
+
+  test('a remote deployment cannot use the local session exemption', async () => {
+    vi.stubEnv('LOCAL_ADMIN_SESSION_ENABLED', 'true')
+    vi.stubEnv('APP_ENV', 'production')
+    vi.stubEnv('ML_API_URL', 'http://127.0.0.1:8000')
+    vi.stubEnv('SCRAPE_API_URL', 'http://127.0.0.1:8000')
+    allowWith({})
+    const { GET } = await import('@/app/api/admin/unlock/route')
+    expect((await GET(request())).status).toBe(403)
   })
 })

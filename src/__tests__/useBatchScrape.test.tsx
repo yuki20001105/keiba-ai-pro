@@ -1,760 +1,461 @@
-import { renderHook, act, waitFor } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-
 const { mockedAuthFetch } = vi.hoisted(() => ({ mockedAuthFetch: vi.fn() }))
-
 vi.mock('@/lib/auth-fetch', () => ({ authFetch: mockedAuthFetch }))
+import { BATCH_SCRAPE_MAX_POLL_DURATION_MS, BATCH_SCRAPE_STORAGE_KEY_PREFIX, BatchScrapeError, useBatchScrape } from '@/hooks/useBatchScrape'
 
-import {
-  BATCH_SCRAPE_MAX_POLL_DURATION_MS,
-  BatchScrapeError,
-  useBatchScrape,
-} from '@/hooks/useBatchScrape'
-
-const FAST_OPTIONS = {
-  pollIntervalMs: 1,
-  maxPollAttempts: 10,
-  maxConsecutiveStatusFailures: 2,
-}
-
-function jsonResponse(payload: unknown, status = 200): Response {
-  return new Response(JSON.stringify(payload), {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  })
-}
-
+const OWNER = 'owner-a'
+const KEY = `${BATCH_SCRAPE_STORAGE_KEY_PREFIX}:${OWNER}`
+const JOB = '11111111-1111-4111-8111-111111111111'
+const OPERATION = '22222222-2222-4222-8222-222222222222'
+const FAST = { ownerUserId: OWNER, pollIntervalMs: 1, maxPollAttempts: 8, maxConsecutiveStatusFailures: 2 }
+const json = (payload: unknown, status = 200) => new Response(JSON.stringify(payload), { status, headers: { 'Content-Type': 'application/json' } })
+const stored = (changes = {}) => ({
+  version: 1, ownerUserId: OWNER, jobId: JOB, operationId: OPERATION,
+  startDate: '20260101', endDate: '20260228', forceRescrape: false, createdAt: '2026-09-13T12:00:00Z', ...changes,
+})
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>(r => {
-    resolve = r
-  })
+  const promise = new Promise<T>(r => { resolve = r })
   return { promise, resolve }
 }
-
-async function sleep(ms = 5) {
-  await act(async () => {
-    await new Promise(resolve => setTimeout(resolve, ms))
+function postCalls() {
+  return mockedAuthFetch.mock.calls.filter(([url, init]) => url === '/api/scrape' && init?.method === 'POST')
+}
+function setupStatus(reply: (jobId: string, count: number) => Response | Promise<Response>) {
+  let polls = 0
+  mockedAuthFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+    if (url === '/api/scrape' && init?.method === 'POST') {
+      const body = JSON.parse(String(init.body))
+      return json({ job_id: body.job_id, status: 'queued' })
+    }
+    if (url.startsWith('/api/scrape/status/')) return reply(url.split('/').pop()!, ++polls)
+    throw new Error('unexpected request: ' + url)
   })
 }
-
-async function renderBatchHook(options = FAST_OPTIONS) {
-  const hook = renderHook(() => useBatchScrape(options))
-  await waitFor(() => {
-    expect(hook.result.current).toBeTruthy()
-  })
-  return hook
+async function startAndCatch(hook: ReturnType<typeof renderHook<ReturnType<typeof useBatchScrape>, unknown>>, start = '2026-01', end = '2026-02') {
+  let answer: unknown
+  await act(async () => { answer = await hook.result.current.start(start, end, false).catch(e => e) })
+  return answer
 }
 
-describe('useBatchScrape', () => {
-  it('uses a 24-hour monitoring deadline for normal long-running jobs', () => {
-    expect(BATCH_SCRAPE_MAX_POLL_DURATION_MS).toBe(24 * 60 * 60 * 1000)
+describe('useBatchScrape server-owned period', () => {
+  beforeEach(() => { mockedAuthFetch.mockReset(); localStorage.clear() })
+
+  it('does not end healthy multi-day monitoring at 24 hours', () => {
+    expect(BATCH_SCRAPE_MAX_POLL_DURATION_MS).toBe(Number.POSITIVE_INFINITY)
   })
 
-  beforeEach(() => {
-    mockedAuthFetch.mockReset()
+  it('persists owner/job/operation identity before exactly one full-period POST', async () => {
+    mockedAuthFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/api/scrape') {
+        const body = JSON.parse(String(init?.body))
+        const saved = JSON.parse(localStorage.getItem(KEY)!)
+        expect(saved).toMatchObject({ ownerUserId: OWNER, jobId: body.job_id, operationId: body.operation_id })
+        expect(body).toMatchObject({ server_batch: true, start_date: '20160101', end_date: '20260930', force_rescrape: false })
+        expect(body.job_id).toMatch(/^[a-f0-9-]{36}$/)
+        expect(body.operation_id).not.toBe(body.job_id)
+        return json({ job_id: body.job_id, status: 'queued' })
+      }
+      return json({ job_id: url.split('/').pop(), status: 'completed', result: { races_collected: 4 } })
+    })
+    const hook = renderHook(() => useBatchScrape(FAST))
+    const result = await startAndCatch(hook, '2016-01', '2026-09')
+    expect(result).toMatchObject({ races_collected: 4, stats: { total_months: 129 } })
+    expect(postCalls()).toHaveLength(1)
+    expect(localStorage.getItem(KEY)).toBeNull()
+    expect(hook.result.current.status).toBe('completed')
   })
 
-  it('observes queued and running before completed', async () => {
-    const statusDeferred: Array<ReturnType<typeof deferred<Response>>> = []
-
-    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url === '/api/scrape' && init?.method === 'POST') {
-        return jsonResponse({ job_id: 'job-1' })
-      }
-      if (url === '/api/scrape/status/job-1') {
-        const d = deferred<Response>()
-        statusDeferred.push(d)
-        return d.promise
-      }
-      throw new Error(`unexpected request: ${url}`)
+  it('shows whole-parent progress without finishing after a single month', async () => {
+    const last = deferred<Response>()
+    let id = ''
+    setupStatus((jobId, count) => {
+      id = jobId
+      return count === 1 ? json({ job_id: id, status: 'running', progress: {
+        done: 1000, total: 2000, current_month: '2026-02', completed_months: 1, total_months: 2,
+        saved_races: 7, saved_horses: 82, existing_races_skipped: 279, no_race_dates: 14, message: '取得中',
+      } }) : last.promise
     })
-
-    const { result } = await renderBatchHook()
-    const promise = result.current.start('2026-01', '2026-01', false)
-
-    await sleep()
-    expect(result.current.status).toBe('queued')
-
-    await act(async () => {
-      statusDeferred.shift()?.resolve(jsonResponse({ status: 'queued', progress: { done: 0, total: 10, message: 'queued' } }))
-    })
-    await sleep()
-    expect(result.current.status).toBe('queued')
-
-    await act(async () => {
-      statusDeferred.shift()?.resolve(jsonResponse({ status: 'running', progress: { done: 3, total: 10, message: 'running' } }))
-    })
-    await sleep()
-    expect(result.current.status).toBe('running')
-
-    await act(async () => {
-      statusDeferred.shift()?.resolve(jsonResponse({ status: 'completed', result: { races_collected: 4 } }))
-    })
-
-    let resolved: any
-    await act(async () => {
-      resolved = await promise
-    })
-
-    expect(resolved).toMatchObject({ races_collected: 4 })
-    expect(result.current.status).toBe('completed')
-    expect(result.current.canRetry).toBe(false)
+    const hook = renderHook(() => useBatchScrape(FAST))
+    let promise!: Promise<unknown>
+    act(() => { promise = hook.result.current.start('2026-01', '2026-02', false) })
+    await waitFor(() => expect(hook.result.current.progress.current).toBe(50))
+    expect(hook.result.current.progress).toMatchObject({ newSavedRaces: 7, newSavedHorses: 82, existingRacesSkipped: 279, verifiedNoRaceDates: 14 })
+    expect(hook.result.current.progress.message).toContain('2026-02')
+    expect(hook.result.current.result).toBeNull()
+    expect(postCalls()).toHaveLength(1)
+    await act(async () => { last.resolve(json({ job_id: id, status: 'completed', result: { races_collected: 12, saved_horses: 130 } })); await promise })
+    expect(hook.result.current.result).toMatchObject({ races_collected: 12, saved_horses: 130 })
   })
 
-  it('accepts completed with races_collected=0 as normal completion', async () => {
-    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url === '/api/scrape' && init?.method === 'POST') return jsonResponse({ job_id: 'job-zero' })
-      if (url === '/api/scrape/status/job-zero') return jsonResponse({ status: 'completed', result: { races_collected: 0 } })
-      throw new Error(`unexpected request: ${url}`)
-    })
-
-    const { result } = await renderBatchHook()
-    let resolved: any
-    await act(async () => {
-      resolved = await result.current.start('2026-01', '2026-01', false)
-    })
-
-    expect(resolved.races_collected).toBe(0)
-    expect(result.current.status).toBe('completed')
-    expect(result.current.result?.races_collected).toBe(0)
-    expect(result.current.canRetry).toBe(false)
-  })
-
-  it('keeps new saves separate from existing and no-race skips', async () => {
-    let statusCalls = 0
-    const completion = deferred<Response>()
-    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url === '/api/scrape' && init?.method === 'POST') {
-        return jsonResponse({ job_id: 'job-counters' })
-      }
-      if (url === '/api/scrape/status/job-counters') {
-        statusCalls += 1
-        if (statusCalls === 1) {
-          return jsonResponse({
-            status: 'running',
-            progress: {
-              done: 2,
-              total: 5,
-              message: 'repairing',
-              saved_races: 1,
-              saved_horses: 12,
-              existing_races_skipped: 47,
-              no_race_dates: 20,
-            },
-          })
-        }
-        return completion.promise
-      }
-      throw new Error(`unexpected request: ${url}`)
-    })
-
-    const { result } = await renderBatchHook()
-    const promise = result.current.start('2026-01', '2026-01', true)
-    await waitFor(() => {
-      expect(result.current.progress.existingRacesSkipped).toBe(47)
-    })
-    expect(result.current.progress.newSavedRaces).toBe(1)
-    expect(result.current.progress.newSavedHorses).toBe(12)
-    expect(result.current.progress.verifiedNoRaceDates).toBe(20)
-
-    await act(async () => {
-      completion.resolve(jsonResponse({
-        status: 'completed',
-        result: {
-          races_collected: 1,
-          saved_horses: 12,
-          existing_races_skipped: 47,
-          verified_no_race_dates: 20,
-        },
-      }))
-    })
-
-    let resolved: any
-    await act(async () => {
-      resolved = await promise
-    })
-    expect(resolved).toMatchObject({
-      races_collected: 1,
-      saved_horses: 12,
-      existing_races_skipped: 47,
-      verified_no_race_dates: 20,
-    })
-  })
-
-  it('keeps status non-completed and result null during second-month running', async () => {
-    let postCount = 0
-    const febStatusDeferred: Array<ReturnType<typeof deferred<Response>>> = []
-
-    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url === '/api/scrape' && init?.method === 'POST') {
-        postCount += 1
-        return jsonResponse({ job_id: postCount === 1 ? 'job-jan' : 'job-feb' })
-      }
-      if (url === '/api/scrape/status/job-jan') {
-        return jsonResponse({ status: 'completed', result: { races_collected: 2 } })
-      }
-      if (url === '/api/scrape/status/job-feb') {
-        const d = deferred<Response>()
-        febStatusDeferred.push(d)
-        return d.promise
-      }
-      throw new Error(`unexpected request: ${url}`)
-    })
-
-    const { result } = await renderBatchHook()
-    const promise = result.current.start('2026-01', '2026-02', false)
-
-    await waitFor(() => {
-      expect(febStatusDeferred.length).toBeGreaterThan(0)
-    })
-
-    await act(async () => {
-      febStatusDeferred.shift()?.resolve(jsonResponse({ status: 'running', progress: { done: 1, total: 10, message: 'running feb' } }))
-    })
-    await sleep()
-    expect(result.current.status).toBe('running')
-    expect(result.current.status).not.toBe('completed')
-    expect(result.current.result).toBeNull()
-
-    await waitFor(() => {
-      expect(febStatusDeferred.length).toBeGreaterThan(0)
-    })
-    await act(async () => {
-      febStatusDeferred.shift()?.resolve(jsonResponse({ status: 'completed', result: { races_collected: 3 } }))
-    })
-
-    let resolved: any
-    await act(async () => {
-      resolved = await promise
-    })
-
-    expect(resolved).toMatchObject({ races_collected: 5 })
-    expect(result.current.status).toBe('completed')
-  })
-
-  it('rejects malformed completed result payloads as monitoring uncertainty', async () => {
-    const invalidValues: unknown[] = [
-      null,
-      undefined,
-      '',
-      false,
-      true,
-      '8',
-      Number.NaN,
-      Number.POSITIVE_INFINITY,
-      -1,
-      1.2,
-    ]
-
-    for (const value of invalidValues) {
-      mockedAuthFetch.mockReset()
-      mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input)
-        if (url === '/api/scrape' && init?.method === 'POST') return jsonResponse({ job_id: 'job-malformed' })
-        if (url === '/api/scrape/status/job-malformed') {
-          return jsonResponse({ status: 'completed', result: { races_collected: value } })
-        }
-        throw new Error(`unexpected request: ${url}`)
-      })
-
-      const { result } = await renderBatchHook({ ...FAST_OPTIONS, maxPollAttempts: 2 })
-      const rejected = await result.current.start('2026-01', '2026-01', false).catch(error => error)
-
-      expect(rejected).toBeInstanceOf(BatchScrapeError)
-      expect((rejected as BatchScrapeError).kind).toBe('monitoring')
-      expect((rejected as BatchScrapeError).safeToRetry).toBe(false)
-      await waitFor(() => {
-        expect(result.current.status).toBe('error')
-      })
-      expect(result.current.result).toBeNull()
-      expect(result.current.error).toContain('完了応答の形式を確認できないため、サーバージョブの状態確認が必要')
-    }
-  })
-
-  it('rejects completed payload when result is missing or null', async () => {
-    const payloads = [
-      { status: 'completed' },
-      { status: 'completed', result: null },
-    ]
-
-    for (const payload of payloads) {
-      mockedAuthFetch.mockReset()
-      mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input)
-        if (url === '/api/scrape' && init?.method === 'POST') return jsonResponse({ job_id: 'job-completed-invalid' })
-        if (url === '/api/scrape/status/job-completed-invalid') return jsonResponse(payload)
-        throw new Error(`unexpected request: ${url}`)
-      })
-
-      const { result } = await renderBatchHook({ ...FAST_OPTIONS, maxPollAttempts: 2 })
-      const rejected = await result.current.start('2026-01', '2026-01', false).catch(error => error)
-      expect((rejected as BatchScrapeError).kind).toBe('monitoring')
-      await waitFor(() => {
-        expect(result.current.status).toBe('error')
-      })
-      expect(result.current.result).toBeNull()
-    }
-  })
-
-  it('resets error/result/jobId on rerun start', async () => {
-    let run = 0
-    const secondStatusDeferred: Array<ReturnType<typeof deferred<Response>>> = []
-    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url === '/api/scrape' && init?.method === 'POST') {
-        run += 1
-        return jsonResponse({ job_id: run === 1 ? 'job-first' : 'job-second' })
-      }
-      if (url === '/api/scrape/status/job-first') return jsonResponse({ status: 'error', error: 'backend failed' })
-      if (url === '/api/scrape/status/job-second') {
-        const d = deferred<Response>()
-        secondStatusDeferred.push(d)
-        return d.promise
-      }
-      throw new Error(`unexpected request: ${url}`)
-    })
-
-    const { result } = await renderBatchHook()
-    await result.current.start('2026-01', '2026-01', false).catch(() => undefined)
-
-    await waitFor(() => {
-      expect(result.current.status).toBe('error')
-    })
-    expect(result.current.error).toContain('backend failed')
-    expect(result.current.jobId).toBe('job-first')
-    expect(result.current.result).toBeNull()
-
-    const secondPromise = result.current.start('2026-01', '2026-01', false)
-    await sleep()
-    expect(result.current.error).toBeNull()
-    expect(result.current.result).toBeNull()
-    expect(result.current.jobId).toBe('job-second')
-
-    await act(async () => {
-      secondStatusDeferred.shift()?.resolve(jsonResponse({ status: 'completed', result: { races_collected: 2 } }))
-    })
-
-    await act(async () => {
-      await secondPromise
-    })
-    expect(result.current.status).toBe('completed')
-  })
-
-  it('rejects empty job_id as monitoring uncertainty', async () => {
-    let postCount = 0
-    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url === '/api/scrape' && init?.method === 'POST') {
-        postCount += 1
-        return jsonResponse({ job_id: '' })
-      }
-      throw new Error(`unexpected request: ${url}`)
-    })
-
-    const { result } = await renderBatchHook()
-    let rejected: unknown
-    await act(async () => {
-      rejected = await result.current.start('2026-01', '2026-01', false).catch(error => error)
-    })
-    expect(rejected).toBeInstanceOf(BatchScrapeError)
-    expect((rejected as BatchScrapeError).kind).toBe('monitoring')
-    expect(result.current.canRetry).toBe(false)
-    await waitFor(() => {
-      expect(result.current.jobId).toBeNull()
-      expect(result.current.isExecutionLocked).toBe(true)
-    })
-
-    let blocked: unknown
-    await act(async () => {
-      blocked = await result.current.start('2026-01', '2026-01', false).catch(error => error)
-    })
-    expect(blocked).toBeInstanceOf(BatchScrapeError)
-    expect((blocked as BatchScrapeError).kind).toBe('busy')
-    expect(postCount).toBe(1)
-  })
-
-  it('unknown status finishes within maxPollAttempts as monitoring uncertainty', async () => {
-    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url === '/api/scrape' && init?.method === 'POST') return jsonResponse({ job_id: 'job-unknown' })
-      if (url === '/api/scrape/status/job-unknown') return jsonResponse({ status: 'mystery' })
-      throw new Error(`unexpected request: ${url}`)
-    })
-
-    const { result } = await renderBatchHook({ ...FAST_OPTIONS, maxPollAttempts: 3 })
-    const rejected = await result.current.start('2026-01', '2026-01', false).catch(error => error)
-    expect(rejected).toBeInstanceOf(BatchScrapeError)
-    expect((rejected as BatchScrapeError).kind).toBe('monitoring')
-    expect((rejected as BatchScrapeError).safeToRetry).toBe(false)
-  })
-
-  it('blocks concurrent start atomically and keeps first run state intact', async () => {
-    const statusDeferred: Array<ReturnType<typeof deferred<Response>>> = []
-    let postCount = 0
-
-    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url === '/api/scrape' && init?.method === 'POST') {
-        postCount += 1
-        return jsonResponse({ job_id: 'job-concurrent' })
-      }
-      if (url === '/api/scrape/status/job-concurrent') {
-        const d = deferred<Response>()
-        statusDeferred.push(d)
-        return d.promise
-      }
-      throw new Error(`unexpected request: ${url}`)
-    })
-
-    const { result } = await renderBatchHook()
-    const first = result.current.start('2026-01', '2026-01', false)
-    await sleep()
-
-    const second = result.current.start('2026-01', '2026-01', false).catch(error => error)
-    const secondError = await second
-    expect(secondError).toBeInstanceOf(BatchScrapeError)
-    expect((secondError as BatchScrapeError).kind).toBe('busy')
-    expect(postCount).toBe(1)
-
-    await act(async () => {
-      statusDeferred.shift()?.resolve(jsonResponse({ status: 'completed', result: { races_collected: 2 } }))
-    })
-    await act(async () => {
-      await first
-    })
-
-    expect(result.current.status).toBe('completed')
-    expect(result.current.result?.races_collected).toBe(2)
-  })
-
-  it('rejects synchronous re-start right after monitoring failure without extra POST', async () => {
-    let postCount = 0
-    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url === '/api/scrape' && init?.method === 'POST') {
-        postCount += 1
-        return jsonResponse({ job_id: 'job-monitoring' })
-      }
-      if (url === '/api/scrape/status/job-monitoring') return jsonResponse({ status: 'not_found' })
-      throw new Error(`unexpected request: ${url}`)
-    })
-
-    const { result } = await renderBatchHook({ ...FAST_OPTIONS, maxConsecutiveStatusFailures: 1 })
-    const firstError = await result.current.start('2026-01', '2026-01', false).catch(error => error)
-
-    expect((firstError as BatchScrapeError).kind).toBe('monitoring')
-
-    const secondError = await result.current.start('2026-01', '2026-01', false).catch(error => error)
-    expect(secondError).toBeInstanceOf(BatchScrapeError)
-    expect((secondError as BatchScrapeError).kind).toBe('busy')
-    expect(postCount).toBe(1)
-  })
-
-  it('marks execution failure as retry-safe', async () => {
-    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url === '/api/scrape' && init?.method === 'POST') return jsonResponse({ job_id: 'job-exec' })
-      if (url === '/api/scrape/status/job-exec') return jsonResponse({ status: 'error', error: 'backend failed' })
-      throw new Error(`unexpected request: ${url}`)
-    })
-
-    const { result } = await renderBatchHook()
-    const rejected = await result.current.start('2026-01', '2026-01', false).catch(error => error)
-
-    expect(rejected).toBeInstanceOf(BatchScrapeError)
-    expect((rejected as BatchScrapeError).kind).toBe('execution')
-    expect((rejected as BatchScrapeError).safeToRetry).toBe(true)
-    await waitFor(() => {
-      expect(result.current.failureKind).toBe('execution')
-      expect(result.current.canRetry).toBe(true)
-    })
-  })
-
-  it('client abort uses monitoring-stop semantics without backend error mock', async () => {
-    const statusDeferred: Array<ReturnType<typeof deferred<Response>>> = []
-
-    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url === '/api/scrape' && init?.method === 'POST') return jsonResponse({ job_id: 'job-abort' })
-      if (url === '/api/scrape/status/job-abort') {
-        const d = deferred<Response>()
-        statusDeferred.push(d)
-        return d.promise
-      }
-      throw new Error(`unexpected request: ${url}`)
-    })
-
-    const { result } = await renderBatchHook()
-    const handled = result.current.start('2026-01', '2026-01', false).catch(error => error)
-
-    await sleep()
-    await act(async () => {
-      result.current.abort()
-    })
-
-    await act(async () => {
-      statusDeferred.shift()?.resolve(jsonResponse({ status: 'running', progress: { done: 1, total: 10, message: 'running' } }))
-    })
-
-    const rejected = await handled
-    expect(rejected).toBeInstanceOf(BatchScrapeError)
-    expect((rejected as BatchScrapeError).kind).toBe('client_stop')
-    expect(result.current.canRetry).toBe(false)
-    expect(result.current.isExecutionLocked).toBe(true)
-  })
-
-  it('rejects start>end without authFetch call', async () => {
-    const { result } = await renderBatchHook()
-    const rejected = await result.current.start('2026-02', '2026-01', false).catch(error => error)
-
-    expect(rejected).toBeInstanceOf(BatchScrapeError)
-    expect((rejected as BatchScrapeError).kind).toBe('validation')
-    expect(mockedAuthFetch).not.toHaveBeenCalled()
-  })
-
-  it('rejects invalid month format and keeps no-retry validation state', async () => {
-    const { result } = await renderBatchHook()
-    const rejected = await result.current.start('2026-13', '2026-01', false).catch(error => error)
-
-    expect(rejected).toBeInstanceOf(BatchScrapeError)
-    expect((rejected as BatchScrapeError).kind).toBe('validation')
-    expect(mockedAuthFetch).not.toHaveBeenCalled()
-    await waitFor(() => {
-      expect(result.current.status).toBe('error')
-      expect(result.current.canRetry).toBe(false)
-    })
-  })
-
-  it('allows real re-start only after reconciliation lock clear', async () => {
-    let postCount = 0
-    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url === '/api/scrape' && init?.method === 'POST') {
-        postCount += 1
-        return jsonResponse({ job_id: postCount === 1 ? 'job-lock' : 'job-after-reconcile' })
-      }
-      if (url === '/api/scrape/status/job-lock') {
-        return jsonResponse({ status: 'not_found' })
-      }
-      if (url === '/api/scrape/status/job-after-reconcile') {
-        return jsonResponse({ status: 'completed', result: { races_collected: 2 } })
-      }
-      throw new Error(`unexpected request: ${url}`)
-    })
-
-    const { result } = await renderBatchHook({ ...FAST_OPTIONS, maxConsecutiveStatusFailures: 1 })
-
-    const firstError = await result.current.start('2026-01', '2026-01', false).catch(error => error)
-    expect((firstError as BatchScrapeError).kind).toBe('monitoring')
-    expect(postCount).toBe(1)
-
-    const blocked = await result.current.start('2026-01', '2026-01', false).catch(error => error)
-    expect((blocked as BatchScrapeError).kind).toBe('busy')
-    expect(postCount).toBe(1)
-
-    await act(async () => {
-      expect(result.current.clearExecutionLockAfterReconciliation()).toBe(true)
-    })
-
-    let resolved: any
-    await act(async () => {
-      resolved = await result.current.start('2026-01', '2026-01', false)
-    })
-
-    expect(postCount).toBe(2)
-    expect(resolved.races_collected).toBe(2)
-    expect(result.current.status).toBe('completed')
-  })
-
-  it('rejects non-2xx start as start_rejected and retry-safe', async () => {
-    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url === '/api/scrape' && init?.method === 'POST') {
-        return jsonResponse({ detail: 'rejected by backend' }, 400)
-      }
-      throw new Error(`unexpected request: ${url}`)
-    })
-
-    const { result } = await renderBatchHook()
-    const rejected = await result.current.start('2026-01', '2026-01', false).catch(error => error)
-
-    expect(rejected).toBeInstanceOf(BatchScrapeError)
-    expect((rejected as BatchScrapeError).kind).toBe('start_rejected')
-    expect((rejected as BatchScrapeError).safeToRetry).toBe(true)
-    await waitFor(() => {
-      expect(result.current.canRetry).toBe(true)
-    })
-  })
-
-  it('classifies owner-active-job as busy and does not offer a blind retry', async () => {
-    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url === '/api/scrape' && init?.method === 'POST') {
-        return jsonResponse({ detail: 'owner-active-job' }, 409)
-      }
-      throw new Error(`unexpected request: ${url}`)
-    })
-
-    const { result } = await renderBatchHook()
-    const rejected = await result.current.start('2026-01', '2026-01', false).catch(error => error)
-
-    expect(rejected).toBeInstanceOf(BatchScrapeError)
-    expect((rejected as BatchScrapeError).message).toBe('別のデータ取得が実行中です。完了までお待ちください。')
-    expect((rejected as BatchScrapeError).kind).toBe('busy')
-    expect((rejected as BatchScrapeError).safeToRetry).toBe(false)
-    await waitFor(() => {
-      expect(result.current.canRetry).toBe(false)
-    })
-  })
-
-  it('keeps polling while server cancellation is pending and treats cancelled as terminal', async () => {
-    const statusDeferred: Array<ReturnType<typeof deferred<Response>>> = []
-    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url === '/api/scrape' && init?.method === 'POST') {
-        return jsonResponse({ job_id: 'job-cancelled' })
-      }
-      if (url === '/api/scrape/status/job-cancelled') {
-        const pending = deferred<Response>()
-        statusDeferred.push(pending)
-        return pending.promise
-      }
-      throw new Error(`unexpected request: ${url}`)
-    })
-
-    const { result } = await renderBatchHook()
-    const promise = result.current.start('2026-01', '2026-01', false).catch(error => error)
-    await waitFor(() => expect(statusDeferred).toHaveLength(1))
-
-    await act(async () => {
-      statusDeferred.shift()?.resolve(jsonResponse({
-        status: 'cancelling',
-        progress: { done: 2, total: 10, message: 'cancel requested' },
-      }))
-    })
-    await waitFor(() => {
-      expect(result.current.status).toBe('cancelling')
-      expect(result.current.loading).toBe(true)
-      expect(result.current.progress.message).toContain('安全な区切りで停止中')
-    })
-    await waitFor(() => expect(statusDeferred).toHaveLength(1))
-
-    await act(async () => {
-      statusDeferred.shift()?.resolve(jsonResponse({ status: 'cancelled' }))
-    })
-    const rejected = await promise
-
-    expect(rejected).toBeInstanceOf(BatchScrapeError)
-    expect((rejected as BatchScrapeError).kind).toBe('cancelled')
-    expect((rejected as BatchScrapeError).safeToRetry).toBe(false)
-    await waitFor(() => {
-      expect(result.current.status).toBe('cancelled')
-      expect(result.current.loading).toBe(false)
-      expect(result.current.error).toBeNull()
-      expect(result.current.canRetry).toBe(false)
-    })
-  })
-
-  it('does not enqueue the next month once a server stop has been requested', async () => {
-    const firstStatus = deferred<Response>()
-    let postCount = 0
-    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url === '/api/scrape' && init?.method === 'POST') {
-        postCount += 1
-        return jsonResponse({ job_id: `job-month-${postCount}` })
-      }
-      if (url === '/api/scrape/status/job-month-1') return firstStatus.promise
-      throw new Error(`unexpected request: ${url}`)
-    })
-
-    const { result } = await renderBatchHook()
-    const promise = result.current.start('2026-01', '2026-02', false).catch(error => error)
-    await waitFor(() => expect(postCount).toBe(1))
-
-    act(() => {
-      result.current.requestBatchStop()
-    })
-    await act(async () => {
-      firstStatus.resolve(jsonResponse({ status: 'completed', result: { races_collected: 1 } }))
-    })
-    const rejected = await promise
-
-    expect(postCount).toBe(1)
-    expect(rejected).toBeInstanceOf(BatchScrapeError)
-    expect((rejected as BatchScrapeError).kind).toBe('cancelled')
-    await waitFor(() => expect(result.current.status).toBe('cancelled'))
-  })
-
-  it('publishes accepted job id and exact monthly request before status polling completes', async () => {
-    const firstStatus = deferred<Response>()
+  it('publishes exact parent period after acceptance', async () => {
+    const finish = deferred<Response>()
     const onJobAccepted = vi.fn()
-    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url === '/api/scrape' && init?.method === 'POST') {
-        return jsonResponse({
-          job_id: 'job-visible-immediately',
-          status: 'queued',
-          created_at: '2026-09-12T08:00:00Z',
-        })
-      }
-      if (url === '/api/scrape/status/job-visible-immediately') return firstStatus.promise
-      throw new Error(`unexpected request: ${url}`)
-    })
-
-    const hook = renderHook(() => useBatchScrape({ ...FAST_OPTIONS, onJobAccepted }))
-    const promise = hook.result.current.start('2026-02', '2026-02', false)
-
+    let id = ''
+    setupStatus(jobId => { id = jobId; return finish.promise })
+    const hook = renderHook(() => useBatchScrape({ ...FAST, onJobAccepted }))
+    let promise!: Promise<unknown>
+    act(() => { promise = hook.result.current.start('2026-01', '2026-02', false) })
     await waitFor(() => expect(onJobAccepted).toHaveBeenCalledTimes(1))
-    expect(onJobAccepted).toHaveBeenCalledWith({
-      jobId: 'job-visible-immediately',
-      status: 'queued',
-      startDate: '20260201',
-      endDate: '20260228',
-      acceptedAt: '2026-09-12T08:00:00Z',
-    })
-
-    await act(async () => {
-      firstStatus.resolve(jsonResponse({ status: 'completed', result: { races_collected: 1 } }))
-      await promise
-    })
+    expect(onJobAccepted).toHaveBeenCalledWith(expect.objectContaining({ jobId: id, startDate: '20260101', endDate: '20260228' }))
+    await act(async () => { finish.resolve(json({ job_id: id, status: 'completed', result: { races_collected: 0 } })); await promise })
+    expect(hook.result.current.result?.races_collected).toBe(0)
   })
 
-  it('finishes the accepted month but never posts the next month while admin grant renewal unmounts the hook', async () => {
-    const firstStatus = deferred<Response>()
-    let postCount = 0
-    let statusCalls = 0
-    mockedAuthFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
+  it.each(['lost-response', 'missing-id', 'wrong-id', 'proxy-502'])('recovers %s with saved ID and no additional POST', async mode => {
+    mockedAuthFetch.mockImplementation(async (url: string) => {
+      if (url === '/api/scrape') {
+        if (mode === 'lost-response') throw new TypeError('Failed to fetch')
+        if (mode === 'proxy-502') return json({ error: 'upstream unknown' }, 502)
+        return json(mode === 'wrong-id' ? { job_id: JOB } : {})
+      }
+      const saved = JSON.parse(localStorage.getItem(KEY)!)
+      expect(url).toBe('/api/scrape/status/' + saved.jobId)
+      return json({ job_id: saved.jobId, status: 'completed', result: { races_collected: 2 } })
+    })
+    const hook = renderHook(() => useBatchScrape(FAST))
+    expect(await startAndCatch(hook)).toMatchObject({ races_collected: 2 })
+    expect(postCalls()).toHaveLength(1)
+  })
+
+  it('retains the preallocated ID when acceptance cannot be resolved', async () => {
+    mockedAuthFetch.mockImplementation(async (url: string) => url === '/api/scrape'
+      ? json({})
+      : json({ status: 'not_found' }, 404))
+    const hook = renderHook(() => useBatchScrape(FAST))
+    const failure = await startAndCatch(hook)
+    expect(failure).toBeInstanceOf(BatchScrapeError)
+    expect(failure).toMatchObject({ kind: 'monitoring', safeToRetry: false, jobId: hook.result.current.jobId })
+    expect(JSON.parse(localStorage.getItem(KEY)!).jobId).toBe(hook.result.current.jobId)
+    expect(hook.result.current.isExecutionLocked).toBe(true)
+    expect(await startAndCatch(hook)).toMatchObject({ kind: 'busy' })
+    expect(postCalls()).toHaveLength(1)
+  })
+
+  it('reopens an accepted job using status GET only', async () => {
+    localStorage.setItem(KEY, JSON.stringify(stored()))
+    setupStatus(jobId => json({ job_id: jobId, status: 'completed', result: { races_collected: 5 } }))
+    const hook = renderHook(() => useBatchScrape(FAST))
+    await waitFor(() => expect(hook.result.current.status).toBe('completed'))
+    expect(hook.result.current.result?.races_collected).toBe(5)
+    expect(postCalls()).toHaveLength(0)
+    expect(localStorage.getItem(KEY)).toBeNull()
+  })
+
+  it('recovers an owner-history parent on a different browser without submitting', async () => {
+    setupStatus(jobId => json({ job_id: jobId, status: 'completed', result: { races_collected: 5 } }))
+    const hook = renderHook(() => useBatchScrape(FAST))
+    await act(async () => {
+      await hook.result.current.reconnect({ jobId: JOB, status: 'running', startDate: '20260101', endDate: '20260228', acceptedAt: '2026-09-13T12:00:00Z' })
+    })
+    expect(hook.result.current.status).toBe('completed')
+    expect(postCalls()).toHaveLength(0)
+  })
+
+  it('unmount aborts observation, preserves ID, and does not cancel or enqueue more work', async () => {
+    const pending = deferred<Response>()
+    let id = ''
+    setupStatus(jobId => { id = jobId; return pending.promise })
+    const hook = renderHook(() => useBatchScrape(FAST))
+    let promise!: Promise<unknown>
+    act(() => { promise = hook.result.current.start('2026-01', '2026-02', false).catch(e => e) })
+    await waitFor(() => expect(id).not.toBe(''))
+    hook.unmount()
+    pending.resolve(json({ job_id: id, status: 'running' }))
+    expect(await promise).toMatchObject({ kind: 'client_stop', jobId: id })
+    expect(JSON.parse(localStorage.getItem(KEY)!).jobId).toBe(id)
+    expect(postCalls()).toHaveLength(1)
+    expect(mockedAuthFetch.mock.calls.some(([url]) => String(url).includes('/cancel/'))).toBe(false)
+    setupStatus(jobId => json({ job_id: jobId, status: 'completed', result: { races_collected: 8 } }))
+    const reopened = renderHook(() => useBatchScrape(FAST))
+    await waitFor(() => expect(reopened.result.current.status).toBe('completed'))
+    expect(postCalls()).toHaveLength(1)
+  })
+
+  it.each([401, 403])('keeps accepted job on status HTTP %s and only reconnects after authentication', async status => {
+    setupStatus(() => json({ detail: 'expired' }, status))
+    const hook = renderHook(() => useBatchScrape(FAST))
+    const failure = await startAndCatch(hook)
+    expect(failure).toMatchObject({ kind: 'authentication', safeToRetry: false })
+    const id = hook.result.current.jobId!
+    expect(JSON.parse(localStorage.getItem(KEY)!).jobId).toBe(id)
+    setupStatus(jobId => json({ job_id: jobId, status: 'completed', result: { races_collected: 7 } }))
+    await act(async () => { await hook.result.current.reconnect() })
+    expect(hook.result.current.status).toBe('completed')
+    expect(postCalls()).toHaveLength(1)
+  })
+
+  it.each([401, 403])('does not permanently lock a never-accepted submission rejected with HTTP %s', async status => {
+    mockedAuthFetch.mockResolvedValue(json({ detail: 'denied' }, status))
+    const hook = renderHook(() => useBatchScrape(FAST))
+    expect(await startAndCatch(hook)).toMatchObject({ kind: 'authentication', safeToRetry: true })
+    expect(localStorage.getItem(KEY)).toBeNull()
+    expect(hook.result.current.isExecutionLocked).toBe(false)
+    expect(hook.result.current.jobId).toBeNull()
+    expect(mockedAuthFetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not lose an accepted ID on temporary auth session/network failure', async () => {
+    setupStatus(() => { throw Object.assign(new Error('session unavailable'), { code: 'AUTH_SESSION_UNAVAILABLE' }) })
+    const hook = renderHook(() => useBatchScrape(FAST))
+    expect(await startAndCatch(hook)).toMatchObject({ kind: 'monitoring', safeToRetry: false })
+    expect(localStorage.getItem(KEY)).not.toBeNull()
+  })
+
+  it.each([null, undefined, '', false, '8', -1, 1.2])('rejects malformed completion races_collected=%s without clearing ID', async value => {
+    setupStatus(jobId => json({ job_id: jobId, status: 'completed', result: { races_collected: value } }))
+    const hook = renderHook(() => useBatchScrape(FAST))
+    expect(await startAndCatch(hook)).toMatchObject({ kind: 'monitoring', safeToRetry: false })
+    expect(hook.result.current.result).toBeNull()
+    expect(localStorage.getItem(KEY)).not.toBeNull()
+    expect(hook.result.current.error).toContain('完了結果')
+  })
+
+  it.each([{ status: 'completed', result: { races_collected: 9 } }, { job_id: JOB, status: 'completed', result: { races_collected: 9 } }])('does not unlock a status response without the exact saved ID', async payload => {
+    setupStatus(() => json(payload))
+    const hook = renderHook(() => useBatchScrape(FAST))
+    expect(await startAndCatch(hook)).toMatchObject({ kind: 'monitoring' })
+    expect(localStorage.getItem(KEY)).not.toBeNull()
+  })
+
+  it('rejects unknown status within bounded test monitoring attempts', async () => {
+    setupStatus(jobId => json({ job_id: jobId, status: 'mystery' }))
+    const hook = renderHook(() => useBatchScrape(FAST))
+    expect(await startAndCatch(hook)).toMatchObject({ kind: 'monitoring', safeToRetry: false })
+  })
+
+  it('blocks concurrent starts atomically and preserves the first request', async () => {
+    const last = deferred<Response>()
+    let id = ''
+    setupStatus(jobId => { id = jobId; return last.promise })
+    const hook = renderHook(() => useBatchScrape(FAST))
+    let first!: Promise<unknown>
+    act(() => { first = hook.result.current.start('2026-01', '2026-02', false) })
+    expect(await startAndCatch(hook)).toMatchObject({ kind: 'busy' })
+    expect(postCalls()).toHaveLength(1)
+    await act(async () => { last.resolve(json({ job_id: id, status: 'completed', result: { races_collected: 2 } })); await first })
+    expect(hook.result.current.result?.races_collected).toBe(2)
+  })
+
+  it('preserves another owner record and never observes it', async () => {
+    localStorage.setItem(KEY, JSON.stringify(stored()))
+    const hook = renderHook(() => useBatchScrape({ ...FAST, ownerUserId: 'owner-b' }))
+    expect(hook.result.current.jobId).toBeNull()
+    expect(mockedAuthFetch).not.toHaveBeenCalled()
+    expect(localStorage.getItem(KEY)).not.toBeNull()
+  })
+
+  it.each([{ jobId: '../other' }, { operationId: 'bad-id' }, { ownerUserId: 'someone-else' }, { startDate: '20260231' }, { endDate: '20250101' }])('fails closed on corrupted owner-scoped storage: %s', async change => {
+    const raw = JSON.stringify(stored(change))
+    localStorage.setItem(KEY, raw)
+    const hook = renderHook(() => useBatchScrape(FAST))
+    await waitFor(() => expect(hook.result.current.isExecutionLocked).toBe(true))
+    expect(mockedAuthFetch).not.toHaveBeenCalled()
+    expect(localStorage.getItem(KEY)).toBe(raw)
+  })
+
+  it('does not submit if durable storage is unavailable', async () => {
+    const hook = renderHook(() => useBatchScrape(FAST))
+    const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota') })
+    try {
+      expect(await startAndCatch(hook)).toMatchObject({ kind: 'start_rejected', safeToRetry: false })
+      expect(mockedAuthFetch).not.toHaveBeenCalled()
+    } finally { spy.mockRestore() }
+  })
+
+  it.each([['2026-02', '2026-01'], ['2026-13', '2026-01'], ['invalid', '2026-01']])('rejects invalid dates %s through %s before POST', async (start, end) => {
+    const hook = renderHook(() => useBatchScrape(FAST))
+    expect(await startAndCatch(hook, start, end)).toMatchObject({ kind: 'validation', safeToRetry: false })
+    expect(mockedAuthFetch).not.toHaveBeenCalled()
+  })
+
+  it('allows a fresh request after definite validation rejection, not an uncertain failure', async () => {
+    mockedAuthFetch.mockResolvedValue(json({ detail: 'invalid date' }, 400))
+    const hook = renderHook(() => useBatchScrape(FAST))
+    expect(await startAndCatch(hook)).toMatchObject({ kind: 'start_rejected', safeToRetry: true })
+    expect(localStorage.getItem(KEY)).toBeNull()
+    setupStatus(jobId => json({ job_id: jobId, status: 'completed', result: { races_collected: 2 } }))
+    expect(await startAndCatch(hook)).toMatchObject({ races_collected: 2 })
+    expect(postCalls()).toHaveLength(2)
+  })
+
+  it('recognizes another owner job conflict without a blind retry', async () => {
+    mockedAuthFetch.mockResolvedValue(json({ detail: 'owner-active-job' }, 409))
+    const hook = renderHook(() => useBatchScrape(FAST))
+    expect(await startAndCatch(hook)).toMatchObject({ kind: 'busy', safeToRetry: false })
+    expect(localStorage.getItem(KEY)).toBeNull()
+    expect(postCalls()).toHaveLength(1)
+  })
+
+  it('keeps cancelling pending until server parent confirms cancellation', async () => {
+    const last = deferred<Response>()
+    let id = ''
+    setupStatus((jobId, count) => {
+      id = jobId
+      return count === 1 ? json({ job_id: id, status: 'cancelling' }) : last.promise
+    })
+    const hook = renderHook(() => useBatchScrape(FAST))
+    let promise!: Promise<unknown>
+    act(() => { promise = hook.result.current.start('2026-01', '2026-02', false).catch(e => e) })
+    await waitFor(() => expect(hook.result.current.status).toBe('cancelling'))
+    expect(hook.result.current.loading).toBe(true)
+    expect(localStorage.getItem(KEY)).not.toBeNull()
+    await act(async () => { last.resolve(json({ job_id: id, status: 'cancelled' })); await promise })
+    expect(hook.result.current.status).toBe('cancelled')
+    expect(hook.result.current.error).toBeNull()
+    expect(localStorage.getItem(KEY)).toBeNull()
+    expect(postCalls()).toHaveLength(1)
+  })
+
+  it('does not pretend cancellation won when the parent completed concurrently', async () => {
+    const last = deferred<Response>()
+    let id = ''
+    setupStatus(jobId => { id = jobId; return last.promise })
+    const hook = renderHook(() => useBatchScrape(FAST))
+    let promise!: Promise<unknown>
+    act(() => { promise = hook.result.current.start('2026-01', '2026-02', false) })
+    await waitFor(() => expect(id).not.toBe(''))
+    act(() => hook.result.current.requestBatchStop())
+    await act(async () => { last.resolve(json({ job_id: id, status: 'completed', result: { races_collected: 3 } })); await promise })
+    expect(hook.result.current.status).toBe('completed')
+    expect(postCalls()).toHaveLength(1)
+  })
+
+  it('marks a durable server error as retry-safe and clears only its own ID', async () => {
+    setupStatus(jobId => json({ job_id: jobId, status: 'error', error: 'backend failed' }))
+    const hook = renderHook(() => useBatchScrape(FAST))
+    expect(await startAndCatch(hook)).toMatchObject({ kind: 'execution', safeToRetry: true })
+    expect(hook.result.current.error).toBe('backend failed')
+    expect(localStorage.getItem(KEY)).toBeNull()
+  })
+
+  it('refuses to clear a different pending parent during legacy lock reconciliation', async () => {
+    setupStatus(() => json({ status: 'not_found' }, 404))
+    const hook = renderHook(() => useBatchScrape(FAST))
+    await startAndCatch(hook)
+    act(() => { expect(hook.result.current.clearExecutionLockAfterReconciliation(JOB)).toBe(false) })
+    expect(localStorage.getItem(KEY)).not.toBeNull()
+  })
+
+  it('manually resends only the same saved identity after an authoritative not_found and explicit confirmation', async () => {
+    let resending = false
+    mockedAuthFetch.mockImplementation(async (url: string) => {
+      const id = JSON.parse(localStorage.getItem(KEY)!).jobId
+      if (url === '/api/scrape') return resending ? json({ job_id: id, status: 'queued' }) : json({}, 502)
+      return resending ? json({ job_id: id, status: 'completed', result: { races_collected: 3 } }) : json({ job_id: id, status: 'not_found' })
+    })
+    const hook = renderHook(() => useBatchScrape(FAST))
+    await startAndCatch(hook)
+    expect(hook.result.current.canResubmit).toBe(true)
+    const before = JSON.parse(String(postCalls()[0][1].body))
+    const confirm = vi.fn(() => { resending = true; return true })
+    await act(async () => { await hook.result.current.resubmit(confirm) })
+    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(postCalls()).toHaveLength(2)
+    expect(JSON.parse(String(postCalls()[1][1].body))).toEqual(before)
+    expect(hook.result.current.status).toBe('completed')
+  })
+
+  it.each([401, 403, 503, 200])('does not resend if the preflight HTTP %s is unauthorized, unavailable, or malformed', async code => {
+    localStorage.setItem(KEY, JSON.stringify(stored({ origin: 'submitted' })))
+    setupStatus(jobId => json({ job_id: jobId, status: 'not_found' }))
+    const hook = renderHook(() => useBatchScrape(FAST))
+    await waitFor(() => expect(hook.result.current.failureKind).toBe('monitoring'))
+    mockedAuthFetch.mockResolvedValue(json({ detail: 'unverified' }, code))
+    const confirm = vi.fn(() => true)
+    await act(async () => { await hook.result.current.resubmit(confirm).catch(() => {}) })
+    expect(confirm).not.toHaveBeenCalled()
+    expect(postCalls()).toHaveLength(0)
+    expect(localStorage.getItem(KEY)).not.toBeNull()
+  })
+
+  it.each([401, 403, 400, 422, 409])('preserves the original identity and lock if a manual resend POST is rejected with HTTP %s', async code => {
+    const original = JSON.stringify(stored({ origin: 'submitted' }))
+    localStorage.setItem(KEY, original)
+    setupStatus(jobId => json({ job_id: jobId, status: 'not_found' }))
+    const hook = renderHook(() => useBatchScrape(FAST))
+    await waitFor(() => expect(hook.result.current.failureKind).toBe('monitoring'))
+    mockedAuthFetch.mockImplementation(async (url: string, init?: RequestInit) => {
       if (url === '/api/scrape' && init?.method === 'POST') {
-        postCount += 1
-        return jsonResponse({ job_id: `job-before-grant-renewal-${postCount}` })
+        expect(JSON.parse(String(init.body))).toMatchObject({ job_id: JOB, operation_id: OPERATION })
+        return json({ detail: code === 409 ? 'owner-active-job' : 'rejected' }, code)
       }
-      if (url === '/api/scrape/status/job-before-grant-renewal-1') {
-        statusCalls += 1
-        return firstStatus.promise
-      }
-      throw new Error(`unexpected request: ${url}`)
+      return json({ job_id: JOB, status: 'not_found' })
     })
+    let failure: unknown
+    await act(async () => { failure = await hook.result.current.resubmit(() => true).catch(error => error) })
+    expect(failure).toMatchObject({ safeToRetry: false, jobId: JOB })
+    expect(hook.result.current.jobId).toBe(JOB)
+    expect(hook.result.current.isExecutionLocked).toBe(true)
+    expect(hook.result.current.canRetry).toBe(false)
+    expect(localStorage.getItem(KEY)).toBe(original)
+    expect(postCalls()).toHaveLength(1)
+    expect(await startAndCatch(hook)).toMatchObject({ kind: 'busy' })
+    expect(postCalls()).toHaveLength(1)
+  })
 
-    const { result, unmount } = await renderBatchHook()
-    const promise = result.current.start('2026-01', '2026-02', false).catch(error => error)
-    await waitFor(() => {
-      expect(postCount).toBe(1)
-      expect(statusCalls).toBe(1)
+  it('never resends a history-adopted record with no original operation identity', async () => {
+    localStorage.setItem(KEY, JSON.stringify(stored({ origin: 'history' })))
+    setupStatus(jobId => json({ job_id: jobId, status: 'not_found' }))
+    const hook = renderHook(() => useBatchScrape(FAST))
+    await waitFor(() => expect(hook.result.current.failureKind).toBe('monitoring'))
+    const confirm = vi.fn(() => true)
+    await act(async () => { await hook.result.current.resubmit(confirm) })
+    expect(hook.result.current.canResubmit).toBe(false)
+    expect(confirm).not.toHaveBeenCalled()
+    expect(postCalls()).toHaveLength(0)
+  })
+
+  it('requires a fresh confirmation and blocks double-clicked resubmission', async () => {
+    localStorage.setItem(KEY, JSON.stringify(stored({ origin: 'submitted' })))
+    setupStatus(jobId => json({ job_id: jobId, status: 'not_found' }))
+    const hook = renderHook(() => useBatchScrape(FAST))
+    await waitFor(() => expect(hook.result.current.failureKind).toBe('monitoring'))
+    const preflight = deferred<Response>()
+    mockedAuthFetch.mockImplementation(() => preflight.promise)
+    const confirm = vi.fn(() => false)
+    let first!: Promise<unknown>
+    act(() => { first = hook.result.current.resubmit(confirm) })
+    await act(async () => { expect(await hook.result.current.resubmit(confirm)).toBeNull() })
+    await act(async () => { preflight.resolve(json({ job_id: JOB, status: 'not_found' })); await first })
+    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(postCalls()).toHaveLength(0)
+    expect(localStorage.getItem(KEY)).not.toBeNull()
+  })
+
+  it('logs out by detaching monitoring without submitting or deleting the prior owner record', async () => {
+    localStorage.setItem(KEY, JSON.stringify(stored()))
+    const pending = deferred<Response>()
+    setupStatus(() => pending.promise)
+    const hook = renderHook(({ ownerUserId }) => useBatchScrape({ ...FAST, ownerUserId }), { initialProps: { ownerUserId: OWNER as string | null } })
+    await waitFor(() => expect(hook.result.current.jobId).toBe(JOB))
+    hook.rerender({ ownerUserId: null })
+    await act(async () => { pending.resolve(json({ job_id: JOB, status: 'completed', result: { races_collected: 5 } })) })
+    expect(hook.result.current.jobId).toBeNull()
+    expect(hook.result.current.result).toBeNull()
+    expect(localStorage.getItem(KEY)).not.toBeNull()
+    expect(postCalls()).toHaveLength(0)
+  })
+
+  it('ignores stale owner callbacks without changing the new account state', async () => {
+    const hook = renderHook(({ ownerUserId }) => useBatchScrape({ ...FAST, ownerUserId }), { initialProps: { ownerUserId: OWNER } })
+    const oldReconnect = hook.result.current.reconnect
+    const oldResubmit = hook.result.current.resubmit
+    const oldStart = hook.result.current.start
+    hook.rerender({ ownerUserId: 'owner-b' })
+    const raw = JSON.stringify(stored({ origin: 'submitted' }))
+    localStorage.setItem(KEY, raw)
+    await act(async () => {
+      expect(await oldReconnect()).toBeNull()
+      expect(await oldResubmit(() => true)).toBeNull()
+      expect(await oldStart('2026-01', '2026-02', false).catch(e => e)).toMatchObject({ kind: 'authentication' })
     })
-
-    unmount()
-    firstStatus.resolve(jsonResponse({ status: 'completed', result: { races_collected: 1 } }))
-    const rejected = await promise
-
-    expect(postCount).toBe(1)
-    expect(rejected).toBeInstanceOf(BatchScrapeError)
-    expect((rejected as BatchScrapeError).kind).toBe('client_stop')
+    expect(hook.result.current.status).toBe('idle')
+    expect(hook.result.current.jobId).toBeNull()
+    expect(hook.result.current.loading).toBe(false)
+    expect(hook.result.current.isExecutionLocked).toBe(false)
+    expect(localStorage.getItem(KEY)).toBe(raw)
+    expect(mockedAuthFetch).not.toHaveBeenCalled()
   })
 })

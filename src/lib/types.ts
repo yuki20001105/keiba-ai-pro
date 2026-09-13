@@ -36,7 +36,7 @@ export type PredictResult = {
 }
 
 // ジョブポーリング共通ステータス
-export type JobStatus = 'idle' | 'queued' | 'running' | 'cancelling' | 'cancelled' | 'completed' | 'error'
+export type JobStatus = 'idle' | 'queued' | 'running' | 'recovering' | 'waiting_resources' | 'cancelling' | 'cancelled' | 'completed' | 'error'
 
 // スクレイプ専用ステータス（idle → scraping → done | error）
 export type ScrapeStatus = 'idle' | 'scraping' | 'done' | 'error'

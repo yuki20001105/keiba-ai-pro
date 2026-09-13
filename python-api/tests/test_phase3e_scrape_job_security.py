@@ -322,6 +322,36 @@ def test_status_requires_full_uuid_and_hides_cross_owner_jobs() -> None:
     assert "request_hash" not in visible
 
 
+def test_status_projects_authorized_runner_resource_wait_details() -> None:
+    request = ScrapeRequest(
+        start_date="2026-01-01", end_date="2026-01-31", dry_run=True, job_id=JOB_A
+    )
+    asyncio.run(scrape_router.scrape_start(request, {"user_id": OWNER_A, "role": "admin"}))
+    runtime = operational.get_operational_saga_runtime()
+    store = runtime._store
+    assert isinstance(store, operational.SQLiteOperationalSagaStore)
+    assert store.claim_next("worker-a", int(time.time()), 30).claim is not None
+
+    runner_job = _job(OWNER_A, status="paused_resource")
+    runner_job["progress"] = {
+        "message": "メモリ解放待ち （使用 9000MB / 上限 8192MB）。自動再開します。"
+    }
+    runner_job["heartbeat_at"] = "2026-09-13T04:00:00Z"
+    assert jobs._persist_job(JOB_A, runner_job) is True
+
+    visible = asyncio.run(
+        scrape_router.scrape_status(JOB_A, {"user_id": OWNER_A, "role": "admin"})
+    )
+    assert visible["status"] == "waiting_resources"
+    assert visible["progress"] == runner_job["progress"]
+    assert visible["heartbeat_at"] == runner_job["heartbeat_at"]
+
+    hidden = asyncio.run(
+        scrape_router.scrape_status(JOB_A, {"user_id": OWNER_B, "role": "admin"})
+    )
+    assert hidden["status"] == "not_found"
+
+
 def test_status_and_history_return_503_when_durable_state_cannot_be_read(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

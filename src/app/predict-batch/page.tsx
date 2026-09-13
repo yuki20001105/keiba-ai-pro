@@ -22,6 +22,7 @@ export default function PredictBatchPage() {
   const [races, setRaces] = useState<RaceItem[]>([])
   const [racesLoading, setRacesLoading] = useState(false)
   const [racesError, setRacesError] = useState('')
+  const [racesMissing, setRacesMissing] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [models, setModels] = useState<ModelSummary[]>([])
   const [modelId, setModelId] = useState<string>('')
@@ -46,6 +47,10 @@ export default function PredictBatchPage() {
       scrape.setStatus('done')
       scrape.setMessage('スクレイプ完了')
       await loadRaces()
+    },
+    onProgress: message => {
+      scrape.setStatus('scraping')
+      scrape.setMessage(message)
     },
     onError: msg => {
       scrape.setStatus('error')
@@ -109,6 +114,7 @@ export default function PredictBatchPage() {
   const loadRaces = useCallback(async () => {
     setRacesLoading(true)
     setRacesError('')
+    setRacesMissing(false)
     setRaces([])
     setSelectedIds(new Set())
     setResults({})
@@ -121,7 +127,7 @@ export default function PredictBatchPage() {
       const fetched = data.races || []
       setRaces(fetched)
       if (fetched.length === 0) {
-        setRacesError('該当日のデータがDBに見つかりません。')
+        setRacesMissing(true)
       } else {
         restoreResultsFromCache(fetched.map((r: any) => r.race_id))
       }
@@ -131,34 +137,6 @@ export default function PredictBatchPage() {
       setRacesLoading(false)
     }
   }, [date, restoreResultsFromCache])  
-
-  const loadRacesWithAutoScrape = async () => {
-    setRacesLoading(true)
-    setRacesError('')
-    setRaces([])
-    setSelectedIds(new Set())
-    setResults({})
-    scrape.reset()
-    try {
-      const res = await authFetch(`/api/races/by-date?date=${date}`)
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`)
-      const fetched = data.races || []
-      setRaces(fetched)
-      if (fetched.length === 0) {
-        // DB になければ自動でスクレイプ開始
-        setRacesLoading(false)
-        scrape.startScrape({ startDate: date, endDate: date, force: false })
-        return
-      } else {
-        restoreResultsFromCache(fetched.map((r: any) => r.race_id))
-      }
-    } catch (e: any) {
-      setRacesError(e.message)
-    } finally {
-      setRacesLoading(false)
-    }
-  }
 
   const triggerScrape = (force = false) => {
     scrape.startScrape({ startDate: date, endDate: date, force })
@@ -391,7 +369,7 @@ export default function PredictBatchPage() {
           )}
 
           <button
-            onClick={loadRacesWithAutoScrape}
+            onClick={loadRaces}
             disabled={racesLoading || scrape.status === 'scraping'}
             className="px-6 py-2.5 bg-[#1e1e1e] text-white text-sm rounded-lg hover:bg-[#2a2a2a] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
@@ -418,20 +396,22 @@ export default function PredictBatchPage() {
           </div>
         )}
 
-        {/* データなし + スクレイプ誘導 */}
-        {racesError && scrape.status === 'idle' && (
-          <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-5 space-y-3">
-            <p className="text-sm text-[#f87171]">{racesError}</p>
-            <p className="text-xs text-[#666]">
-              この日付のデータをローカルサーバーからスクレイプして取得できます。
-              FastAPI（localhost:8000）が起動している必要があります。
-            </p>
+        {/* データ未取得 + スクレイプ誘導 */}
+        {racesMissing && scrape.status === 'idle' && (
+          <div className="bg-[#0d141c] border border-[#1e3448] rounded-lg p-5 space-y-3">
+            <p className="text-sm text-[#93c5fd]">この日のデータはまだ取得されていません。</p>
             <button
               onClick={() => triggerScrape(false)}
               className="px-5 py-2.5 bg-[#1a3a5a] text-[#60a5fa] text-sm rounded-lg hover:bg-[#1e4a6a] transition-colors border border-[#2a5a8a]"
             >
               この日付をスクレイプして取得
             </button>
+          </div>
+        )}
+
+        {racesError && scrape.status === 'idle' && (
+          <div className="bg-[#1a0a0a] border border-[#3a1a1a] rounded-lg p-4 text-sm text-[#f87171]">
+            レース一覧を取得できませんでした: {racesError}
           </div>
         )}
 

@@ -1,9 +1,10 @@
-﻿'use client'
+'use client'
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import Link from 'next/link'
 import { Logo } from '@/components/Logo'
 import { Toast } from '@/components/Toast'
+import { ScrapeJobRecovery } from '@/components/ScrapeJobRecovery'
 import { useAuth } from '@/contexts/AuthContext'
 import { authFetch } from '@/lib/auth-fetch'
 import { formatApiErrorDetail } from '@/lib/api-error'
@@ -80,6 +81,7 @@ type FetchSummaryHistoryItem = {
     end_date?: string
     force_rescrape?: boolean
     dry_run?: boolean
+    server_batch?: boolean
   }
   result?: unknown
   fetch_summary?: {
@@ -118,7 +120,7 @@ type FetchSummaryHistoryItem = {
 
 type ActiveScrapeJob = {
   jobId: string
-  status: 'queued' | 'running' | 'cancelling'
+  status: 'queued' | 'running' | 'recovering' | 'waiting_resources' | 'cancelling'
   startDate: string
   endDate: string
   startedAt: string | null
@@ -175,10 +177,10 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 function isActiveJobStatus(value: unknown): value is ActiveScrapeJob['status'] {
-  return value === 'queued' || value === 'running' || value === 'cancelling'
+  return value === 'queued' || value === 'running' || value === 'recovering' || value === 'waiting_resources' || value === 'cancelling'
 }
 
-function isKnownJobStatus(value: unknown): value is 'queued' | 'running' | 'cancelling' | 'cancelled' | 'completed' | 'error' {
+function isKnownJobStatus(value: unknown): value is ActiveScrapeJob['status'] | 'cancelled' | 'completed' | 'error' {
   return isActiveJobStatus(value) || value === 'cancelled' || value === 'completed' || value === 'error'
 }
 
@@ -201,11 +203,7 @@ function activeJobFromHistory(item: FetchSummaryHistoryItem): ActiveScrapeJob | 
     status: item.status,
     startDate: typeof request?.start_date === 'string' ? request.start_date : '',
     endDate: typeof request?.end_date === 'string' ? request.end_date : '',
-    startedAt: item.status === 'running' && typeof item.updated_at === 'string' && item.updated_at
-      ? item.updated_at
-      : typeof item.created_at === 'string' && item.created_at
-        ? item.created_at
-        : null,
+    startedAt: typeof item.created_at === 'string' && item.created_at ? item.created_at : null,
     cancelRequestedAt: typeof item.cancel_requested_at === 'string' ? item.cancel_requested_at : null,
     dryRun: request?.dry_run === true,
   }
@@ -443,21 +441,24 @@ export default function DataCollectionPage() {
     setCancelError('')
   }, [])
   const batchScrapeOptions = Number.isFinite(e2ePollInterval) && (e2ePollInterval as number) >= 0
-    ? { pollIntervalMs: e2ePollInterval as number, onJobAccepted: handleBatchJobAccepted }
-    : { onJobAccepted: handleBatchJobAccepted }
+    ? { ownerUserId: userId, pollIntervalMs: e2ePollInterval as number, onJobAccepted: handleBatchJobAccepted }
+    : { ownerUserId: userId, onJobAccepted: handleBatchJobAccepted }
 
-  // バッチスクレイピング（月単位ループ + ポーリングをフックが担当）
+  // 全期間をサーバーへ一度だけ投入し、画面は親ジョブを監視する。
   const {
     loading: batchLoading,
     status: batchStatus,
     error: batchError,
     failureKind,
     canRetry,
+    canResubmit,
     isExecutionLocked,
     jobId: activeJobId,
     progress: batchProgress,
     result: batchResult,
     start: startBatchScrape,
+    reconnect: reconnectBatchScrape,
+    resubmit: resubmitBatchScrape,
     requestBatchStop,
     clearExecutionLockAfterReconciliation,
   } = useBatchScrape(batchScrapeOptions)
@@ -512,7 +513,9 @@ export default function DataCollectionPage() {
 
   const isApiUnavailable = localApiStatus === 'unhealthy' || localApiStatus === 'unknown'
   const effectivePeriodError = periodErrorMessage || (!isPeriodValid ? periodValidation.message || '' : '')
-  const transientUncertaintyKind: UncertaintyFailureKind | null = failureKind === 'monitoring' || failureKind === 'client_stop'
+  // New parent jobs have an owner-scoped durable ID. Do not create a second,
+  // global/jobless lock on a network interruption or when this screen unmounts.
+  const transientUncertaintyKind: UncertaintyFailureKind | null = !activeJobId && failureKind === 'monitoring'
     ? failureKind
     : null
   const effectiveTransientUncertainty = transientUncertaintyDismissed ? null : transientUncertaintyKind
@@ -941,11 +944,11 @@ export default function DataCollectionPage() {
     if (!transientUncertaintyKind) return
     persistUncertaintyLock(transientUncertaintyKind, activeJobId, lastRequestSnapshotRef.current)
     if (transientUncertaintyKind === 'monitoring') {
-      setReconcileMessage(COMPLETED_CONTRACT_MESSAGE)
+      setReconcileMessage(batchError || '通信を確認できません。状態を再確認してください。')
     } else {
       setReconcileMessage('ブラウザ側の監視停止が発生しました。サーバージョブ継続の可能性があります。')
     }
-  }, [activeJobId, transientUncertaintyKind, persistUncertaintyLock])
+  }, [activeJobId, batchError, transientUncertaintyKind, persistUncertaintyLock])
 
   const loadFetchSummaryHistory = useCallback((silent = false): Promise<ActiveScrapeJob | null> => {
     const existingRequest = activeJobRefreshPromiseRef.current
@@ -963,7 +966,9 @@ export default function DataCollectionPage() {
         const res = await authFetch('/api/scrape/history?limit=10', {
           signal: AbortSignal.timeout(10000),
         })
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        if (!res.ok) throw new Error(res.status === 401 || res.status === 403
+          ? 'ログイン・管理者権限を再確認してください。取得はサーバーで継続します。'
+          : `HTTP ${res.status}`)
         const data: unknown = await res.json().catch(() => null)
         if (!isObject(data) || !Array.isArray(data.jobs)) {
           throw new Error('invalid scrape history envelope')
@@ -984,6 +989,18 @@ export default function DataCollectionPage() {
           throw new Error('multiple active scrape jobs')
         }
         const activeJob = activeJobs[0] ?? null
+        const activeParent = jobs.find(item => item.job_id === activeJob?.jobId && item.request_payload?.server_batch === true)
+        if (activeParent && activeJob) {
+          // Owner-scoped history is authoritative. This reconnect only performs
+          // status GETs; it never starts or restarts a month after login/reload.
+          void reconnectBatchScrape({
+            jobId: activeJob.jobId,
+            status: activeJob.status === 'queued' ? 'queued' : 'running',
+            startDate: activeJob.startDate,
+            endDate: activeJob.endDate,
+            acceptedAt: activeJob.startedAt || new Date().toISOString(),
+          }).catch(() => { /* The hook keeps the ID and displays the actual failure. */ })
+        }
 
         if (dryRunStorageKey) {
           try {
@@ -1039,7 +1056,9 @@ export default function DataCollectionPage() {
       } catch (error) {
         console.error('fetch history load error:', error)
         setActiveJobHydrated(true)
-        setActiveJobCheckError('実行状態を確認できません。安全のため新しい処理を停止しています。')
+        setActiveJobCheckError(error instanceof Error && error.message.startsWith('ログイン')
+          ? error.message
+          : '再接続中です。新しい取得は開始せず、サーバーの状態を再確認します。')
         return null
       }
     })()
@@ -1052,7 +1071,7 @@ export default function DataCollectionPage() {
     })
     activeJobRefreshPromiseRef.current = trackedRequest
     return trackedRequest
-  }, [dryRunStorageKey, userId])
+  }, [dryRunStorageKey, reconnectBatchScrape, userId])
 
   const refreshActiveJobAfterConflict = useCallback(async (): Promise<ActiveScrapeJob | null> => {
     setActiveJobConflictPending(true)
@@ -1077,8 +1096,8 @@ export default function DataCollectionPage() {
     )
     if (!confirmed) return
 
-    // Stop future month submission immediately, but keep monitoring the current
-    // server job until its durable status becomes cancelled/completed/error.
+    // Stop the durable parent through its API. Keep observing until the server
+    // acknowledges cancellation; closing this screen does not cancel anything.
     requestBatchStop()
     if (target.dryRun) dryRunStopRequestedRef.current = true
     cancelInFlightRef.current = true
@@ -1093,7 +1112,7 @@ export default function DataCollectionPage() {
       const payload: unknown = await response.json().catch(() => null)
 
       if (response.status === 409) {
-        setCancelError('対象ジョブはすでに完了またはエラー終了しています。次の月は自動開始せず、最新状態を再確認します。')
+        setCancelError('処理はすでに終了しています。最新状態を確認します。')
         await refreshActiveJobAfterConflict()
         return
       }
@@ -1427,11 +1446,12 @@ export default function DataCollectionPage() {
       if (error instanceof BatchScrapeError && error.kind === 'busy') {
         await refreshActiveJobAfterConflict()
       }
-      if (error instanceof BatchScrapeError && (error.kind === 'monitoring' || error.kind === 'client_stop')) {
-        persistUncertaintyLock(error.kind, activeJobId, target)
-        if (error.kind === 'monitoring') {
-          setReconcileMessage(COMPLETED_CONTRACT_MESSAGE)
-        }
+      // A detached page is not a failed job. Its owner-scoped parent ID was
+      // saved before POST and will be observed again on the next visit.
+      if (error instanceof BatchScrapeError && error.kind === 'client_stop') return
+      if (error instanceof BatchScrapeError && error.kind === 'monitoring' && !error.jobId) {
+        persistUncertaintyLock(error.kind, null, target)
+        setReconcileMessage(error.message)
       }
       setRetrySnapshot(safeToRetry ? target : null)
       showToast(`取得エラー: ${error.message}`, 'error')
@@ -1449,7 +1469,7 @@ export default function DataCollectionPage() {
       }
 
       const payload = await res.json().catch(() => null)
-      if (!isObject(payload) || typeof payload.status !== 'string') {
+      if (!isObject(payload) || payload.job_id !== effectiveUncertaintyJobId || typeof payload.status !== 'string') {
         setReconcileMessage('状態応答形式が不正です。lockを維持します。')
         return
       }
@@ -1465,7 +1485,7 @@ export default function DataCollectionPage() {
       }
 
       if (payload.status === 'error') {
-        const unlocked = clearExecutionLockAfterReconciliation()
+        const unlocked = clearExecutionLockAfterReconciliation(effectiveUncertaintyJobId)
         if (!unlocked) {
           setReconcileMessage('状態再確認は完了しましたが、処理中のためlock解除は保留されました。')
           return
@@ -1483,7 +1503,7 @@ export default function DataCollectionPage() {
           setReconcileMessage(COMPLETED_CONTRACT_MESSAGE)
           return
         }
-        const unlocked = clearExecutionLockAfterReconciliation()
+        const unlocked = clearExecutionLockAfterReconciliation(effectiveUncertaintyJobId)
         if (!unlocked) {
           setReconcileMessage('対象jobは完了を確認しましたが、処理中のためlock解除は保留されました。')
           return
@@ -1497,7 +1517,7 @@ export default function DataCollectionPage() {
       }
 
       if (payload.status === 'cancelled') {
-        const unlocked = clearExecutionLockAfterReconciliation()
+        const unlocked = clearExecutionLockAfterReconciliation(effectiveUncertaintyJobId)
         if (!unlocked) {
           setReconcileMessage('停止完了は確認しましたが、処理中のためlock解除は保留されました。')
           return
@@ -1809,10 +1829,12 @@ export default function DataCollectionPage() {
                 <div className="font-medium text-white" role="status" aria-live="polite">
                   {activeServerJob.status === 'cancelling'
                     ? '停止中'
+                    : activeServerJob.status === 'waiting_resources' || activeServerJob.status === 'recovering'
+                      ? 'サーバーで待機中'
                     : dryRunLoading && activeServerJob.dryRun
                       ? '事前確認中'
                       : activeServerJob.jobId === activeJobId
-                        ? '取得中'
+                        ? 'サーバーで取得中'
                         : '別の取得が実行中'}
                 </div>
               </div>
@@ -1827,6 +1849,9 @@ export default function DataCollectionPage() {
               <div className="break-all text-[11px] text-[#64748b]">
                 ID: {activeServerJob.jobId}
               </div>
+              {!activeServerJob.dryRun && activeServerJob.jobId === activeJobId && (
+                <div className="text-[11px] text-[#93a9bf]">画面を閉じても継続します（PC・Pythonは起動したまま）。</div>
+              )}
               {activeServerJob.status === 'cancelling' && (
                 <div className="rounded border border-[#854d0e] bg-[#1c1206] px-3 py-2 text-[#fde68a]">
                   保存済みデータは残ります。
@@ -1955,10 +1980,19 @@ export default function DataCollectionPage() {
             <div className="rounded border border-[#4a1d1d] bg-[#220d0d] px-3 py-2 text-xs text-[#fca5a5] space-y-1" role="alert" data-testid="uncertainty-panel">
               <div>実行状態不明</div>
               {effectiveUncertaintyJobId && <div>job_id: {effectiveUncertaintyJobId}</div>}
-              <div>{COMPLETED_CONTRACT_MESSAGE}</div>
+              <div>前回の取得状態を確認してください。</div>
               <div>開始済みのサーバージョブは継続している可能性があります</div>
               {!effectiveUncertaintyJobId && <div>job_idがないため自動解除できません。Phase 3Eでは承認依頼の記録だけを行い、lockは解除しません。</div>}
               {reconcileMessage && reconcileMessage !== COMPLETED_CONTRACT_MESSAGE && <div>{reconcileMessage}</div>}
+              {!effectiveUncertaintyJobId && joblessReviewLock && (
+                <ScrapeJobRecovery
+                  lock={joblessReviewLock}
+                  disabled={reconcileLoading || batchLoading}
+                  onVerifiedJob={verifiedJobId => persistUncertaintyLock(
+                    joblessReviewLock.failureKind, verifiedJobId, joblessReviewLock.request,
+                  )}
+                />
+              )}
               {!effectiveUncertaintyJobId && joblessReviewLock && !pendingReview && (
                 <div className="mt-3 space-y-2 rounded border border-[#713f12] bg-[#1c1206] p-3 text-[#fde68a]" data-testid="phase3e-review-form">
                   <div className="font-medium">非実行型の承認依頼（pending review）</div>
@@ -2209,7 +2243,8 @@ export default function DataCollectionPage() {
                       const titles: Record<string, string> = {
                         execution: '取得失敗',
                         start_rejected: '開始拒否',
-                        monitoring: '実行状態不明',
+                        monitoring: '再接続が必要です',
+                        authentication: '認証の再確認が必要です',
                         client_stop: 'ブラウザ側の監視停止',
                         validation: '入力エラー',
                         busy: '取得処理中',
@@ -2219,6 +2254,17 @@ export default function DataCollectionPage() {
                       return `${title}: ${batchError || '不明なエラー'}`
                     })()}
                   </div>
+                  {activeJobId && (failureKind === 'monitoring' || failureKind === 'authentication') && (
+                    <button
+                      type="button"
+                      data-testid="reconnect-batch-button"
+                      onClick={() => void reconnectBatchScrape().catch(() => {})}
+                      disabled={batchLoading}
+                      className="rounded bg-white px-3 py-1.5 text-xs font-medium text-black disabled:opacity-50"
+                    >
+                      状態を再確認
+                    </button>
+                  )}
                   {canRetry && retrySnapshot && (failureKind === 'execution' || failureKind === 'start_rejected') && (
                     <button
                       data-testid="retry-button"
@@ -2232,6 +2278,17 @@ export default function DataCollectionPage() {
                     >
                       再実行
                     </button>
+                  )}
+                  {canResubmit && (
+                    <button
+                      type="button"
+                      data-testid="resubmit-batch-button"
+                      disabled={batchLoading}
+                      onClick={() => void resubmitBatchScrape(() => window.confirm(
+                        '未受付の同じ依頼を再送しますか？期間とジョブIDは変更しません。',
+                      )).catch(() => {})}
+                      className="rounded border border-[#333] px-3 py-1.5 text-xs text-white disabled:opacity-50"
+                    >同じ依頼を再送</button>
                   )}
                 </div>
               )}
@@ -2312,4 +2369,3 @@ export default function DataCollectionPage() {
     </div>
   )
 }
-

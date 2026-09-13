@@ -16,6 +16,8 @@ from scraping.fetch_pipeline import fetch_text
 from scraping.horse import scrape_horse_detail
 from scraping.mobile_race import parse_mobile_race
 from scraping.odds import fetch_tansho_odds_api
+from scraping.parsed_cache import prefer_mobile_endpoint, remember_mobile_endpoint
+from scraping.quality import classify_race_quality
 
 try:
     from app_config import logger  # type: ignore
@@ -127,7 +129,8 @@ async def scrape_race_full(
     """
     _quick_mode = quick_mode
 
-    url = f"https://db.netkeiba.com/race/{race_id}/"
+    preferred_mobile = prefer_mobile_endpoint("race-result")
+    url = f"https://{'db.sp.netkeiba.com' if preferred_mobile else 'db.netkeiba.com'}/race/{race_id}/"
     _fetch, html = await fetch_text(
         session,
         url,
@@ -142,8 +145,20 @@ async def scrape_race_full(
         circuit_threshold=3,
         circuit_cooldown_sec=120.0,
     )
-    mobile_source = False
-    if _fetch.status == 400:
+    mobile_source = preferred_mobile and _fetch.status == 200
+    if preferred_mobile and _fetch.status in (400, 404):
+        remember_mobile_endpoint("race-result", valid=False)
+        url = f"https://db.netkeiba.com/race/{race_id}/"
+        _fetch, html = await fetch_text(
+            session, url, cache_ttl_sec=12 * 60 * 60,
+            force_refresh=force_refresh, resume_key=f"race:{race_id}:result",
+            min_interval_sec=1.0, max_retries=3, retry_statuses={429, 500, 503},
+            retry_base_sec=2.0, retry_jitter_sec=0.6,
+            circuit_threshold=3, circuit_cooldown_sec=120.0,
+        )
+        preferred_mobile = False
+    desktop_rejected = not preferred_mobile and _fetch.status == 400
+    if desktop_rejected:
         mobile_url = f"https://db.sp.netkeiba.com/race/{race_id}/"
         _fetch, html = await fetch_text(
             session,
@@ -174,7 +189,7 @@ async def scrape_race_full(
         logger.error(f"空レスポンス: {race_id}")
         return None
     if mobile_source:
-        return await parse_mobile_race(
+        parsed = await parse_mobile_race(
             session,
             race_id,
             html,
@@ -182,6 +197,11 @@ async def scrape_race_full(
             quick_mode=_quick_mode,
             horse_detail_fetcher=scrape_horse_detail,
         )
+        if desktop_rejected and parsed and classify_race_quality(parsed).valid_for_date_completion:
+            remember_mobile_endpoint("race-result")
+        elif preferred_mobile and not parsed:
+            remember_mobile_endpoint("race-result", valid=False)
+        return parsed
     if "\ufffd" in html[:500]:
         logger.debug(f"EUC-JP 変換警告 (先頭500文字に置換文字あり): {race_id}")
 
@@ -684,9 +704,9 @@ async def scrape_race_full(
     for _ci in range(0, len(unique_horses), 4):
         _chunk = unique_horses[_ci : _ci + 4]
         await asyncio.gather(*[_fetch_detail(h) for h in _chunk])
-        if _ci + 4 < len(unique_horses):
-            await asyncio.sleep(1.0)  # 4頭ごとにインターバル（IP ブロック抑制）
-        gc.collect()
+    # Every actual HTTP attempt is paced by the shared fetch pipeline.
+    # Cached horse details need neither a fixed sleep nor a full GC per chunk.
+    gc.collect()
 
     # distance=0 のレースは _invalid_distance フラグを付与（ローダーが除外する）
     _invalid_dist_flag = (distance == 0 or distance is None)
@@ -1079,8 +1099,6 @@ async def _scrape_shutuba_fallback(
     for chunk_start in range(0, len(horses), 4):
         chunk = horses[chunk_start : chunk_start + 4]
         await asyncio.gather(*(_fetch_shutuba_detail(horse) for horse in chunk))
-        if chunk_start + 4 < len(horses):
-            await asyncio.sleep(1.0)
 
     for horse in horses:
         horse["odds_status"] = _odds_status

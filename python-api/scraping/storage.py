@@ -71,6 +71,7 @@ def _save_race_sqlite_only(race_data: dict, db_path: Path, overwrite: bool = Tru
     horses = race_data["horses"]
     race_id = race_info["race_id"]
     return_tables = race_data.get("return_tables", [])
+    conn: sqlite3.Connection | None = None
     try:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(db_path))
@@ -97,11 +98,35 @@ def _save_race_sqlite_only(race_data: dict, db_path: Path, overwrite: bool = Tru
         """)
         if overwrite:
             cur.execute("DELETE FROM race_results_ultimate WHERE race_id = ?", (race_id,))
+        # Acquisition evidence is operational metadata, not a categorical or
+        # numeric training input. Keep it separate, in the SAME transaction as
+        # the provider fields, and never mutate the caller's parsed payload.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS scrape_horse_reuse_audit (
+                race_id TEXT NOT NULL,
+                horse_id TEXT NOT NULL,
+                target_date TEXT NOT NULL,
+                audit_json TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (race_id, horse_id)
+            )
+        """)
+        if overwrite:
+            cur.execute("DELETE FROM scrape_horse_reuse_audit WHERE race_id = ?", (race_id,))
         for h in horses:
+            provider_fields = {key: value for key, value in h.items() if key != "_acquisition_reuse"}
             cur.execute(
                 "INSERT INTO race_results_ultimate (race_id, data) VALUES (?, ?)",
-                (race_id, json.dumps(h, ensure_ascii=False)),
+                (race_id, json.dumps(provider_fields, ensure_ascii=False)),
             )
+            audit = h.get("_acquisition_reuse")
+            if isinstance(audit, dict) and h.get("horse_id"):
+                cur.execute(
+                    "INSERT OR REPLACE INTO scrape_horse_reuse_audit "
+                    "(race_id,horse_id,target_date,audit_json) VALUES (?,?,?,?)",
+                    (race_id, str(h["horse_id"]), str(audit.get("target_date") or ""),
+                     json.dumps(audit, ensure_ascii=False, allow_nan=False)),
+                )
         # ── 払い戻し表 ──
         cur.execute("""
             CREATE TABLE IF NOT EXISTS return_tables_ultimate (
@@ -129,11 +154,15 @@ def _save_race_sqlite_only(race_data: dict, db_path: Path, overwrite: bool = Tru
                 ),
             )
         conn.commit()
-        conn.close()
         return True
     except Exception as e:
+        if conn is not None:
+            conn.rollback()
         logger.warning(f"SQLite 保存失敗 {race_id}: {e}")
         return False
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def _save_race_to_ultimate_db(race_data: dict, db_path: Path, overwrite: bool = True) -> bool:

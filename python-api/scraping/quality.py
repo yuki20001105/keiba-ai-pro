@@ -13,7 +13,7 @@ import hashlib
 import sqlite3
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -53,6 +53,7 @@ TERMINAL_SOURCE_REASONS = {
 }
 _INIT_LOCK = threading.RLock()
 _INITIALIZED_DB_PATHS: set[str] = set()
+DEFAULT_NO_RACE_RECHECK_TTL_SECONDS = 6 * 60 * 60
 
 
 def _utc_now() -> str:
@@ -398,6 +399,84 @@ def record_verified_no_race_dates(
     return len(dates)
 
 
+def defer_unconfirmed_no_race_date(
+    db_path: Path,
+    *,
+    race_date: str,
+    source_status: str,
+) -> None:
+    """Keep a recent empty response retryable instead of declaring no races."""
+
+    record_date_expectation(db_path, race_date, [])
+    queue_repair(
+        db_path,
+        entity_type="date",
+        entity_id=race_date,
+        repair_kind="race_list",
+        error="recent_race_list_empty_recheck",
+        provenance={"race_date": race_date, "source_status": source_status},
+        count_attempt=False,
+    )
+    now = _utc_now()
+    with sqlite3.connect(str(db_path)) as conn:
+        # Repeated publication-time empties must never accumulate attempts or
+        # become quarantined.  They remain visible and retryable.
+        conn.execute(
+            "UPDATE scrape_repair_queue SET status='pending', attempt_count=0, "
+            "last_error='recent_race_list_empty_recheck', updated_at=? "
+            "WHERE entity_type='date' AND entity_id=? AND repair_kind='race_list'",
+            (now, race_date),
+        )
+        conn.execute(
+            "UPDATE scrape_date_completeness SET status='partial', updated_at=? "
+            "WHERE race_date=? AND expected_race_count=0",
+            (now, race_date),
+        )
+
+
+def invalidate_verified_no_race_dates(
+    db_path: Path,
+    race_dates: Iterable[str],
+) -> int:
+    """Invalidate stale empty checkpoints contradicted by a race calendar."""
+
+    dates = sorted({str(value) for value in race_dates if str(value)})
+    if not dates or not db_path.exists():
+        return 0
+    init_acquisition_quality_db(db_path)
+    now = _utc_now()
+    changed = 0
+    with sqlite3.connect(str(db_path)) as conn:
+        for chunk_start in range(0, len(dates), 500):
+            chunk = dates[chunk_start : chunk_start + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            cursor = conn.execute(
+                f"UPDATE scrape_date_completeness SET status='partial', updated_at=? "
+                f"WHERE status='complete' AND expected_race_count=0 "
+                f"AND race_date IN ({placeholders})",
+                (now, *chunk),
+            )
+            changed += int(cursor.rowcount or 0)
+            conn.execute(
+                f"UPDATE scrape_repair_queue SET status='pending', attempt_count=0, "
+                f"last_error='calendar_scheduled_recheck', updated_at=? "
+                f"WHERE entity_type='date' AND repair_kind='race_list' "
+                f"AND entity_id IN ({placeholders})",
+                (now, *chunk),
+            )
+            scraped_dates_exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='scraped_dates'"
+            ).fetchone()
+            if scraped_dates_exists:
+                cursor = conn.execute(
+                    f"DELETE FROM scraped_dates WHERE race_count=0 AND no_race=1 "
+                    f"AND date IN ({placeholders})",
+                    chunk,
+                )
+                changed += int(cursor.rowcount or 0)
+    return changed
+
+
 def queue_repair(
     db_path: Path,
     *,
@@ -730,19 +809,42 @@ def excluded_standard_dates(db_path: Path) -> set[str]:
         return set()
 
 
-def completed_quality_dates(db_path: Path) -> set[str]:
+def completed_quality_dates(
+    db_path: Path,
+    *,
+    no_race_ttl_seconds: int = DEFAULT_NO_RACE_RECHECK_TTL_SECONDS,
+) -> set[str]:
+    """Return complete dates while expiring zero-race checkpoints."""
+
     if not db_path.exists():
         return set()
     try:
         init_acquisition_quality_db(db_path)
+        ttl = max(0, int(no_race_ttl_seconds))
+        fresh_after = datetime.now(timezone.utc) - timedelta(seconds=ttl)
         with sqlite3.connect(str(db_path)) as conn:
-            return {
-                str(row[0])
-                for row in conn.execute(
-                    "SELECT race_date FROM scrape_date_completeness WHERE status='complete'"
+            rows = conn.execute(
+                "SELECT race_date, expected_race_count, updated_at "
+                "FROM scrape_date_completeness WHERE status='complete'"
+            ).fetchall()
+        completed: set[str] = set()
+        for race_date, expected_count, updated_at in rows:
+            if int(expected_count or 0) > 0:
+                completed.add(str(race_date))
+                continue
+            try:
+                observed_at = datetime.fromisoformat(
+                    str(updated_at).replace("Z", "+00:00")
                 )
-            }
-    except sqlite3.Error:
+                if observed_at.tzinfo is None:
+                    observed_at = observed_at.replace(tzinfo=timezone.utc)
+                if observed_at.astimezone(timezone.utc) >= fresh_after:
+                    completed.add(str(race_date))
+            except (TypeError, ValueError):
+                # An unparseable checkpoint cannot safely suppress a retry.
+                continue
+        return completed
+    except (sqlite3.Error, TypeError, ValueError):
         return set()
 
 

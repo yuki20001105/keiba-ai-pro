@@ -8,6 +8,7 @@ the same single FastAPI process.
 from __future__ import annotations
 
 import re
+import time
 from datetime import date as date_type
 from urllib.parse import urlencode
 
@@ -16,9 +17,17 @@ from bs4 import BeautifulSoup
 
 from .constants import get_random_headers
 from .fetch_pipeline import fetch_text
+from .parsed_cache import get_parsed, parser_version, put_parsed, source_metadata
+from .race_inventory import RaceListSource
 
 
 _JRA_VENUE_CODES = tuple(f"{value:02d}" for value in range(1, 11))
+_PARSER_VERSION = parser_version(__file__)
+
+
+def _cached_month_ids(date_str: str) -> list[str] | None:
+    index = get_parsed("month-race-index", date_str[:6], _PARSER_VERSION)
+    return index.get(date_str, []) if index is not None else None
 
 
 def build_mobile_month_url(date_str: str, page: int = 1) -> str:
@@ -96,12 +105,21 @@ async def _fetch_mobile_month_race_ids(
     this fallback fail closed.
     """
     month_key = f"{target_date.year:04d}{target_date.month:02d}"
+    cached = _cached_month_ids(date_str)
+    if cached is not None:
+        return cached
+    sources: dict[str, dict] = {}
+    current_month = target_date.year == date_type.today().year and target_date.month == date_type.today().month
+    source_ttl = 5 * 60 if current_month else 24 * 60 * 60
 
     async def fetch_page(page: int) -> str:
+        url = build_mobile_month_url(date_str, page)
+        existing = source_metadata(url)
         result, html = await fetch_text(
             session,
-            build_mobile_month_url(date_str, page),
-            cache_ttl_sec=24 * 60 * 60,
+            url,
+            cache_ttl_sec=source_ttl,
+            force_refresh=bool(existing and existing["fetched_at"] + source_ttl <= time.time()),
             resume_key=f"race-list-mobile:{month_key}:page:{page}",
             min_interval_sec=1.0,
             max_retries=2,
@@ -115,6 +133,8 @@ async def _fetch_mobile_month_race_ids(
             raise RuntimeError(
                 f"mobile race-list page {page} unavailable (HTTP {result.status})"
             )
+        metadata = getattr(result, "cache_snapshot", None)
+        sources[url] = dict(metadata) if metadata else {"url": url, "fetched_at": 0, "expires_at": 0}
         return html
 
     first_html = await fetch_page(1)
@@ -122,9 +142,43 @@ async def _fetch_mobile_month_race_ids(
     if page_count > 100:
         raise RuntimeError(f"mobile race-list pagination is implausible: {page_count}")
 
-    entries = extract_mobile_race_entries(first_html)
-    for page in range(2, page_count + 1):
-        entries.extend(extract_mobile_race_entries(await fetch_page(page)))
+    entries: list[tuple[str, str]] = []
+    page = 1
+    html = first_html
+    while page <= page_count:
+        page_entries = extract_mobile_race_entries(html)
+        if not page_entries:
+            # An unrecognized HTTP 200 is not proof of an empty month.
+            raise RuntimeError(f"mobile race-list page {page} has no verified race entries")
+        if any(
+            entry_date[:6] != month_key or not _valid_jra_race_id(race_id, target_date)
+            for entry_date, race_id in page_entries
+        ):
+            raise RuntimeError(f"mobile race-list page {page} has inconsistent race entries")
+        try:
+            for entry_date, _race_id in page_entries:
+                date_type(int(entry_date[:4]), int(entry_date[4:6]), int(entry_date[6:8]))
+        except ValueError as exc:
+            raise RuntimeError(f"mobile race-list page {page} has invalid dates") from exc
+        if page > 1 and not set(page_entries).difference(entries):
+            raise RuntimeError(f"mobile race-list page {page} repeats an earlier page")
+        entries.extend(page_entries)
+        page_count = max(page_count, extract_mobile_max_page(html))
+        if page_count > 100:
+            raise RuntimeError(f"mobile race-list pagination is implausible: {page_count}")
+        page += 1
+        if page <= page_count:
+            html = await fetch_page(page)
+
+    index: dict[str, list[str]] = {}
+    for entry_date, race_id in entries:
+        ids = index.setdefault(entry_date, [])
+        if race_id not in ids:
+            ids.append(race_id)
+    # Current month inventories change as race cards are published. Their
+    # derived index expires quickly, even if its backing HTML lives longer.
+    put_parsed("month-race-index", month_key, _PARSER_VERSION, index, sources,
+               max_age_sec=source_ttl)
 
     race_ids = [
         race_id
@@ -151,6 +205,10 @@ def extract_race_ids(html: str) -> list[str]:
 async def fetch_race_ids(date_str: str) -> tuple[list[str], str]:
     """Fetch a race list without writing application data."""
     target_date = date_type(int(date_str[:4]), int(date_str[4:6]), int(date_str[6:8]))
+    cached = _cached_month_ids(date_str)
+    if cached is not None:
+        source = "db.sp.netkeiba.com/month-search"
+        return cached, source if cached else f"{source}:verified-empty"
 
     timeout = aiohttp.ClientTimeout(total=25, connect=8)
     connector = aiohttp.TCPConnector(limit=2, limit_per_host=1)
@@ -174,7 +232,9 @@ async def fetch_race_ids(date_str: str) -> tuple[list[str], str]:
         if db_result.status == 200:
             race_ids = extract_race_ids(db_html)
             if race_ids:
-                return race_ids, "db.netkeiba.com"
+                return race_ids, RaceListSource(
+                    "db.netkeiba.com", fetched=db_result, parser=_PARSER_VERSION,
+                )
 
         sub_result, sub_html = await fetch_text(
             session,
@@ -195,7 +255,9 @@ async def fetch_race_ids(date_str: str) -> tuple[list[str], str]:
         if sub_result.status == 200:
             race_ids = extract_race_ids(sub_html)
             if race_ids:
-                return race_ids, "race.netkeiba.com"
+                return race_ids, RaceListSource(
+                    "race.netkeiba.com", fetched=sub_result, parser=_PARSER_VERSION,
+                )
 
         # Both desktop endpoints currently return HTTP 400 for some valid
         # historical dates.  The mobile DB month search remains available and

@@ -218,15 +218,18 @@ async def test_connectivity():
     try:
         timeout = aiohttp.ClientTimeout(total=10)
         async with aiohttp.ClientSession(headers=SCRAPE_HEADERS, timeout=timeout) as session:
-            async with session.get("https://db.netkeiba.com/race/list/20250101/") as resp:
-                content = await resp.read()
-                html = content.decode("euc-jp", errors="ignore")
-                ids = re.findall(r"/race/(\d{12})/", html)
-                result["netkeiba"] = {
-                    "status": resp.status,
-                    "race_ids_found": len(set(ids)),
-                    "sample": list(set(ids))[:3],
-                }
+            from scraping.fetch_pipeline import fetch_text
+
+            resp, html = await fetch_text(
+                session, "https://db.netkeiba.com/race/list/20250101/",
+                use_cache=False, force_refresh=True, max_retries=1, total_timeout_sec=10,
+            )
+            ids = re.findall(r"/race/(\d{12})/", html)
+            result["netkeiba"] = {
+                "status": resp.status,
+                "race_ids_found": len(set(ids)),
+                "sample": list(set(ids))[:3],
+            }
     except Exception as e:
         result["netkeiba"] = {"error": str(e)}
 

@@ -11,30 +11,40 @@ import re
 import sqlite3
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import date as date_cls
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Literal
 
 import aiohttp
-import httpx
 
 from scraping.constants import SCRAPE_HEADERS, SCRAPE_PROXY_URL, get_random_headers
 from scraping.fetch_pipeline import (
-    decode_html_body,
+    FetchAccessBlocked,
     estimate_fetch_plan,
+    fetch_context,
     fetch_text,
     get_fetch_metrics,
+    record_fetch_metric,
     write_fetch_summary,
 )
 from scraping.race import scrape_race_full
+from scraping.result_reuse import fetch_acquisition_race
 from scraping.race_list import fetch_race_ids
+from scraping.race_inventory import (
+    get_finalized_race_inventory,
+    record_finalized_race_inventory,
+)
+from scraping.saved_horse_reuse import acquisition_horse_reuse
 from scraping.quality import (
     classify_race_quality,
     completed_quality_dates,
+    defer_unconfirmed_no_race_date,
     excluded_standard_dates,
     excluded_standard_race_ids,
     hydrate_quality_from_existing_data,
     init_acquisition_quality_db,
+    invalidate_verified_no_race_dates,
     record_date_expectation,
     record_date_failure,
     record_verified_no_race_dates,
@@ -358,16 +368,18 @@ async def _fetch_race_days_for_month(
     """
     url = f"https://race.netkeiba.com/top/calendar.html?year={year}&month={month:02d}"
     try:
-        async with httpx.AsyncClient(
-            timeout=timeout_sec,
-            follow_redirects=True,
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=timeout_sec),
             headers=get_random_headers(),
-        ) as hx:
-            resp = await hx.get(url)
-        if resp.status_code != 200:
-            logger.warning(f"calendar HTTP {resp.status_code}: {year}/{month:02d}")
+        ) as session:
+            resp, html = await fetch_text(
+                session, url, cache_ttl_sec=60 * 60,
+                resume_key=f"calendar:{year}:{month:02d}",
+                min_interval_sec=1.0, max_retries=2,
+            )
+        if resp.status != 200:
+            logger.warning(f"calendar HTTP {resp.status}: {year}/{month:02d}")
             return None
-        html = decode_html_body(resp.content)
         # href="/top/race_list.html?kaisai_date=20240105" 形式のリンクから日付を抽出
         dates = list(dict.fromkeys(re.findall(r"kaisai_date=(\d{8})", html)))
         if not dates:
@@ -378,6 +390,8 @@ async def _fetch_race_days_for_month(
             return None
         logger.info(f"カレンダー取得: {year}/{month:02d} → {len(dates)}日 {dates[:3]}")
         return dates
+    except FetchAccessBlocked:
+        raise
     except Exception as e:
         logger.warning(f"calendar fetch failed {year}/{month:02d}: {e}")
         return None
@@ -429,7 +443,7 @@ async def _build_race_dates_from_calendar(
         all_dates.extend(days)
         if heartbeat is not None:
             heartbeat()
-        await _cancellable_sleep(1.0, cancel_requested)  # カレンダーリクエスト間インターバル
+        # Actual HTTP is paced centrally; cached calendars require no sleep.
 
     # 指定範囲でフィルタ
     s_str = s_dt.strftime("%Y%m%d")
@@ -459,6 +473,22 @@ def _env_int(name: str, default: int) -> int:
         return max(0, int(os.environ.get(name, str(default))))
     except (TypeError, ValueError):
         return default
+
+
+def _is_recent_or_future_race_date(
+    value: str,
+    *,
+    today: date_cls | None = None,
+    window_days: int = 14,
+) -> bool:
+    """Return whether an empty response is too recent to be conclusive."""
+
+    try:
+        target = datetime.strptime(value, "%Y%m%d").date()
+    except (TypeError, ValueError):
+        return True
+    reference = today or date_cls.today()
+    return target >= reference - timedelta(days=max(0, int(window_days)))
 
 
 def get_scrape_resource_snapshot() -> dict:
@@ -531,9 +561,9 @@ async def _wait_for_resource_capacity(
         job["error"] = None
         progress = job.setdefault("progress", {})
         progress["message"] = (
-            "Resource guard paused scraping; it will resume automatically "
-            f"(rss={snapshot.get('process_rss_mb')} MB, "
-            f"available={snapshot.get('system_available_mb')} MB)."
+            "メモリ解放待ち "
+            f"（使用 {snapshot.get('process_rss_mb')}MB / "
+            f"上限 {snapshot.get('process_rss_limit_mb')}MB）。自動再開します。"
         )
         _checkpoint_job(job_id, job, force=True)
         if max_wait and time.monotonic() - wait_started >= max_wait:
@@ -547,6 +577,10 @@ def start_scrape_job_worker(job_id: str, request: dict | None = None) -> bool:
     if not job:
         return False
     request_data = dict(request or job.get("request") or {})
+    if request_data.get("operational_parent_job_id"):
+        # Monthly children are owned by the parent's durable saga lease.
+        # The legacy recovery daemon must never launch a second worker.
+        return False
     if not request_data.get("start_date") or not request_data.get("end_date"):
         job["status"] = "error"
         job["error"] = "This legacy job has no persisted date range and cannot be resumed safely."
@@ -609,6 +643,8 @@ def resume_interrupted_scrape_jobs() -> int:
                 continue
         job = _load_job_from_db(str(job_id))
         request_data = (job or {}).get("request") or {}
+        if request_data.get("operational_parent_job_id"):
+            continue
         if not job or not request_data.get("start_date") or not request_data.get("end_date"):
             if job:
                 job["status"] = "error"
@@ -999,6 +1035,79 @@ async def _run_scrape_job(
     dry_run: bool = False,
     cancel_requested: Callable[[], bool] | None = None,
 ):
+    """Bind metrics and cooperative wait handling to this job's worker context."""
+    last_wait_checkpoint = 0.0
+
+    def on_wait(state: dict) -> None:
+        nonlocal last_wait_checkpoint
+        # Keep cancellation responsive without writing the job DB for every
+        # waiting horse task (the shared lease may be polled four times/second).
+        _raise_if_cancel_requested(cancel_requested)
+        current = _scrape_jobs.get(job_id)
+        if current is None:
+            return
+        progress = current.setdefault("progress", {})
+        progress["fetch_control"] = state
+        cooldown = float(state.get("cooldown_until", 0) or 0)
+        if cooldown > time.time():
+            progress["message"] = "アクセス制限のため待機中。時間をおいて自動再開します。"
+        elif float(state.get("interval", 0) or 0) > 2.0:
+            progress["message"] = "応答状況に合わせて自動減速中"
+        now = time.monotonic()
+        if now - last_wait_checkpoint >= 5.0:
+            progress["fetch_metrics"] = get_fetch_metrics()
+            progress["fetch_metrics_scope"] = "current_worker_attempt"
+            _checkpoint_job(job_id, current)
+            last_wait_checkpoint = now
+
+    with fetch_context(job_id=job_id, on_wait=on_wait):
+        attempt_started_at = time.time()
+        attempt_started = time.perf_counter()
+        await _run_scrape_job_impl(
+            job_id, start_date, end_date, force_rescrape, dry_run, cancel_requested,
+        )
+        # Measure the whole worker attempt, including resource waits, final
+        # quality audit and the terminal job write. This last telemetry write
+        # is deliberately outside the measured work. On recovery a fresh
+        # attempt is reported, never mislabelled as the entire batch duration.
+        current = _scrape_jobs.get(job_id)
+        if current is not None and current.get("status") == "completed" and not current.get("_store_unavailable"):
+            measurement = {
+                "version": 1,
+                "scope": "current_worker_attempt",
+                "attempt_number": int(current.get("resume_count", 0) or 0) + 1,
+                "attempt_started_at_epoch": attempt_started_at,
+                "attempt_work_wall_time_sec": max(0.0, time.perf_counter() - attempt_started),
+                "metrics": get_fetch_metrics(),
+            }
+            current.setdefault("progress", {})["acquisition_measurement"] = measurement
+            result = current.get("result")
+            if isinstance(result, dict):
+                summary = result.setdefault("fetch_summary", {})
+                summary["metrics"] = measurement["metrics"]
+                summary["timings"] = {k: v for k, v in measurement.items() if k != "metrics"}
+                if result.get("fetch_summary_path"):
+                    try:
+                        await asyncio.to_thread(
+                            write_fetch_summary, summary, Path(result["fetch_summary_path"]),
+                        )
+                    except Exception as exc:
+                        logger.warning("acquisition timing report unavailable %s: %s", job_id, exc)
+            # Acquisition completion was already committed by the worker.
+            # Optional telemetry must not turn that successful receipt into a
+            # failed/retryable data acquisition or release its owner early.
+            if not await asyncio.to_thread(_persist_job, job_id, current):
+                logger.warning("acquisition timing checkpoint unavailable %s", job_id)
+
+
+async def _run_scrape_job_impl(
+    job_id: str,
+    start_date: str,
+    end_date: str,
+    force_rescrape: bool = False,
+    dry_run: bool = False,
+    cancel_requested: Callable[[], bool] | None = None,
+):
     """バックグラウンドでスクレイピングを実行しジョブストアを更新する"""
     try:
         import time as _time
@@ -1055,11 +1164,31 @@ async def _run_scrape_job(
                 existing_race_dates = await asyncio.to_thread(
                     _existing_race_dates, ULTIMATE_DB, dates
                 )
-                scheduled_dates = original_dates & (
+                confirmed_scheduled_dates = original_dates & (
                     set(_calendar_dates) | existing_race_dates
                 )
-                verified_no_race_dates = sorted(original_dates - scheduled_dates)
+                missing_from_calendar = original_dates - confirmed_scheduled_dates
+                recent_recheck_dates = {
+                    date
+                    for date in missing_from_calendar
+                    if _is_recent_or_future_race_date(
+                        date,
+                        window_days=_env_int("SCRAPE_RECENT_NO_RACE_DEFER_DAYS", 14),
+                    )
+                }
+                scheduled_dates = confirmed_scheduled_dates | recent_recheck_dates
+                verified_no_race_dates = sorted(missing_from_calendar - recent_recheck_dates)
                 calendar_verified_no_race_dates = set(verified_no_race_dates)
+                invalidated_no_race = await asyncio.to_thread(
+                    invalidate_verified_no_race_dates,
+                    ULTIMATE_DB,
+                    confirmed_scheduled_dates,
+                )
+                if invalidated_no_race:
+                    logger.info(
+                        "開催日と矛盾する開催なし記録を無効化: %s件",
+                        invalidated_no_race,
+                    )
                 if verified_no_race_dates:
                     await asyncio.to_thread(
                         record_verified_no_race_dates,
@@ -1077,7 +1206,8 @@ async def _run_scrape_job(
                 dates = sorted(scheduled_dates)
                 logger.info(
                     f"カレンダー絞り込み完了: {_original_count}日 → {len(dates)}開催日 / "
-                    f"{calendar_verified_no_race_count}非開催日"
+                    f"{calendar_verified_no_race_count}非開催日 / "
+                    f"{len(recent_recheck_dates)}直近日再確認"
                 )
             else:
                 logger.warning("カレンダー取得失敗 → 全日付で処理（フォールバック）")
@@ -1106,8 +1236,10 @@ async def _run_scrape_job(
             dry_resume_keys: list[str] = []
             _rate_limit_policy = {
                 "min_interval_sec": 1.0,
-                "scope": "per-host",
-                "note": "INV-07 compliant; no high-concurrency acceleration",
+                "initial_interval_sec": 2.0,
+                "max_concurrent_requests": 1,
+                "scope": "provider-family",
+                "note": "Adaptive pacing; DB and parsed-cache work has no network delay",
             }
             _retry_policy = {
                 "max_retries": 3,
@@ -1121,8 +1253,10 @@ async def _run_scrape_job(
             }
             _circuit_breaker_policy = {
                 "failure_threshold": 3,
-                "cooldown_sec": 120.0,
-                "scope": "per-host",
+                "cooldown_sec": 90.0,
+                "rate_limit_min_cooldown_sec": 300.0,
+                "access_block_requires_operator_review": True,
+                "scope": "provider-family",
             }
             for d in dates:
                 _raise_if_cancel_requested(cancel_requested)
@@ -1211,9 +1345,24 @@ async def _run_scrape_job(
         if not force_rescrape:
             try:
                 _local_scraped = await asyncio.to_thread(
-                    completed_quality_dates, ULTIMATE_DB
+                    completed_quality_dates,
+                    ULTIMATE_DB,
+                    no_race_ttl_seconds=max(
+                        300,
+                        _env_int("SCRAPE_NO_RACE_RECHECK_TTL_SEC", 6 * 60 * 60),
+                    ),
                 )
                 _raise_if_cancel_requested(cancel_requested)
+                # Current/recent publication state changes throughout the day;
+                # it must never be hidden by a prior zero-race checkpoint.
+                _local_scraped.difference_update(
+                    date
+                    for date in dates
+                    if _is_recent_or_future_race_date(
+                        date,
+                        window_days=_env_int("SCRAPE_RECENT_NO_RACE_DEFER_DAYS", 14),
+                    )
+                )
                 scraped_dates.update(_local_scraped)
                 if _local_scraped:
                     logger.info(f"SQLite取得済み日付: {len(_local_scraped)}日分をスキップ")
@@ -1223,13 +1372,27 @@ async def _run_scrape_job(
 
             excluded_dates = await asyncio.to_thread(excluded_standard_dates, ULTIMATE_DB)
             _raise_if_cancel_requested(cancel_requested)
+            excluded_dates.difference_update(
+                date
+                for date in dates
+                if _is_recent_or_future_race_date(
+                    date,
+                    window_days=_env_int("SCRAPE_RECENT_NO_RACE_DEFER_DAYS", 14),
+                )
+            )
 
         timeout = aiohttp.ClientTimeout(total=25, connect=8)
         connector = aiohttp.TCPConnector(limit=5, limit_per_host=3)
-        from datetime import date as _date_cls
 
         completed_date_counts = await asyncio.to_thread(
             _completed_date_race_counts, ULTIMATE_DB, dates
+        )
+        # Old positive date checkpoints did not bind an authoritative list to
+        # its source/freshness. Route those days through the inventory gate
+        # instead of letting them bypass invalidation indefinitely. Existing
+        # verified no-race TTL handling remains unchanged.
+        scraped_dates.difference_update(
+            date for date in dates if int(completed_date_counts.get(date, 0) or 0) > 0
         )
         _raise_if_cancel_requested(cancel_requested)
         counter = {
@@ -1283,12 +1446,9 @@ async def _run_scrape_job(
                     continue
 
                 # 過去30日以内か判定（インターバル・フォールバック制御用）
-                _days_ago = (_date_cls.today() - _date_cls(int(date[:4]), int(date[4:6]), int(date[6:8]))).days
-                _is_recent = _days_ago <= 30
                 # 過去データは db.netkeiba.com のみ → 短いインターバルで高速化
-                _pre_sleep = 2.0 if _is_recent else 1.0
-                _inter_race_sleep = 2.0 if _is_recent else 1.0
-                _post_sleep = 8.0 if _is_recent else 2.0
+                # The shared request scheduler owns all network pacing.
+                # DB/cache hits and local parsing do not consume HTTP slots.
 
                 if date in scraped_dates:
                     logger.info(f"{date}: 取得済み（SQLite/Supabase）→ スキップ")
@@ -1320,10 +1480,11 @@ async def _run_scrape_job(
                 list_failure_reason: str | None = None
                 list_source_status = "not_requested"
                 verified_no_race = False
+                deferred_no_race = False
+                race_list_source = ""
+                inventory_reused = False
                 try:
-                    await _cancellable_sleep(
-                        _pre_sleep, cancel_requested
-                    )  # レース一覧リクエスト間のインターバル
+                    _raise_if_cancel_requested(cancel_requested)
 
                     # Resolve the authoritative date list through the shared
                     # fail-closed path.  It tries the desktop endpoints first,
@@ -1331,17 +1492,43 @@ async def _run_scrape_job(
                     # therefore an HTTP 400 can no longer be mistaken for an
                     # empty/non-racing date.
                     try:
-                        race_ids, race_list_source = await fetch_race_ids(date)
+                        inventory_started = time.perf_counter()
+                        inventory = await asyncio.to_thread(
+                            get_finalized_race_inventory, ULTIMATE_DB, date,
+                            force_refresh=force_rescrape,
+                        )
+                        record_fetch_metric(
+                            "local_inventory_lookup_cumulative_ms",
+                            round((time.perf_counter() - inventory_started) * 1000),
+                        )
+                        inventory_reused = inventory is not None
+                        record_fetch_metric(
+                            "local_inventory_reuse_hits" if inventory_reused else "local_inventory_reuse_misses",
+                        )
+                        if inventory is not None:
+                            race_ids, race_list_source = inventory
+                        else:
+                            race_ids, race_list_source = await fetch_race_ids(date)
                         _raise_if_cancel_requested(cancel_requested)
                         list_source_status = f"ok:{race_list_source}"
                         if not race_ids:
-                            verified_no_race = race_list_source.endswith(":verified-empty")
+                            source_verified_empty = race_list_source.endswith(":verified-empty")
+                            deferred_no_race = source_verified_empty and _is_recent_or_future_race_date(
+                                date,
+                                window_days=_env_int(
+                                    "SCRAPE_RECENT_NO_RACE_DEFER_DAYS",
+                                    14,
+                                ),
+                            )
+                            verified_no_race = source_verified_empty and not deferred_no_race
                             list_failure_reason = (
-                                "race_list_verified_empty"
-                                if verified_no_race
+                                "recent_race_list_empty_recheck"
+                                if deferred_no_race
+                                else "race_list_verified_empty"
+                                if source_verified_empty
                                 else "race_list_empty"
                             )
-                    except ScrapeJobCancellationRequested:
+                    except (ScrapeJobCancellationRequested, FetchAccessBlocked):
                         raise
                     except Exception as _list_error:
                         race_ids = []
@@ -1353,7 +1540,16 @@ async def _run_scrape_job(
                     # Freeze the authoritative race list before exclusions.
                     # Quarantined races remain visible to the date audit, so a
                     # partial day can never become a silent success.
-                    if verified_no_race:
+                    if deferred_no_race:
+                        await asyncio.to_thread(
+                            defer_unconfirmed_no_race_date,
+                            ULTIMATE_DB,
+                            race_date=date,
+                            source_status=list_source_status,
+                        )
+                        errors.append(f"{date}: recent_race_list_empty_recheck")
+                        logger.info(f"{date}: 空レスポンスを確定せず再確認対象として保存")
+                    elif verified_no_race:
                         await asyncio.to_thread(
                             record_verified_no_race_dates,
                             ULTIMATE_DB,
@@ -1421,13 +1617,15 @@ async def _run_scrape_job(
                     async def _fetch_and_save(race_id, _date=date, _day_idx=i):
                         try:
                             _raise_if_cancel_requested(cancel_requested)
-                            race_data = await scrape_race_full(
-                                session,
-                                race_id,
-                                date_hint=_date,
-                                quick_mode=True,
-                                force_refresh=True,
-                            )
+                            with acquisition_horse_reuse(
+                                ULTIMATE_DB, _date, force_refresh=force_rescrape,
+                            ):
+                                race_data = await fetch_acquisition_race(
+                                    session,
+                                    race_id,
+                                    date_hint=_date,
+                                    fetcher=scrape_race_full,
+                                )
                             # The fetch/parse may be discarded, but a new
                             # SQLite write must never start after cancellation
                             # has been observed.
@@ -1507,7 +1705,7 @@ async def _run_scrape_job(
                                 )
                                 errors.append(f"{race_id}: parse_or_source_empty")
                                 logger.warning(f"レースデータなし/出走馬なし: {race_id}")
-                        except ScrapeJobCancellationRequested:
+                        except (ScrapeJobCancellationRequested, FetchAccessBlocked):
                             raise
                         except Exception as exc:
                             err_msg = f"{race_id}: {exc}"
@@ -1528,16 +1726,15 @@ async def _run_scrape_job(
                         chunk = race_ids[ci : ci + 1]
                         await asyncio.gather(*[_fetch_and_save(r) for r in chunk])
                         _checkpoint_job(job_id, job)
-                        if ci + 1 < len(race_ids):
-                            await _cancellable_sleep(
-                                _inter_race_sleep, cancel_requested
-                            )  # レース間インターバル
-                        await asyncio.to_thread(gc.collect)
+                        # Periodic collection avoids a full GC after every
+                        # cached race, while keeping long batches bounded.
+                        if (ci + 1) % 12 == 0:
+                            await asyncio.to_thread(gc.collect)
                         _raise_if_cancel_requested(cancel_requested)
                     if errors:
                         logger.warning(f"エラー一覧: {errors[:5]}")
 
-                except ScrapeJobCancellationRequested:
+                except (ScrapeJobCancellationRequested, FetchAccessBlocked):
                     raise
                 except Exception as e:
                     errors.append(f"{date}: {e}")
@@ -1590,6 +1787,17 @@ async def _run_scrape_job(
                                 date,
                                 date_audit["expected_race_count"],
                             )
+                            # A reuse hit never refreshes its own TTL. Only an
+                            # attributed source response and successful final
+                            # quality audit may promote a new inventory.
+                            if not inventory_reused:
+                                promoted = await asyncio.to_thread(
+                                    record_finalized_race_inventory,
+                                    ULTIMATE_DB, date, expected_race_ids,
+                                    source=race_list_source, audit=date_audit,
+                                )
+                                if promoted:
+                                    record_fetch_metric("local_inventory_promotions")
                         completed_dates.add(date)
                         job["progress"]["completed_dates"] = sorted(completed_dates)
                         job["progress"]["last_completed_date"] = date
@@ -1606,9 +1814,7 @@ async def _run_scrape_job(
                     logger.error(f"{date}: date completeness audit failed: {audit_exc}")
                 # 進捗を SQLite に永続化（Render スピンダウン対策）
                 await asyncio.to_thread(_persist_job_or_raise, job_id, job)
-                # 日付間インターバル（最終日以外）
-                if i < total - 1:
-                    await _cancellable_sleep(_post_sleep, cancel_requested)
+                _raise_if_cancel_requested(cancel_requested)
 
         saved_races = counter["races"]
         saved_horses = counter["horses"]
@@ -1631,10 +1837,12 @@ async def _run_scrape_job(
             "calendar_filter_applied": calendar_filter_applied,
             "elapsed_time_sec": elapsed,
             "quality_audit": quality_audit,
-            "metrics": get_fetch_metrics(reset=True),
+            "metrics": get_fetch_metrics(),
             "rate_limit_policy": {
                 "min_interval_sec": 1.0,
-                "scope": "per-host",
+                "initial_interval_sec": 2.0,
+                "max_concurrent_requests": 1,
+                "scope": "provider-family",
             },
             "retry_backoff_policy": {
                 "max_retries": 3,
@@ -1644,8 +1852,10 @@ async def _run_scrape_job(
             },
             "circuit_breaker_policy": {
                 "failure_threshold": 3,
-                "cooldown_sec": 120.0,
-                "scope": "per-host",
+                "cooldown_sec": 90.0,
+                "rate_limit_min_cooldown_sec": 300.0,
+                "access_block_requires_operator_review": True,
+                "scope": "provider-family",
             },
         }
         report_path = await asyncio.to_thread(write_fetch_summary, fetch_summary)
@@ -1688,9 +1898,27 @@ async def _run_scrape_job(
                     "races_collected": int(progress.get("saved_races", 0) or 0),
                     "saved_horses": int(progress.get("saved_horses", 0) or 0),
                     "message": "cancelled by owner at a safe checkpoint",
+                    "fetch_summary": {"metrics": get_fetch_metrics(), "metrics_scope": "current_worker_attempt"},
                 }
         cancelled_job = _scrape_jobs.get(job_id, {})
         await asyncio.to_thread(_persist_job_or_raise, job_id, cancelled_job)
+    except FetchAccessBlocked as e:
+        logger.warning("Provider restricted acquisition %s: %s", job_id, e)
+        with _JOBS_LOCK:
+            current = _scrape_jobs.get(job_id, {})
+            progress = current.setdefault("progress", {})
+            progress["message"] = "netkeibaの通信制限により停止しました"
+            progress["fetch_block_reason"] = str(e)
+            current["status"] = "error"
+            current["error"] = progress["message"]
+            current["result"] = {
+                "success": False,
+                "partial_results_preserved": True,
+                "races_collected": int(progress.get("saved_races", 0) or 0),
+                "saved_horses": int(progress.get("saved_horses", 0) or 0),
+                "metrics": get_fetch_metrics(),
+            }
+        await asyncio.to_thread(_persist_job_or_raise, job_id, current)
     except Exception as e:
         logger.error(f"スクレイピングジョブ失敗 {job_id}: {e}")
         with _JOBS_LOCK:
