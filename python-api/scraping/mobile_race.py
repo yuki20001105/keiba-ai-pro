@@ -7,6 +7,7 @@ import re
 from typing import Any, Awaitable, Callable
 
 from bs4 import BeautifulSoup
+from scraping.last3f_evidence import clock_column
 
 
 JRA_VENUES = {
@@ -130,7 +131,7 @@ async def parse_mobile_race(
         "time": _column(headers, "\u30bf\u30a4\u30e0"),
         "margin": _column(headers, "\u7740\u5dee"),
         "corner": _column(headers, "\u901a\u904e"),
-        "last_3f": _column(headers, "\u4e0a\u304c\u308a"),
+        "last_3f": clock_column(headers),
         "odds": _column(headers, "\u5358\u52dd"),
         "popularity": _column(headers, "\u4eba\u6c17"),
         "weight": _column(headers, "\u99ac\u4f53\u91cd"),
@@ -237,9 +238,9 @@ async def parse_mobile_race(
         )
         for horse, detail in zip(chunk, details):
             horse.update(detail)
-        if start + 4 < len(values):
-            await asyncio.sleep(1.0)
-        gc.collect()
+    # Requests are paced centrally, including concurrent horse enrichment.
+    # Cache-only chunks should not incur a separate one-second delay.
+    gc.collect()
 
     class_match = re.search(r"\b(G[1-3]|L|OP)\b", header_text)
     if class_match:

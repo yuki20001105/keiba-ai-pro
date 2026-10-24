@@ -11,6 +11,7 @@
       "python": "${workspaceFolder}/python-api/.venv/Scripts/python.exe",
       "cwd": "${workspaceFolder}/python-api",
       "env": {
+        "PYTHONUTF8": "1",
         "PYTHONIOENCODING": "utf-8",
         "PYTHONPATH": "${workspaceFolder}/keiba;${workspaceFolder}/python-api"
       },
@@ -31,6 +32,7 @@
         "APP_ENV": "production",
         "ALLOW_STAGING_WRITE": "false",
         "NETKEIBA_RACE_WRITE_ENABLED": "false",
+        "PYTHONUTF8": "1",
         "PYTHONIOENCODING": "utf-8",
         "PYTHONPATH": "${workspaceFolder}/keiba;${workspaceFolder}/python-api"
       },
@@ -52,7 +54,7 @@
         "uriFormat": "http://localhost:3000",
         "action": "openExternally"
       }
-    }
+    },
     {
       // Production safe UI 起動。ビルド後に start し、localhost:3000 を開く
       "name": "Next.js (production safe)",

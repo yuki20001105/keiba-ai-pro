@@ -4,6 +4,12 @@ This directory is the canonical, ordered bootstrap for a **new and isolated**
 Supabase project. It reconciles the repository's historical schema files into
 one fail-closed chain without rewriting already shipped migrations.
 
+The current candidate manifest contains 22 ordered migrations. Ordinal 22 is
+the owner-scoped operational scrape cancellation extension. Existing hosted
+21-row histories and their retained evidence remain valid immutable prefixes;
+they are advanced only by a separately reviewed append-only upgrade. Never
+rewrite an existing history row to make it appear to contain ordinal 22.
+
 The only accepted ordering authority is the canonical
 `supabase/bootstrap/v1/manifest.json`; the gate and renderer reject every
 alternate manifest path, including a content-equivalent copy. The Phase 3M gate applies the chain

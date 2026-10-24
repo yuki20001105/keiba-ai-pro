@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import calendar
 import re
 from datetime import date, datetime, timedelta
 
@@ -9,6 +10,7 @@ from datetime import date, datetime, timedelta
 MAX_SCRAPE_RANGE_DAYS = 31
 SCRAPE_TARGETS_PER_DAY = 2
 MAX_SCRAPE_TARGETS = MAX_SCRAPE_RANGE_DAYS * SCRAPE_TARGETS_PER_DAY
+MAX_SCRAPE_BATCH_MONTHS = 240
 
 _DATE_FORMATS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"^\d{8}$"), "%Y%m%d"),
@@ -50,3 +52,24 @@ def build_bounded_scrape_dates(start_date: object, end_date: object) -> list[str
 
     start, _end, inclusive_days = validate_scrape_date_range(start_date, end_date)
     return [(start + timedelta(days=offset)).strftime("%Y%m%d") for offset in range(inclusive_days)]
+
+
+def build_scrape_months(start_date: object, end_date: object) -> list[tuple[str, str]]:
+    """Bound a durable batch, retaining the 31-day contract for every child."""
+    start, end = parse_scrape_date(start_date), parse_scrape_date(end_date)
+    months = (end.year - start.year) * 12 + end.month - start.month + 1
+    if end < start:
+        raise ValueError("scrape start_date must not be after end_date")
+    if months > MAX_SCRAPE_BATCH_MONTHS:
+        raise ValueError(f"scrape batch must not exceed {MAX_SCRAPE_BATCH_MONTHS} months")
+    result: list[tuple[str, str]] = []
+    current = start
+    while current <= end:
+        last = min(end, current.replace(day=calendar.monthrange(current.year, current.month)[1]))
+        first_text, last_text = current.strftime("%Y%m%d"), last.strftime("%Y%m%d")
+        validate_scrape_date_range(first_text, last_text)
+        result.append((first_text, last_text))
+        if last == end:
+            break
+        current = last + timedelta(days=1)
+    return result

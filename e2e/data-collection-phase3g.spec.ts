@@ -6,7 +6,7 @@ import {
 import { UNCERTAINTY_SERVER_REVIEW_LOCATOR_STORAGE_KEY } from '../src/lib/scrape-uncertainty-review-server'
 import { mockSupabaseIdentity, setSupabaseTestSession } from './helpers/mock-api'
 
-const SUPABASE_ORIGIN = 'http://127.0.0.1:54321'
+const SUPABASE_ORIGIN = process.env.NEXT_PUBLIC_SUPABASE_URL || 'http://127.0.0.1:54321'
 const REQUEST_ID = '11111111-1111-4111-8111-111111111111'
 const CLIENT_REQUEST_ID = '22222222-2222-4222-8222-222222222222'
 const DECISION_REASON = 'Independent Admin verified the review-only evidence and confirms no execution is permitted.'
@@ -142,7 +142,7 @@ test.describe('Phase 3G review-only Admin evidence console', () => {
     await mockSupabaseIdentity(page, { authenticated: true, role: 'user', tier: 'premium' })
     await page.goto('/data-collection/uncertainty-reviews')
 
-    await expect(page.getByTestId('phase3g-admin-required')).toBeVisible()
+    await expect(page).toHaveURL(/\/home$/)
     await expect(page.getByTestId('phase3g-load-reviewable')).toHaveCount(0)
   })
 

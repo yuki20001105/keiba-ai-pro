@@ -5,7 +5,7 @@
       "label": "Start FastAPI",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/Scripts/python.exe",
-      "args": ["main.py"],
+      "args": ["-X", "utf8", "main.py"],
       "isBackground": true,
       "problemMatcher": [],
       "presentation": {

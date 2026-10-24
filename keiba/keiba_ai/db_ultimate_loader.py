@@ -289,7 +289,11 @@ def load_prediction_history_frame(
             history[column] = pd.to_numeric(history[column], errors="coerce", downcast="float")
     return history
 
-def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
+def load_ultimate_training_frame(
+    db_path: Path,
+    *,
+    read_only: bool = False,
+) -> pd.DataFrame:
     """
     race_results_ultimateテーブルからUltimate版データを読み込む
     races_ultimateテーブルのdistance/track_type等もJOINして取得する
@@ -311,7 +315,12 @@ def load_ultimate_training_frame(db_path: Path) -> pd.DataFrame:
         print(f"  ✗ DBファイルが見つかりません: {db_path}")
         return pd.DataFrame()
     
-    conn = sqlite3.connect(db_path)
+    if read_only:
+        connection_uri = f"{db_path.resolve().as_uri()}?mode=ro&immutable=1"
+        conn = sqlite3.connect(connection_uri, uri=True)
+        conn.execute("PRAGMA query_only=ON")
+    else:
+        conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
     # テーブル存在確認

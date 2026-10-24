@@ -2,6 +2,9 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { authFetch } from '@/lib/auth-fetch'
 import type { JobStatus } from '@/lib/types'
 
+const STATUS_REQUEST_TIMEOUT_MS = 10_000
+const CONNECTION_RECHECK_MESSAGE = '接続を再確認中です。処理は継続している可能性があります。'
+
 export interface JobPollerOptions {
   /** ジョブIDが設定されたらポーリング開始。null の間は停止。 */
   jobId: string | null
@@ -11,10 +14,12 @@ export interface JobPollerOptions {
   onCompleted?: (statusData: any) => void
   /** エラー時コールバック */
   onError?: (message: string) => void
+  /** 進捗更新時コールバック */
+  onProgress?: (message: string, statusData: any) => void
   /** ポーリング間隔 (ms) — デフォルト 3000 */
   intervalMs?: number
-  /** タイムアウト上限 (ms) — デフォルト 10分 */
-  maxMs?: number
+  /** 任意の監視上限。未指定/null はサーバーの終端状態まで監視する。 */
+  maxMs?: number | null
 }
 
 export interface JobPollerResult {
@@ -45,8 +50,9 @@ export function useJobPoller({
   getStatusUrl,
   onCompleted,
   onError,
+  onProgress,
   intervalMs = 3000,
-  maxMs = 10 * 60 * 1000,
+  maxMs = null,
 }: JobPollerOptions): JobPollerResult {
   const [status, setStatus] = useState<JobStatus>('idle')
   const [progress, setProgress] = useState('')
@@ -56,14 +62,25 @@ export function useJobPoller({
   // stableな参照でコールバックを保持（re-render のたびに setInterval が再生成されないように）
   const onCompletedRef = useRef(onCompleted)
   const onErrorRef = useRef(onError)
+  const onProgressRef = useRef(onProgress)
+  const requestInFlightRef = useRef(false)
+  const requestControllerRef = useRef<AbortController | null>(null)
+  const generationRef = useRef(0)
   useEffect(() => { onCompletedRef.current = onCompleted }, [onCompleted])
   useEffect(() => { onErrorRef.current = onError }, [onError])
+  useEffect(() => { onProgressRef.current = onProgress }, [onProgress])
 
   const stop = useCallback(() => {
+    // Invalidate responses before aborting: even an abort-ignoring transport
+    // must not complete a different job or stop its newer polling timer.
+    ++generationRef.current
     if (timerRef.current) {
       clearInterval(timerRef.current)
       timerRef.current = null
     }
+    requestControllerRef.current?.abort()
+    requestControllerRef.current = null
+    requestInFlightRef.current = false
   }, [])
 
   const reset = useCallback(() => {
@@ -71,30 +88,68 @@ export function useJobPoller({
     setStatus('idle')
     setProgress('')
     setPct(0)
+    requestInFlightRef.current = false
   }, [stop])
 
   useEffect(() => {
     if (!jobId) return
+    const generation = ++generationRef.current
+    const current = () => generation === generationRef.current
+    let reconnecting = false
     setStatus('running')
+    setProgress('')
+    setPct(0)
     startRef.current = Date.now()
 
     timerRef.current = setInterval(async () => {
-      // タイムアウト判定
-      if (Date.now() - startRef.current > maxMs) {
+      if (!current()) return
+      // Durable jobs are monitored until the backend reports a terminal state.
+      // A finite cap remains available only for explicitly bounded callers.
+      if (typeof maxMs === 'number' && maxMs > 0 && Date.now() - startRef.current > maxMs) {
         stop()
         setStatus('error')
         setProgress('タイムアウト')
         onErrorRef.current?.('ジョブがタイムアウトしました')
         return
       }
+      if (requestInFlightRef.current) return
+      requestInFlightRef.current = true
+      const controller = new AbortController()
+      requestControllerRef.current = controller
+      let timeoutId: ReturnType<typeof setTimeout> | undefined
+      let abortRequest: (() => void) | undefined
 
       try {
-        const res = await authFetch(getStatusUrl(jobId))
-        if (!res.ok) return // 一時的エラーはスキップ
-        const data = await res.json()
+        // Bound both headers and the JSON body. Abort alone is insufficient
+        // for transports that do not settle their promise after cancellation.
+        const cancellation = new Promise<never>((_resolve, reject) => {
+          abortRequest = () => reject(new Error('job-status-request-aborted'))
+          controller.signal.addEventListener('abort', abortRequest, { once: true })
+          timeoutId = setTimeout(() => controller.abort(), STATUS_REQUEST_TIMEOUT_MS)
+        })
+        const readStatus = (async () => {
+          const response = await authFetch(getStatusUrl(jobId), { signal: controller.signal, cache: 'no-store' })
+          if (!response.ok) throw new Error('job-status-temporarily-unavailable')
+          return response.json()
+        })()
+        const data = await Promise.race([readStatus, cancellation])
+        if (!current()) return
 
-        const msg: string = data.progress || data.message || ''
-        if (msg) setProgress(msg)
+        const rawProgress = data?.progress
+        const msg = typeof rawProgress === 'string'
+          ? rawProgress
+          : rawProgress && typeof rawProgress === 'object' && typeof rawProgress.message === 'string'
+            ? rawProgress.message
+            : typeof data?.message === 'string'
+              ? data.message
+              : ''
+        if (msg) {
+          setProgress(msg)
+          onProgressRef.current?.(msg, data)
+        } else if (reconnecting) {
+          setProgress('')
+        }
+        reconnecting = false
         if (typeof data.pct === 'number') setPct(data.pct)
 
         if (data.status === 'completed') {
@@ -111,9 +166,28 @@ export function useJobPoller({
           setStatus('error')
           setProgress('ジョブが見つかりません')
           onErrorRef.current?.('ジョブが見つかりません（サーバーが再起動した可能性があります）')
+        } else if (data.status === 'waiting_resources') {
+          setStatus('waiting_resources')
+        } else if (data.status === 'recovering') {
+          setStatus('recovering')
+        } else if (data.status === 'queued') {
+          setStatus('queued')
+        } else if (data.status === 'running') {
+          setStatus('running')
         }
       } catch {
-        // ネットワーク一時エラーは無視
+        if (!current()) return
+        // Do not invoke onError or clear the caller's durable job ID for an
+        // interrupted status read: the server may still be working normally.
+        reconnecting = true
+        setProgress(CONNECTION_RECHECK_MESSAGE)
+      } finally {
+        if (timeoutId !== undefined) clearTimeout(timeoutId)
+        if (abortRequest) controller.signal.removeEventListener('abort', abortRequest)
+        if (current()) {
+          requestInFlightRef.current = false
+          if (requestControllerRef.current === controller) requestControllerRef.current = null
+        }
       }
     }, intervalMs)
 

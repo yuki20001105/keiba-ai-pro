@@ -338,10 +338,11 @@ def test_draft_staking_policy_never_creates_a_qualifying_wager(tmp_path: Path) -
 
 def test_migration_and_compose_contract_are_append_only_least_privilege_and_diskless() -> None:
     manifest = json.loads((ROOT / "supabase/bootstrap/v1/manifest.json").read_text(encoding="utf-8"))
-    assert len(manifest["migrations"]) == 21
-    assert [entry["version"] for entry in manifest["migrations"][-2:]] == [
+    assert len(manifest["migrations"]) == 22
+    assert [entry["version"] for entry in manifest["migrations"][-3:]] == [
         "20260802148000",
         "20260802149000",
+        "20260912150000",
     ]
     sql = (ROOT / "supabase/migrations/20260802_phase3n_observation_ha.sql").read_text(
         encoding="utf-8"

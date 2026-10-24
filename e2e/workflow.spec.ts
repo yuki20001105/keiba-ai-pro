@@ -3,11 +3,12 @@
  * ──────────────────────────────────────────────────────────────
  * フルフロー統合テスト
  *
- *   Step 1: データ取得  (/data-collection)
- *   Step 2: モデル学習  (/train)
- *   Step 3: 予測実行    (/predict-batch)
- *   Step 4: 成績確認    (/dashboard)
- *   Step 5: 予測スコア詳細 (/race-analysis)
+ *   一般ユーザーの主要フロー:
+ *     Step 1: 予測実行 (/predict-batch)
+ *     Step 2: 成績確認 (/dashboard)
+ *
+ *   データ取得・モデル管理・本番前チェックは管理者導線、
+ *   予測スコア詳細と予測履歴は主要画面から辿る補助機能として個別検証する。
  *
  * 実行コマンド:
  *   npx playwright test e2e/workflow.spec.ts --reporter=list
@@ -28,8 +29,11 @@ import {
 } from './helpers/mock-api'
 
 // ── 共通モック設定 ──────────────────────────────────────────────
-async function setupCommonMocks(page: Page) {
-  await mockAuth(page)
+async function setupCommonMocks(
+  page: Page,
+  auth: { role?: 'admin' | 'user'; tier?: 'free' | 'premium' } = {},
+) {
+  await mockAuth(page, auth)
   await mockHealth(page)
   await mockDataStats(page)
   await mockRacesByDate(page)
@@ -42,8 +46,8 @@ async function setupCommonMocks(page: Page) {
 async function mockScraping(page: Page) {
   let scrapeJobPoll = 0
 
-  await page.route('/api/scrape/status/__health_check__**', route =>
-    route.fulfill({ json: { status: 'ok' } })
+  await page.route('/api/scrape/health**', route =>
+    route.fulfill({ json: { status: 'healthy' } })
   )
   await page.route('/api/scrape', route => {
     if (route.request().method() === 'POST') {
@@ -71,11 +75,16 @@ async function mockScraping(page: Page) {
 // ── 学習用モック ──────────────────────────────────────────────────
 async function mockTraining(page: Page) {
   let trainPoll = 0
+  const trainJobId = '11111111-1111-4111-8111-111111111111'
+
+  await page.route('/api/ml/train/capability**', route =>
+    route.fulfill({ json: { enabled: true, reason: null } })
+  )
 
   await page.route('/api/ml/train/start**', route =>
-    route.fulfill({ json: { job_id: 'wf-train-001', status: 'started' } })
+    route.fulfill({ json: { job_id: trainJobId, status: 'started' } })
   )
-  await page.route('/api/ml/train/status/wf-train-001**', route => {
+  await page.route(`/api/ml/train/status/${trainJobId}**`, route => {
     trainPoll++
     if (trainPoll < 3) {
       return route.fulfill({
@@ -91,6 +100,18 @@ async function mockTraining(page: Page) {
           model_id: 'wf-model-001',
           model_path: 'models/wf-model-001.joblib',
           metrics: { auc: 0.758, cv_auc_mean: 0.741, logloss: 0.45 },
+          evaluation: {
+            primary: {
+              rank_correlation: 0.758, rmse: 0.45,
+              top_pick_win_rate: 0.365, favorite_win_rate: 0.410,
+              top_pick_win_rate_delta: -0.045, win_roi: 91.2,
+            },
+            details: {
+              mae: 0.34, r2: 0.61, evaluation_date_from: '2026-01-01',
+              evaluation_date_to: '2026-04-01', evaluation_race_count: 100,
+            },
+            time_slices: [],
+          },
           data_count: 8500,
           race_count: 100,
           feature_count: 61,
@@ -117,13 +138,14 @@ test.describe('【Step 1】データ取得フロー', () => {
 
   test('1-1: データ取得ページが正常に表示される', async ({ page }) => {
     await page.goto('/data-collection')
-    await expect(page.getByText('データ取得', { exact: true })).toBeVisible()
-    await expect(page.getByText('期間指定一括取得')).toBeVisible()
+    await expect(page.getByRole('heading', { name: '期間' })).toBeVisible()
+    await expect(page.getByTestId('dry-run-button')).toHaveText('事前確認')
+    await expect(page.getByTestId('execute-button')).toHaveText('取得開始')
   })
 
   test('1-2: ローカルAPIが起動中と表示される', async ({ page }) => {
     await page.goto('/data-collection')
-    await expect(page.getByText(/起動中|オンライン/)).toBeVisible({ timeout: 5000 })
+    await expect(page.getByText('API 稼働中', { exact: true })).toBeVisible({ timeout: 5000 })
   })
 
   test('1-3: 期間入力 → スクレイピング実行 → 進捗バーが表示される', async ({ page }) => {
@@ -141,9 +163,10 @@ test.describe('【Step 1】データ取得フロー', () => {
     await expect(page.getByText(/取得中|完了|24/).first()).toBeVisible({ timeout: 15000 })
   })
 
-  test('1-4: 次のステップ（モデル学習）へのリンクが表示される', async ({ page }) => {
+  test('1-4: データ取得画面は取得操作だけに集中している', async ({ page }) => {
     await page.goto('/data-collection')
-    await expect(page.getByRole('link', { name: /モデル学習/ })).toBeVisible()
+    await expect(page.getByRole('heading', { name: '期間' })).toBeVisible()
+    await expect(page.getByRole('link', { name: /モデル学習/ })).toHaveCount(0)
   })
 })
 
@@ -158,28 +181,29 @@ test.describe('【Step 2】モデル学習フロー', () => {
 
   test('2-1: モデル学習ページが正常に表示される', async ({ page }) => {
     await page.goto('/train')
-    await expect(page.getByText('モデル学習')).toBeVisible()
+    await expect(page.getByText('モデル作成').first()).toBeVisible()
     await expect(page.getByText('学習設定')).toBeVisible()
   })
 
-  test('2-2: 保存済みモデル一覧が表示される（AUC付き）', async ({ page }) => {
+  test('2-2: 保存済みモデル一覧に5つの主要指標が表示される', async ({ page }) => {
     await page.goto('/train')
     await expect(page.getByText('保存済みモデル')).toBeVisible()
     await expect(page.getByText('abc123-def456')).toBeVisible({ timeout: 5000 })
-    // AUC値が表示される
-    await expect(page.getByText(/AUC.*0\.7/)).toBeVisible({ timeout: 5000 })
+    await expect(page.getByText('順位相関').first()).toBeVisible({ timeout: 5000 })
+    await expect(page.getByText('0.723').first()).toBeVisible()
+    await expect(page.getByText('回収率').first()).toBeVisible()
   })
 
-  test('2-3: 学習実行 → プログレス → 完了とAUCが表示される', async ({ page }) => {
+  test('2-3: 学習実行 → プログレス → 完了と順位相関が表示される', async ({ page }) => {
     await page.goto('/train')
 
-    // 学習開始ボタンをクリック
-    await page.getByRole('button', { name: '学習開始' }).click()
+    // モデル作成ボタンをクリック
+    await page.getByRole('button', { name: 'モデル作成' }).click()
 
     // プログレス表示
     await expect(page.getByText(/学習中|実行中/).first()).toBeVisible({ timeout: 5000 })
 
-    // 完了後のAUC表示
+    // 完了後の順位相関表示
     await expect(page.getByText(/0\.758|0\.741|完了/).first()).toBeVisible({ timeout: 20000 })
   })
 
@@ -320,9 +344,10 @@ test.describe('【Step 4】成績確認フロー', () => {
     }
   })
 
-  test('4-6: データ取得ページへのリンクが表示される（次サイクルへ）', async ({ page }) => {
+  test('4-6: 予測履歴と次の予測へのリンクが表示される', async ({ page }) => {
     await page.goto('/dashboard')
-    await expect(page.getByRole('link', { name: /データ取得/ })).toBeVisible({ timeout: 5000 })
+    await expect(page.getByRole('link', { name: /予測履歴/ })).toHaveAttribute('href', '/prediction-history')
+    await expect(page.getByRole('link', { name: /予測実行へ/ })).toHaveAttribute('href', '/predict-batch')
   })
 })
 
@@ -379,84 +404,82 @@ test.describe('【Step 5】予測スコア詳細フロー', () => {
     await expect(page.getByText(/0\.\d{2}|%|\d+\.\d+/).first()).toBeVisible({ timeout: 5000 })
   })
 
-  test('5-5: 特徴量タブで入力特徴量データが確認できる', async ({ page }) => {
+  test('5-5: AIの判断タブで予測に寄与した要素が確認できる', async ({ page }) => {
     await page.goto('/race-analysis')
     await page.getByText('テストレース1').click()
 
-    // 特徴量タブへ切り替え
-    const featTab = page.getByRole('button', { name: /特徴量/ })
-    await expect(featTab).toBeVisible({ timeout: 5000 })
-    await featTab.click()
+    const explainTab = page.getByRole('button', { name: 'AIの判断' })
+    await expect(explainTab).toBeVisible({ timeout: 5000 })
+    await explainTab.click()
 
-    // 文字列テーブルが表示される
-    await expect(page.getByRole('columnheader', { name: 'odds_win' })).toBeVisible({ timeout: 5000 })
-    await expect(page.getByText('テスト馬A', { exact: false }).first()).toBeVisible({ timeout: 5000 })
+    await expect(page.getByText('騎手の勝率').first()).toBeVisible({ timeout: 5000 })
+    await expect(page.getByText('速度スコアを上げた要素')).toBeVisible()
   })
 
-  test('5-6: 特徴量グループチップで列フィルタリングができる', async ({ page }) => {
+  test('5-6: 文章解説はユーザー操作時だけ取得する', async ({ page }) => {
+    let explanationRequests = 0
+    await page.route('/api/prediction-explanation', route => {
+      explanationRequests += 1
+      return route.fulfill({ json: { explanation: '騎手の勝率が評価を押し上げています。', source: 'openai' } })
+    })
     await page.goto('/race-analysis')
     await page.getByText('テストレース1').click()
 
-    const featTab = page.getByRole('button', { name: /特徴量/ })
-    await featTab.click()
+    await page.getByRole('button', { name: 'AIの判断' }).click()
+    expect(explanationRequests).toBe(0)
+    await page.getByRole('button', { name: '文章で解説' }).click()
+    await expect(page.getByText('LLM解説')).toBeVisible()
+    expect(explanationRequests).toBe(1)
+  })
 
-    // oddsグループチップを非表示に
-    const oddsChip = page.getByRole('button', { name: /^odds/ })
-    await expect(oddsChip).toBeVisible({ timeout: 5000 })
-    await oddsChip.click()
+  test('5-7: 日付とレースIDのリンクから対象レースを自動表示できる', async ({ page }) => {
+    await page.goto('/race-analysis?date=20260407&race_id=202604070101')
 
-    // odds_win列が消える
-    await expect(page.getByRole('columnheader', { name: 'odds_win' })).not.toBeVisible()
+    await expect(page.locator('input[type="date"]')).toHaveValue('2026-04-07')
+    await expect(page.getByText('テスト馬A').first()).toBeVisible({ timeout: 5000 })
+  })
+
+  test('5-8: 旧featuresリンクでもAIの判断を直接表示できる', async ({ page }) => {
+    await page.goto('/race-analysis?date=20260407&race_id=202604070101&tab=features')
+
+    await expect(page.locator('input[type="date"]')).toHaveValue('2026-04-07')
+    await expect(page.getByText('速度スコアを上げた要素')).toBeVisible({ timeout: 5000 })
   })
 })
 
 // ══════════════════════════════════════════════════════════════════
 // Full Workflow: 全ステップを通した統合シナリオ
 // ══════════════════════════════════════════════════════════════════
-test.describe('【Full Workflow】ホームから全ページ遷移シナリオ', () => {
+test.describe('【Full Workflow】ホームから主要機能へ遷移するシナリオ', () => {
   test.beforeEach(async ({ page }) => {
-    await setupCommonMocks(page)
+    await setupCommonMocks(page, { role: 'user', tier: 'free' })
     await mockScraping(page)
     await mockTraining(page)
     page.on('dialog', dialog => dialog.accept())
   })
 
-  test('ホーム → データ取得 → 学習 → 予測 → 成績 まで全ページ正常遷移', async ({ page }) => {
+  test('ホーム → 予測 → 成績の主要フローを正常に遷移できる', async ({ page }) => {
     // ── ホーム ──
     await page.goto('/home')
     await expect(page.getByText('AI競馬予測')).toBeVisible()
-    await expect(page.getByText('データ取得')).toBeVisible()
-
-    // Step 1 へ
-    await page.getByRole('link', { name: 'データ取得' }).first().click()
-    await page.waitForURL('/data-collection')
-    await expect(page.getByText('データ取得', { exact: true })).toBeVisible()
-
-    // Step 2 へ
-    await page.getByRole('link', { name: /モデル学習/ }).click()
-    await page.waitForURL('/train')
-    await expect(page.getByText('モデル学習')).toBeVisible()
-
-    // Step 3 へ（ヘッダーロゴからホームに戻り再遷移、または直接）
-    await page.goto('/predict-batch')
+    await page.getByRole('link', { name: /予測実行/ }).first().click()
+    await page.waitForURL('/predict-batch')
     await expect(page.getByText('一括予測')).toBeVisible()
 
-    // Step 4 へ
-    await page.goto('/dashboard')
+    await page.goto('/home')
+    await page.getByRole('link', { name: /成績確認/ }).first().click()
+    await page.waitForURL('/dashboard')
     await expect(page.getByText('ダッシュボード')).toBeVisible()
-
-    // Step 5 へ（詳細分析）
-    await page.goto('/race-analysis')
-    await expect(page.getByText('予測結果確認')).toBeVisible()
   })
 
-  test('ホームのStepカードから各ページへ正しくリンクされる', async ({ page }) => {
+  test('一般ユーザーのホームは利用可能な2機能だけにリンクされる', async ({ page }) => {
     await page.goto('/home')
 
-    // 各Stepリンクが正しいURLを持つ
-    await expect(page.getByRole('link', { name: 'データ取得' }).first()).toHaveAttribute('href', '/data-collection')
-    await expect(page.getByRole('link', { name: 'モデル学習' }).first()).toHaveAttribute('href', '/train')
-    await expect(page.getByRole('link', { name: '予測実行' }).first()).toHaveAttribute('href', '/predict-batch')
-    await expect(page.getByRole('link', { name: '成績確認' }).first()).toHaveAttribute('href', '/dashboard')
+    await expect(page.getByRole('link', { name: /予測実行/ }).first()).toHaveAttribute('href', '/predict-batch')
+    await expect(page.getByRole('link', { name: /成績確認/ }).first()).toHaveAttribute('href', '/dashboard')
+
+    for (const href of ['/data-collection', '/train', '/race-analysis', '/prediction-history', '/production-readiness', '/notion-report', '/model-redesign-workbench']) {
+      await expect(page.locator(`a[href="${href}"]`)).toHaveCount(0)
+    }
   })
 })

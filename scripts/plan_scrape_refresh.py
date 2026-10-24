@@ -19,7 +19,7 @@ from typing import Any
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_DB_PATH = ROOT_DIR / "keiba" / "data" / "keiba_ultimate.db"
-DEFAULT_OUTPUT = ROOT_DIR / "reports" / "scrape_refresh_plan.json"
+DEFAULT_OUTPUT = ROOT_DIR / "reports" / "generated" / "scraping" / "plans" / "scrape_refresh_plan.json"
 DEFAULT_AVG_SEC_PER_REQ = 1.2
 CURRENT_PARSER_VERSION = "2.0.0"
 

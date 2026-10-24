@@ -36,7 +36,6 @@ Operational notes:
 | /api/data-stats | FastAPI /api/data_stats | home, dashboard, data-collection, admin |
 | /api/models | FastAPI /api/models | train, predict-batch, race-analysis |
 | /api/models/[id] GET | FastAPI /api/models/{model_id} | train read-only model detail |
-| /api/ml/train/status/[job_id] | FastAPI /api/train/status/{job_id} | train |
 | /api/analyze-race | FastAPI /api/analyze_race | predict-batch, race-analysis |
 | /api/analyze-races-batch | FastAPI /api/analyze_races_batch | backend-facing route available |
 | /api/races/by-date | FastAPI /api/races/by_date | predict-batch, race-analysis, data-view |
@@ -60,6 +59,8 @@ Operational notes:
 | /api/profiling/status/[job_id] | FastAPI /api/profiling/status/{job_id} | data-collection |
 | /api/profiling/html/[job_id] | FastAPI /api/profiling/html/{job_id} | data-collection |
 | /api/scrape | FastAPI /api/scrape/start | data-collection, useScrape/useBatchScrape |
+| /api/scrape/cancel/[jobId] | FastAPI /api/scrape/cancel/{job_id} | data-collection owner-scoped cooperative stop |
+| /api/scrape/retire/[jobId] | FastAPI /api/scrape/retire/{job_id} | data-collection local-only absent-request retirement; no scrape execution |
 | /api/scrape/status/[jobId] | FastAPI /api/scrape/status/{job_id} | predict-batch, useScrape/useBatchScrape |
 | /api/scrape/health | FastAPI /api/scrape/health | data-collection |
 | /api/export/bet-list | FastAPI /api/export/bet-list(/csv) | predict-batch |
@@ -70,6 +71,8 @@ Operational notes:
 |---|---|---|
 | /api/ai-correct | OpenAI/Gemini | optional OCR post-process flow |
 | /api/ocr | Vision/OCR service | optional OCR flow |
+| /api/performance | FastAPI GET /api/performance | local authenticated dashboard; owner-scoped official-result reconciliation, no external scraping |
+| /api/performance/records | FastAPI POST /api/performance/records | local prediction UI; immutable server snapshot selections, paper/explicit actual separated; never submits purchases |
 | /api/netkeiba/calendar | external scrape service | utility/integration route |
 | /api/netkeiba/race-list | FastAPI /api/netkeiba/race-list | migrated read-only proxy route (P1-4) |
 | /api/netkeiba/race | external scrape + Supabase write | mixed write path (not canonical) |
@@ -100,8 +103,10 @@ Operational notes:
 | Next Route | Replacement | Reason |
 |---|---|---|
 | /api/scrape (current implementation calls /api/scrape/start) | /api/scrape/start style naming in Next route layer (future) | name suggests legacy sync behavior, but actual behavior is async start |
-| /api/ml/train/start | approval-bound durable retrain job runner | direct `.joblib` writer is available only by exact local/test opt-in; deployed/unknown environments fail closed and the UI action is disabled |
-| /api/models/[id] DELETE | separate durable model-retirement approval | local/Supabase artifact deletion is available only by exact local/test opt-in; deployed/unknown environments fail closed and the UI action is disabled |
+| /api/ml/train/capability | approval-bound durable retrain job runner | loopback-only capability check; requires exact local/test opt-in plus verified Admin mode |
+| /api/ml/train/start | approval-bound durable retrain job runner | direct `.joblib` writer is enabled only on loopback with exact local/test opt-in and verified Admin mode; deployed/unknown environments fail closed |
+| /api/ml/train/status/[job_id] | approval-bound durable retrain job status | local compatibility job status; requires a verified Admin and a canonical job UUID |
+| /api/models/[id] DELETE | separate durable model-retirement approval | local/test only with exact opt-in, loopback boundaries, and current-password Admin mode; the active model is protected and deployed/unknown environments fail closed |
 | /api/models/[id]/activate | separate durable model-switch approval | pointer mutation is available only by exact local/test opt-in; deployed/unknown environments fail closed and the UI action is disabled |
 
 ### unused (current UI)
@@ -121,7 +126,6 @@ Operational notes:
 - /api/models/{model_id}
 - /api/analyze_race
 - /api/analyze_races_batch
-- /api/train/status/{job_id}
 - /api/races/recent
 - /api/races/{race_id}/horses
 - /api/races/by_date
@@ -132,6 +136,8 @@ Operational notes:
 - /api/realtime-odds/{race_id}
 - /api/realtime-odds/refresh
 - /api/scrape/start
+- /api/scrape/cancel/{job_id}
+- /api/scrape/retire/{job_id}
 - /api/scrape/status/{job_id}
 - /api/scrape/health
 - /api/profiling/start
@@ -151,7 +157,9 @@ Operational notes:
 ### experimental
 
 - /api/predict (older inference endpoint kept available)
-- /api/train (synchronous training endpoint; operationally heavier than async start)
+- /api/performance (local authenticated owner-scoped paper/actual summary; settled-only ROI, pending payouts excluded)
+- /api/performance/records (local immutable first-choice ledger; actual requires explicit confirmed=true; no real purchase)
+- /api/train (legacy synchronous endpoint; disabled in favor of serialized async start)
 - /api/netkeiba/race-list (read-only proxy to scrape service, introduced in P1-4)
 - /api/netkeiba/race/preflight (read-only preflight contract for write path decomposition, introduced in P1-5)
 - /api/netkeiba/race/dry-run (write orchestration simulation without write, introduced in P1-7)
@@ -173,7 +181,7 @@ Operational notes:
 
 ### deprecated
 
-- /api/train and /api/train/start are local/test compatibility writers only; both fail closed unless `APP_ENV` is local/test and `MODEL_TRAINING_LOCAL_ENABLED=true`
+- /api/train/capability, /api/train/start, and /api/train/status/{job_id} are local/test compatibility endpoints only; Production fails closed, while the local launcher enables them for authenticated Admin use. `/api/train` remains disabled even locally.
 - DELETE /api/models/{model_id} is local/test compatibility only and fails closed unless `MODEL_DELETION_LOCAL_ENABLED=true`
 - /api/models/{model_id}/activate is local/test compatibility only and is not a promotion path
 - if deprecating /api/predict later, maintain compatibility period and migrate callers first
@@ -190,7 +198,7 @@ Operational notes:
 1. Introduce route-level tags/metadata in API handlers for runtime-visible classification.
 2. Migrate naming of Next scrape start route to explicit /api/scrape/start (keeping /api/scrape alias during transition).
 3. Review mixed path route /api/netkeiba/race and converge writes to FastAPI-centric path.
-4. Decide lifecycle for /api/predict and /api/train sync endpoints (retain vs deprecate).
+4. Decide lifecycle for /api/predict; `/api/train` sync is already disabled and can be removed after compatibility review.
 
 ## 5. Direct Supabase / Scrape Service Path Inventory (P1-3)
 

@@ -412,6 +412,11 @@ class _HeartbeatSupervisor:
 
 
 Trainer = Callable[..., Awaitable[Any]]
+BundleParser = Callable[..., Any]
+RequestFactory = Callable[[Any], Any]
+ProgressObserver = Callable[[RetrainLease, str, int | None], RetrainLease]
+SnapshotCopier = Callable[[Path, Path], Any]
+ResultObserver = Callable[[RetrainLease, RegisteredArtifact, Any], RetrainLease]
 
 
 class ApprovedRetrainCoordinator:
@@ -426,11 +431,36 @@ class ApprovedRetrainCoordinator:
         lease_ttl_seconds: int = 120,
         heartbeat_interval_seconds: float | None = None,
         trainer: Trainer | None = None,
+        bundle_parser: BundleParser | None = None,
+        request_factory: RequestFactory | None = None,
+        progress_observer: ProgressObserver | None = None,
+        snapshot_copier: SnapshotCopier | None = None,
+        result_observer: ResultObserver | None = None,
     ) -> None:
         if not 30 <= lease_ttl_seconds <= 300:
             raise RetrainWorkerError("retrain-worker-ttl-invalid")
-        if execution_policy not in {"staging-train", "sandbox-train"}:
+        approved_policy = execution_policy in {"staging-train", "sandbox-train"}
+        local_policy = (
+            execution_policy == "local-admin-train"
+            and bundle_parser is not None
+            and request_factory is not None
+            and progress_observer is not None
+            and snapshot_copier is not None
+            and result_observer is not None
+        )
+        if not approved_policy and not local_policy:
             raise RetrainWorkerError("retrain-worker-policy-invalid")
+        if approved_policy and any(
+            value is not None
+            for value in (
+                bundle_parser,
+                request_factory,
+                progress_observer,
+                snapshot_copier,
+                result_observer,
+            )
+        ):
+            raise RetrainWorkerError("retrain-worker-approved-parser-override-forbidden")
         interval = (
             lease_ttl_seconds / 3
             if heartbeat_interval_seconds is None
@@ -446,6 +476,11 @@ class ApprovedRetrainCoordinator:
         self._lease_ttl_seconds = lease_ttl_seconds
         self._heartbeat_interval_seconds = interval
         self._trainer = trainer
+        self._bundle_parser = bundle_parser
+        self._request_factory = request_factory
+        self._progress_observer = progress_observer
+        self._snapshot_copier = snapshot_copier or shutil.copyfile
+        self._result_observer = result_observer
 
     @staticmethod
     def _snapshot_source(path: Path) -> Path:
@@ -477,7 +512,12 @@ class ApprovedRetrainCoordinator:
             raise ApprovedExecutionError("trained-artifact-path-invalid")
         return resolved
 
-    async def _run_trainer(self, request: Any, execution: Any) -> Any:
+    async def _run_trainer(
+        self,
+        request: Any,
+        execution: Any,
+        supervisor: _HeartbeatSupervisor,
+    ) -> Any:
         trainer = self._trainer
         if trainer is None:
             from routers.train import _do_train  # type: ignore
@@ -485,10 +525,26 @@ class ApprovedRetrainCoordinator:
             trainer = _do_train
 
         cancel_requested = threading.Event()
+        coordinator_loop = asyncio.get_running_loop()
 
         def progress_callback(_message: str, _percent: int | None = None) -> None:
             if cancel_requested.is_set():
                 raise ApprovedExecutionError("approved-training-cancelled")
+            if self._progress_observer is not None:
+                # Trainer code runs in a separate thread/event loop. Route the
+                # write through the coordinator loop so it is serialized with
+                # heartbeat mutations and receives the current lease version.
+                future = asyncio.run_coroutine_threadsafe(
+                    supervisor.mutate(
+                        lambda current: self._progress_observer(
+                            current,
+                            _message,
+                            _percent,
+                        )
+                    ),
+                    coordinator_loop,
+                )
+                future.result()
 
         def invoke() -> Any:
             return asyncio.run(
@@ -546,7 +602,8 @@ class ApprovedRetrainCoordinator:
                 pass
             raise
         try:
-            bundle = ApprovedExecutionBundle.from_rpc(
+            parser = self._bundle_parser or ApprovedExecutionBundle.from_rpc
+            bundle = parser(
                 bundle_value,
                 expected_job_id=job_id,
                 expected_worker_id=self._worker_id,
@@ -582,7 +639,7 @@ class ApprovedRetrainCoordinator:
             with tempfile.TemporaryDirectory(prefix=f"keiba-retrain-{job_id}-") as raw_workspace:
                 workspace = Path(raw_workspace)
                 snapshot = workspace / "snapshot.db"
-                await asyncio.to_thread(shutil.copyfile, source, snapshot)
+                await asyncio.to_thread(self._snapshot_copier, source, snapshot)
                 execution = bundle.create_execution(
                     workspace=workspace,
                     snapshot_path=snapshot,
@@ -593,15 +650,26 @@ class ApprovedRetrainCoordinator:
                 )
                 started = True
                 failure_code = "training-failed"
-                request = TrainRequest(
-                    target=bundle.target,
-                    model_type=bundle.model_type,
-                    force_sync=False,
-                    test_size=0.2,
-                    cv_folds=5,
-                    use_optuna=False,
-                )
-                response = await self._run_trainer(request, execution)
+                if self._request_factory is None:
+                    request = TrainRequest(
+                        target=bundle.target,
+                        model_type=bundle.model_type,
+                        force_sync=False,
+                        test_size=0.2,
+                        cv_folds=5,
+                        use_optuna=False,
+                    )
+                else:
+                    request = self._request_factory(bundle)
+                response = await self._run_trainer(request, execution, supervisor)
+                supervisor.ensure_live()
+                # Re-bind the completed training result to the immutable input
+                # bytes before any durable result staging or external write.  A
+                # local execution may materialize its workspace snapshot as a
+                # hardlink to the catalog entry, so this deliberately hashes the
+                # workspace path again rather than trusting the pre-training
+                # verification performed by ``create_execution``.
+                await asyncio.to_thread(execution.verify_snapshot)
                 supervisor.ensure_live()
                 artifact_path = self._artifact_path(
                     Path(response.model_path),
@@ -625,8 +693,16 @@ class ApprovedRetrainCoordinator:
                         size_bytes=size_bytes,
                         media_type=ARTIFACT_MEDIA_TYPE,
                     )
-                    artifact_file.seek(0)
                     failure_code = "worker-error"
+                    if self._result_observer is not None:
+                        await supervisor.mutate(
+                            lambda current: self._result_observer(
+                                current,
+                                artifact,
+                                response,
+                            )
+                        )
+                    artifact_file.seek(0)
                     await asyncio.to_thread(
                         self._gateway.upload,
                         artifact_file=artifact_file,

@@ -5,11 +5,24 @@
 import { Page } from '@playwright/test'
 import { buildSupabaseSessionCookie, getAppOrigin, type SupabaseSessionOptions } from './supabase-session'
 
-/** Supabase auth — ログイン不要の匿名ユーザーを返す */
-export async function mockAuth(page: Page) {
-  await page.route('**/auth/v1/user**', route =>
-    route.fulfill({ status: 401, json: { error: 'not authenticated' } })
-  )
+/** Supabase auth — protected-page test session (Admin/Premium by default for legacy suites). */
+export async function mockAuth(
+  page: Page,
+  opts: { role?: 'admin' | 'user'; tier?: 'free' | 'premium' } = {},
+) {
+  const appBaseUrl = process.env.PW_BASE_URL || `http://127.0.0.1:${process.env.PW_PORT || '3101'}`
+  const role = opts.role ?? 'admin'
+  const tier = opts.tier ?? 'premium'
+  await setSupabaseTestSession(page, {
+    appBaseUrl,
+    role,
+    tier,
+  })
+  await mockSupabaseIdentity(page, {
+    authenticated: true,
+    role,
+    tier,
+  })
 }
 
 export async function setSupabaseTestSession(page: Page, opts: SupabaseSessionOptions) {
@@ -24,6 +37,20 @@ export async function setSupabaseTestSession(page: Page, opts: SupabaseSessionOp
       sameSite: 'Lax',
     },
   ])
+  if ((opts.role ?? 'user') === 'admin') {
+    await page.route('/api/admin/unlock**', route => {
+      if (route.request().method() !== 'GET') return route.fallback()
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          version: 1,
+          unlocked: true,
+          expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+        }),
+      })
+    })
+  }
   return cookie.name
 }
 
@@ -87,8 +114,24 @@ export async function mockSupabaseIdentity(
 /** FastAPI /health */
 export async function mockHealth(page: Page, online = true) {
   await page.route('/api/health**', route =>
-    route.fulfill({ status: online ? 200 : 503, json: { status: online ? 'ok' : 'offline' } })
+    route.fulfill({ status: online ? 200 : 503, json: {
+      status: online ? 'ok' : 'offline',
+      ...(online ? { prediction_runtime: { version: 'bounded-cpu-v1', max_workers: 4 } } : {}),
+    } })
   )
+}
+
+export async function mockScrapeHealth(page: Page) {
+  const scrape_capabilities = {
+    race_scopes: ['all', 'jra'], jra_month_reuse: true,
+    safety_policy_version: 'normal-acquisition-safe-v1',
+    minimum_provider_interval_seconds: 3, halt_http400: true,
+    preserve_saved_values: true, max_concurrent_http_requests: 1,
+  }
+  await page.route('/api/health**', route =>
+    route.fulfill({ json: { status: 'ok', scrape_capabilities } }))
+  await page.route('/api/scrape/health**', route =>
+    route.fulfill({ json: { status: 'healthy', scrape_capabilities } }))
 }
 
 /** FastAPI /api/data_stats */
@@ -120,32 +163,115 @@ export async function mockModels(page: Page) {
     route.fulfill({
       json: {
         models: [
-          { model_id: 'abc123-def456', model_type: 'lightgbm', target: 'win', auc: 0.7234, cv_auc_mean: 0.710, created_at: '2026-04-01T10:00:00Z', is_active: true, n_rows: 5000, training_date_from: '2024-01-01', training_date_to: '2025-12-31' },
+          {
+            model_id: 'abc123-def456', model_type: 'lightgbm', target: 'speed_deviation',
+            auc: 0.7234, cv_auc_mean: 0.710, created_at: '2026-04-01T10:00:00Z',
+            is_active: true, n_rows: 5000, training_date_from: '2024-01-01', training_date_to: '2025-12-31',
+            evaluation: {
+              primary: {
+                rank_correlation: 0.7234, rmse: 0.681,
+                top_pick_win_rate: 0.352, favorite_win_rate: 0.410,
+                top_pick_win_rate_delta: -0.058, win_roi: 84.6,
+              },
+              details: {
+                mae: 0.512, r2: 0.573, evaluation_date_from: '2025-07-19',
+                evaluation_date_to: '2026-04-01', evaluation_race_count: 412,
+              },
+              time_slices: [],
+            },
+          },
         ],
       },
     })
   )
 }
 
+export async function mockPredictionFreshness(page: Page) {
+  await page.route('/api/prediction-freshness**', route => route.fulfill({ json: {
+    schema_version: 'prediction-freshness-v1', data_revision: 'e2e-saved-source',
+    model_runtime_revision: 'e2e-model-runtime',
+    resolved_model_id: new URL(route.request().url()).searchParams.get('model_id') || 'abc123-def456',
+    source_tracking: true, revision_kind: 'sqlite-source-generation', source_snapshot_verified: false,
+    capabilities: { saved_db_recompute: true },
+  } }))
+}
+
 /** 予測結果（/api/analyze-race用） */
 export async function mockAnalyzeRace(page: Page) {
+  await mockPredictionFreshness(page)
   await page.route('/api/analyze-race**', route =>
     route.fulfill({
       json: {
         success: true,
+        model_id: 'abc123-def456',
+        freshness: {
+          schema_version: 'prediction-freshness-v1', data_revision: 'e2e-saved-source',
+          model_runtime_revision: 'e2e-model-runtime', resolved_model_id: 'abc123-def456',
+          source_tracking: true, revision_kind: 'sqlite-source-generation', source: 'saved_db',
+          generated_at: new Date().toISOString(), cache_hit: false, data_changed_during_prediction: false,
+        },
+        // Artificial semantic audit evidence for UI-only purchase fixtures.
+        input_diagnostics: {
+          schema: 'prediction-input-contract-v1', status: 'aligned', semantic_parity_verified: true,
+          expected_count: 3, actual_count: 3, missing_columns: [], restored_columns: [],
+          blocked_columns: [], all_missing_columns: [], issue_codes: [],
+          source_hash_matches: true, history_available: true,
+        },
+        explanation_method: 'tree_shap',
         race_id: '202604070101',
-        race_info: { race_name: 'テストレース1', venue: '東京', date: '2026-04-07', race_no: 1, track_type: '芝', distance: 1600, num_horses: 3 },
+        race_info: { race_id: '202604070101', race_name: 'テストレース1', venue: '東京', date: '2026-04-07', race_no: 1, track_type: '芝', distance: 1600, num_horses: 3 },
         predictions: [
-          { horse_number: 1, horse_name: 'テスト馬A', jockey_name: '騎手A', predicted_rank: 1, p_raw: 0.35, p_norm: 0.40, odds: 3.2, expected_value: 1.28, popularity: 1 },
-          { horse_number: 2, horse_name: 'テスト馬B', jockey_name: '騎手B', predicted_rank: 2, p_raw: 0.25, p_norm: 0.30, odds: 5.0, expected_value: 1.50, popularity: 2 },
-          { horse_number: 3, horse_name: 'テスト馬C', jockey_name: '騎手C', predicted_rank: 3, p_raw: 0.15, p_norm: 0.18, odds: 8.0, expected_value: 1.44, popularity: 3 },
+          {
+            horse_number: 1, horse_name: 'テスト馬A', jockey_name: '騎手A', predicted_rank: 1,
+            win_probability: 0.40, p_raw: 0.35, p_norm: 0.40, odds: 3.2, expected_value: 1.28, popularity: 1,
+            explanation: {
+              method: 'tree_shap', base_value: 0.1, features: [
+                { feature: 'jockey_win_rate', label: '騎手の勝率', description: '騎手の勝率', value: 0.15, contribution: 0.21, impact_pct: 34, direction: 'positive' },
+                { feature: 'prev_race_finish', label: '前走着順', description: '前走着順', value: 1, contribution: 0.15, impact_pct: 24, direction: 'positive' },
+                { feature: 'horse_weight_change', label: '馬体重変化', description: '前走からの馬体重変化', value: -8, contribution: -0.09, impact_pct: 15, direction: 'negative' },
+              ],
+            },
+          },
+          {
+            horse_number: 2, horse_name: 'テスト馬B', jockey_name: '騎手B', predicted_rank: 2,
+            win_probability: 0.30, p_raw: 0.25, p_norm: 0.30, odds: 5.0, expected_value: 1.50, popularity: 2,
+            explanation: {
+              method: 'tree_shap', base_value: 0.1, features: [
+                { feature: 'days_since_last_race', label: '前走からの日数', description: '前走からの経過日数', value: 28, contribution: 0.12, impact_pct: 30, direction: 'positive' },
+              ],
+            },
+          },
+          {
+            horse_number: 3, horse_name: 'テスト馬C', jockey_name: '騎手C', predicted_rank: 3,
+            win_probability: 0.18, p_raw: 0.15, p_norm: 0.18, odds: 8.0, expected_value: 1.44, popularity: 3,
+            explanation: {
+              method: 'tree_shap', base_value: 0.1, features: [
+                { feature: 'odds', label: '単勝オッズ', description: '単勝オッズ', value: 8, contribution: -0.1, impact_pct: 27, direction: 'negative' },
+              ],
+            },
+          },
         ],
         best_bet_type: '単勝',
         bet_types: { '単勝': [{ combination: '1', odds: 3.2 }, { combination: '2', odds: 5.0 }] },
-        recommendation: { action: '購入推奨', purchase_count: 1, unit_price: 1000, total_cost: 1000, expected_return: 1280, reason: '期待値 > 1.0' },
+        performance_snapshot_id: 'fixture-prediction-snapshot',
+        recommendation: {
+          action: '購入候補', decision: 'buy', reason: '検証用の校正済み候補',
+          policy_version: 'value-selection-v2', probability_basis: 'calibrated', input_verified: true,
+          bankroll: 10000, risk_mode: 'balanced', budget: 300, per_race_limit: 300,
+          purchase_count: 1, unit_price: 300, total_cost: 300, expected_return: 384,
+          evaluated_at: new Date().toISOString(), valid_until: new Date(Date.now() + 300000).toISOString(),
+          tickets: [{ bet_type: '単勝', combination: '1', horse_numbers: [1], stake: 300,
+            probability: 0.40, odds: 3.2, expected_value: 1.28, conservative_expected_value: 1.15 }],
+        },
       },
     })
   )
+  await page.route('/api/performance/records**', route => {
+    const body = route.request().postDataJSON()
+    return route.fulfill({ json: {
+      record: { id: 'fixture-performance-record', tickets: body.tickets, mode: body.mode }, existing: false,
+    } })
+  })
 }
 
 /** @deprecated Use mockAnalyzeRace instead */

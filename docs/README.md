@@ -6,6 +6,8 @@
 
 ### 🚀 [setup/](setup/)
 セットアップ・初期設定関連のドキュメント
+- **LOCAL_DIRECTORY_LAYOUT.md** - ローカル構成・追跡物・生成物の境界（基準）
+- **RESEARCH_DB_RECOVERY.md** - 研究DBの復元元・検証・切替基準
 - **QUICKSTART.md** - 最速起動ガイド（推奨）⭐
 - **SETUP.md** - 初期セットアップガイド
 - **SERVER_SETUP_README.md** - サーバーセットアップ

@@ -154,15 +154,13 @@ race_ids = extract_race_ids_from_html(html)
 
 ### 現在の問題を再現:
 ```powershell
-C:\Users\yuki2\Documents\ws\keiba\Scripts\python.exe test_recent_dates.py
-# → すべて400エラー
+python-api\.venv\Scripts\python.exe -X utf8 scripts\audit_scrape_missingness.py --help
 ```
 
 ### Selenium版テスト:
 ```powershell
-# 実装後にテスト
-C:\Users\yuki2\Documents\ws\keiba\Scripts\python.exe test_selenium_scraping.py
-# → race_id取得成功を確認
+# 現行サービスの起動状態を確認
+npm run status
 ```
 
 ---

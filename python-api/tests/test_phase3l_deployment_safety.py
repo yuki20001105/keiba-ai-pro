@@ -300,7 +300,7 @@ def test_local_startup_commands_use_the_worktree_venv_and_canonical_ports() -> N
     package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
     scripts = package["scripts"]
     assert scripts["dev:api"] == (
-        "python-api/.venv/Scripts/python.exe python-api/main.py"
+        r".\python-api\.venv\Scripts\python.exe -X utf8 .\python-api\main.py"
     )
     assert scripts["setup:api"].endswith("./scripts/setup-python.ps1")
     assert "scraping_service_ultimate_fast.py" not in scripts["dev:api"]

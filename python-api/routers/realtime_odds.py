@@ -20,6 +20,8 @@ from app_config import logger  # type: ignore
 from deps.auth import require_admin  # type: ignore
 from scraping.constants import SCRAPE_HEADERS  # type: ignore
 from scraping.odds import fetch_tansho_odds_api  # type: ignore
+from scraping.fetch_pipeline import FetchAccessBlocked, fetch_text  # type: ignore
+from scraping.browser_transport import install_paced_routes  # type: ignore
 
 router = APIRouter()
 
@@ -56,11 +58,10 @@ async def _fetch_tansho_odds(session: aiohttp.ClientSession, race_id: str) -> di
 
     url = f"https://race.netkeiba.com/odds/index.html?type=b1&race_id={race_id}"
     try:
-        async with session.get(url) as resp:
-            if resp.status != 200:
-                logger.warning(f"[odds] 単勝 HTTP {resp.status}: {race_id}")
-                return {}
-            html = (await resp.read()).decode("euc-jp", errors="replace")
+        resp, html = await fetch_text(session, url, use_cache=False, force_refresh=True, max_retries=1)
+        if resp.status != 200:
+            logger.warning(f"[odds] 単勝 HTTP {resp.status}: {race_id}")
+            return {}
         # 新フォーマット: <span id="odds-1_01">3.5</span>（2024年以降の netkeiba）
         pattern = re.compile(r'id="odds-1_(\d+)"[^>]*>([0-9.]+)<', re.IGNORECASE)
         result = {str(int(m.group(1))): float(m.group(2)) for m in pattern.finditer(html)}
@@ -69,6 +70,8 @@ async def _fetch_tansho_odds(session: aiohttp.ClientSession, race_id: str) -> di
         # 旧フォーマット: <td id="odds_dl_b1_1">3.5</td>（フォールバック）
         pattern_old = re.compile(r'id="odds_dl_b1_(\d+)"[^>]*>([0-9.]+)<', re.IGNORECASE)
         return {m.group(1): float(m.group(2)) for m in pattern_old.finditer(html)}
+    except FetchAccessBlocked:
+        raise
     except Exception as e:
         logger.warning(f"[odds] 単勝取得失敗 {race_id}: {e}")
         return {}
@@ -79,13 +82,15 @@ async def _fetch_tansho_odds_playwright(race_id: str) -> dict[str, float]:
     netkeiba のオッズは JavaScript AJAX でロードされるため、静的 HTML では ---.- のまま。
     静的 HTML 取得が失敗したレースの当日オッズ補完に使用すること。
     """
+    transport_errors: list[Exception] = []
     try:
         from playwright.async_api import async_playwright  # type: ignore
         url = f"https://race.netkeiba.com/odds/index.html?type=b1&race_id={race_id}"
-        async with async_playwright() as p:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session, async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             try:
-                page = await browser.new_page()
+                page = await browser.new_page(service_workers="block")
+                transport_errors = await install_paced_routes(page, session)
                 await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
                 # JavaScript がオッズを ---.- から実値に置換するまで最大 8 秒待機
                 try:
@@ -97,6 +102,8 @@ async def _fetch_tansho_odds_playwright(race_id: str) -> dict[str, float]:
                 except Exception:
                     pass  # タイムアウト時はそのまま進む（---.- のまま → 空 dict 返却）
                 html = await page.content()
+                if transport_errors:
+                    raise transport_errors[0]
             finally:
                 await browser.close()
         pattern = re.compile(r'id="odds-1_(\d+)"[^>]*>([0-9.]+)<')
@@ -106,7 +113,11 @@ async def _fetch_tansho_odds_playwright(race_id: str) -> dict[str, float]:
         else:
             logger.info(f"[odds_playwright] {race_id}: オッズ未公開（---.-）")
         return result
+    except FetchAccessBlocked:
+        raise
     except Exception as e:
+        if transport_errors:
+            raise transport_errors[0]
         logger.warning(f"[odds_playwright] {race_id}: 取得失敗 {e}")
         return {}
 
@@ -126,8 +137,8 @@ async def _fetch_tansho_odds_playwright_batch(
     race_ids: list[str],
 ) -> dict[str, dict[str, float]]:
     """複数レースの単勝オッズを Playwright で一括取得（ブラウザ 1 インスタンス・最大 3 並列ページ）。
-    ブラウザの起動/終了コストを 1 回にまとめることで、36 レースを ~60 秒以内で処理できる。
-    INV-07 に準拠: ページ間に 1.0 秒スリープを挟む。
+    ブラウザの起動/終了コストを 1 回にまとめる。
+    各ページの実通信も取得ジョブと同じ共有発行枠を使う（INV-07）。
     """
     if not race_ids:
         return {}
@@ -137,10 +148,13 @@ async def _fetch_tansho_odds_playwright_batch(
         sem = _get_pw_semaphore()
         results: dict[str, dict[str, float]] = {}
 
-        async def _fetch_one(browser: Any, race_id: str) -> None:
+        async def _fetch_one(browser: Any, race_id: str, session: Any) -> None:
             async with sem:
+                transport_errors: list[Exception] = []
+                page = None
                 try:
-                    page = await browser.new_page()
+                    page = await browser.new_page(service_workers="block")
+                    transport_errors = await install_paced_routes(page, session)
                     url = f"https://race.netkeiba.com/odds/index.html?type=b1&race_id={race_id}"
                     await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
                     try:
@@ -152,25 +166,34 @@ async def _fetch_tansho_odds_playwright_batch(
                     except Exception:
                         pass
                     html = await page.content()
-                    await page.close()
+                    if transport_errors:
+                        raise transport_errors[0]
                     r = {str(int(m.group(1))): float(m.group(2)) for m in pattern.finditer(html)}
                     results[race_id] = r
                     if r:
                         logger.info(f"[odds_pw_batch] {race_id}: {len(r)} 頭")
                     else:
                         logger.info(f"[odds_pw_batch] {race_id}: ---.-（未公開）")
+                except FetchAccessBlocked:
+                    raise
                 except Exception as e:
+                    if transport_errors:
+                        raise transport_errors[0]
                     logger.warning(f"[odds_pw_batch] {race_id}: {e}")
                     results[race_id] = {}
-                await asyncio.sleep(1.0)  # INV-07 スクレイピングインターバル
+                finally:
+                    if page is not None:
+                        await page.close()
 
-        async with async_playwright() as p:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session, async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             try:
-                await asyncio.gather(*[_fetch_one(browser, rid) for rid in race_ids])
+                await asyncio.gather(*[_fetch_one(browser, rid, session) for rid in race_ids])
             finally:
                 await browser.close()
         return results
+    except FetchAccessBlocked:
+        raise
     except Exception as e:
         logger.warning(f"[odds_pw_batch] 一括取得失敗: {e}")
         return {}
@@ -180,10 +203,9 @@ async def _fetch_umaren_odds(session: aiohttp.ClientSession, race_id: str) -> di
     """馬連オッズを取得: race.netkeiba.com/odds/index.html?type=b6"""
     url = f"https://race.netkeiba.com/odds/index.html?type=b6&race_id={race_id}"
     try:
-        async with session.get(url) as resp:
-            if resp.status != 200:
-                return {}
-            html = (await resp.read()).decode("euc-jp", errors="replace")
+        resp, html = await fetch_text(session, url, use_cache=False, force_refresh=True, max_retries=1)
+        if resp.status != 200:
+            return {}
         # <span id="odds_b6_1_2">12.5</span>
         pattern = re.compile(r'id="odds_b6_(\d+)_(\d+)"[^>]*>([0-9.]+)<')
         result: dict[str, float] = {}
@@ -191,6 +213,8 @@ async def _fetch_umaren_odds(session: aiohttp.ClientSession, race_id: str) -> di
             key = f"{m.group(1)}-{m.group(2)}"
             result[key] = float(m.group(3))
         return result
+    except FetchAccessBlocked:
+        raise
     except Exception as e:
         logger.warning(f"[odds] 馬連取得失敗 {race_id}: {e}")
         return {}
@@ -200,16 +224,17 @@ async def _fetch_sanrenpuku_odds(session: aiohttp.ClientSession, race_id: str) -
     """三連複オッズ（上位50組のみ）を取得"""
     url = f"https://race.netkeiba.com/odds/index.html?type=b8&race_id={race_id}"
     try:
-        async with session.get(url) as resp:
-            if resp.status != 200:
-                return {}
-            html = (await resp.read()).decode("euc-jp", errors="replace")
+        resp, html = await fetch_text(session, url, use_cache=False, force_refresh=True, max_retries=1)
+        if resp.status != 200:
+            return {}
         pattern = re.compile(r'id="odds_b8_(\d+)_(\d+)_(\d+)"[^>]*>([0-9.]+)<')
         result: dict[str, float] = {}
         for m in pattern.finditer(html):
             key = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
             result[key] = float(m.group(4))
         return result
+    except FetchAccessBlocked:
+        raise
     except Exception as e:
         logger.warning(f"[odds] 三連複取得失敗 {race_id}: {e}")
         return {}
@@ -231,6 +256,8 @@ async def _scrape_odds(race_id: str, bet_types: list[str]) -> dict[str, Any]:
         results = await asyncio.gather(*tasks.values(), return_exceptions=True)
         data: dict[str, Any] = {"race_id": race_id, "fetched_at": time.time(), "odds": {}}
         for key, result in zip(tasks.keys(), results):
+            if isinstance(result, FetchAccessBlocked):
+                raise result
             if isinstance(result, Exception):
                 logger.warning(f"[odds] {key} 取得例外 {race_id}: {result}")
                 data["odds"][key] = {}

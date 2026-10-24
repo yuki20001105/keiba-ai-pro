@@ -14,8 +14,14 @@ ROOT = Path(__file__).resolve().parents[2]
 ADOPTION_RENDERER_PATH = (
     ROOT / "scripts" / "security" / "render_phase3n_legacy_production_adoption_sql.py"
 )
-DEFAULT_CONTRACT = ROOT / "reports" / "phase3n_legacy_production_adoption_contract_20260816.json"
-DEFAULT_OUTPUT = ROOT / "reports" / "phase3n_legacy_production_preflight.sql"
+DEFAULT_CONTRACT = (
+    ROOT
+    / "reports"
+    / "evidence"
+    / "phase3n"
+    / "phase3n_legacy_production_adoption_contract_20260816.json"
+)
+DEFAULT_OUTPUT = ROOT / "reports" / "generated" / "phase3n" / "phase3n_legacy_production_preflight.sql"
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 

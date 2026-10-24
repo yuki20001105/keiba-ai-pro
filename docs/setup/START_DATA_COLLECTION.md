@@ -1,5 +1,9 @@
 # 安全なデータ収集の開始手順
 
+> この文書には旧ポート8001サービスの履歴説明が残っています。旧補助スクリプトは
+> 現リポジトリに含まれません。現行の起動と状態確認は
+> `start-keiba-ai-pro.bat`と`npm run status`を使用してください。
+
 ## 🎯 前提条件
 
 ✅ VPN（ProtonVPN等）に接続済み  
@@ -14,8 +18,8 @@
 ```powershell
 cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
 
-# レート制限機能付きスクレイピングサービスを起動
-C:\Users\yuki2\Documents\ws\keiba\Scripts\python.exe scraping_service_v2.py
+# 現行のFastAPIとNext.jsを安全設定で起動
+.\start-keiba-ai-pro.bat
 ```
 
 **起動メッセージの確認:**
@@ -41,8 +45,8 @@ INFO:     Uvicorn running on http://0.0.0.0:8001
 ```powershell
 cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
 
-# 安全なデータ収集テストを実行
-C:\Users\yuki2\Documents\ws\keiba\Scripts\python.exe test_safe_scraping.py
+# FastAPIとNext.jsプロキシの状態を確認
+npm run status
 ```
 
 ### 期待される結果:
@@ -146,7 +150,8 @@ curl http://localhost:8001/health
 
 **解決策**:
 ```powershell
-C:\Users\yuki2\Documents\ws\keiba\Scripts\python.exe scraping_service_v2.py
+.\start-keiba-ai-pro.bat
+npm run status
 ```
 
 ### エラー: "まだ400エラーです"

@@ -1,25 +1,79 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import Link from 'next/link'
+import { formatModelCreatedAt } from '@/lib/model-display'
 import { Logo } from '@/components/Logo'
 import { Toast } from '@/components/Toast'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { ModelEvaluationSummary } from '@/components/ModelEvaluationSummary'
 import { authFetch } from '@/lib/auth-fetch'
 import { useJobPoller } from '@/hooks/useJobPoller'
 
 const TRAIN_UI_STATE_KEY = 'keiba-ai-pro:train-ui:v1'
-const TRAIN_POLL_TIMEOUT_MS = 24 * 60 * 60 * 1000
+const TRAIN_JOB_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const BASELINE_FEATURE_PIPELINE = 'local-db-shared-v1'
+const OPTIMIZED_FEATURE_PIPELINE = 'local-db-shared-optimized-v1'
+const CONTEXT_FEATURE_PIPELINE = 'local-db-context-v1'
+const FEATURE_PROFILE_VERSION = 1
+const SHARED_TARGET = 'speed_deviation' as const
+
+type TrainingCapability = 'checking' | 'enabled' | 'disabled'
+type ComputeDevice = 'auto' | 'cpu' | 'gpu'
+type FeaturePipeline = typeof BASELINE_FEATURE_PIPELINE | typeof OPTIMIZED_FEATURE_PIPELINE | typeof CONTEXT_FEATURE_PIPELINE
+type AccelerationCapability = { gpuAvailable: boolean; featureCacheSupported: boolean; contextProfileSupported: boolean }
+type TrainingAcceleration = {
+  device?: 'cpu' | 'gpu'
+  cache_hit?: boolean
+  preparation_seconds?: number
+  fit_seconds?: number
+  total_seconds?: number
+  fallback_reason?: string | null
+}
+
+function elapsedLabel(seconds: unknown) {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) return null
+  const rounded = Math.round(seconds)
+  return rounded < 60 ? `${rounded}秒` : `${Math.floor(rounded / 60)}分${rounded % 60}秒`
+}
+
+function TrainingAccelerationSummary({ acceleration }: { acceleration?: TrainingAcceleration | null }) {
+  if (!acceleration) return null
+  const total = elapsedLabel(acceleration.total_seconds)
+  const preparation = elapsedLabel(acceleration.preparation_seconds)
+  const fit = elapsedLabel(acceleration.fit_seconds)
+  return (
+    <div className="mt-3 space-y-2 text-xs text-[#888]" data-testid="training-acceleration-result">
+      <div className="flex flex-wrap gap-2">
+        {(acceleration.device === 'gpu' || acceleration.device === 'cpu') && (
+          <span className="rounded border border-[#2a2a2a] px-2 py-1">{acceleration.device.toUpperCase()}</span>
+        )}
+        {typeof acceleration.cache_hit === 'boolean' && (
+          <span className="rounded border border-[#2a2a2a] px-2 py-1">{acceleration.cache_hit ? '特徴量再利用' : '特徴量生成'}</span>
+        )}
+        {total && <span className="rounded border border-[#2a2a2a] px-2 py-1">学習処理 {total}</span>}
+      </div>
+      {(total || preparation || fit || acceleration.fallback_reason) && (
+        <details>
+          <summary className="cursor-pointer text-[#666] hover:text-white">処理の内訳</summary>
+          <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
+            {preparation && <span>準備 {preparation}</span>}
+            {fit && <span>学習・校正・評価 {fit}</span>}
+          </div>
+          {(total || preparation || fit) && <p className="mt-2 text-[#666]">スナップショット作成・公開処理は含みません。</p>}
+          {acceleration.fallback_reason && acceleration.device === 'cpu' && <p className="mt-2">CPUに切り替えて実行しました。</p>}
+        </details>
+      )}
+    </div>
+  )
+}
 
 export default function TrainPage() {
   const [loading, setLoading] = useState(false)
-  const [target, setTarget] = useState<'win' | 'place3' | 'win_tie' | 'speed_deviation'>('win')
-  const [modelType, setModelType] = useState<'logistic_regression' | 'lightgbm'>('lightgbm')
+  const [target, setTarget] = useState<'win' | 'place3' | 'win_tie' | 'speed_deviation'>('speed_deviation')
+  const modelType = 'lightgbm' as const
   const [testSize, setTestSize] = useState(0.2)
-  const [cvFolds, setCvFolds] = useState(5)
-  const [useOptuna, setUseOptuna] = useState(false)
-  const [optunaTrials, setOptunaTrials] = useState(50)
-  const [optunaTimeout, setOptunaTimeout] = useState(300)
+  const cvFolds = 5
   const [trainingDateFrom, setTrainingDateFrom] = useState('')
   const [trainingDateTo, setTrainingDateTo] = useState('')
   const [trainResult, setTrainResult] = useState<any>(null)
@@ -31,6 +85,49 @@ export default function TrainPage() {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [settingsHydrated, setSettingsHydrated] = useState(false)
+  const [trainingCapability, setTrainingCapability] = useState<TrainingCapability>('checking')
+  const [accelerationCapability, setAccelerationCapability] = useState<AccelerationCapability | null>(null)
+  const [computeDevice, setComputeDevice] = useState<ComputeDevice>('auto')
+  const [reuseFeatures, setReuseFeatures] = useState(true)
+  const [featurePipeline, setFeaturePipeline] = useState<FeaturePipeline>(OPTIMIZED_FEATURE_PIPELINE)
+  const [jobAcceleration, setJobAcceleration] = useState<TrainingAcceleration | null>(null)
+  const effectiveComputeDevice = computeDevice === 'gpu' && accelerationCapability?.gpuAvailable !== true ? 'auto' : computeDevice
+  const contextProfileUnavailable = featurePipeline === CONTEXT_FEATURE_PIPELINE
+    && accelerationCapability?.contextProfileSupported !== true
+
+  const loadTrainingCapability = useCallback(async () => {
+    setTrainingCapability('checking')
+    try {
+      const response = await authFetch('/api/ml/train/capability', {
+        cache: 'no-store',
+        signal: AbortSignal.timeout(6_000),
+      })
+      const payload: unknown = await response.json().catch(() => null)
+      const enabled = response.ok
+        && typeof payload === 'object'
+        && payload !== null
+        && !Array.isArray(payload)
+        && (payload as Record<string, unknown>).enabled === true
+      setTrainingCapability(enabled ? 'enabled' : 'disabled')
+      const acceleration = typeof payload === 'object' && payload !== null && !Array.isArray(payload)
+        ? (payload as Record<string, unknown>).acceleration
+        : null
+      setAccelerationCapability(typeof acceleration === 'object' && acceleration !== null && !Array.isArray(acceleration)
+        ? {
+          gpuAvailable: (acceleration as Record<string, unknown>).gpu_available === true,
+          featureCacheSupported: (acceleration as Record<string, unknown>).feature_cache_supported === true,
+          contextProfileSupported: Array.isArray((payload as Record<string, unknown>).feature_profiles)
+            && ((payload as Record<string, unknown>).feature_profiles as unknown[]).some(profile =>
+              typeof profile === 'object' && profile !== null
+                && (profile as Record<string, unknown>).pipeline === CONTEXT_FEATURE_PIPELINE
+                && (profile as Record<string, unknown>).feature_count === 80),
+        }
+        : null)
+    } catch {
+      setTrainingCapability('disabled')
+      setAccelerationCapability(null)
+    }
+  }, [])
 
   const { progress: jobProgress, pct: jobPct } = useJobPoller({
     jobId,
@@ -41,20 +138,41 @@ export default function TrainPage() {
       const result = statusData.result || {}
       setTrainResult({
         model_id: result.model_id,
+        target,
         auc: result.metrics?.auc,
         logloss: result.metrics?.logloss,
+        evaluation: result.evaluation,
+        feature_pipeline: result.feature_pipeline,
+        probability_validation: result.probability_validation ?? result.evaluation?.probability_validation,
+        training_time_seconds: result.training_time_seconds ?? result.training_time,
+        training_parallel_workers: result.training_parallel_workers,
+        native_threads: result.native_threads,
+        acceleration: result.acceleration,
         n_rows: result.data_count,
         message: result.message,
       })
-      showToast(`学習完了 — AUC: ${result.metrics?.auc?.toFixed(4) ?? '?'}`)
+      const correlation = result.evaluation?.primary?.rank_correlation
+      showToast(
+        target === 'speed_deviation'
+          ? `学習完了 — 順位相関: ${typeof correlation === 'number' ? correlation.toFixed(3) : '未計測'}`
+          : '学習が完了しました',
+      )
       loadModels()
     },
     onError: msg => { setLoading(false); setJobId(null); showToast(msg, 'error') },
-    maxMs: TRAIN_POLL_TIMEOUT_MS,
+    onProgress: (_message, statusData) => {
+      if (statusData.acceleration && typeof statusData.acceleration === 'object') {
+        setJobAcceleration(statusData.acceleration)
+      }
+    },
   })
 
   const showToast = (message: string, type: 'success' | 'error' = 'success') =>
     setToast({ visible: true, message, type })
+
+  useEffect(() => {
+    void loadTrainingCapability()
+  }, [loadTrainingCapability])
 
   useEffect(() => {
     loadModels()
@@ -62,17 +180,20 @@ export default function TrainPage() {
       const raw = localStorage.getItem(TRAIN_UI_STATE_KEY)
       const saved = raw ? JSON.parse(raw) : null
       if (saved && typeof saved === 'object') {
-        if (['win', 'place3', 'win_tie', 'speed_deviation'].includes(saved.target)) setTarget(saved.target)
-        if (['logistic_regression', 'lightgbm'].includes(saved.modelType)) setModelType(saved.modelType)
         if (typeof saved.testSize === 'number') setTestSize(saved.testSize)
-        if (typeof saved.cvFolds === 'number') setCvFolds(saved.cvFolds)
-        if (typeof saved.useOptuna === 'boolean') setUseOptuna(saved.useOptuna)
-        if (typeof saved.optunaTrials === 'number') setOptunaTrials(saved.optunaTrials)
-        if (typeof saved.optunaTimeout === 'number') setOptunaTimeout(saved.optunaTimeout)
         if (typeof saved.trainingDateFrom === 'string') setTrainingDateFrom(saved.trainingDateFrom)
         if (typeof saved.trainingDateTo === 'string') setTrainingDateTo(saved.trainingDateTo)
         if (typeof saved.showAdvanced === 'boolean') setShowAdvanced(saved.showAdvanced)
-        if (typeof saved.activeJobId === 'string' && saved.activeJobId) {
+        if (['auto', 'cpu', 'gpu'].includes(saved.computeDevice)) setComputeDevice(saved.computeDevice)
+        if (typeof saved.reuseFeatures === 'boolean') setReuseFeatures(saved.reuseFeatures)
+        // Older settings stored the fixed baseline, not a user-selected profile.
+        if (saved.featureProfileVersion === FEATURE_PROFILE_VERSION
+          && [BASELINE_FEATURE_PIPELINE, OPTIMIZED_FEATURE_PIPELINE, CONTEXT_FEATURE_PIPELINE].includes(saved.featurePipeline)) {
+          setFeaturePipeline(saved.featurePipeline)
+        }
+        if (typeof saved.activeJobId === 'string' && TRAIN_JOB_ID_PATTERN.test(saved.activeJobId)) {
+          // Keep the label of an older accepted job, never its settings for a new run.
+          if (['win', 'place3', 'win_tie', 'speed_deviation'].includes(saved.target)) setTarget(saved.target)
           setJobId(saved.activeJobId)
           setLoading(true)
         }
@@ -91,9 +212,10 @@ export default function TrainPage() {
       modelType,
       testSize,
       cvFolds,
-      useOptuna,
-      optunaTrials,
-      optunaTimeout,
+      featurePipeline,
+      featureProfileVersion: FEATURE_PROFILE_VERSION,
+      computeDevice,
+      reuseFeatures,
       trainingDateFrom,
       trainingDateTo,
       showAdvanced,
@@ -105,9 +227,9 @@ export default function TrainPage() {
     modelType,
     testSize,
     cvFolds,
-    useOptuna,
-    optunaTrials,
-    optunaTimeout,
+    computeDevice,
+    reuseFeatures,
+    featurePipeline,
     trainingDateFrom,
     trainingDateTo,
     showAdvanced,
@@ -129,12 +251,13 @@ export default function TrainPage() {
     setConfirmDelete(null)
     setDeletingId(modelId)
     try {
-      const res = await authFetch(`/api/models/${modelId}`, { method: 'DELETE' })
-      if (!res.ok) throw new Error('削除失敗')
-      loadModels()
+      const res = await authFetch(`/api/models/${encodeURIComponent(modelId)}`, { method: 'DELETE' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '削除できません')
+      await loadModels()
       showToast(`モデルを削除しました`)
-    } catch {
-      showToast('削除に失敗しました', 'error')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '削除できません', 'error')
     } finally {
       setDeletingId(null)
     }
@@ -144,11 +267,12 @@ export default function TrainPage() {
     setActivatingId(modelId)
     try {
       const res = await authFetch(`/api/models/${modelId}/activate`, { method: 'PUT' })
-      if (!res.ok) throw new Error('切り替え失敗')
-      loadModels()
-      showToast('使用モデルを切り替えました')
-    } catch {
-      showToast('モデルの切り替えに失敗しました', 'error')
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || '変更できません')
+      await loadModels()
+      showToast('既定モデルを変更しました')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '変更できません', 'error')
     } finally {
       setActivatingId(null)
     }
@@ -168,24 +292,6 @@ export default function TrainPage() {
     logistic_regression: 'Logistic Regression',
   }
 
-  /** model_id の末尾 YYYYMMDD_HHMM を "YYYY/MM/DD HH:MM" に変換 */
-  const parseCreatedDate = (modelId: string, createdAt?: string): string => {
-    if (createdAt && createdAt !== 'unknown') {
-      const d = new Date(createdAt)
-      if (!isNaN(d.getTime())) {
-        return d.toLocaleString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
-      }
-    }
-    // model_id 末尾パターン: _YYYYMMDD_HHMM
-    const m = modelId.match(/_(\d{8})_(\d{4})(?:_\d+)?\.?joblib?$/) ||
-              modelId.match(/_(\d{8})_(\d{4})$/)
-    if (m) {
-      const [, d, t] = m
-      return `${d.slice(0,4)}/${d.slice(4,6)}/${d.slice(6,8)} ${t.slice(0,2)}:${t.slice(2,4)}`
-    }
-    return '—'
-  }
-
   /** 学習期間を "YYYY/MM/DD 〜 YYYY/MM/DD" に整形 */
   const formatDateRange = (from?: string, to?: string): string => {
     const fmt = (s?: string) => {
@@ -197,10 +303,35 @@ export default function TrainPage() {
     return `${fmt(from)} 〜 ${fmt(to)}`
   }
 
+  const trackAcceptedJob = (acceptedJobId: string) => {
+    try {
+      localStorage.setItem(TRAIN_UI_STATE_KEY, JSON.stringify({
+        target: SHARED_TARGET,
+        modelType,
+        testSize,
+        cvFolds,
+        featurePipeline,
+        featureProfileVersion: FEATURE_PROFILE_VERSION,
+        computeDevice: effectiveComputeDevice,
+        reuseFeatures,
+        trainingDateFrom,
+        trainingDateTo,
+        showAdvanced,
+        activeJobId: acceptedJobId,
+      }))
+    } catch {
+      showToast('ジョブIDを保存できません', 'error')
+    }
+    setJobId(acceptedJobId)
+  }
+
   const handleTrain = async () => {
+    if (loading || trainingCapability !== 'enabled' || contextProfileUnavailable) return
+    setTarget(SHARED_TARGET)
     setLoading(true)
     setTrainResult(null)
     setJobId(null)
+    setJobAcceleration(null)
 
     try {
       // 1. 非同期ジョブ起動（すぐに job_id が返る）
@@ -208,9 +339,11 @@ export default function TrainPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          target, model_type: modelType, test_size: testSize, cv_folds: cvFolds,
-          use_sqlite: true, use_optimizer: modelType === 'lightgbm',
-          use_optuna: useOptuna, optuna_trials: optunaTrials, optuna_timeout: optunaTimeout,
+          target: SHARED_TARGET, model_type: modelType, test_size: testSize, cv_folds: cvFolds,
+          feature_pipeline: featurePipeline,
+          compute_device: effectiveComputeDevice,
+          reuse_features: reuseFeatures,
+          use_sqlite: true, use_optimizer: true, use_optuna: false,
           ultimate_mode: true,
           training_date_from: trainingDateFrom || null,
           training_date_to: trainingDateTo || null,
@@ -218,12 +351,44 @@ export default function TrainPage() {
       })
 
       if (!startRes.ok) {
-        const errorData = await startRes.json()
-        throw new Error(errorData.detail || errorData.error || `HTTP ${startRes.status}`)
+        const errorData: unknown = await startRes.json().catch(() => null)
+        const errorRecord = typeof errorData === 'object' && errorData !== null && !Array.isArray(errorData)
+          ? errorData as Record<string, unknown>
+          : null
+        const detail = errorRecord?.detail
+        const detailRecord = typeof detail === 'object' && detail !== null && !Array.isArray(detail)
+          ? detail as Record<string, unknown>
+          : null
+        const activeJobId = typeof detailRecord?.job_id === 'string' ? detailRecord.job_id : ''
+        if (
+          startRes.status === 409
+          && detailRecord?.code === 'train-job-active'
+          && TRAIN_JOB_ID_PATTERN.test(activeJobId)
+        ) {
+          trackAcceptedJob(activeJobId)
+          return
+        }
+        const message = typeof detail === 'string'
+          ? detail
+          : typeof detailRecord?.message === 'string'
+            ? detailRecord.message
+            : typeof errorRecord?.error === 'string'
+              ? errorRecord.error
+              : `HTTP ${startRes.status}`
+        throw new Error(message)
       }
 
-      const startData = await startRes.json()
-      setJobId(startData.job_id)
+      const startData: unknown = await startRes.json()
+      const acceptedJobId = typeof startData === 'object'
+        && startData !== null
+        && !Array.isArray(startData)
+        && typeof (startData as Record<string, unknown>).job_id === 'string'
+        ? (startData as Record<string, unknown>).job_id as string
+        : ''
+      if (!TRAIN_JOB_ID_PATTERN.test(acceptedJobId)) {
+        throw new Error('ジョブIDを確認できません')
+      }
+      trackAcceptedJob(acceptedJobId)
 
     } catch (error: any) {
       setLoading(false)
@@ -244,7 +409,7 @@ export default function TrainPage() {
             </svg>
             ホーム
           </Link>
-          <span className="text-sm text-[#888]">モデル学習</span>
+          <span className="text-sm text-[#888]">モデル作成</span>
           <Link
             href="/feature-lab"
             className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-[#2a2a2a] bg-[#111] text-xs text-[#aaa] hover:text-white hover:border-[#444] transition-colors"
@@ -261,22 +426,38 @@ export default function TrainPage() {
       <main className="max-w-3xl mx-auto px-6 py-10 space-y-6">
         <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-6 space-y-5">
           <h2 className="text-sm font-medium text-white">学習設定</h2>
+          <p className="mt-2 text-xs leading-relaxed text-[#888]">
+            最新の保存済みDBから、選択期間内の学習可能データを使用します。
+            作成後は予測画面でモデルを選び「最新データで再予測」してください。使用中モデルは自動で切り替わりません。
+          </p>
+          <p className="text-xs text-[#888]">保存済みDB・共通特徴量</p>
+          <div className="space-y-1 text-xs" data-testid="training-feature-profile">
+            <p className="text-[#aaa]">{featurePipeline === CONTEXT_FEATURE_PIPELINE ? '条件・展開80項目（比較候補）' : featurePipeline === OPTIMIZED_FEATURE_PIPELINE ? '候補46項目' : '基準47項目'}</p>
+            {featurePipeline === OPTIMIZED_FEATURE_PIPELINE && (
+              <p className="text-[#777]">直近5走の複勝圏率を除外。安定した優位性は未確認です。</p>
+            )}
+            {featurePipeline === CONTEXT_FEATURE_PIPELINE && (
+              <div className="space-y-1 text-[#888]" data-testid="training-context-profile-note">
+                <p>既存46項目に、過去の条件適性・馬体重推移・枠・脚質／展開・血統の34項目を追加します。</p>
+                <p>対象レースより前の情報だけを使用。欠損は推測で埋めず、購入判断は未承認の比較候補です。</p>
+                <p className="text-[#666]">馬場状態は良／稍重／重／不良です。芝の傷みや当日の内外有利を直接観測した値ではありません。</p>
+                <p className="text-[#666]">使用柵・内外回り・芝の損傷・実ラップは未取得です。展開は過去の通過順位から作る傾向値です。</p>
+              </div>
+            )}
+            <p className="text-[#666]">使用中モデルは自動で切り替えません。</p>
+          </div>
+          <p className="text-xs text-[#666]" data-testid="training-acceleration-setting">
+            {effectiveComputeDevice === 'auto' ? 'GPU / CPU 自動選択' : `${effectiveComputeDevice.toUpperCase()}学習`}
+            {reuseFeatures && <span className="ml-3">特徴量再利用</span>}
+          </p>
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="text-xs text-[#666] block mb-2">予測ターゲット</label>
-              <select value={target} onChange={e => setTarget(e.target.value as any)} className={FLD}>
-                <option value="win">単勝（1着予測）</option>
-                <option value="place3">複勝（3着以内）</option>
-                <option value="win_tie">タイム同着（1着+同タイム馬）</option>
-                <option value="speed_deviation">速度偏差（回帰）</option>
-              </select>
+              <div aria-label="予測ターゲット" className={FLD}>速度スコア（回帰）</div>
             </div>
             <div>
               <label className="text-xs text-[#666] block mb-2">モデルタイプ</label>
-              <select value={modelType} onChange={e => setModelType(e.target.value as any)} className={FLD}>
-                <option value="lightgbm">LightGBM（推奨）</option>
-                <option value="logistic_regression">Logistic Regression</option>
-              </select>
+              <div className={FLD}>LightGBM（推奨）</div>
             </div>
           </div>
 
@@ -302,63 +483,70 @@ export default function TrainPage() {
             </button>
             {showAdvanced && (
               <div className="px-4 pb-4 pt-3 space-y-4 border-t border-[#1e1e1e]">
-                <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label htmlFor="shared-feature-pipeline" className="text-xs text-[#666] block mb-2">特徴量構成</label>
+                  <select id="shared-feature-pipeline" value={featurePipeline} disabled={loading}
+                    onChange={e => setFeaturePipeline(e.target.value as FeaturePipeline)} className={FLD}>
+                    <option value={OPTIMIZED_FEATURE_PIPELINE}>候補46項目</option>
+                    <option value={BASELINE_FEATURE_PIPELINE}>基準47項目</option>
+                    <option value={CONTEXT_FEATURE_PIPELINE} disabled={accelerationCapability?.contextProfileSupported !== true}>条件・展開を追加（比較候補80項目）</option>
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="shared-compute-device" className="text-xs text-[#666] block mb-2">学習方式</label>
+                  <select id="shared-compute-device" value={effectiveComputeDevice} disabled={loading}
+                    onChange={e => setComputeDevice(e.target.value as ComputeDevice)} className={FLD}>
+                    <option value="auto">自動（GPU / CPU）</option>
+                    <option value="cpu">CPU</option>
+                    <option value="gpu" disabled={accelerationCapability?.gpuAvailable !== true}>GPU</option>
+                  </select>
+                </div>
+                <label className="flex items-center gap-2 text-xs text-[#888]">
+                  <input type="checkbox" checked={reuseFeatures} disabled={loading}
+                    onChange={e => setReuseFeatures(e.target.checked)} className="accent-white" />
+                  特徴量を再利用
+                </label>
+                <div>
                   <div>
-                    <label className="text-xs text-[#666] block mb-2">テストデータ割合</label>
-                    <input type="number" min="0.1" max="0.5" step="0.05" value={testSize}
+                    <label htmlFor="shared-test-size" className="text-xs text-[#666] block mb-2">最終評価の割合</label>
+                    <input id="shared-test-size" type="number" min="0.1" max="0.5" step="0.05" value={testSize}
                       onChange={e => setTestSize(parseFloat(e.target.value))} className={FLD} />
                   </div>
-                  <div>
-                    <label className="text-xs text-[#666] block mb-2">CVフォールド数</label>
-                    <input type="number" min="2" max="10" value={cvFolds}
-                      onChange={e => setCvFolds(parseInt(e.target.value))} className={FLD} />
-                  </div>
                 </div>
-                {modelType === 'lightgbm' && (
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <div className="text-xs text-[#888] font-medium">Optuna 最適化</div>
-                        <div className="text-xs text-[#555] mt-0.5">ベイズ最適化でパラメータ自動探索（時間がかかります）</div>
-                      </div>
-                      <button
-                        onClick={() => setUseOptuna(v => !v)}
-                        className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors ${useOptuna ? 'bg-white' : 'bg-[#333]'}`}
-                      >
-                        <span className={`inline-block h-3.5 w-3.5 transform rounded-full transition-transform ${useOptuna ? 'translate-x-5 bg-black' : 'translate-x-0.5 bg-[#888]'}`} />
-                      </button>
-                    </div>
-                    {useOptuna && (
-                      <div className="grid grid-cols-2 gap-4 pt-2 border-t border-[#1e1e1e]">
-                        <div>
-                          <label className="text-xs text-[#666] block mb-2">試行回数: {optunaTrials}</label>
-                          <input type="range" min="3" max="100" value={optunaTrials}
-                            onChange={e => setOptunaTrials(parseInt(e.target.value))} className="w-full accent-white" />
-                        </div>
-                        <div>
-                          <label className="text-xs text-[#666] block mb-2">タイムアウト (秒)</label>
-                          <input type="number" min="60" max="3600" step="60" value={optunaTimeout}
-                            onChange={e => setOptunaTimeout(parseInt(e.target.value))} className={FLD} />
-                        </div>
-                        <div className="col-span-2 text-xs text-[#444]">
-                          推定時間: {Math.round(optunaTrials * cvFolds * 0.3 / 60)}〜{Math.round(optunaTrials * cvFolds * 0.5 / 60)} 分
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
+                <p className="text-xs text-[#777]">固定2候補を比較。順位相関・RMSEで確認します。</p>
+                <p className="text-xs text-[#666]">学習・校正・最終評価は時系列で分離します。直近データが校正・評価に割り当てられる場合もあり、全件がモデルの学習に入るわけではありません。</p>
               </div>
             )}
           </div>
 
           <button
             onClick={handleTrain}
-            disabled
-            title="モデル学習には永続的な承認と承認済みジョブ実行基盤が必要です"
+            disabled={loading || trainingCapability !== 'enabled' || contextProfileUnavailable}
             className="w-full py-3 bg-white text-black font-medium rounded-lg hover:bg-[#eee] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            {loading ? (jobProgress || '学習中...') : '承認済みジョブ実行基盤を準備中'}
+            {loading
+              ? '作成中…'
+              : trainingCapability === 'checking'
+                ? '確認中…'
+                : trainingCapability === 'enabled'
+                  ? 'モデル作成'
+                  : '利用不可'}
           </button>
+          {!loading && contextProfileUnavailable && (
+            <p className="text-xs text-[#888]">このAPIでは条件・展開候補を利用できません。特徴量構成を選び直すか、API反映後に再確認してください。</p>
+          )}
+          {!loading && trainingCapability === 'disabled' && (
+            <div className="flex items-center justify-center gap-3 text-xs text-[#666]">
+              <span>ローカル管理者のみ</span>
+              <button
+                type="button"
+                onClick={() => void loadTrainingCapability()}
+                className="text-[#aaa] transition-colors hover:text-white"
+              >
+                再確認
+              </button>
+            </div>
+          )}
 
           {loading && jobId && (
             <div className="p-4 bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg space-y-2">
@@ -366,6 +554,10 @@ export default function TrainPage() {
                 <div className="flex items-center gap-2">
                   <span className="inline-block w-2 h-2 rounded-full bg-yellow-400 animate-pulse" />
                   <span className="text-xs text-[#888]">学習中</span>
+                  {(jobAcceleration?.device === 'gpu' || jobAcceleration?.device === 'cpu') && (
+                    <span className="text-xs text-[#666]">{jobAcceleration.device.toUpperCase()}</span>
+                  )}
+                  {jobAcceleration?.cache_hit === true && <span className="text-xs text-[#666]">特徴量再利用</span>}
                 </div>
                 <span className="text-xs text-[#555] tabular-nums">{jobPct}%</span>
               </div>
@@ -383,30 +575,24 @@ export default function TrainPage() {
 
         {trainResult && (
           <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-6">
-            <div className="flex items-center gap-3 mb-4">
+            <div className="mb-4 flex items-center justify-between gap-3">
               <div className="text-sm font-medium text-white">学習結果</div>
-              {trainResult.auc != null && (
-                <span className={`text-xs px-2 py-0.5 rounded font-medium ${
-                  trainResult.auc >= 0.75 ? 'bg-[#0a2a0a] text-[#4ade80] border border-[#1a4a1a]' :
-                  trainResult.auc >= 0.70 ? 'bg-[#0a1a2a] text-[#60a5fa] border border-[#1a3a5a]' :
-                  'bg-[#1a1a0a] text-[#facc15] border border-[#3a3a1a]'
-                }`}>
-                  {trainResult.auc >= 0.75 ? '優秀' : trainResult.auc >= 0.70 ? '良好' : '要改善'}
-                </span>
-              )}
+              <div className="text-xs text-[#555]">{trainResult.n_rows?.toLocaleString()}件</div>
             </div>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              {[
-                { label: 'AUC', value: trainResult.auc?.toFixed(4) },
-                { label: 'Log Loss', value: trainResult.logloss?.toFixed(4) },
-                { label: '学習データ数', value: trainResult.n_rows?.toLocaleString() },
-                { label: 'モデルID', value: trainResult.model_id, small: true },
-              ].map(s => (
-                <div key={s.label} className="bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg p-4">
-                  <div className="text-xs text-[#555] mb-1">{s.label}</div>
-                  <div className={`font-bold ${s.small ? 'text-xs text-[#4ade80] break-all' : 'text-xl'}`}>{s.value}</div>
-                </div>
-              ))}
+            <ModelEvaluationSummary
+              evaluation={trainResult.evaluation}
+              target={trainResult.target}
+              legacyAuc={trainResult.auc}
+              legacyLogloss={trainResult.logloss}
+              featurePipeline={trainResult.feature_pipeline}
+              probabilityValidation={trainResult.probability_validation}
+              trainingTimeSeconds={trainResult.training_time_seconds}
+              trainingParallelWorkers={trainResult.training_parallel_workers}
+              nativeThreads={trainResult.native_threads}
+            />
+            <TrainingAccelerationSummary acceleration={trainResult.acceleration} />
+            <div className="mt-3 truncate text-[10px] font-mono text-[#333]" title={trainResult.model_id}>
+              {trainResult.model_id}
             </div>
           </div>
         )}
@@ -432,37 +618,29 @@ export default function TrainPage() {
                 {models.map((m, i) => {
                   const targetLabel = TARGET_LABELS[m.target] ?? m.target ?? '不明'
                   const typeLabel = MODEL_TYPE_LABELS[m.model_type] ?? m.model_type ?? '不明'
-                  const createdDate = parseCreatedDate(m.model_id, m.created_at)
+                  const createdDate = formatModelCreatedAt(m)
                   const dateRange = formatDateRange(m.training_date_from, m.training_date_to)
-                  const aucVal = m.auc ? m.auc.toFixed(4) : '—'
-                  const cvVal = m.cv_auc_mean && m.cv_auc_mean > 0 ? m.cv_auc_mean.toFixed(4) : '—'
                   const isActivating = activatingId === m.model_id
                   const isDeleting = deletingId === m.model_id
                   return (
                     <div
                       key={i}
+                      data-testid={`model-card-${m.model_id}`}
                       className={`px-5 py-4 hover:bg-[#161616] transition-colors ${m.is_active ? 'border-l-2 border-[#4ade80]' : ''}`}
                     >
-                      {/* 1行目: ターゲット名 + アクティブバッジ + AUC */}
+                      {/* 1行目: モデル名と状態 */}
                       <div className="flex items-start justify-between gap-4">
                         <div className="flex items-center gap-2 min-w-0">
-                          <span className="text-sm font-medium text-white">{targetLabel}</span>
+                          <span className="text-sm font-medium text-white">{m.display_name || targetLabel}</span>
                           <span className="text-xs text-[#555]">{typeLabel}</span>
                           {m.is_active && (
                             <span className="shrink-0 text-xs px-1.5 py-0.5 rounded bg-[#0a2a0a] text-[#4ade80] border border-[#1a4a1a] font-medium">
-                              使用中
+                              既定
                             </span>
                           )}
-                        </div>
-                        <div className="text-right shrink-0">
-                          <div className={`text-sm font-medium tabular-nums ${
-                            !m.auc ? 'text-[#555]' :
-                            m.auc >= 0.80 ? 'text-[#4ade80]' :
-                            m.auc >= 0.70 ? 'text-[#60a5fa]' : 'text-[#facc15]'
-                          }`}>AUC {aucVal}</div>
-                          {cvVal !== '—' && (
-                            <div className="text-xs text-[#555] tabular-nums">CV {cvVal}</div>
-                          )}
+                          {m.feature_pipeline === 'local-win-nll-reference-v1'
+                            ? <span className="text-xs text-[#fde68a]">参考運用</span>
+                            : m.is_local_candidate && <span className="text-xs text-[#7dd3fc]">研究候補</span>}
                         </div>
                       </div>
                       {/* 2行目: 作成日時 + 学習期間 */}
@@ -472,23 +650,36 @@ export default function TrainPage() {
                         {m.feature_count > 0 && <span>特徴量: {m.feature_count}個</span>}
                         {m.n_rows > 0 && <span>{m.n_rows.toLocaleString()}件</span>}
                       </div>
+                      <div className="mt-3">
+                        <ModelEvaluationSummary
+                          evaluation={m.evaluation}
+                          target={m.target}
+                          legacyAuc={m.auc}
+                          featurePipeline={m.feature_pipeline}
+                          probabilityValidation={m.probability_validation ?? m.evaluation?.probability_validation}
+                          trainingTimeSeconds={m.training_time_seconds}
+                          trainingParallelWorkers={m.training_parallel_workers}
+                          nativeThreads={m.native_threads}
+                        />
+                        <TrainingAccelerationSummary acceleration={m.acceleration} />
+                      </div>
                       {/* 3行目: アクション */}
                       <div className="mt-3 flex items-center gap-2">
-                        {!m.is_active && (
+                        {!m.is_active && !m.is_local_candidate && (
                           <button
                             onClick={() => handleActivateModel(m.model_id)}
-                            disabled
-                            title="active model切替には再学習承認とは別の永続的なAdmin承認が必要です"
+                            disabled={isActivating}
+                            title="モデル未指定の予測で使う"
                             className="text-xs px-3 py-1 rounded border border-[#333] text-[#aaa] hover:border-[#555] hover:text-white transition-colors disabled:opacity-40"
                           >
-                            {isActivating ? '切替中...' : '使用する'}
+                            {isActivating ? '変更中...' : '既定にする'}
                           </button>
                         )}
                         <div className="flex-1" />
                         <button
                           onClick={() => handleDeleteModel(m.model_id)}
-                          disabled
-                          title="モデル削除には別の永続的な廃止承認が必要です"
+                          disabled={isDeleting || m.is_active || m.is_local_candidate}
+                          title={m.is_active ? '使用中モデルは削除できません' : m.is_local_candidate ? '研究候補の原本は保護されています' : 'このモデルを削除'}
                           className="text-xs text-[#555] hover:text-red-400 transition-colors disabled:opacity-30 px-2 py-1"
                         >
                           {isDeleting ? '...' : '削除'}

@@ -40,13 +40,17 @@ from __future__ import annotations
 import csv
 import io
 import json
+import math
+import re
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from app_config import logger  # type: ignore
+from betting.value_policy import POLICY_VERSION, verified_prediction_input
 
 router = APIRouter()
 
@@ -66,21 +70,70 @@ BET_TYPE_TO_CODE: dict[str, str] = {
 CODE_TO_BET_TYPE: dict[str, str] = {v: k for k, v in BET_TYPE_TO_CODE.items()}
 
 
+def _aware_instant(value: Any) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed.astimezone(timezone.utc) if parsed.tzinfo is not None else None
+
+
 def _build_bet_rows(
     analyze_results: list[dict],
     bankroll: int,
     min_ev: float,
     min_prob: float,
     max_bets_per_race: int,
+    *,
+    now: datetime | None = None,
 ) -> list[dict]:
-    """analyze_race レスポンスのリストから購入推奨行を生成する"""
+    """Export only the decision policy's selected tickets and assigned stakes.
+
+    Legacy candidate lists are not purchase decisions. In particular, a skip
+    must never be turned back into an order by an export-time EV filter.
+    """
     rows: list[dict] = []
+    current = now if now is not None else datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        return rows
+    current = current.astimezone(timezone.utc)
 
     for result in analyze_results:
-        if not result.get("success"):
+        if not isinstance(result, dict) or result.get("success") is not True:
+            continue
+
+        recommendation = result.get("recommendation")
+        if not isinstance(recommendation, dict):
+            continue
+        if (
+            recommendation.get("policy_version") != POLICY_VERSION
+            or recommendation.get("input_verified") is not True
+            or not verified_prediction_input(result.get("input_diagnostics"))
+            or recommendation.get("probability_basis") != "calibrated"
+            or recommendation.get("decision") not in ("buy", "priority")
+        ):
+            continue
+        if (
+            recommendation.get("decision") == "skip"
+            or recommendation.get("action") == "見送り"
+            or result.get("race_level") == "skip"
+        ):
+            continue
+        evaluated = _aware_instant(recommendation.get("evaluated_at"))
+        valid_until = _aware_instant(recommendation.get("valid_until"))
+        if (
+            evaluated is None or valid_until is None
+            or valid_until <= evaluated or current < evaluated
+            or current >= min(valid_until, evaluated + timedelta(minutes=5))
+        ):
+            continue
+        tickets = recommendation.get("tickets")
+        if not isinstance(tickets, list) or not tickets:
             continue
 
         race_info = result.get("race_info") or {}
+        if not isinstance(race_info, dict):
+            continue
         race_id = race_info.get("race_id") or result.get("race_id", "")
         race_name = race_info.get("race_name", "")
         venue = race_info.get("venue", "")
@@ -88,75 +141,74 @@ def _build_bet_rows(
         post_time = race_info.get("post_time", "")
 
         predictions: list[dict] = result.get("predictions", [])
-        bet_types: dict[str, Any] = result.get("bet_types") or {}
         best_bet_type: str = result.get("best_bet_type") or ""
         race_level: str = result.get("race_level") or "normal"
-        best_bet_info: dict = result.get("best_bet_info") or {}
 
-        # ---- bet_types から買い目を展開 ----
         _horse_map: dict[str, str] = {
             str(p.get("horse_number") or p.get("horse_no", "")): p.get("horse_name", "")
             for p in predictions
+            if isinstance(p, dict)
         }
 
         added = 0
-        for bet_label, candidates_info in bet_types.items():
+        for ticket in tickets:
             if added >= max_bets_per_race:
                 break
-
-            candidates: list[dict] = []
-            if isinstance(candidates_info, dict):
-                candidates = candidates_info.get("combinations") or candidates_info.get("horses") or []
-            elif isinstance(candidates_info, list):
-                candidates = candidates_info
-
-            for cand in candidates:
-                if added >= max_bets_per_race:
-                    break
-
-                ev: float = cand.get("expected_value") or 0.0
-                prob: float = cand.get("probability") or 0.0
-                comb: str = str(cand.get("combination") or cand.get("combo") or "")
-                odds: float | None = cand.get("odds")
-                unit_price: int = int(cand.get("unit_price") or 100)
-                units: int = int(cand.get("units") or cand.get("count") or 1)
-
-                if ev < min_ev:
-                    continue
-                if prob < min_prob:
-                    continue
-                if not comb:
-                    continue
-
-                # 馬番リストから馬名を解決
-                nums = re.split(r"[-→]", comb)
-                horse_names = [_horse_map.get(n.strip(), f"#{n.strip()}") for n in nums]
-
-                rows.append({
-                    "race_id": race_id,
-                    "race_name": race_name,
-                    "venue": venue,
-                    "race_no": race_no,
-                    "post_time": post_time,
-                    "bet_type": bet_label,
-                    "bet_type_code": BET_TYPE_TO_CODE.get(bet_label, bet_label.lower()),
-                    "combination": comb,
-                    "horse_names": horse_names,
-                    "unit_price": unit_price,
-                    "units": units,
-                    "total_cost": unit_price * units,
-                    "expected_value": round(ev, 3),
-                    "win_probability": round(prob, 4),
-                    "odds": odds,
-                    "race_level": race_level,
-                    "is_best_bet": bet_label == best_bet_type,
-                })
-                added += 1
+            if not isinstance(ticket, dict):
+                continue
+            bet_label = ticket.get("bet_type")
+            comb = str(ticket.get("combination") or "")
+            if not isinstance(bet_label, str) or bet_label not in BET_TYPE_TO_CODE or not comb:
+                continue
+            raw_stake = ticket.get("stake")
+            if any(isinstance(ticket.get(key), bool) for key in
+                   ("stake", "expected_value", "conservative_expected_value", "probability", "odds")):
+                continue
+            try:
+                ev = float(ticket["expected_value"])
+                conservative_ev = float(ticket["conservative_expected_value"])
+                prob = float(ticket["probability"])
+                odds = float(ticket["odds"])
+                stake = float(raw_stake)
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+            if (
+                not all(math.isfinite(value) for value in (ev, conservative_ev, prob, odds, stake))
+                or not 0 < conservative_ev <= ev
+                or not 0 < prob <= 1
+                or odds <= 1
+                or stake < 100
+                or not stake.is_integer()
+                or stake % 100 != 0
+            ):
+                continue
+            # Filter before display rounding; never alter the assigned stake.
+            if conservative_ev < max(1.0, min_ev) or prob < min_prob:
+                continue
+            nums = re.split(r"[-→]", comb)
+            horse_names = [_horse_map.get(n.strip(), f"#{n.strip()}") for n in nums]
+            rows.append({
+                "race_id": race_id,
+                "race_name": race_name,
+                "venue": venue,
+                "race_no": race_no,
+                "post_time": post_time,
+                "bet_type": bet_label,
+                "bet_type_code": BET_TYPE_TO_CODE[bet_label],
+                "combination": comb,
+                "horse_names": horse_names,
+                "unit_price": 100,
+                "units": int(stake) // 100,
+                "total_cost": int(stake),
+                "expected_value": round(ev, 3),
+                "win_probability": round(prob, 4),
+                "odds": odds,
+                "race_level": race_level,
+                "is_best_bet": bet_label == best_bet_type,
+            })
+            added += 1
 
     return rows
-
-
-import re  # noqa: E402 (上のimportブロック後に置く)
 
 
 @router.post("/api/export/bet-list")

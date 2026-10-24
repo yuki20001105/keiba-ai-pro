@@ -2,35 +2,47 @@
 学習エンドポイント
 POST /api/train
 POST /api/train/start
+GET  /api/train/capability
 GET  /api/train/status/{job_id}
 """
 from __future__ import annotations
 
 import asyncio
+import functools
+import ipaddress
+import json
 import os
+import shutil
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import threading
+import time
 import traceback
 import uuid
-from datetime import datetime
+from collections.abc import Mapping
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List
 
 import joblib
 import numpy as np
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app_config import (  # type: ignore
     SUPABASE_DATA_ENABLED,
     CONFIG_PATH,
     MODELS_DIR,
     ULTIMATE_DB,
+    get_active_model_id,
     get_supabase_client,
     logger,
 )
-from deps.auth import require_premium  # type: ignore
+from deps.auth import require_admin  # type: ignore
 from models import TrainRequest, TrainResponse  # type: ignore
+from training.db_context_registry import CONTEXT_PIPELINE, SHARED_PIPELINES  # type: ignore
 from keiba_ai.constants import FUTURE_FIELDS  # type: ignore
-from keiba_ai.feature_catalog import FeatureCatalog  # type: ignore
-from scraping.jobs import _purge_old_jobs, _MAX_JOBS  # type: ignore
 from training.approved_execution import (  # type: ignore
     ApprovedExecutionError,
     ApprovedTrainingExecution,
@@ -38,7 +50,48 @@ from training.approved_execution import (  # type: ignore
 from training.job_store import (  # type: ignore
     load_train_job,
     mark_interrupted_train_jobs,
-    persist_train_job,
+)
+from training.local_feature_contract import (  # type: ignore
+    build_training_cv_plan,
+    derive_local_feature_schema,
+    engineer_training_features,
+    filter_history_through_last_target,
+    filter_training_period,
+    prepare_lightgbm_feature_split,
+    prepare_training_target,
+    ranking_group_sizes,
+    select_training_holdout,
+    stable_race_order,
+)
+from training.eligibility import (  # type: ignore
+    TrainingEligibilityError,
+    load_recorded_quality_states,
+    select_training_eligible_rows,
+)
+from training.model_evaluation import (  # type: ignore
+    evaluate_ranking_predictions,
+    evaluate_speed_deviation_predictions,
+)
+from training.local_retrain import (  # type: ignore
+    LOCAL_EXECUTION_POLICY,
+    LocalExecutionBundle,
+    LocalRetrainConflict,
+    LocalRetrainError,
+    LocalRetrainGateway,
+    LocalRetrainNotFound,
+    LocalRetrainStore,
+    LocalTrainingContract,
+    LocalTrainingExecution,
+    compute_source_tree_sha256,
+    copy_local_snapshot,
+    create_sqlite_snapshot,
+    new_preparation_token,
+    reconcile_snapshot_catalog,
+    sha256_file,
+)
+from training.retrain_worker import (  # type: ignore
+    MAX_ARTIFACT_BYTES,
+    ApprovedRetrainCoordinator,
 )
 
 router = APIRouter()
@@ -58,10 +111,206 @@ class BCWrap:
 
 
 
-# ジョブストア（インメモリ）
-_train_jobs: dict = {}
-mark_interrupted_train_jobs()
 _LOCAL_ENVIRONMENTS = frozenset({"local", "development", "dev", "test", "ci"})
+_LOCAL_RETRAIN_SOURCE_ROOT = Path(__file__).resolve().parents[2]
+_LOCAL_RETRAIN_LEDGER = Path(__file__).resolve().parents[1] / "data" / "local_retrain_jobs.db"
+_LOCAL_RETRAIN_SNAPSHOT_CATALOG = ULTIMATE_DB.parent / "model_retrain_snapshots"
+_LOCAL_RETRAIN_ARTIFACT_ROOT = MODELS_DIR / ".local-retrain" / "artifacts"
+_LOCAL_RETRAIN_WORKER_ENTRYPOINT = (
+    Path(__file__).resolve().parents[1] / "local_retrain_worker_main.py"
+)
+_LOCAL_RETRAIN_WORKER_LOG = Path(__file__).resolve().parents[1] / "logs" / "local_retrain_worker.log"
+_SHARED_FEATURE_CACHE_ROOT = Path(__file__).resolve().parents[1] / "data" / "shared_feature_cache"
+_LOCAL_RETRAIN_RUNTIME_LOCK = threading.RLock()
+_LOCAL_RETRAIN_RUNTIME: tuple[LocalRetrainStore, LocalRetrainGateway] | None = None
+_LOCAL_RETRAIN_STARTUP_ERROR: str | None = None
+_LOCAL_PREPARATION_TTL_SECONDS = 300
+_LOCAL_PREPARATION_HEARTBEAT_SECONDS = 15
+
+
+def _local_owner_id(current_user: Mapping[str, object]) -> str:
+    """Return a verified durable Admin UUID; development fallbacks are forbidden."""
+
+    value = str(current_user.get("user_id") or "").strip().lower()
+    try:
+        parsed = uuid.UUID(value)
+    except (ValueError, AttributeError) as exc:
+        raise HTTPException(status_code=403, detail="admin identity is unavailable") from exc
+    if parsed.version != 4 or str(parsed) != value:
+        raise HTTPException(status_code=403, detail="admin identity is unavailable")
+    return value
+
+
+async def require_local_training_admin(
+    current_user: dict = Depends(require_admin),
+) -> dict:
+    """Reject the middleware's unauthenticated local-dev Admin fallback."""
+
+    _local_owner_id(current_user)
+    return current_user
+
+
+def _active_model_binding() -> tuple[str, str]:
+    """Bind the exact active model ID and bytes used to authorize a local run."""
+
+    model_id = get_active_model_id()
+    if not model_id:
+        raise LocalRetrainError("local-active-model-unavailable")
+    model_root = MODELS_DIR.resolve(strict=True)
+    model_path = MODELS_DIR / f"{model_id}.joblib"
+    if model_path.is_symlink():
+        raise LocalRetrainError("local-active-model-path-invalid")
+    try:
+        resolved = model_path.resolve(strict=True)
+    except OSError as exc:
+        raise LocalRetrainError("local-active-model-unavailable") from exc
+    if not resolved.is_file() or resolved.parent != model_root:
+        raise LocalRetrainError("local-active-model-path-invalid")
+    try:
+        digest, size = sha256_file(resolved, max_bytes=MAX_ARTIFACT_BYTES)
+    except OSError as exc:
+        raise LocalRetrainError("local-active-model-unavailable") from exc
+    if size < 1:
+        raise LocalRetrainError("local-active-model-unavailable")
+    return model_id, digest
+
+
+def _active_model_features(expected_binding: tuple[str, str]) -> tuple[str, ...]:
+    """Validate the trusted active baseline without reusing its old schema.
+
+    The active artifact is bound into the local authorization contract so a
+    concurrent model switch cannot change the baseline during preparation.
+    Its feature list may predate the current leakage policy, however, and is
+    never used to select candidate features.  Candidate training derives a new
+    schema from the immutable data snapshot and rejects ``FUTURE_FIELDS`` at
+    both contract creation and execution time.
+    """
+
+    model_id, _digest = expected_binding
+    path = MODELS_DIR / f"{model_id}.joblib"
+    try:
+        bundle = joblib.load(path)
+    except Exception as exc:
+        raise LocalRetrainError("local-active-model-bundle-invalid") from exc
+    if not isinstance(bundle, Mapping):
+        raise LocalRetrainError("local-active-model-bundle-invalid")
+    raw_features = bundle.get("feature_columns")
+    if not isinstance(raw_features, (list, tuple)):
+        raise LocalRetrainError("local-active-model-features-invalid")
+    features = tuple(raw_features)
+    if (
+        not features
+        or len(features) > 2_048
+        or any(not isinstance(value, str) or not value for value in features)
+        or len(set(features)) != len(features)
+    ):
+        raise LocalRetrainError("local-active-model-features-invalid")
+    if _active_model_binding() != expected_binding:
+        raise LocalRetrainError("local-active-model-binding-changed")
+    return features
+
+
+def _candidate_commit_sha() -> str:
+    """Read the full HEAD SHA without treating a dirty tree as clean."""
+
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=_LOCAL_RETRAIN_SOURCE_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise LocalRetrainError("local-source-commit-unavailable") from exc
+    candidate = completed.stdout.strip().lower()
+    if len(candidate) != 40 or any(char not in "0123456789abcdef" for char in candidate):
+        raise LocalRetrainError("local-source-commit-invalid")
+    return candidate
+
+
+def _get_local_retrain_runtime() -> tuple[LocalRetrainStore, LocalRetrainGateway]:
+    """Construct one process-local facade over the durable SQLite ledger."""
+
+    global _LOCAL_RETRAIN_RUNTIME
+    with _LOCAL_RETRAIN_RUNTIME_LOCK:
+        if _LOCAL_RETRAIN_RUNTIME is None:
+            store = LocalRetrainStore(_LOCAL_RETRAIN_LEDGER)
+            gateway = LocalRetrainGateway(
+                store,
+                artifact_root=_LOCAL_RETRAIN_ARTIFACT_ROOT,
+                published_model_root=MODELS_DIR,
+                source_root=_LOCAL_RETRAIN_SOURCE_ROOT,
+                candidate_commit_provider=_candidate_commit_sha,
+                active_model_binding_provider=_active_model_binding,
+            )
+            _LOCAL_RETRAIN_RUNTIME = (store, gateway)
+        return _LOCAL_RETRAIN_RUNTIME
+
+
+def _local_training_parameters(request: TrainRequest) -> dict[str, object]:
+    payload = request.model_dump()
+    payload.pop("target", None)
+    payload.pop("model_type", None)
+    # The source-pinned schema-v1 contract stays unchanged; the exact ordered
+    # feature contract binds the new pipeline (see db_shared_contract).
+    payload.pop("feature_pipeline", None)
+    # Execution/cache choices are durable job scheduling controls, not model
+    # hyperparameters. Keep the existing schema-v1 feature/lease contract exact.
+    payload.pop("compute_device", None)
+    payload.pop("reuse_features", None)
+    return payload
+
+
+def reconcile_interrupted_train_jobs() -> int:
+    """Reconcile legacy and fenced local jobs from the startup lifecycle."""
+
+    global _LOCAL_RETRAIN_STARTUP_ERROR
+    legacy_count = mark_interrupted_train_jobs()
+    try:
+        _require_legacy_model_training_allowed()
+    except HTTPException:
+        return legacy_count
+
+    try:
+        store, gateway = _get_local_retrain_runtime()
+        removed_snapshots = reconcile_snapshot_catalog(_LOCAL_RETRAIN_SNAPSHOT_CATALOG)
+        report = gateway.reconcile_orphan_artifacts()
+        for job_id in report.redispatch_job_ids:
+            try:
+                _start_local_retrain_thread(job_id, prepare_request=None)
+            except Exception:
+                try:
+                    queued = store.get_job(job_id)
+                    if queued.state == "queued":
+                        store.fail_queued(
+                            job_id=job_id,
+                            expected_version=queued.record_version,
+                            failure_code="local-runner-start-failed",
+                        )
+                except LocalRetrainError:
+                    pass
+                logger.error(
+                    "local retrain redispatch %s failed:\n%s",
+                    job_id,
+                    traceback.format_exc(),
+                )
+        _LOCAL_RETRAIN_STARTUP_ERROR = None
+        logger.info(
+            "local retrain startup reconciliation: redispatch=%s failed=%s "
+            "publications=%s artifacts_removed=%s snapshots_removed=%s",
+            len(report.redispatch_job_ids),
+            len(report.failed_job_ids),
+            report.completed_publications,
+            report.removed_orphans,
+            removed_snapshots,
+        )
+        return legacy_count + len(report.failed_job_ids)
+    except Exception:
+        _LOCAL_RETRAIN_STARTUP_ERROR = "local-training-reconciliation-failed"
+        logger.error("local retrain startup reconciliation failed:\n%s", traceback.format_exc())
+        return legacy_count
 
 
 def _require_legacy_model_training_allowed() -> None:
@@ -77,6 +326,143 @@ def _require_legacy_model_training_allowed() -> None:
                 "legacy direct training is available only by explicit local/test opt-in"
             ),
         )
+
+
+def _is_loopback_client(request: Request) -> bool:
+    """Accept only a direct request from this machine."""
+
+    host = request.client.host.strip() if request.client and request.client.host else ""
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return host.lower() == "localhost"
+    if address.is_loopback:
+        return True
+    mapped = getattr(address, "ipv4_mapped", None)
+    return bool(mapped and mapped.is_loopback)
+
+
+async def require_loopback_training_request(request: Request) -> None:
+    if not _is_loopback_client(request):
+        raise HTTPException(
+            status_code=403,
+            detail="local model training is available only from this computer",
+        )
+
+
+def _training_capability_state() -> dict[str, object]:
+    """Return a bounded, fail-closed local training readiness result."""
+
+    try:
+        _require_legacy_model_training_allowed()
+    except HTTPException:
+        return {
+            "enabled": False,
+            "mode": "disabled",
+            "reason": "local-training-disabled",
+        }
+
+    try:
+        database_ready = (
+            ULTIMATE_DB.is_file()
+            and ULTIMATE_DB.stat().st_size > 0
+            and os.access(ULTIMATE_DB, os.R_OK)
+        )
+    except (OSError, sqlite3.Error):
+        database_ready = False
+    if not database_ready:
+        return {
+            "enabled": False,
+            "mode": "disabled",
+            "reason": "database-unavailable",
+        }
+
+    try:
+        model_storage_ready = MODELS_DIR.is_dir() and os.access(MODELS_DIR, os.W_OK)
+    except OSError:
+        model_storage_ready = False
+    if not model_storage_ready:
+        return {
+            "enabled": False,
+            "mode": "disabled",
+            "reason": "model-storage-unavailable",
+        }
+
+    if _LOCAL_RETRAIN_STARTUP_ERROR is not None:
+        return {
+            "enabled": False,
+            "mode": "disabled",
+            "reason": _LOCAL_RETRAIN_STARTUP_ERROR,
+        }
+
+    try:
+        database_size = ULTIMATE_DB.stat().st_size
+        free_bytes = shutil.disk_usage(ULTIMATE_DB.parent).free
+        reserve_bytes = max(512 * 1024 * 1024, database_size // 10)
+        if free_bytes < database_size + reserve_bytes:
+            return {
+                "enabled": False,
+                "mode": "disabled",
+                "reason": "snapshot-storage-insufficient",
+            }
+        _LOCAL_RETRAIN_SNAPSHOT_CATALOG.mkdir(parents=True, exist_ok=True)
+        if (
+            not os.access(_LOCAL_RETRAIN_SNAPSHOT_CATALOG, os.W_OK)
+            or os.stat(_LOCAL_RETRAIN_SNAPSHOT_CATALOG).st_dev
+            != os.stat(tempfile.gettempdir()).st_dev
+        ):
+            return {
+                "enabled": False,
+                "mode": "disabled",
+                "reason": "snapshot-storage-incompatible",
+            }
+        _get_local_retrain_runtime()
+        binding = _active_model_binding()
+        _active_model_features(binding)
+        _candidate_commit_sha()
+        compute_source_tree_sha256(_LOCAL_RETRAIN_SOURCE_ROOT)
+    except LocalRetrainError as exc:
+        return {
+            "enabled": False,
+            "mode": "disabled",
+            "reason": str(exc),
+        }
+    except (OSError, sqlite3.Error):
+        return {
+            "enabled": False,
+            "mode": "disabled",
+            "reason": "local-training-storage-unavailable",
+        }
+
+    from training.db_shared_acceleration import get_compute_capability
+    compute = get_compute_capability()
+    gpu_available = compute["devices"]["gpu"]["installed_and_pinned"]
+    return {"enabled": True, "mode": "local-admin", "reason": None,
+            "feature_profiles": [
+                {"pipeline": "local-db-shared-v1", "feature_count": 47},
+                {"pipeline": "local-db-shared-optimized-v1", "feature_count": 46},
+                {"pipeline": CONTEXT_PIPELINE, "feature_count": 80, "reference_only": True},
+            ],
+            "acceleration": {"default_device": "auto", "gpu_available": gpu_available,
+                "feature_cache_supported": True,
+                "gpu_reason": None if gpu_available else "GPU環境を確認できません",
+                "runtime": compute}}
+
+
+def _atomic_joblib_dump(bundle: dict, model_path: Path) -> None:
+    """Publish a complete artifact without exposing a partially written file."""
+
+    temporary_path = model_path.with_name(
+        f".{model_path.name}.{uuid.uuid4().hex}.tmp"
+    )
+    try:
+        joblib.dump(bundle, temporary_path)
+        os.replace(temporary_path, model_path)
+    finally:
+        try:
+            temporary_path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("temporary model artifact cleanup failed")
 
 
 def _extract_ym_from_df(df: "pd.DataFrame") -> list:  # noqa: F821
@@ -138,11 +524,140 @@ def _get_date8_to(df: "pd.DataFrame") -> str:  # noqa: F821
 # レース後確定フィールド（keiba_ai.constants.FUTURE_FIELDS を参照）
 
 
+async def _do_shared_db_train(request, execution, progress_cb) -> TrainResponse:
+    """Local-only shared inputs, inside the existing snapshot/lease publisher.
+
+    This path does not synchronize remote data, change the active pointer, or
+    reuse the final evaluation outcomes for tuning/calibration.
+    """
+    from training.db_shared_cache import prepare_shared_inputs
+    from training.db_shared_fit import source_hashes as fit_source_hashes
+    from training.db_shared_acceleration import current_execution_receipt
+    from training.db_context_registry import selected_feature_columns, fit_module
+    profile = fit_module(request.feature_pipeline)
+    FEATURE_COLUMNS = list(selected_feature_columns(request.feature_pipeline))
+    FEATURE_VERSION = request.feature_pipeline
+    if FEATURE_VERSION == "local-db-shared-v1":
+        from training.db_shared_features import source_hashes
+        from training.db_shared_acceleration import accelerated_fit_shared_model
+    else:
+        source_hashes = profile.feature_source_hashes
+        accelerated_fit_shared_model = profile.accelerated_fit_shared_model
+    if request.target != "speed_deviation" or request.use_optuna or not request.use_optimizer:
+        raise HTTPException(409, "共通DB学習の実行条件が一致しません")
+    execution.select_feature_columns(FEATURE_COLUMNS, future_fields=FUTURE_FIELDS)
+    runtime_receipt = current_execution_receipt()
+    if runtime_receipt is None or runtime_receipt["requested_device"] != request.compute_device:
+        raise LocalRetrainError("local-shared-execution-policy-unbound")
+    started = time.perf_counter()
+    progress_cb("共通特徴量の再利用条件を確認中", 8)
+    def preparation_progress(message, _pct):
+        progress_cb(message, 16)
+    if FEATURE_VERSION == CONTEXT_PIPELINE:
+        frame, features, coverage, cache_receipt = await asyncio.to_thread(
+            profile.prepare_inputs, execution.snapshot_path,
+            request.training_date_from, request.training_date_to,
+            _SHARED_FEATURE_CACHE_ROOT, progress=preparation_progress,
+            expected_source_hashes=profile.source_hashes(),
+            reuse_features=request.reuse_features,
+        )
+    else:
+        frame, features, coverage, cache_receipt = await asyncio.to_thread(
+            prepare_shared_inputs, execution.snapshot_path,
+            request.training_date_from, request.training_date_to,
+            _SHARED_FEATURE_CACHE_ROOT, progress=preparation_progress,
+            expected_source_hashes=fit_source_hashes(), reuse_features=request.reuse_features,
+        )
+    if cache_receipt["snapshot_sha256"] != execution.data_snapshot_sha256:
+        raise LocalRetrainError("local-shared-cache-snapshot-mismatch")
+    prepared = time.perf_counter()
+    # Two candidates share the compact matrix; native parallelism is capped
+    # rather than duplicating the 3GB source DB per model/process.
+    device = runtime_receipt["resolved_device"]
+    progress_cb(f"固定候補を比較中（{device.upper()}）", 28)
+    bundle, result = await asyncio.to_thread(
+        accelerated_fit_shared_model, frame, features, test_size=request.test_size,
+        compute_device=request.compute_device, execution_receipt=runtime_receipt,
+        n_threads=4, progress=progress_cb,
+    )
+    fitted = time.perf_counter()
+    acceleration = {"device": device, "requested_device": request.compute_device,
+        "cache_hit": cache_receipt["cache_hit"], "cache_status": cache_receipt["cache_status"],
+        "preparation_seconds": prepared - started, "fit_seconds": fitted - prepared,
+        "total_seconds": fitted - started, "fallback_reason": runtime_receipt["fallback_reason"],
+        "timing_scope": "feature-preparation-through-fit-calibration-evaluation",
+        "cache_receipt": cache_receipt, "execution_receipt": runtime_receipt,
+        "data_snapshot_sha256": execution.data_snapshot_sha256,
+        "approved_payload_hash": execution.approved_payload_hash}
+    evaluation = result["evaluation"]
+    probability_validation = result["probability_validation"]
+    dates = frame["race_date"].astype(str).str.replace("-", "", regex=False)
+    created = datetime.now(timezone(timedelta(hours=9)))
+    model_id = f"dbshared_{dates.min()}_{dates.max()}_{created:%Y%m%d_%H%M}_{created:%S%f}"
+    model_path = execution.prepare_artifact_directory() / f"model_speed_deviation_lightgbm_{model_id}.joblib"
+    training_seconds = time.perf_counter() - started
+    metrics = {
+        "auc": float(evaluation["primary"]["rank_correlation"]),
+        "logloss": float(evaluation["primary"]["rmse"]),
+        "cv_auc_mean": float(result.get("cv_rank_correlation", 0.0)),
+        "cv_auc_std": 0.0,
+    }
+    bundle.update({
+        "feature_pipeline": FEATURE_VERSION,
+        "feature_columns": list(FEATURE_COLUMNS), "feature_source_hashes": source_hashes(),
+        "fit_source_sha256": sha256_file(Path(profile.__file__))[0],
+        "target": "speed_deviation", "model_type": "lightgbm", "ultimate_mode": True,
+        "use_optimizer": False, "optimizer": None, "evaluation": evaluation,
+        "probability_validation": probability_validation, "metrics": metrics,
+        "shared_training_audit": result,
+        "acceleration": acceleration,
+        "training_stage_seconds": {
+            **cache_receipt["stage_seconds"],
+            "feature_preparation": prepared - started,
+            "candidate_fit_calibration_evaluation": fitted - prepared,
+        },
+        "training_eligibility": coverage, "data_count": result["data_count"],
+        "race_count": result["race_count"], "created_at": created.isoformat(),
+        "dataset_period_start": str(dates.min()), "dataset_period_end": str(dates.max()),
+        "training_time_seconds": training_seconds,
+        "training_parallel_workers": result.get("training_parallel_workers", 2),
+        "native_threads": result.get("training_native_threads", 4),
+        "pipeline_config": {"requires_full_history": True, "shared_db_features": FEATURE_VERSION},
+        "local_execution": {
+            "execution_policy": execution.execution_policy, "job_id": execution.job_id,
+            "approved_payload_hash": execution.approved_payload_hash,
+            "data_snapshot_sha256": execution.data_snapshot_sha256,
+            "feature_contract_sha256": execution.feature_contract_sha256,
+            "candidate_commit_sha": execution.candidate_commit_sha,
+            "source_tree_sha256": execution.source_tree_sha256,
+            "active_model_id": execution.active_model_id,
+            "active_model_sha256": execution.active_model_sha256,
+        },
+    })
+    progress_cb("検証結果とモデルを保存中", 93)
+    await asyncio.to_thread(_atomic_joblib_dump, bundle, model_path)
+    del features, frame, bundle
+    import gc
+    gc.collect()
+    return TrainResponse(
+        success=True, model_id=model_id, model_path=str(model_path), metrics=metrics,
+        evaluation=evaluation, probability_validation=probability_validation,
+        data_count=int(result["data_count"]),
+        race_count=int(result["race_count"]), feature_count=len(FEATURE_COLUMNS),
+        training_time=time.perf_counter() - started,
+        message="共通DB特徴量で学習・時系列検証が完了しました",
+        feature_columns=list(FEATURE_COLUMNS), feature_pipeline=FEATURE_VERSION,
+        training_eligibility=coverage, training_parallel_workers=result.get("training_parallel_workers", 2),
+        native_threads=result.get("training_native_threads", 4),
+        acceleration=acceleration,
+    )
+
+
 async def _do_train(
     request: TrainRequest,
     current_user: dict,
     progress_cb=None,
-    approved_execution: ApprovedTrainingExecution | None = None,
+    approved_execution: ApprovedTrainingExecution | LocalTrainingExecution | None = None,
 ) -> TrainResponse:
     """モデル学習内部実装（progress_cb は任意のコールバック = (msg: str, pct: int | None) -> None）"""
     if approved_execution is None:
@@ -160,20 +675,33 @@ async def _do_train(
                 training_date_to=request.training_date_to,
             )
             approved_execution.verify_snapshot()
+            if isinstance(approved_execution, LocalTrainingExecution):
+                from training.db_context_registry import verify_pipeline
+                approved_execution.validate_request(**_local_training_parameters(request))
+                verify_pipeline(approved_execution.contract, request.feature_pipeline)
         except ApprovedExecutionError as exc:
             raise HTTPException(
                 status_code=409,
                 detail="approved training contract mismatch",
             ) from exc
+    uses_explicit_oot_split = bool(
+        approved_execution is not None
+        and getattr(approved_execution, "uses_explicit_oot_split", True)
+    )
+    # The only available calibration data is also the untouched evaluation
+    # set.  Fitting and scoring a calibrator on those same rows is optimistic,
+    # so calibration stays disabled until a separate calibration partition is
+    # part of the execution contract.
+    allows_calibration = False
     if progress_cb is None:
         def progress_cb(msg: str, pct: int = None): pass  # noqa: F811
+    if request.feature_pipeline in SHARED_PIPELINES:
+        if not isinstance(approved_execution, LocalTrainingExecution):
+            raise HTTPException(409, "共通DB学習はローカル管理者ジョブ専用です")
+        return await _do_shared_db_train(request, approved_execution, progress_cb)
     try:
         import pandas as pd
         from keiba_ai.db_ultimate_loader import load_ultimate_training_frame  # type: ignore
-        from keiba_ai.feature_engineering import add_derived_features  # type: ignore
-        from keiba_ai.lightgbm_feature_optimizer import (  # type: ignore
-            prepare_for_lightgbm_ultimate,
-        )
         from keiba_ai.optuna_optimizer import OptunaLightGBMOptimizer  # type: ignore
 
         # Phase 0: 87特徴量モード固定（入力値に関わらず常に ultimate LightGBM）
@@ -224,39 +752,21 @@ async def _do_train(
 
         # データ読み辿み（常に ultimate モード）
         progress_cb("学習データ読み込み中...", 8)
-        df = load_ultimate_training_frame(db_path)
+        loaded_df = load_ultimate_training_frame(
+            db_path,
+            read_only=approved_execution is not None,
+        )
 
-        print(f"DEBUG: Loaded {len(df)} rows from database")
-        progress_cb(f"データ読み込み完了 ({len(df):,} 行)", 15)
+        print(f"DEBUG: Loaded {len(loaded_df)} rows from database")
+        progress_cb(f"データ読み込み完了 ({len(loaded_df):,} 行)", 15)
 
-        # 学習期間フィルタ
-        # race_date(YYYYMMDD, 100%充填)を優先。一致しない場合は race_id[:6] にフォールバック
-        if request.training_date_from or request.training_date_to:
-            # race_date が YYYYMMDD 形式の行はそれを使用、
-            # NULL/不正な行は race_id 先頭6桁（YYYYMM）にフォールバック
-            # NOTE: `astype(str)` すると None → "None" になり "None" > "202603" となるため
-            #       to フィルタで古い行が全て除去されるバグを修正
-            if "race_date" in df.columns:
-                _rd_str = df["race_date"].astype(str).str.strip()
-                _has_valid_date = _rd_str.str.match(r"^\d{8}$")
-            else:
-                _rd_str = pd.Series([""] * len(df), index=df.index)
-                _has_valid_date = pd.Series([False] * len(df), index=df.index)
-
-            if "race_id" in df.columns:
-                _fallback_ym = df["race_id"].astype(str).str[:6]
-            else:
-                _fallback_ym = pd.Series(["000000"] * len(df), index=df.index)
-
-            _date_ym = _rd_str.str[:6].where(_has_valid_date, _fallback_ym)
-
-            if request.training_date_from:
-                from_ym = request.training_date_from.replace("-", "")
-                df = df[_date_ym >= from_ym]
-                _date_ym = _date_ym.loc[df.index]
-            if request.training_date_to:
-                to_ym = request.training_date_to.replace("-", "")
-                df = df[_date_ym <= to_ym]
+        # Preparation and execution share this exact period selector so the
+        # immutable local feature contract cannot drift from runtime.
+        df = filter_training_period(
+            loaded_df,
+            training_date_from=request.training_date_from,
+            training_date_to=request.training_date_to,
+        )
 
         if df.empty:
             raise HTTPException(
@@ -264,23 +774,131 @@ async def _do_train(
                 detail=f"訓練データが見つかりません。DB: {db_path}",
             )
 
-        # ターゲット変数を先に取得（FUTURE_FIELDSのdrop前にfinish列が必要）
-        from keiba_ai.train import _make_target  # type: ignore
-        y = _make_target(df, request.target)
+        quality_states = load_recorded_quality_states(db_path)
+        try:
+            eligibility = select_training_eligible_rows(
+                df,
+                target=request.target,
+                training_date_from=request.training_date_from,
+                training_date_to=request.training_date_to,
+                recorded_quality_states=quality_states,
+            )
+        except TrainingEligibilityError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"学習可能データの判定に失敗しました: {exc}",
+            ) from exc
+        df = eligibility.frame
+        eligibility_manifest = eligibility.manifest.as_dict()
+        if df.empty:
+            raise HTTPException(
+                status_code=400,
+                detail="品質条件と目的変数を満たす学習可能データがありません",
+            )
+        try:
+            history_source = filter_history_through_last_target(loaded_df, df)
+            history_eligibility = (
+                eligibility
+                if not request.training_date_from
+                and not request.training_date_to
+                and len(history_source) == len(loaded_df)
+                else select_training_eligible_rows(
+                    history_source,
+                    target=request.target,
+                    recorded_quality_states=quality_states,
+                )
+            )
+        except (TrainingEligibilityError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"学習履歴データの判定に失敗しました: {exc}",
+            ) from exc
+        history_df = history_eligibility.frame
+        progress_cb(
+            f"学習可能データを確認 ({len(df):,} 行)",
+            18,
+        )
 
-        if request.target != "speed_deviation" and len(y.unique()) < 2:
-            raise HTTPException(status_code=400, detail="2クラス以上が必要です")
+        evaluation_frame = pd.DataFrame(index=df.index)
+        for evaluation_column in (
+            "race_id",
+            "race_date",
+            "finish",
+            "popularity",
+            "odds",
+            "tansho_payout",
+        ):
+            evaluation_frame[evaluation_column] = (
+                df[evaluation_column] if evaluation_column in df.columns else pd.NA
+            )
+
+        # Freeze the evaluation boundary before target normalization or
+        # optimizer fitting.  This keeps all holdout distributions invisible
+        # to fitted training state.
+        _is_regression = request.target == "speed_deviation"
+        _is_ranking = request.target == "rank"
+        if uses_explicit_oot_split:
+            if "race_date" not in df.columns:
+                raise ApprovedExecutionError("approved-period-column-unavailable")
+            approved_dates = pd.to_datetime(
+                df["race_date"].astype(str).str.strip(),
+                format="%Y%m%d",
+                errors="coerce",
+            )
+            train_mask = approved_dates.between(
+                pd.Timestamp(approved_execution.train_period_start),
+                pd.Timestamp(approved_execution.train_period_end),
+            )
+            validation_mask = approved_dates.between(
+                pd.Timestamp(approved_execution.validation_period_start),
+                pd.Timestamp(approved_execution.validation_period_end),
+            )
+            train_positions = tuple(np.flatnonzero(train_mask.to_numpy()).tolist())
+            validation_positions = tuple(
+                np.flatnonzero(validation_mask.to_numpy()).tolist()
+            )
+            holdout_is_time_based = True
+            if len(train_positions) < 200 or len(validation_positions) < 50:
+                raise ApprovedExecutionError("approved-period-observations-insufficient")
+        else:
+            try:
+                holdout = select_training_holdout(
+                    df,
+                    target=request.target,
+                    test_size=request.test_size,
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"学習・評価データを分割できません: {exc}",
+                ) from exc
+            train_positions = holdout.train_positions
+            validation_positions = holdout.validation_positions
+            holdout_is_time_based = holdout.time_based
+
+        # Build any target normalization strictly from training outcomes.
+        prepared_target = prepare_training_target(
+            df,
+            target=request.target,
+            train_positions=train_positions,
+        )
+        y = prepared_target.values
+        speed_deviation_baseline = prepared_target.speed_deviation_baseline
+        if not _is_regression:
+            if y.nunique() < 2:
+                raise HTTPException(status_code=400, detail="2クラス以上が必要です")
+            if uses_explicit_oot_split and (
+                y.iloc[list(train_positions)].nunique() < 2
+                or y.iloc[list(validation_positions)].nunique() < 2
+            ):
+                raise ApprovedExecutionError("approved-period-target-classes-insufficient")
+
         # 特徴量エンジニアリング（finish等を使うのでdrop前に実施）
         progress_cb("特徴量エンジニアリング中...", 20)
-        df = add_derived_features(df, full_history_df=df)
-        # NOTE: UltimateFeatureCalculator は feature_engineering.py で同等の特徴量を
-        # ベクトル化计算済みのため除去（zero-variance 問題も解消）
-        df = df.loc[:, ~df.columns.duplicated()]
-
-        # レース後フィールド除去（特徴量エンジニアリング後・学習前に実施）
-        drop_train = [c for c in FUTURE_FIELDS if c in df.columns]
-        if drop_train:
-            df = df.drop(columns=drop_train)
+        df = engineer_training_features(
+            df,
+            full_history_frame=history_df,
+        )
 
         _all_feature_columns: List[str] = []
         optimizer = None
@@ -295,66 +913,81 @@ async def _do_train(
             try:
                 print("\n=== LightGBM最適化モード ===")
                 progress_cb("特徴量選択・最適化中...", 28)
-                exclude_cols = [
-                    request.target, "race_id", "horse_id", "jockey_id",
-                    "trainer_id", "owner_id", "finish_position",
-                ]
-                if approved_execution is not None:
-                    if "race_date" not in df.columns:
-                        raise ApprovedExecutionError("approved-period-column-unavailable")
-                    approved_dates = pd.to_datetime(
-                        df["race_date"].astype(str).str.strip(),
-                        format="%Y%m%d",
-                        errors="coerce",
+                train_position_list = list(train_positions)
+                validation_position_list = list(validation_positions)
+                df_train_source = df.iloc[train_position_list].copy()
+                df_validation_source = df.iloc[validation_position_list].copy()
+                y_train_source = y.iloc[train_position_list].reset_index(drop=True)
+                y_validation_source = y.iloc[validation_position_list].reset_index(drop=True)
+                if not _is_regression and (
+                    y_train_source.nunique() < 2
+                    or y_validation_source.nunique() < 2
+                ):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="学習・評価の両方に2クラス以上が必要です",
                     )
-                    train_mask = approved_dates.between(
-                        pd.Timestamp(approved_execution.train_period_start),
-                        pd.Timestamp(approved_execution.train_period_end),
-                    )
-                    validation_mask = approved_dates.between(
-                        pd.Timestamp(approved_execution.validation_period_start),
-                        pd.Timestamp(approved_execution.validation_period_end),
-                    )
-                    if int(train_mask.sum()) < 200 or int(validation_mask.sum()) < 50:
-                        raise ApprovedExecutionError("approved-period-observations-insufficient")
-                    df_train_source = df.loc[train_mask].copy()
-                    df_validation_source = df.loc[validation_mask].copy()
-                    y_train_source = y.loc[train_mask].reset_index(drop=True)
-                    y_validation_source = y.loc[validation_mask].reset_index(drop=True)
-                    if y_train_source.nunique() < 2 or y_validation_source.nunique() < 2:
-                        raise ApprovedExecutionError("approved-period-target-classes-insufficient")
+                evaluation_train = evaluation_frame.iloc[train_position_list].copy()
+                evaluation_validation = evaluation_frame.iloc[
+                    validation_position_list
+                ].copy()
 
-                    df_train_optimized, optimizer, categorical_features = (
-                        prepare_for_lightgbm_ultimate(
-                            df_train_source,
-                            target_col=request.target,
-                            is_training=True,
-                        )
+                prepared_split = prepare_lightgbm_feature_split(
+                    df_train_source,
+                    df_validation_source,
+                    target=request.target,
+                )
+                optimizer = prepared_split.train.optimizer
+                categorical_features = list(
+                    prepared_split.train.categorical_features
+                )
+                X_train_source = prepared_split.train.features
+                X_validation_source = prepared_split.validation.features
+                df_train_optimized = prepared_split.train.optimized
+                df_validation_optimized = prepared_split.validation.optimized
+
+                if _is_ranking:
+                    # LightGBM ranking query sizes describe contiguous row
+                    # blocks.  Stabilize every aligned object by race before
+                    # constructing those sizes.
+                    train_order = list(stable_race_order(df_train_source))
+                    validation_order = list(
+                        stable_race_order(df_validation_source)
                     )
-                    df_validation_optimized, _, _ = prepare_for_lightgbm_ultimate(
-                        df_validation_source,
-                        target_col=request.target,
-                        is_training=False,
-                        optimizer=optimizer,
+                    df_train_source = df_train_source.iloc[train_order].reset_index(
+                        drop=True
                     )
-                    X_train_source = df_train_optimized.drop(
-                        [c for c in exclude_cols if c in df_train_optimized.columns],
-                        axis=1,
+                    df_validation_source = df_validation_source.iloc[
+                        validation_order
+                    ].reset_index(drop=True)
+                    y_train_source = y_train_source.iloc[train_order].reset_index(
+                        drop=True
                     )
-                    X_validation_source = df_validation_optimized.drop(
-                        [c for c in exclude_cols if c in df_validation_optimized.columns],
-                        axis=1,
+                    y_validation_source = y_validation_source.iloc[
+                        validation_order
+                    ].reset_index(drop=True)
+                    evaluation_train = evaluation_train.iloc[
+                        train_order
+                    ].reset_index(drop=True)
+                    evaluation_validation = evaluation_validation.iloc[
+                        validation_order
+                    ].reset_index(drop=True)
+                    X_train_source = X_train_source.iloc[train_order].reset_index(
+                        drop=True
                     )
-                    train_objects = X_train_source.select_dtypes(include=["object"]).columns.tolist()
-                    validation_objects = X_validation_source.select_dtypes(
-                        include=["object"]
-                    ).columns.tolist()
-                    if train_objects:
-                        X_train_source = X_train_source.drop(columns=train_objects)
-                    if validation_objects:
-                        X_validation_source = X_validation_source.drop(columns=validation_objects)
+                    X_validation_source = X_validation_source.iloc[
+                        validation_order
+                    ].reset_index(drop=True)
+                    df_train_optimized = df_train_optimized.iloc[
+                        train_order
+                    ].reset_index(drop=True)
+                    df_validation_optimized = df_validation_optimized.iloc[
+                        validation_order
+                    ].reset_index(drop=True)
+
+                if approved_execution is not None:
                     try:
-                        approved_columns = approved_execution.select_feature_columns(
+                        bound_columns = approved_execution.select_feature_columns(
                             X_train_source.columns.tolist(),
                             future_fields=FUTURE_FIELDS,
                         )
@@ -363,142 +996,100 @@ async def _do_train(
                             future_fields=FUTURE_FIELDS,
                         )
                     except ApprovedExecutionError as exc:
+                        mismatch_detail = (
+                            "approved training contract mismatch"
+                            if uses_explicit_oot_split
+                            else "local training contract mismatch"
+                        )
                         raise HTTPException(
                             status_code=409,
-                            detail="approved training contract mismatch",
+                            detail=mismatch_detail,
                         ) from exc
-                    X_train_source = X_train_source.loc[:, list(approved_columns)]
-                    X_validation_source = X_validation_source.loc[:, list(approved_columns)]
+                    X_train_source = X_train_source.loc[:, list(bound_columns)]
+                    X_validation_source = X_validation_source.loc[:, list(bound_columns)]
                     categorical_features = [
-                        feature for feature in categorical_features if feature in approved_columns
+                        feature
+                        for feature in categorical_features
+                        if feature in bound_columns
                     ]
-                    approved_train_count = len(X_train_source)
-                    X = pd.concat(
-                        [X_train_source, X_validation_source],
-                        ignore_index=True,
-                    )
-                    y = pd.concat(
-                        [y_train_source, y_validation_source],
-                        ignore_index=True,
-                    )
-                    df = pd.concat(
-                        [df_train_source, df_validation_source],
-                        ignore_index=True,
-                    )
-                    df_optimized = pd.concat(
-                        [df_train_optimized, df_validation_optimized],
-                        ignore_index=True,
-                    )
-                else:
-                    df_optimized, optimizer, categorical_features = prepare_for_lightgbm_ultimate(
-                        df, target_col=request.target, is_training=True
-                    )
-                    X = df_optimized.drop(
-                        [c for c in exclude_cols if c in df_optimized.columns],
-                        axis=1,
-                    )
-                    obj_cols = X.select_dtypes(include=["object"]).columns.tolist()
-                    if obj_cols:
-                        X = X.drop(columns=obj_cols)
+
+                train_count = len(X_train_source)
+                X = pd.concat(
+                    [X_train_source, X_validation_source],
+                    ignore_index=True,
+                )
+                y = pd.concat(
+                    [y_train_source, y_validation_source],
+                    ignore_index=True,
+                )
+                df = pd.concat(
+                    [df_train_source, df_validation_source],
+                    ignore_index=True,
+                )
+                evaluation_frame = pd.concat(
+                    [evaluation_train, evaluation_validation],
+                    ignore_index=True,
+                )
+                df_optimized = pd.concat(
+                    [df_train_optimized, df_validation_optimized],
+                    ignore_index=True,
+                )
                 feature_count = len(X.columns)
                 _all_feature_columns = X.columns.tolist()
 
-                from sklearn.model_selection import train_test_split
                 from sklearn.metrics import roc_auc_score, log_loss
                 import lightgbm as lgb
 
-                # 時系列分割（ランダム分割より汎化性能検証に適切）
                 X = X.reset_index(drop=True)
                 y = y.reset_index(drop=True)
-
-                _is_regression = request.target == "speed_deviation"
-                _is_ranking    = request.target == "rank"
-
-                # regression 前処理: finish_time NaN 行を分割前に除去
-                # race_results_ultimate に出馬表(shutuba)データが混在すると
-                # 時系列分割でテストセットが全 NaN になり model.predict が失敗する
-                if _is_regression:
-                    _pre_valid = y.notna().values
-                    if not _pre_valid.all():
-                        n_removed = int((~_pre_valid).sum())
-                        logger.info(
-                            f"speed_deviation 前処理: finish_time NaN {n_removed} 行を除去 "
-                            f"({int(_pre_valid.sum())} 行が有効)"
-                        )
-                        X = X.loc[_pre_valid].reset_index(drop=True)
-                        y = y.loc[_pre_valid].reset_index(drop=True)
-                        # df のインデックスを同期（race_date が時系列分割に使用される）
-                        df = df.reset_index(drop=True).loc[_pre_valid].reset_index(drop=True)
-
-                _time_split = approved_execution is not None
-                if approved_execution is not None:
-                    X_train = X.iloc[:approved_train_count]
-                    X_test = X.iloc[approved_train_count:]
-                    y_train = y.iloc[:approved_train_count]
-                    y_test = y.iloc[approved_train_count:]
-                    logger.info(
-                        "Approved out-of-time split: train=%s validation=%s",
-                        len(X_train),
-                        len(X_test),
-                    )
-                elif "race_date" in df.columns:
-                    _dates = pd.to_datetime(
-                        df["race_date"].reset_index(drop=True).astype(str).str[:8],
-                        format="%Y%m%d", errors="coerce",
-                    )
-                    _cutoff = _dates.quantile(1.0 - request.test_size)
-                    _tr_mask = (_dates <= _cutoff).values
-                    _te_mask = ~_tr_mask
-                    if int(_tr_mask.sum()) >= 200 and int(_te_mask.sum()) >= 50:
-                        X_train = X.loc[_tr_mask]
-                        X_test = X.loc[_te_mask]
-                        y_train = y.loc[_tr_mask]
-                        y_test = y.loc[_te_mask]
-                        _time_split = True
-                        logger.info(f"時系列分割: 学習 {_tr_mask.sum()}行, テスト {_te_mask.sum()}行")
-                if not _time_split:
-                    if _is_regression:
-                        X_train, X_test, y_train, y_test = train_test_split(
-                            X, y, test_size=request.test_size, random_state=42
-                        )
-                    elif _is_ranking:
-                        X_train, X_test, y_train, y_test = train_test_split(
-                            X, y, test_size=request.test_size, random_state=42
-                        )
-                    else:
-                        X_train, X_test, y_train, y_test = train_test_split(
-                            X, y, test_size=request.test_size, random_state=42, stratify=y
-                        )
-                # speed_deviation: NaN行を除外（タイム欠損馬）
-                if _is_regression:
-                    _valid_train = y_train.notna()
-                    _valid_test  = y_test.notna()
-                    X_train, y_train = X_train.loc[_valid_train], y_train.loc[_valid_train]
-                    X_test,  y_test  = X_test.loc[_valid_test],   y_test.loc[_valid_test]
+                evaluation_frame = evaluation_frame.reset_index(drop=True)
+                X_train = X.iloc[:train_count]
+                X_test = X.iloc[train_count:]
+                y_train = y.iloc[:train_count]
+                y_test = y.iloc[train_count:]
+                logger.info(
+                    "%s split: train=%s validation=%s",
+                    "Out-of-time" if holdout_is_time_based else "Race-group",
+                    len(X_train),
+                    len(X_test),
+                )
 
                 categorical_indices = [X.columns.get_loc(c) for c in categorical_features if c in X.columns]
 
+                cv_fold_pairs = None
+                cv_plan = None
+                if not _is_ranking:
+                    try:
+                        cv_plan = build_training_cv_plan(
+                            df_train_source,
+                            n_splits=request.cv_folds,
+                        )
+                    except ValueError as exc:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"内部CVを構成できません: {exc}",
+                        ) from exc
+                    cv_fold_pairs = [
+                        (
+                            np.asarray(train_fold, dtype=np.int64),
+                            np.asarray(validation_fold, dtype=np.int64),
+                        )
+                        for train_fold, validation_fold in cv_plan.folds
+                    ]
+                    logger.info(
+                        "%s internal CV: folds=%s",
+                        "Forward-time" if cv_plan.time_based else "Race-group",
+                        len(cv_fold_pairs),
+                    )
+
                 if _is_ranking:
                     # ─── LambdaRank パス ─────────────────────────────────────
-                    # race_id ごとのグループサイズを計算（train/test 分割後の df を参照）
-                    _df_for_groups = df.reset_index(drop=True)
-                    _y_full = y.reset_index(drop=True)
-                    _tr_idx = X_train.index if hasattr(X_train, 'index') else range(len(X_train))
-                    _te_idx = X_test.index  if hasattr(X_test,  'index') else range(len(X_test))
-                    _race_ids_full = df_optimized["race_id"].reset_index(drop=True) if "race_id" in df_optimized.columns else pd.Series(["0"] * len(df_optimized))
-                    _race_ids_tr   = _race_ids_full.loc[list(_tr_idx)].values
-                    _race_ids_te   = _race_ids_full.loc[list(_te_idx)].values
-                    from collections import Counter as _Counter
-                    _ctr_tr = list(_Counter(_race_ids_tr).values())
-                    _ctr_te = list(_Counter(_race_ids_te).values())
+                    _race_ids_tr = df.iloc[:train_count]["race_id"].astype(str)
+                    _ctr_tr = list(ranking_group_sizes(_race_ids_tr))
                     _max_label = int(y_train.max()) if len(y_train) > 0 else 18
                     train_data = lgb.Dataset(
                         X_train.values, label=y_train.values,
                         group=_ctr_tr,
-                    )
-                    valid_data = lgb.Dataset(
-                        X_test.values, label=y_test.values,
-                        group=_ctr_te,
                     )
                     params = {
                         "objective":        "lambdarank",
@@ -518,22 +1109,16 @@ async def _do_train(
                     model = lgb.train(
                         params, train_data,
                         num_boost_round=500,
-                        valid_sets=[valid_data],
-                        callbacks=[
-                            lgb.early_stopping(stopping_rounds=50, verbose=False),
-                            lgb.log_evaluation(100),
-                        ],
+                        callbacks=[lgb.log_evaluation(100)],
                     )
                     _scores = model.predict(X_test.values)
-                    from scipy.stats import spearmanr as _spr
-                    import numpy as _np_loc_r
-                    _sp, _ = _spr(y_test.values, _scores)
-                    auc = float(_sp) if not _np_loc_r.isnan(_sp) else 0.0
+                    # A global Spearman score is invalid here because rank
+                    # relevance depends on each race's field size.  Per-race
+                    # metrics are computed after this block and macro-averaged.
+                    auc = 0.0
                     logloss = 0.0
-                    cv_auc_mean = auc
+                    cv_auc_mean = 0.0
                     cv_auc_std  = 0.0
-                    best_round_cv = model.num_trees()
-                    best_round_final = best_round_cv
                     y_pred_proba = _scores
                     _is_ranker_model = True
                 else:
@@ -576,8 +1161,9 @@ async def _do_train(
                     _cv_lgb_cb.order = 100
                     cv_result = lgb.cv(
                         params, train_data,
-                        num_boost_round=1000, nfold=request.cv_folds,
-                        stratified=(not _is_regression), return_cvbooster=True,
+                        num_boost_round=1000,
+                        folds=cv_fold_pairs,
+                        return_cvbooster=True,
                         callbacks=[
                             lgb.early_stopping(stopping_rounds=50, verbose=False),
                             lgb.log_evaluation(period=0),
@@ -596,7 +1182,7 @@ async def _do_train(
                         best_round_cv = len(cv_result["valid binary_logloss-mean"])
                         cv_auc_mean = 1.0 - cv_logloss_mean
                         cv_auc_std  = cv_logloss_std
-                    best_round_final = int(best_round_cv * request.cv_folds / (request.cv_folds - 1))
+                    best_round_final = best_round_cv
 
                     progress_cb("最終モデル学習中...", 60)
                     full_train_data = lgb.Dataset(X_train, y_train, categorical_feature=categorical_indices)
@@ -619,7 +1205,6 @@ async def _do_train(
                         _sp, _ = _spearmanr(y_test, y_pred_proba)
                         auc = float(_sp) if not _np_loc.isnan(_sp) else 0.0
                         logloss = float(_np_loc.sqrt(_np_loc.nanmean((y_test.values - y_pred_proba) ** 2)))
-                        cv_auc_mean = auc
                     else:
                         auc = roc_auc_score(y_test, y_pred_proba)
                         logloss = log_loss(y_test, y_pred_proba)
@@ -630,7 +1215,7 @@ async def _do_train(
                 raise
 
             # Optuna
-            if request.use_optuna:
+            if request.use_optuna and not (_is_regression or _is_ranking):
                 optuna_executed = True
                 try:
                     print("\n=== Optunaハイパーパラメータ最適化 ===")
@@ -639,10 +1224,13 @@ async def _do_train(
                         categorical_indices = [X.columns.get_loc(c) for c in categorical_features if c in X.columns]
                         optuna_optimizer = OptunaLightGBMOptimizer(
                             n_trials=request.optuna_trials, cv_folds=request.cv_folds,
-                            random_state=42, timeout=300,
+                            random_state=42, timeout=request.optuna_timeout,
                         )
                         best_params, best_optuna_score = optuna_optimizer.optimize(
-                            X, y, categorical_features=categorical_indices,
+                            X_train,
+                            y_train,
+                            categorical_features=categorical_indices,
+                            folds=cv_fold_pairs,
                         )
                         optimized_params = optuna_optimizer.get_best_model_params()
                         optuna_num_rounds = optimized_params.pop("n_estimators", 1000)
@@ -659,8 +1247,8 @@ async def _do_train(
                         _opt_cv_lgb_cb.order = 100
                         cv_result_opt = lgb.cv(
                             optimized_params, train_data_opt,
-                            num_boost_round=optuna_num_rounds, nfold=request.cv_folds,
-                            stratified=(not _is_regression),
+                            num_boost_round=optuna_num_rounds,
+                            folds=cv_fold_pairs,
                             callbacks=[
                                 lgb.early_stopping(stopping_rounds=50, verbose=False),
                                 lgb.log_evaluation(period=0),
@@ -686,7 +1274,7 @@ async def _do_train(
                             cv_auc_mean = 0.0
                             cv_auc_std = 0.0
                             best_round_opt = optuna_num_rounds
-                        best_round_opt_final = int(best_round_opt * request.cv_folds / (request.cv_folds - 1))
+                        best_round_opt_final = best_round_opt
                         progress_cb("Optunaパラメータでモデル再学習中...", 82)
                         _opt_final_rounds = best_round_opt_final
                         def _opt_final_lgb_cb(env,
@@ -706,7 +1294,6 @@ async def _do_train(
                             _sp2, _ = _spearmanr2(y_test, y_pred_proba)
                             auc = float(_sp2) if not _np_loc2.isnan(_sp2) else 0.0
                             logloss = float(_np_loc2.sqrt(_np_loc2.nanmean((y_test.values - y_pred_proba) ** 2)))
-                            cv_auc_mean = auc
                         else:
                             auc = roc_auc_score(y_test, y_pred_proba)
                             logloss = log_loss(y_test, y_pred_proba)
@@ -718,13 +1305,20 @@ async def _do_train(
                             "gradient_boosting": "gradient_boosting",
                         }
                         optimize_model(
-                            model_type_map[request.model_type], X.values, y.values,
-                            n_trials=request.optuna_trials, timeout=300,
+                            model_type_map[request.model_type],
+                            X_train.values,
+                            y_train.values,
+                            n_trials=request.optuna_trials, timeout=request.optuna_timeout,
                         )
                 except Exception as e:
                     optuna_error = f"{type(e).__name__}: {str(e)}"
                     print(f"❌ Optuna最適化エラー: {optuna_error}")
                     traceback.print_exc()
+            elif request.use_optuna:
+                optuna_error = (
+                    "Optunaは二値分類ターゲット（win/place3/win_tie）のみ対応しています"
+                )
+                logger.info("Optuna skipped: %s", optuna_error)
 
         else:
             # Phase 0: 標準モード削除。use_optimizer=True/model_type='lightgbm' のみサポート。
@@ -739,7 +1333,7 @@ async def _do_train(
         calibrator = None
         logloss_calibrated = logloss
         if (
-            approved_execution is None
+            allows_calibration
             and request.target not in ("speed_deviation", "rank")
         ):
             try:
@@ -764,12 +1358,50 @@ async def _do_train(
             except Exception as _cal_err:
                 logger.warning(f"キャリブレーション学習失敗: {_cal_err}")
 
+        evaluation: dict = {}
+        if request.target == "speed_deviation":
+            evaluation_test = evaluation_frame.loc[X_test.index].reset_index(drop=True)
+            evaluation = evaluate_speed_deviation_predictions(
+                actual=y_test.reset_index(drop=True),
+                predicted=y_pred_proba,
+                race_ids=evaluation_test["race_id"],
+                finish_positions=evaluation_test["finish"],
+                race_dates=evaluation_test["race_date"],
+                popularity=evaluation_test["popularity"],
+                odds=evaluation_test["odds"],
+                payouts=evaluation_test["tansho_payout"],
+            )
+            if not evaluation or evaluation["primary"].get("rank_correlation") is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="速度モデルのレース内順位相関を評価できません",
+                )
+            auc = float(evaluation["primary"]["rank_correlation"])
+            logloss = float(evaluation["primary"]["rmse"])
+        elif request.target == "rank":
+            evaluation_test = evaluation_frame.loc[X_test.index].reset_index(drop=True)
+            evaluation = evaluate_ranking_predictions(
+                actual_relevance=y_test.reset_index(drop=True),
+                predicted=y_pred_proba,
+                race_ids=evaluation_test["race_id"],
+                race_dates=evaluation_test["race_date"],
+            )
+            if not evaluation:
+                raise HTTPException(
+                    status_code=400,
+                    detail="ランキング評価に必要な複数頭レースがありません",
+                )
+            auc = float(evaluation["primary"]["ndcg_at_3"])
+
         # モデル保存 — IDはデータ日付範囲 + 作成日時（一意性を保証）
         progress_cb("モデルを保存中...", 93)
         date_from_8 = _get_date8_from(df)
         date_to_8 = _get_date8_to(df)
         saved_at = datetime.now().strftime("%Y%m%d_%H%M")
-        model_id = f"{date_from_8}_{date_to_8}_{saved_at}"
+        # Numeric suffix preserves existing UI parsing while preventing a
+        # later run in the same minute from replacing the earlier artifact.
+        artifact_suffix = datetime.now().strftime("%S%f")
+        model_id = f"{date_from_8}_{date_to_8}_{saved_at}_{artifact_suffix}"
         model_filename = f"model_{request.target}_{request.model_type}_{model_id}.joblib"
         if approved_execution is None:
             model_directory = MODELS_DIR
@@ -795,6 +1427,9 @@ async def _do_train(
                 "use_optimizer": request.use_optimizer,
                 "optimizer_type": type(optimizer).__name__ if optimizer is not None else None,
                 "requires_full_history": True,
+                "holdout_kind": (
+                    "out_of_time" if holdout_is_time_based else "race_group"
+                ),
                 "feature_engineering_hash": __import__("hashlib").md5(
                     __import__("inspect").getsource(
                         __import__("keiba_ai.feature_engineering", fromlist=["add_derived_features"])
@@ -806,6 +1441,9 @@ async def _do_train(
                 "logloss_calibrated": float(logloss_calibrated),
                 "cv_auc_mean": float(cv_auc_mean), "cv_auc_std": float(cv_auc_std),
             },
+            "evaluation": evaluation,
+            "training_eligibility": eligibility_manifest,
+            "speed_deviation_baseline": speed_deviation_baseline,
             "data_count": len(df),
             "race_count": df["race_id"].nunique() if "race_id" in df.columns else 0,
             "created_at": saved_at,
@@ -813,38 +1451,64 @@ async def _do_train(
             "training_date_to": _get_actual_date_to(df, request.training_date_to),
         }
         if approved_execution is not None:
-            bundle["approved_execution"] = {
+            execution_policy = getattr(
+                approved_execution,
+                "execution_policy",
+                "approved-retrain",
+            )
+            execution_binding_key = (
+                "local_execution"
+                if execution_policy == "local-admin-train"
+                else "approved_execution"
+            )
+            execution_binding = {
+                "execution_policy": execution_policy,
                 "job_id": approved_execution.job_id,
                 "approved_payload_hash": approved_execution.approved_payload_hash,
                 "data_snapshot_sha256": approved_execution.data_snapshot_sha256,
                 "feature_contract_sha256": approved_execution.feature_contract_sha256,
                 "candidate_commit_sha": approved_execution.candidate_commit_sha,
                 "active_model_id": approved_execution.active_model_id,
-                "train_period": {
+            }
+            if uses_explicit_oot_split:
+                execution_binding["train_period"] = {
                     "start": approved_execution.train_period_start,
                     "end": approved_execution.train_period_end,
-                },
-                "validation_period": {
+                }
+                execution_binding["validation_period"] = {
                     "start": approved_execution.validation_period_start,
                     "end": approved_execution.validation_period_end,
-                },
-            }
+                }
+            else:
+                execution_binding["training_period"] = {
+                    "from": request.training_date_from,
+                    "to": request.training_date_to,
+                }
+            bundle[execution_binding_key] = execution_binding
+            source_tree_sha256 = getattr(
+                approved_execution,
+                "source_tree_sha256",
+                None,
+            )
+            active_model_sha256 = getattr(
+                approved_execution,
+                "active_model_sha256",
+                None,
+            )
+            if source_tree_sha256 is not None:
+                execution_binding["source_tree_sha256"] = source_tree_sha256
+            if active_model_sha256 is not None:
+                execution_binding["active_model_sha256"] = active_model_sha256
         # LambdaRank はランカー固有フラグを保存
         if request.target == "rank" and locals().get("_is_ranker_model"):
             bundle["_is_ranker"] = True
-        joblib.dump(bundle, model_path)
+        _atomic_joblib_dump(bundle, model_path)
 
-        # カタログをモデルの特徴量で自動同期（新規特徴量を auto_synced ステージに追記）
-        try:
-            _catalog_path = Path(__file__).parent.parent.parent / "keiba" / "feature_catalog.yaml"
-            if approved_execution is None and _catalog_path.exists():
-                _cat = FeatureCatalog.load(_catalog_path)
-                _new = _cat.sync_with_model_features(bundle.get("feature_columns", []))
-                if _new:
-                    _cat.save(_catalog_path)
-                    logger.info(f"feature_catalog.yaml に {len(_new)} 件の新規特徴量を追記: {_new}")
-        except Exception as _e:
-            logger.warning(f"feature_catalog 同期スキップ: {_e}")
+        # Training artifacts must not mutate the source-controlled feature
+        # catalog. Catalog changes are reviewed and committed separately.
+        _catalog_path = Path(__file__).parent.parent.parent / "keiba" / "feature_catalog.yaml"
+        if approved_execution is None and _catalog_path.exists():
+            logger.debug("feature_catalog auto-sync is disabled for local training")
 
         # Supabase へモデルアップロード（ブロッキング I/O を to_thread で分離）
         if approved_execution is None and SUPABASE_DATA_ENABLED and get_supabase_client():
@@ -872,6 +1536,18 @@ async def _do_train(
 
         progress_cb("学習完了", 98)
         training_time = (datetime.now() - start_time).total_seconds()
+        completion_message = (
+            f"モデル学習完了 (順位相関: {auc:.4f}, RMSE: {logloss:.4f})"
+            if request.target == "speed_deviation"
+            else (
+                f"モデル学習完了 (NDCG@3: {auc:.4f})"
+                if request.target == "rank"
+                else (
+                    f"モデル学習完了 (AUC: {auc:.4f}, LogLoss: {logloss:.4f}, "
+                    f"LogLoss(Cal): {logloss_calibrated:.4f})"
+                )
+            )
+        )
         return TrainResponse(
             success=True,
             model_id=model_id,
@@ -881,14 +1557,16 @@ async def _do_train(
                 "logloss_calibrated": float(logloss_calibrated),
                 "cv_auc_mean": float(cv_auc_mean), "cv_auc_std": float(cv_auc_std),
             },
+            evaluation=evaluation,
             data_count=len(df),
             race_count=df["race_id"].nunique() if "race_id" in df.columns else 0,
             feature_count=feature_count,
             training_time=training_time,
-            message=f"モデル学習完了 (AUC: {auc:.4f}, LogLoss: {logloss:.4f}, LogLoss(Cal): {logloss_calibrated:.4f})",
+            message=completion_message,
             optuna_executed=optuna_executed,
             optuna_error=optuna_error,
             feature_columns=_all_feature_columns,
+            training_eligibility=eligibility_manifest,
         )
 
     except HTTPException:
@@ -903,86 +1581,501 @@ async def _do_train(
         raise HTTPException(status_code=500, detail=f"学習中にエラーが発生: {str(e)}")
 
 
+@router.get("/api/train/capability")
+async def train_capability(
+    current_user: dict = Depends(require_local_training_admin),
+    _: None = Depends(require_loopback_training_request),
+):
+    """Report whether this local Admin session can create a model."""
+    return _training_capability_state()
+
+
 @router.post("/api/train", response_model=TrainResponse)
-async def train_model(request: TrainRequest, current_user: dict = Depends(require_premium)):
-    """モデル学習エンドポイント"""
-    return await _do_train(request, current_user)
+async def train_model(
+    request: TrainRequest,
+    current_user: dict = Depends(require_local_training_admin),
+    _: None = Depends(require_loopback_training_request),
+):
+    """Reject the synchronous writer; local UI uses the serialized job route."""
+    _require_legacy_model_training_allowed()
+    raise HTTPException(
+        status_code=409,
+        detail="synchronous model training is disabled; use /api/train/start",
+    )
 
 
 # ── 非同期ジョブ管理 ──────────────────────────────────────
 
 
-async def _run_train_job(job_id: str, request: TrainRequest, current_user: dict) -> None:
-    job = _train_jobs[job_id]
-    job["status"] = "running"
-    job["pct"] = 0
-    persist_train_job(job_id, job)
+def _safe_local_failure_code(error: BaseException, fallback: str) -> str:
+    value = str(error).strip().lower()
+    if (
+        3 <= len(value) <= 63
+        and value[0].isalnum()
+        and all(char.isalnum() or char == "-" for char in value)
+    ):
+        return value
+    return fallback
 
-    def _cb(msg: str, pct: int = None) -> None:
-        job["progress"] = msg
-        if pct is not None:
-            job["pct"] = pct
-        persist_train_job(job_id, job)
 
+async def _execute_queued_local_retrain(job_id: str) -> None:
+    """Run one already-bound queued job through the shared fenced coordinator."""
+
+    from training.db_context_registry import request_payload
+    store: LocalRetrainStore | None = None
     try:
-        train_result = await _do_train(request, current_user, progress_cb=_cb)
-        job["status"] = "completed"
-        job["result"] = train_result.dict()
-        job["progress"] = "完了"
-        job["pct"] = 100
-        persist_train_job(job_id, job)
-    except HTTPException as e:
-        job["status"] = "error"
-        job["error"] = e.detail
-        job["progress"] = f"エラー: {e.detail}"
-        persist_train_job(job_id, job)
-    except Exception as e:
-        job["status"] = "error"
-        job["error"] = str(e)
-        job["progress"] = f"エラー: {str(e)}"
-        persist_train_job(job_id, job)
-        logger.error(f"学習ジョブ {job_id} 失敗:\n{traceback.format_exc()}")
+        store, gateway = _get_local_retrain_runtime()
+        queued = store.get_job(job_id)
+        if queued.state != "queued" or queued.contract is None or queued.snapshot_path is None:
+            return
+        contract = queued.contract
+        initial_request = TrainRequest(**queued.request_payload)
+        # Options are taken only from the durable, owner-scoped start request;
+        # neither a resumed worker nor client can rewrite a queued policy.
+        def make_request(bundle):
+            value = TrainRequest(**request_payload(bundle))
+            if (_local_training_parameters(initial_request) != _local_training_parameters(value)
+                    or initial_request.target != value.target
+                    or initial_request.model_type != value.model_type
+                    or initial_request.feature_pipeline != value.feature_pipeline):
+                raise LocalRetrainError("local-shared-durable-request-mismatch")
+            if value.feature_pipeline in SHARED_PIPELINES:
+                from training.db_shared_acceleration import current_execution_receipt
+                receipt = current_execution_receipt()
+                if receipt is None or receipt["requested_device"] != initial_request.compute_device:
+                    raise LocalRetrainError("local-shared-durable-execution-mismatch")
+            return value.model_copy(update={"compute_device": initial_request.compute_device,
+                                            "reuse_features": initial_request.reuse_features})
+        parser = functools.partial(
+            LocalExecutionBundle.from_gateway,
+            expected_source_tree_sha256=contract.source_tree_sha256,
+            expected_active_model_sha256=contract.active_model_sha256,
+        )
+        coordinator = ApprovedRetrainCoordinator(
+            gateway,
+            worker_id=f"local-admin-{job_id[:8]}",
+            candidate_commit_sha=contract.candidate_commit_sha,
+            active_model_id=contract.active_model_id,
+            execution_policy=LOCAL_EXECUTION_POLICY,
+            lease_ttl_seconds=120,
+            trainer=_do_train,
+            bundle_parser=parser,
+            request_factory=make_request,
+            progress_observer=gateway.progress_observer(job_id),
+            snapshot_copier=copy_local_snapshot,
+            result_observer=gateway.stage_result,
+        )
+        artifact = await coordinator.run_job(
+            job_id=job_id,
+            expected_version=queued.record_version,
+            snapshot_source=queued.snapshot_path,
+        )
+        last_error: BaseException | None = None
+        for attempt in range(3):
+            try:
+                await asyncio.to_thread(
+                    gateway.record_result,
+                    job_id=job_id,
+                    artifact=artifact,
+                )
+                return
+            except Exception as exc:
+                last_error = exc
+                if attempt < 2:
+                    await asyncio.sleep(0.25 * (attempt + 1))
+        if last_error is not None:
+            raise last_error
+    except Exception as exc:
+        # `claim` happens before the Coordinator's guarded section. If it
+        # fails, close the otherwise-permanent queued state with a CAS. Once
+        # claimed, the Coordinator/lease protocol owns all failure mutation.
+        if store is not None:
+            try:
+                current = store.get_job(job_id)
+                if current.state == "queued":
+                    store.fail_queued(
+                        job_id=job_id,
+                        expected_version=current.record_version,
+                        failure_code="claim-runtime-binding-failed",
+                    )
+            except Exception:
+                logger.warning(
+                    "local retrain queued-job failure persistence failed for %s",
+                    job_id,
+                    exc_info=True,
+                )
+        logger.error("local retrain job %s failed:\n%s", job_id, traceback.format_exc())
+
+
+async def _prepare_and_execute_local_retrain(
+    job_id: str,
+    request: TrainRequest,
+    preparation_token: str,
+) -> None:
+    """Create immutable inputs asynchronously, then enter the lease protocol."""
+
+    store: LocalRetrainStore | None = None
+    try:
+        store, _gateway = _get_local_retrain_runtime()
+        preparing = store.get_job(job_id)
+        if preparing.state != "preparing":
+            return
+        if TrainRequest(**preparing.request_payload).model_dump() != request.model_dump():
+            raise LocalRetrainError("local-preparing-durable-request-mismatch")
+        heartbeat_lock = threading.Lock()
+        last_heartbeat = 0.0
+
+        def renew_preparation(*, force: bool = False) -> None:
+            """Renew only when this worker demonstrates forward activity."""
+
+            nonlocal last_heartbeat
+            observed = time.monotonic()
+            with heartbeat_lock:
+                if (
+                    not force
+                    and observed - last_heartbeat
+                    < _LOCAL_PREPARATION_HEARTBEAT_SECONDS
+                ):
+                    return
+                store.heartbeat_preparation(
+                    job_id=job_id,
+                    expected_version=preparing.record_version,
+                    preparation_token=preparation_token,
+                    ttl_seconds=_LOCAL_PREPARATION_TTL_SECONDS,
+                )
+                last_heartbeat = observed
+
+        renew_preparation(force=True)
+        store.update_progress(job_id, "実行条件を確認中", 1)
+        candidate_commit = await asyncio.to_thread(_candidate_commit_sha)
+        renew_preparation(force=True)
+        source_tree_sha256 = await asyncio.to_thread(
+            compute_source_tree_sha256,
+            _LOCAL_RETRAIN_SOURCE_ROOT,
+            heartbeat=renew_preparation,
+        )
+        renew_preparation(force=True)
+        active_binding = await asyncio.to_thread(_active_model_binding)
+        renew_preparation(force=True)
+        # Validate the trusted active bundle while retaining its artifact hash
+        # as the runtime authorization binding.  Its historical feature list
+        # is not a valid schema for today's transformer.
+        await asyncio.to_thread(
+            _active_model_features,
+            active_binding,
+        )
+        renew_preparation(force=True)
+
+        def snapshot_progress(done: int, total: int) -> None:
+            pct = 2 if total <= 0 else 2 + min(2, int(2 * done / total))
+            store.update_progress(job_id, "データを準備中", pct)
+
+        snapshot = await asyncio.to_thread(
+            create_sqlite_snapshot,
+            ULTIMATE_DB,
+            _LOCAL_RETRAIN_SNAPSHOT_CATALOG,
+            progress=snapshot_progress,
+            heartbeat=renew_preparation,
+        )
+        renew_preparation(force=True)
+
+        def feature_contract_progress(message: str, pct: int) -> None:
+            # Renewal is tied to completed/started pipeline phases.  There is
+            # deliberately no independent watchdog that can renew a hung job.
+            renew_preparation(force=True)
+            store.update_progress(job_id, message, pct)
+
+        if request.feature_pipeline in SHARED_PIPELINES:
+            from training.db_context_registry import selected_feature_columns
+            selected_features = selected_feature_columns(request.feature_pipeline)
+            feature_contract_progress(f"共通DB特徴量の契約を確認済み（{len(selected_features)}項目）", 5)
+        else:
+            selected_features = await asyncio.to_thread(
+                derive_local_feature_schema,
+                snapshot.path,
+                target=request.target,
+                training_date_from=request.training_date_from,
+                training_date_to=request.training_date_to,
+                test_size=request.test_size,
+                observe_phase=feature_contract_progress,
+            )
+        renew_preparation(force=True)
+        # Close the read/hash race before the immutable contract is queued.
+        if (
+            await asyncio.to_thread(_candidate_commit_sha) != candidate_commit
+            or await asyncio.to_thread(
+                compute_source_tree_sha256,
+                _LOCAL_RETRAIN_SOURCE_ROOT,
+                heartbeat=renew_preparation,
+            )
+            != source_tree_sha256
+            or await asyncio.to_thread(_active_model_binding) != active_binding
+        ):
+            raise LocalRetrainError("local-runtime-binding-changed")
+        contract = await asyncio.to_thread(
+            LocalTrainingContract.create,
+            job_id=job_id,
+            owner_id=preparing.owner_id,
+            snapshot=snapshot,
+            target=request.target,
+            model_type=request.model_type,
+            selected_features=selected_features,
+            removed_features=(),
+            candidate_commit_sha=candidate_commit,
+            source_tree_sha256=source_tree_sha256,
+            active_model_id=active_binding[0],
+            active_model_sha256=active_binding[1],
+            training_parameters=_local_training_parameters(request),
+            future_fields=FUTURE_FIELDS,
+        )
+        renew_preparation(force=True)
+        store.queue_job(
+            job_id=job_id,
+            expected_version=preparing.record_version,
+            preparation_token=preparation_token,
+            snapshot=snapshot,
+            contract=contract,
+        )
+    except Exception as exc:
+        if store is not None:
+            try:
+                current = store.get_job(job_id)
+                if current.state == "preparing":
+                    store.fail_preparation(
+                        job_id=job_id,
+                        expected_version=current.record_version,
+                        preparation_token=preparation_token,
+                        failure_code=_safe_local_failure_code(
+                            exc,
+                            "local-training-preparation-failed",
+                        ),
+                    )
+            except Exception:
+                logger.warning(
+                    "local retrain preparation failure persistence failed for %s",
+                    job_id,
+                    exc_info=True,
+                )
+        logger.error(
+            "local retrain job %s preparation failed:\n%s",
+            job_id,
+            traceback.format_exc(),
+        )
+        return
+    await _execute_queued_local_retrain(job_id)
+
+
+def _start_local_retrain_thread(
+    job_id: str,
+    *,
+    prepare_request: TrainRequest | None,
+    preparation_token: str | None = None,
+) -> None:
+    """Start one isolated worker process without exposing its token in argv.
+
+    Training loads large pandas/NumPy/LightGBM objects.  Running the whole
+    preparation and training pipeline outside FastAPI lets the operating
+    system reclaim that memory deterministically when the worker exits.
+    """
+
+    mode = "queued" if prepare_request is None else "prepare"
+    if mode == "prepare" and preparation_token is None:
+        raise LocalRetrainError("local-preparation-token-missing")
+    if not _LOCAL_RETRAIN_WORKER_ENTRYPOINT.is_file():
+        raise LocalRetrainError("local-runner-entrypoint-unavailable")
+
+    from training.db_shared_acceleration import resolve_runtime
+    durable_request = prepare_request
+    if durable_request is None:
+        store, _gateway = _get_local_retrain_runtime()
+        durable_request = TrainRequest(**store.get_job(job_id).request_payload)
+    runtime = resolve_runtime(durable_request.compute_device,
+                              durable_request.feature_pipeline in SHARED_PIPELINES)
+    payload = {
+        "schema_version": 2,
+        "mode": mode,
+        "job_id": job_id,
+        "preparation_token": preparation_token,
+        "request": prepare_request.model_dump() if prepare_request is not None else None,
+        "execution_receipt": runtime["execution_receipt"],
+    }
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    api_root = Path(__file__).resolve().parents[1]
+    interpreter = Path(runtime["interpreter"])
+    _LOCAL_RETRAIN_WORKER_LOG.parent.mkdir(parents=True, exist_ok=True)
+    creationflags = (
+        int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) if os.name == "nt" else 0
+    )
+    with _LOCAL_RETRAIN_WORKER_LOG.open("a", encoding="utf-8") as worker_log:
+        process = subprocess.Popen(
+            [
+                str(interpreter),
+                "-X",
+                "utf8",
+                str(_LOCAL_RETRAIN_WORKER_ENTRYPOINT),
+            ],
+            cwd=str(api_root),
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            stdin=subprocess.PIPE,
+            stdout=worker_log,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            close_fds=True,
+            creationflags=creationflags,
+            start_new_session=os.name != "nt",
+        )
+        if process.stdin is None:
+            process.kill()
+            raise LocalRetrainError("local-runner-stdin-unavailable")
+        try:
+            process.stdin.write(serialized + "\n")
+            process.stdin.flush()
+        except (BrokenPipeError, OSError) as exc:
+            process.kill()
+            raise LocalRetrainError("local-runner-start-failed") from exc
+        finally:
+            process.stdin.close()
 
 
 @router.post("/api/train/start")
-async def train_start(request: TrainRequest, current_user: dict = Depends(require_premium)):
-    """非同期学習ジョブを起動してすぐに job_id を返す"""
+async def train_start(
+    request: TrainRequest,
+    current_user: dict = Depends(require_local_training_admin),
+    _: None = Depends(require_loopback_training_request),
+):
+    """Create a durable local job and return before snapshot/training I/O."""
+
     _require_legacy_model_training_allowed()
-    _purge_old_jobs(_train_jobs)
+    if request.force_sync is not False:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "local-training-sync-forbidden",
+                "message": "非同期ジョブとして実行してください",
+            },
+        )
+    shared = request.feature_pipeline in SHARED_PIPELINES
+    if shared and (request.target != "speed_deviation" or request.use_optuna):
+        raise HTTPException(409, "共通DB学習は速度偏差・固定候補比較を使用してください")
+    if not (request.use_sqlite and request.ultimate_mode and request.use_optimizer is True):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "local-training-mode-invalid",
+                "message": "現在のモデル作成方式を使用してください",
+            },
+        )
+    capability = _training_capability_state()
+    if capability.get("enabled") is not True:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "local-training-unavailable",
+                "message": "モデル作成を利用できません",
+                "reason": capability.get("reason"),
+            },
+        )
+
+    owner_id = _local_owner_id(current_user)
+    normalized_request = request.model_copy(update={"force_sync": False})
     job_id = str(uuid.uuid4())
-    _train_jobs[job_id] = {"status": "queued", "progress": "キュー待ち", "pct": 0, "result": None, "error": None}
-    persist_train_job(job_id, _train_jobs[job_id], request.model_dump())
+    preparation_token = new_preparation_token()
     try:
-        import threading
-        def _bg() -> None:
-            # 別スレッドで独立した event loop を持つことでメインループをブロックしない
-            asyncio.run(_run_train_job(job_id, request, current_user))
-        threading.Thread(target=_bg, daemon=True, name=f"train-{job_id}").start()
-    except Exception as e:
-        _train_jobs[job_id]["status"] = "error"
-        _train_jobs[job_id]["error"] = f"タスク起動失敗: {e}"
-    persist_train_job(job_id, _train_jobs[job_id])
-    return {"job_id": job_id, "status": _train_jobs[job_id]["status"]}
+        store, _gateway = _get_local_retrain_runtime()
+        job = store.create_job(
+            job_id=job_id,
+            owner_id=owner_id,
+            request_payload=normalized_request.model_dump(),
+            preparation_token=preparation_token,
+            preparation_ttl_seconds=_LOCAL_PREPARATION_TTL_SECONDS,
+        )
+    except LocalRetrainConflict as exc:
+        detail: dict[str, object] = {
+            "code": "train-job-active",
+            "message": "別のモデル作成が実行中です",
+        }
+        if exc.job_id is not None:
+            detail["job_id"] = exc.job_id
+        raise HTTPException(status_code=409, detail=detail) from exc
+    except (LocalRetrainError, sqlite3.Error, OSError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="training job state is unavailable",
+        ) from exc
+
+    try:
+        _start_local_retrain_thread(
+            job_id,
+            prepare_request=normalized_request,
+            preparation_token=preparation_token,
+        )
+    except Exception as exc:
+        try:
+            store.fail_preparation(
+                job_id=job_id,
+                expected_version=job.record_version,
+                preparation_token=preparation_token,
+                failure_code="local-runner-start-failed",
+            )
+        except LocalRetrainError:
+            pass
+        raise HTTPException(
+            status_code=503,
+            detail="training job runner is unavailable",
+        ) from exc
+    return {"job_id": job_id, "status": "queued"}
 
 
 @router.get("/api/train/status/{job_id}")
-async def train_job_status(job_id: str):
-    """学習ジョブの進捗・結果を返す"""
-    job = _train_jobs.get(job_id) or load_train_job(job_id)
-    if not job:
+async def train_job_status(
+    job_id: str,
+    current_user: dict = Depends(require_local_training_admin),
+    _: None = Depends(require_loopback_training_request),
+):
+    """Return only this Admin's durable job projection without mutating it."""
+
+    owner_id = _local_owner_id(current_user)
+    try:
+        store, _gateway = _get_local_retrain_runtime()
+        record = store.get_job_for_owner(job_id, owner_id)
+    except LocalRetrainNotFound:
+        record = None
+    except (LocalRetrainError, sqlite3.Error, OSError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="training job state is unavailable",
+        ) from exc
+
+    if record is not None:
+        return record.to_status()
+
+    # Preserve a terminal projection for pre-migration local jobs only.
+    legacy_job = load_train_job(job_id)
+    if legacy_job and str(legacy_job.get("owner_id") or "") == str(
+        current_user.get("user_id") or ""
+    ):
+        return {
+            "job_id": job_id,
+            "status": legacy_job["status"],
+            "progress": legacy_job["progress"],
+            "pct": legacy_job.get("pct", 0),
+            "result": legacy_job.get("result"),
+            "error": legacy_job.get("error"),
+        }
+
+    if record is None:
         return {
             "job_id": job_id,
             "status": "not_found",
             "progress": "",
             "pct": 0,
             "result": None,
-            "error": f"学習ジョブ {job_id} が見つかりません（サーバー再起動の可能性）",
+            "error": "学習ジョブが見つかりません",
         }
-    return {
-        "job_id": job_id,
-        "status": job["status"],
-        "progress": job["progress"],
-        "pct": job.get("pct", 0),
-        "result": job.get("result"),
-        "error": job.get("error"),
-    }

@@ -55,8 +55,8 @@
 # プロジェクトディレクトリに移動
 cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
 
-# VPN接続確認テストを実行
-C:\Users\yuki2\Documents\ws\keiba\Scripts\python.exe test_after_vpn.py
+# VPN接続後の外向きIPを確認
+python-api\.venv\Scripts\python.exe -X utf8 -c "import requests; print(requests.get('https://api.ipify.org', timeout=10).text)"
 ```
 
 ### 期待される結果:
@@ -102,8 +102,9 @@ C:\Users\yuki2\Documents\ws\keiba\Scripts\python.exe test_after_vpn.py
 ### VPN経由でのアクセスが成功した場合:
 
 ```powershell
-# レート制限を守ったテストスクリプト
-C:\Users\yuki2\Documents\ws\keiba\Scripts\python.exe test_actual_working_raceid.py
+# 現行の収集経路と安全設定を確認
+.\start-keiba-ai-pro.bat
+npm run status
 ```
 
 ### ⚠️ 重要な注意事項:
@@ -152,17 +153,18 @@ C:\Users\yuki2\Documents\ws\keiba\Scripts\python.exe test_actual_working_raceid.
 
 ### IPアドレス確認のみ
 ```powershell
-C:\Users\yuki2\Documents\ws\keiba\Scripts\python.exe -c "import requests; print(requests.get('https://api.ipify.org').text)"
+python-api\.venv\Scripts\python.exe -X utf8 -c "import requests; print(requests.get('https://api.ipify.org', timeout=10).text)"
 ```
 
 ### VPN接続後の総合テスト
 ```powershell
-C:\Users\yuki2\Documents\ws\keiba\Scripts\python.exe test_after_vpn.py
+python-api\.venv\Scripts\python.exe -X utf8 -c "import requests; print(requests.get('https://api.ipify.org', timeout=10).text)"
 ```
 
 ### 基本的な接続テスト
 ```powershell
-C:\Users\yuki2\Documents\ws\keiba\Scripts\python.exe test_actual_working_raceid.py
+.\start-keiba-ai-pro.bat
+npm run status
 ```
 
 ---

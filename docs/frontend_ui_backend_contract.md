@@ -1,7 +1,7 @@
 # Frontend UI / Backend Contract Inventory
 
-Updated: 2026-07-05
-Scope: Current-state inventory only (no behavior change)
+Updated: 2026-09-12
+Scope: Current-state inventory
 
 ## 0. Purpose
 
@@ -15,16 +15,18 @@ Architecture (current):
 
 | UI Page | Role | Uses API | Notes |
 |---|---|---|---|
-| src/app/home/page.tsx | entry dashboard | yes | health/data summary |
-| src/app/data-collection/page.tsx | scrape/profiling ops | yes | includes scrape health-like probe |
-| src/app/train/page.tsx | model training management | yes | async train job flow |
+| src/app/home/page.tsx | user/Admin shared five-function hub | no | Admin role is detected automatically; no screen-mode switch |
+| src/app/data-collection/page.tsx | compact Admin scrape ops | yes | AdminActionRouteGuard; normal UI is health/range/Dry-run/normal execute/cooperative stop/progress/latest summary/three stats only; maintenance surfaces are hidden |
+| src/app/train/page.tsx | Admin model creation | yes | AdminActionRouteGuard; async train job flow |
 | src/app/predict-batch/page.tsx | batch race prediction/purchase | yes | central prediction workflow |
 | src/app/race-analysis/page.tsx | single race analysis | yes | model switch + cache |
 | src/app/feature-lab/page.tsx | feature catalog/importance/coverage | yes | premium-sensitive endpoints behind API |
 | src/app/data-view/page.tsx | raw/features debug viewer | yes | premium-sensitive debug endpoints |
 | src/app/prediction-history/page.tsx | prediction performance history | yes | premium-sensitive endpoint |
 | src/app/dashboard/page.tsx | purchase performance dashboard | yes | purchase/statistics endpoints |
-| src/app/admin/page.tsx | admin operational page | yes | currently uses data-stats |
+| src/app/user-management/page.tsx | read-only Admin user list | yes | AdminActionRouteGuard; safe profile projection only; no role-changing UI |
+| src/app/production-readiness/page.tsx | hidden readiness checks | yes | AdminActionRouteGuard; read-only operational checks; no Home link |
+| src/app/admin/page.tsx | legacy admin route | no | clears the short-lived Admin confirmation grant and redirects to `/home` |
 | src/app/login/page.tsx | authentication screen | no direct backend | auth entry only |
 | src/app/page.tsx | landing page | no direct backend | marketing/entry |
 
@@ -32,12 +34,14 @@ Architecture (current):
 
 | UI Screen | Next API Route | FastAPI Endpoint | Permission (effective) | State | Gap |
 |---|---|---|---|---|---|
-| train | /api/ml/train/start | POST /api/train/start | Premium/Admin + exact local/test opt-in | local compatibility | deployed/unknown environments fail closed at Next and FastAPI; normal UI is disabled pending an approval-bound durable job runner |
-| train | /api/ml/train/status/[job_id] | GET /api/train/status/{job_id} | login required (token expected) | production | add UI pre-check for unauthorized |
+| train | /api/ml/train/capability | GET /api/train/capability | Admin mode (current-password verification) + loopback + exact local/test opt-in | local compatibility | Production remains disabled; UI enables start only after this preflight succeeds |
+| train | /api/ml/train/start | POST /api/train/start | Admin mode (current-password verification) + loopback + exact local/test opt-in | local compatibility | verified bearer token is forwarded; deployed/unknown environments fail closed at Next and FastAPI |
+| train | /api/ml/train/status/[job_id] | GET /api/train/status/{job_id} | verified Admin + loopback + exact local/test opt-in | local compatibility | canonical job UUID only; polling may continue after the short-lived start grant expires |
 | train | /api/models | GET /api/models | login required | production | none critical |
 | train | /api/models/[id] | GET /api/models/{model_id} | authenticated read | production | none critical |
 | train | /api/models/[id] | DELETE /api/models/{model_id} | Admin + exact local/test opt-in | local compatibility | deployed/unknown environments fail closed; UI deletion is disabled pending separate durable retirement approval |
 | train | /api/models/[id]/activate | PUT /api/models/{model_id}/activate | Admin + explicit local/test opt-in only | local compatibility | deployed and unknown environments fail closed; UI direct activation is disabled |
+| production-readiness | /api/production-readiness | local allowlisted build/health/smoke checks | UI: Admin action pre-check; API: Premium/Admin | production | no business DB write; local artifacts and compute load may still occur |
 | model-redesign-workbench | /api/model-redesign/jobs | private Supabase RPC | Admin + approved requester + exact approval CAS/hash | internal API | durable queued submission exists; UI wiring and worker execution remain absent |
 | model-redesign-workbench | /api/model-redesign/jobs/[job_id] | private Supabase RPC | Admin | internal API | authoritative queued status only; no execution claim exists |
 | predict-batch | /api/analyze-race | POST /api/analyze_race | login required | production | none critical |
@@ -51,14 +55,16 @@ Architecture (current):
 | data-view | /api/debug/race/[race_id] | GET /api/debug/race/{race_id} | premium required (backend) | production | UI guard missing |
 | data-view | /api/debug/race/[race_id]/features | GET /api/debug/race/{race_id}/features | premium required (backend) | production | UI guard missing |
 | prediction-history | /api/prediction-history | GET /api/prediction-history | premium required (backend) | production | UI guard missing |
-| data-collection | /api/scrape | POST /api/scrape (legacy sync) | login required/admin-intent | production | uses legacy sync endpoint |
+| data-collection | /api/scrape | POST /api/scrape (legacy sync) | login required/admin-intent | production | normal UI uses Dry-run or normal execute and fixes `force_rescrape=false` |
 | data-collection | /api/scrape/status/[jobId] | GET /api/scrape/status/{job_id} | login required | production | batch scrape polling endpoint |
-| data-collection | /api/scrape/history | GET /api/scrape/history | login required | production | fetch summary history (read-only) |
+| data-collection | /api/scrape/cancel/[jobId] | POST /api/scrape/cancel/{job_id} | Admin action confirmation + backend owner scope | production candidate | durable cooperative stop; `cancelling` remains locked until authoritative terminal state; migration must precede or accompany backend rollout |
+| data-collection | /api/scrape/history | GET /api/scrape/history | login required | production | read-only; normal UI renders the latest fetch summary only |
 | data-collection | /api/scrape/health | GET /api/scrape/health | login required | production | dedicated health contract |
-| data-collection | /api/profiling | POST /api/profiling/start | login required | production | query/body contract should be documented |
-| data-collection | /api/profiling/status/[job_id] | GET /api/profiling/status/{job_id} | login required | production | none critical |
-| data-collection | /api/races/recent | GET /api/races/recent | login required | production | none critical |
-| data-collection | /api/races/[race_id]/horses | GET /api/races/{race_id}/horses | login required | production | none critical |
+| data-collection | /api/data-stats | GET /api/data_stats | login required | production | normal UI renders total races, total runners, and latest acquisition date |
+| data-collection maintenance | /api/profiling | POST /api/profiling/start | login required | production | capability retained; not exposed on the normal Data Collection surface |
+| data-collection maintenance | /api/profiling/status/[job_id] | GET /api/profiling/status/{job_id} | login required | production | capability retained; not exposed on the normal Data Collection surface |
+| data-collection maintenance | /api/races/recent | GET /api/races/recent | login required | production | capability retained; recent-race list is hidden from the normal surface |
+| data-collection maintenance | /api/races/[race_id]/horses | GET /api/races/{race_id}/horses | login required | production | capability retained; race-detail viewer is hidden from the normal surface |
 | dashboard | /api/purchase/[id] | PATCH/DELETE /api/purchase/{purchase_id} | login required | production | none critical |
 | dashboard | /api/purchase-history | GET /api/purchase_history | login required | production | naming mixed |
 | dashboard | /api/statistics | GET /api/statistics | login required | production | none critical |
@@ -72,8 +78,9 @@ Architecture (current):
 |---|---|---|---|
 | GET /api/prediction-history and /{race_id} | require_premium | no explicit pre-guard | user sees runtime failure instead of gated UX |
 | GET /api/debug/race/{race_id} and /features | require_premium | no explicit pre-guard | premium feature exposed by navigation but denied at runtime |
-| POST /api/train (synchronous route) | require_premium | no explicit pre-guard | unexpected 403 if called directly |
+| POST /api/train (synchronous route) | Admin + loopback + exact local opt-in | no UI caller | always rejects with 409; the serialized `/api/train/start` route is the only local writer |
 | POST /api/scrape/start | require_admin + operational saga binding | Admin workflow guard | deployed execute remains disabled until fenced destination exists |
+| POST /api/scrape/cancel/{job_id} | require_admin + owner-scoped operational mutation | Admin action confirmation + active-job UI | migration ordinal 22 must be applied before or with the backend; otherwise cancellation fails closed without changing the job |
 | POST /api/scrape/repair/{race_id} and /api/rescrape_incomplete | require_admin + local-only legacy opt-in | no executable UI | Next and FastAPI both reject deployed/unknown environments |
 | screens using authFetch generally | token optional at fetch layer | no centralized role gating matrix | inconsistent UX across pages |
 
@@ -189,12 +196,19 @@ Guarded screens (P0):
 	- non-premium: debug/features and prediction-history calls suppressed
 	- premium-only notices shown in locked tabs
 	- 401/403 on result API: explicit permission message
+- src/app/home/page.tsx + src/app/user-management/page.tsx
+	- user and Admin share the same `/home` shell without a mode switch
+	- Admin sees the five ordered functions automatically; ordinary users see prediction and performance only
+	- user management is a separate read-only page and does not expose role-changing controls
+	- Admin-only pages verify the current password as a UI pre-check at the action boundary
+	- the user-list API also requires the signed short-lived grant; other operation APIs retain their existing role/environment contracts
 - src/app/admin/page.tsx
-	- Admin badge shown in header
+	- legacy route redirects to locked `/home`; it does not render a separate Admin dashboard
 
 Notes:
 - Backend authorization remains authoritative; UI guard is pre-check UX only.
-- API contracts and backend permission logic are unchanged.
+- `/train` and `/production-readiness` use an Admin action pre-check before mounting their UI. Some underlying operational APIs retain their existing `PremiumOrAdmin` contract for compatibility; that API contract does not grant access to these screens.
+- Existing operational API contracts and backend permissions are unchanged; the admin profile APIs additionally require the signed short-lived confirmation grant.
 
 ## 12. Verification Baseline (P0.5)
 
@@ -1010,8 +1024,7 @@ Smoke contract:
 	- `retry_count`
 
 E2E contract:
-- Data Collection page shows history section and refresh button
-- history cards or empty-state message is rendered
+- Data Collection page shows at most the latest fetch summary when one exists; the full history console is not part of the normal surface
 - dry-run/execute display labels remain visible
 - secret-like strings are not rendered in UI
-- auth-guarded route uses real login pattern and skips when `E2E_PASSWORD` is unset
+- auth-guarded route uses an isolated mocked Admin session, so the compact UI contract runs without external credentials

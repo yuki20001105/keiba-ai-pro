@@ -77,12 +77,19 @@ keiba/pyvenv.cfg
 keiba/data/
 keiba/models/
 keiba/.vscode/
+keiba/etc/
 
 # Database files (ローカル開発用)
 # デプロイ用にDBを含めたい場合は下記をコメントアウトする
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
+*.sqlite-shm
+*.sqlite-wal
 *.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
 keiba.db
 # !keiba/data/keiba_ultimate.db  ← デプロイ時はこの行のコメントを外す
 
@@ -91,6 +98,7 @@ keiba.db
 *.parquet
 *.h5
 *.pkl
+python-api/models/*.evaluation.json
 *.pickle
 
 # Models (ローカル開発用)
@@ -101,10 +109,13 @@ keiba.db
 
 # Logs
 *.log
+*.log.[0-9]*
 logs/
 
 # Generated reports & script outputs
 /output/
+/outputs/
+/market-segments-v1.zip
 *.html
 *_out.txt
 *_output*.txt
@@ -113,25 +124,32 @@ regen_*.txt
 verify_result.txt
 patch_log*.txt
 dev-server.log
-reports/
-reports/analyze_race_smoke_result.json
-reports/e2e_notebooks/
-reports/e2e_debug/
-reports/e2e_logs/
-reports/keiba_notebook_e2e_result.json
+/reports/*
+!/reports/README.md
+!/reports/evidence/
+!/reports/evidence/**
 docs/reports/feature_analysis.json
 docs/reports/feature_llm_report.md
 
 # Generated scraper/model data
 python-api/data/html/
 python-api/data/models/
+python-api/data/shared_feature_cache/
 
 # Generated model artifacts
 python-api/models/*.joblib
 python-api/models/*.metadata.json
 
-# Local notebook workspace
-notebooks/
+# Notebook sources are tracked; runtime state stays local.
+/notebooks/.ipynb_checkpoints/
+/notebooks/**/.ipynb_checkpoints/
+/notebooks/**/__pycache__/
+/notebooks/config.json
+/notebooks/data/
+/notebooks/reports/
+
+# Legacy root data logs
+/data/*_err.txt
 
 # python-api generated outputs
 python-api/*.log
@@ -147,6 +165,7 @@ tools/pipeline_output/
 # OS
 .DS_Store
 Thumbs.db
+*.lnk
 
 # ChromeDriver
 chromedriver*

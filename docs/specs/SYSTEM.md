@@ -138,17 +138,21 @@ the system shall POST_RACE_FIELDS に含まれるカラムを必ず推論入力�
 ### INV-07: スクレイピングインターバル
 
 ```
-While スクレイピングループを実行する,
-when 各ページリクエストの間,
-the system shall 最低 1.0 秒のスリープを挿入する。
+While netkeiba への実通信を実行する,
+the system shall サブドメイン・ジョブ・プロセスで共有する制御器により、
+リクエスト開始間隔を最低 1.0 秒、同時通信数を 1 に制限する。
+the system shall 429 の待機期限および 401/403/制限画面による停止を共有・永続化する。
 ```
 
-| 箇所 | 最低値 | ファイル |
+| 制御 | 値 | ファイル |
 |---|---|---|
-| 日付ループ（過去データ） | 1.0s | `scraping/jobs.py` `_pre_sleep` |
-| レース間インターバル | 1.0s | `scraping/jobs.py` `_inter_race_sleep` |
-| 馬詳細 4 頭ごと | 1.0s | `scraping/race.py` |
-| 血統ページ補完 | 1.0s | `scraping/horse.py` |
+| 全 netkeiba ホストの実通信 | 初期 2.0s / 下限 1.0s | `scraping/request_pacing.py` |
+| リダイレクト・再試行・フォールバック | 同じ通信枠を使用 | `scraping/fetch_pipeline.py` |
+| 429 | Retry-After と 5 分以上の内部待機の長い方 | 同上 |
+| キャッシュのみの処理 | 固定 sleep 不要 | `scraping/parsed_cache.py`, `result_reuse.py` |
+
+最低 1 秒はアプリ内の制約であり、提供元の許容速度を保証するものではない。
+日付・レース・馬のループに重複した待機を置かず、実際の送信直前に保証する。
 
 ---
 

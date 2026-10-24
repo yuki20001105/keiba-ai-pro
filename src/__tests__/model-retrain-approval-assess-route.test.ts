@@ -10,7 +10,9 @@ import type { RetrainDryRunPayload } from '@/lib/model-retrain-approval-types'
 const ACTOR = '11111111-1111-4111-8111-111111111111'
 const APPROVER = '22222222-2222-4222-8222-222222222222'
 const COMMIT = 'a'.repeat(40)
-const ACTIVE_MODEL = 'model_speed_deviation_lightgbm_20160101_20260322_20260418_1928'
+const ACTIVE_MODEL = JSON.parse(
+  readFileSync(path.join(process.cwd(), 'python-api', 'models', '.active_model.json'), 'utf8'),
+).model_id as string
 const authMock = vi.hoisted(() => vi.fn())
 
 vi.mock('@/lib/server-auth', () => ({ verifyRequestAuth: authMock }))

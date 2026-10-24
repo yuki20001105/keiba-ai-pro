@@ -100,7 +100,7 @@ assessment:
 - repeated non-2xx health/API responses or an Auth/RLS boundary regression.
 
 The 2026-08-16 read-only preflight is recorded in
-`reports/limited_production_operational_preflight_20260816.json`. It remains
+`reports/evidence/limited-production/limited_production_operational_preflight_20260816.json`. It remains
 fail-closed. Authenticated Vercel review identified Production project
 `keiba-ai-pro` (`prj_UcRc...`) separately from trusted Staging project
 `keiba-ai-pro-staging` (`prj_PRd5...`). Production currently serves provider

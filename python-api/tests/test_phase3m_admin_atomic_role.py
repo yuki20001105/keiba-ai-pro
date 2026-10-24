@@ -84,7 +84,7 @@ def test_admin_role_rpc_is_service_role_only() -> None:
 def test_admin_route_uses_verified_actor_and_never_directly_updates_profiles() -> None:
     route = ROUTE.read_text(encoding="utf-8")
 
-    assert "verifyRequestAuth(request, { requireAdmin: true })" in route
+    assert "verifyRequestAuth(request, { requireAdminMode: true })" in route
     assert "p_actor_user_id: actor.value" in route
     assert "p_target_user_id: target.value" in route
     assert "p_request_id: requestId" in route

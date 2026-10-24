@@ -60,7 +60,7 @@ PowerShellで以下を実行：
 #### Python API サーバー（ポート8000）
 ```powershell
 cd python-api
-..\keiba\.venv\Scripts\python.exe main.py
+.\.venv\Scripts\python.exe -X utf8 main.py
 ```
 
 #### Next.js 開発サーバー（ポート3000）
@@ -102,8 +102,8 @@ Stop-Process -Name node,python -Force
 **解決策:**
 ```powershell
 cd python-api
-$env:PYTHONPATH = "C:\Users\yuki2\Documents\ws\keiba-ai-pro"
-..\keiba\.venv\Scripts\python.exe -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+$env:PYTHONPATH = (Resolve-Path ..).Path
+.\.venv\Scripts\python.exe -X utf8 -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ### データベースが見つからない
@@ -112,8 +112,7 @@ $env:PYTHONPATH = "C:\Users\yuki2\Documents\ws\keiba-ai-pro"
 | **API Docs** | http://localhost:8000
 **解決策:**
 ```powershell
-cd keiba
-.\.venv\Scripts\python.exe -c "import sys; sys.path.insert(0, '.'); from keiba_ai.db import connect, init_db; conn = connect(); init_db(conn); print('DB初期化完了')"
+python-api\.venv\Scripts\python.exe -X utf8 -c "import sys; sys.path.insert(0, 'keiba'); from keiba_ai.db import connect, init_db; conn = connect(); init_db(conn); print('DB初期化完了')"
 ```
 
 ### スクリプト実行ポリシーエラー

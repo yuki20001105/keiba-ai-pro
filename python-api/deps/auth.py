@@ -18,6 +18,7 @@ JWT ミドルウェアが request.state にセットした情報を利用し、
 from __future__ import annotations
 
 import logging
+import asyncio
 import os
 from typing import Optional
 
@@ -97,6 +98,23 @@ async def require_admin(user: dict = Depends(get_current_user)) -> dict:
             detail="管理者権限が必要です（スクレイピングは管理者のみ実行できます）",
         )
     return {**user, "role": role}
+
+
+async def require_current_admin(user: dict = Depends(get_current_user)) -> dict:
+    """Authorize new long-lived work with a current profile, never stale claims.
+
+    Accepted work retains its bounded execution intent. New submissions must
+    not use the legacy local JWT fallback if role lookup is unavailable.
+    """
+    user_id = str(user.get("user_id") or "").strip()
+    if not user_id:
+        raise HTTPException(status_code=401, detail="認証が必要です")
+    profile = await asyncio.to_thread(_get_profile_from_db, user_id)
+    if not isinstance(profile, dict):
+        raise HTTPException(status_code=503, detail="現在の管理者権限を確認できません")
+    if profile.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="管理者権限が必要です")
+    return {**user, "role": "admin"}
 
 
 # ── Guard: Premium 専用 ──────────────────────────────────────────────

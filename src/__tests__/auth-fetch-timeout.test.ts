@@ -6,7 +6,7 @@ vi.mock('@/lib/supabase', () => ({
   supabase: { auth: { getSession: getSessionMock } },
 }))
 
-import { authFetch } from '@/lib/auth-fetch'
+import { authFetch, AuthSessionUnavailableError } from '@/lib/auth-fetch'
 
 describe('authFetch', () => {
   beforeEach(() => {
@@ -20,14 +20,28 @@ describe('authFetch', () => {
     vi.clearAllMocks()
   })
 
-  it('does not leave the request pending when Supabase session lookup stalls', async () => {
+  it('reports a transient error instead of sending an unauthenticated request when session lookup stalls', async () => {
     getSessionMock.mockReturnValue(new Promise(() => {}))
 
     const request = authFetch('/api/health')
+    const assertion = expect(request).rejects.toBeInstanceOf(AuthSessionUnavailableError)
     await vi.advanceTimersByTimeAsync(2_000)
 
-    await expect(request).resolves.toBeInstanceOf(Response)
-    expect(fetch).toHaveBeenCalledOnce()
+    await assertion
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('does not turn a failed token refresh into a tokenless 401', async () => {
+    getSessionMock.mockResolvedValue({ data: { session: null }, error: { status: 503 } })
+    await expect(authFetch('/api/scrape/status')).rejects.toMatchObject({ code: 'AUTH_SESSION_UNAVAILABLE' })
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('a confirmed missing session still sends no credentials', async () => {
+    getSessionMock.mockResolvedValue({ data: { session: null }, error: null })
+    await authFetch('/api/scrape/status')
+    const init = vi.mocked(fetch).mock.calls[0][1]
+    expect(new Headers(init?.headers).has('Authorization')).toBe(false)
   })
 
   it('adds the bearer token when the session is available', async () => {

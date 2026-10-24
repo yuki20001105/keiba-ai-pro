@@ -12,10 +12,10 @@
 ## 1. Destination State
 Target state is a frontend-led scrape operation where operator can:
 1. run dry-run and verify safety/readiness,
-2. execute scoped scrape safely,
+2. execute scoped normal scrape safely with `force_rescrape=false`,
 3. monitor job state and completion,
-4. inspect fetch summary and data reflection,
-5. branch into quality and repair planning flows without accidental write operations.
+4. inspect the latest fetch summary and three stored-data statistics,
+5. use separately retained maintenance paths for quality/repair investigation without exposing them in normal navigation.
 
 ---
 
@@ -23,11 +23,10 @@ Target state is a frontend-led scrape operation where operator can:
 
 ### 2.1 Completed now
 - Dry-run UI and polling on `/data-collection`.
-- Execute path on `/data-collection` with progress and completion summary.
-- Fetch summary history rendering.
-- Data stats / recent races / race detail inspection.
-- Refresh Plan preview UI and route (read-only).
-- P0 Repair Plan preview UI and route (read-only).
+- Normal execute path on `/data-collection` with `force_rescrape=false`, progress, completion summary, and fail-closed uncertainty reconciliation.
+- Latest fetch summary and three data-stat values render on the compact normal surface.
+- Full history, recent-race/detail inspection, profiling, and quality/repair navigation are hidden from the normal surface while their implementations remain available for maintenance.
+- Refresh Plan, P0 Repair Plan, Targeted Refetch Plan, Live Validation, and Review Queue pages/routes remain implemented but have no normal Data Collection navigation.
 - Execute endpoints for refresh/p0 intentionally return `501 not-implemented`.
 
 ### 2.2 Partially complete
@@ -48,7 +47,7 @@ Target state is a frontend-led scrape operation where operator can:
 - Failure state is explicit (`error`), with actionable retry path.
 
 ### Gate B: Observability
-- History must include dry-run and execute differentiators.
+- The latest visible summary must distinguish dry-run from execute; the retained history API continues to preserve older records.
 - Operator can distinguish "not yet complete" from "zero results".
 
 ### Gate C: Safety
@@ -57,7 +56,7 @@ Target state is a frontend-led scrape operation where operator can:
 - Preview endpoints reject unsafe path-like inputs.
 
 ### Gate D: Quality bridge
-- Post-execute operator flow to quality checks is explicit and low-friction.
+- Quality/repair tools remain reachable through documented maintenance procedures, not from the compact normal UI.
 
 ---
 
@@ -65,7 +64,7 @@ Target state is a frontend-led scrape operation where operator can:
 
 ## Phase 1 (done): Dry-run UX hardening
 - Maintain explicit in-progress vs complete rendering.
-- Preserve detailed dry-run breakdown cards.
+- Keep the safety-relevant Dry-run estimate visible; technical policy detail may remain outside the compact normal view.
 
 ## Phase 2 (done): Small-window execute stabilization
 - Execute from `/data-collection` with progress + completion summary.
@@ -77,14 +76,14 @@ Target state is a frontend-led scrape operation where operator can:
 
 ## Phase 4 (in progress): Post-execute quality summary
 - Present concise quality status immediately after execute.
-- Bridge into missingness/P0 planning in one operator flow.
+- Keep missingness/P0 planning in a separate maintenance flow until its execution controls are approved.
 
 ## Phase 5 (planned): P0 quality dashboard
 - Visualize reason/action breakdown (cache-missing, schema-review, domain-allowed, etc.).
 
 ## Phase 6 (in progress): Targeted refetch/live validation UI
-- Targeted refetch planning is now first-class read-only UI/route.
-- Bounded live validation is now a first-class Admin UI backed by a FastAPI service.
+- Targeted refetch planning remains implemented as a read-only maintenance UI/route, but is hidden from normal Data Collection navigation.
+- Bounded live validation remains implemented as an Admin maintenance UI backed by a FastAPI service, but is hidden from normal Data Collection navigation.
 - Client input is limited to target/type/count plus explicit confirmation; URLs and filesystem paths remain server-owned.
 - The bounded path performs no automatic HTTP retry: at most three selected URLs means at most three outbound attempts.
 - Local one-URL evidence confirmed an unchanged main DB and caches, but it is not deployed staging evidence.
@@ -131,16 +130,17 @@ Target state is a frontend-led scrape operation where operator can:
 
 ## 5. Do-Not-Do Constraints
 1. Do not default to broad full refetch from UI.
-2. Do not expose direct DB write behavior from planning screens.
-3. Do not mix unresolved source-empty cases into generic refetch actions.
-4. Do not remove no-downgrade principles in future execution phases.
+2. Keep normal Data Collection execution fixed to `force_rescrape=false`; repair/refetch requires a separate maintenance path and approval.
+3. Do not expose direct DB write behavior from planning screens.
+4. Do not mix unresolved source-empty cases into generic refetch actions.
+5. Do not remove no-downgrade principles in future execution phases.
 
 ---
 
 ## 6. Completion Metrics
 - M1: zero "pending shown as zero-result" regressions.
 - M2: stable small-window execute success with observable completion artifacts.
-- M3: post-execute quality review reachable in one operator path.
+- M3: post-execute quality review remains available through a documented maintenance path without cluttering the normal UI.
 - M4: P0 classification and validation visible without script-only dependency.
 - M5: approval-gated repair scaffold in place before any write unlock.
 - M6: synthetic saga failure matrix is complete with zero guard-observed forbidden primitive attempts before any executable saga work begins.

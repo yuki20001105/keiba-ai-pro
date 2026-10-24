@@ -1,7 +1,7 @@
 import { expect, Page, test } from '@playwright/test'
 import { mockSupabaseIdentity, setSupabaseTestSession } from './helpers/mock-api'
 
-const SUPABASE_ORIGIN = 'http://127.0.0.1:54321'
+const SUPABASE_ORIGIN = process.env.NEXT_PUBLIC_SUPABASE_URL || 'http://127.0.0.1:54321'
 
 type Scenario =
   | { kind: 'ok'; body: Record<string, unknown> }
@@ -24,7 +24,7 @@ async function setupAuthorizedPage(page: Page, baseURL: string) {
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ total_races: 1, total_horses: 1, latest_date: '2026-07-01' }) })
   )
   await page.route('**/api/scrape/history**', route =>
-    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ jobs: [] }) })
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ count: 0, jobs: [] }) })
   )
 }
 
@@ -169,11 +169,6 @@ test.describe('Phase3C Targeted Refetch Planning (read-only)', () => {
     await setupAuthorizedPage(page, baseURL)
     await mountScenario(page, { kind: 'ok', body: successPayload('all', 10, 2) }, 'all')
 
-    await page.goto('/data-collection')
-    const link = page.getByRole('link', { name: 'Targeted Refetch Plan' }).first()
-    await expect(link).toBeVisible()
-    await expect(link).toHaveAttribute('href', '/data-collection/targeted-refetch-plan')
-
     await page.goto('/data-collection/targeted-refetch-plan')
     await expect(page).toHaveURL(/\/data-collection\/targeted-refetch-plan/)
 
@@ -220,6 +215,7 @@ test.describe('Phase3C Targeted Refetch Planning (read-only)', () => {
     await button.click()
     await expect(button).toBeDisabled()
     await button.click({ force: true })
+    await expect.poll(() => targetedPostCount).toBe(1)
 
     resolver()
     await expect(page.getByTestId('phase3c-status')).toContainText('success')

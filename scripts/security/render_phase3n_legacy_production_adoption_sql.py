@@ -16,8 +16,14 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 RUNNER_PATH = ROOT / "scripts" / "security" / "run_phase3m_supabase_bootstrap_gate.py"
 DEFAULT_MANIFEST = ROOT / "supabase" / "bootstrap" / "v1" / "manifest.json"
-DEFAULT_CONTRACT = ROOT / "reports" / "phase3n_legacy_production_adoption_contract_20260816.json"
-DEFAULT_OUTPUT = ROOT / "reports" / "phase3n_legacy_production_adoption_review.sql"
+DEFAULT_CONTRACT = (
+    ROOT
+    / "reports"
+    / "evidence"
+    / "phase3n"
+    / "phase3n_legacy_production_adoption_contract_20260816.json"
+)
+DEFAULT_OUTPUT = ROOT / "reports" / "generated" / "phase3n" / "phase3n_legacy_production_adoption_review.sql"
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 PROJECT_REF_PATTERN = re.compile(r"^[a-z]{20}$")

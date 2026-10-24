@@ -1,19 +1,28 @@
-﻿'use client'
+'use client'
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import Link from 'next/link'
 import { Logo } from '@/components/Logo'
 import { Toast } from '@/components/Toast'
+import { ScrapeJobRecovery } from '@/components/ScrapeJobRecovery'
+import { ScrapeBatchRecoveryNotice } from '@/components/ScrapeBatchRecoveryNotice'
+import { useAuth } from '@/contexts/AuthContext'
 import { authFetch } from '@/lib/auth-fetch'
 import { formatApiErrorDetail } from '@/lib/api-error'
+import { buildScrapeAcquisitionDisplay, scrapeQueueTitle } from '@/lib/scrape-acquisition-display'
+import { isScrapeRaceScope, scrapeRaceScopeLabel, supportsJraScrape, type ScrapeRaceScope } from '@/lib/scrape-race-scope'
+import { ACQUISITION_SAFETY_POLICY_LABEL, supportsSafeAcquisition } from '@/lib/scrape-safety-policy'
+import type { RetiredScrapeDraft } from '@/lib/scrape-retirement'
 import {
   aggregateDryRunResults,
   enumerateMonthDateRanges,
   type DryRunResult as ScrapeDryRunResult,
 } from '@/lib/dry-run-batch'
-import { useJobPoller } from '@/hooks/useJobPoller'
-import { BatchScrapeError, useBatchScrape } from '@/hooks/useBatchScrape'
-import { useAuth } from '@/contexts/AuthContext'
+import {
+  BatchScrapeError,
+  useBatchScrape,
+  type BatchAcceptedJob,
+} from '@/hooks/useBatchScrape'
 import {
   UNCERTAINTY_REVIEW_STORAGE_KEY,
   UNCERTAINTY_STORAGE_KEY,
@@ -41,22 +50,48 @@ import {
   type ScrapeUncertaintyReviewRecord,
 } from '@/lib/scrape-uncertainty-review-server'
 
-const ACTIVE_DRY_RUN_JOB_KEY = 'keiba-ai-pro:active-dry-run-job:v1'
+const ACTIVE_DRY_RUN_JOB_KEY_PREFIX = 'keiba-ai-pro:active-dry-run-job:v2'
 const DRY_RUN_TIMEOUT_MS = 24 * 60 * 60 * 1000
+const ACTIVE_JOB_POLL_INTERVAL_MS = 3000
+const OWNER_ACTIVE_JOB_MESSAGE = '別のデータ取得が実行中です。完了までお待ちください。'
+const PARTIAL_DRY_RUN_RECOVERY_MESSAGE = '事前確認をやり直してください。'
+const SCRAPE_CANCELLED_MESSAGE = '取得を停止しました。'
+const DRY_RUN_CANCELLED_MESSAGE = '事前確認を停止しました。'
+const PARTIAL_DRY_RUN_CANCEL_COMPLETION_MESSAGE = '一部確認済み（次月は未実行）'
 
 type ScrapeHealthStatus = 'healthy' | 'degraded' | 'unhealthy' | 'unknown'
 type LocalApiStatus = 'checking' | ScrapeHealthStatus
 
 type StoredDryRunJob = {
+  ownerUserId: string
   jobId: string
   startedAt: number
+  startDate: string
+  endDate: string
+  batchStartPeriod: string
+  batchEndPeriod: string
+  monthIndex: number
+  totalMonths: number
+  raceScope?: ScrapeRaceScope
 }
 
 type FetchSummaryHistoryItem = {
   job_id: string
   status: string
+  progress?: unknown
   created_at?: string
   updated_at?: string
+  cancel_requested_at?: string
+  cancelled_at?: string
+  request_payload?: {
+    start_date?: string
+    end_date?: string
+    force_rescrape?: boolean
+    dry_run?: boolean
+    server_batch?: boolean
+    race_scope?: ScrapeRaceScope
+  }
+  result?: unknown
   fetch_summary?: {
     mode?: string
     start_date?: string
@@ -91,16 +126,159 @@ type FetchSummaryHistoryItem = {
   }
 }
 
+type ActiveScrapeJob = {
+  jobId: string
+  status: 'queued' | 'running' | 'recovering' | 'waiting_resources' | 'cancelling'
+  startDate: string
+  endDate: string
+  startedAt: string | null
+  cancelRequestedAt: string | null
+  dryRun: boolean
+  progress?: unknown
+  raceScope?: ScrapeRaceScope
+}
+
 type PeriodValidation = {
   ok: boolean
   message?: string
 }
 
+class DryRunPollingError extends Error {
+  readonly terminal: boolean
+  readonly cancelled: boolean
+
+  constructor(message: string, terminal: boolean, cancelled = false) {
+    super(message)
+    this.name = 'DryRunPollingError'
+    this.terminal = terminal
+    this.cancelled = cancelled
+  }
+}
+
 const PERIOD_PATTERN = /^(\d{4})-(0[1-9]|1[0-2])$/
 const COMPLETED_CONTRACT_MESSAGE = '完了応答の形式を確認できないため、サーバージョブの状態確認が必要'
 
+function requestDateMonth(value: unknown): string | null {
+  if (typeof value !== 'string' || !/^\d{8}$/.test(value)) return null
+  const iso = `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`
+  const parsed = new Date(`${iso}T00:00:00Z`)
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== iso) return null
+  return iso.slice(0, 7)
+}
+
+function parseStoredDryRunJob(value: unknown, expectedOwnerUserId: string): StoredDryRunJob | null {
+  if (!isObject(value)) return null
+  const candidate = value as Partial<StoredDryRunJob>
+  if (candidate.ownerUserId !== expectedOwnerUserId) return null
+  if (typeof candidate.jobId !== 'string' || candidate.jobId.length === 0) return null
+  if (typeof candidate.startedAt !== 'number' || !Number.isFinite(candidate.startedAt)) return null
+  if (typeof candidate.startDate !== 'string' || !/^\d{8}$/.test(candidate.startDate)) return null
+  if (typeof candidate.endDate !== 'string' || !/^\d{8}$/.test(candidate.endDate)) return null
+  if (typeof candidate.batchStartPeriod !== 'string' || !PERIOD_PATTERN.test(candidate.batchStartPeriod)) return null
+  if (typeof candidate.batchEndPeriod !== 'string' || !PERIOD_PATTERN.test(candidate.batchEndPeriod)) return null
+  if (!Number.isInteger(candidate.monthIndex) || (candidate.monthIndex as number) < 0) return null
+  if (!Number.isInteger(candidate.totalMonths) || (candidate.totalMonths as number) < 1) return null
+  if ((candidate.monthIndex as number) >= (candidate.totalMonths as number)) return null
+  if (candidate.raceScope !== undefined && !isScrapeRaceScope(candidate.raceScope)) return null
+  const [startYear, startMonth] = candidate.batchStartPeriod.split('-').map(Number)
+  const [endYear, endMonth] = candidate.batchEndPeriod.split('-').map(Number)
+  const expectedTotalMonths = (endYear - startYear) * 12 + endMonth - startMonth + 1
+  if (expectedTotalMonths !== candidate.totalMonths) return null
+  const expectedMonthIndex = (Number(candidate.startDate.slice(0, 4)) - startYear) * 12
+    + Number(candidate.startDate.slice(4, 6)) - startMonth
+  if (expectedMonthIndex !== candidate.monthIndex) return null
+  if (candidate.endDate.slice(0, 6) !== candidate.startDate.slice(0, 6)) return null
+  return candidate as StoredDryRunJob
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
+}
+
+function isActiveJobStatus(value: unknown): value is ActiveScrapeJob['status'] {
+  return value === 'queued' || value === 'running' || value === 'recovering' || value === 'waiting_resources' || value === 'cancelling'
+}
+
+function isKnownJobStatus(value: unknown): value is ActiveScrapeJob['status'] | 'cancelled' | 'completed' | 'error' {
+  return isActiveJobStatus(value) || value === 'cancelled' || value === 'completed' || value === 'error'
+}
+
+function normalizeHistoryItem(value: unknown): FetchSummaryHistoryItem | null {
+  if (!isObject(value) || typeof value.job_id !== 'string' || !value.job_id || !isKnownJobStatus(value.status)) return null
+  if (isObject(value.request_payload) && value.request_payload.race_scope !== undefined
+    && !isScrapeRaceScope(value.request_payload.race_scope)) return null
+  const result = isObject(value.result) ? value.result : null
+  const nestedSummary = result && isObject(result.fetch_summary) ? result.fetch_summary : null
+  const directSummary = isObject(value.fetch_summary) ? value.fetch_summary : null
+  return {
+    ...(value as FetchSummaryHistoryItem),
+    fetch_summary: (directSummary ?? nestedSummary ?? undefined) as FetchSummaryHistoryItem['fetch_summary'],
+  }
+}
+
+function activeJobFromHistory(item: FetchSummaryHistoryItem): ActiveScrapeJob | null {
+  if (!isActiveJobStatus(item.status)) return null
+  const request = item.request_payload
+  return {
+    jobId: item.job_id,
+    status: item.status,
+    startDate: typeof request?.start_date === 'string' ? request.start_date : '',
+    endDate: typeof request?.end_date === 'string' ? request.end_date : '',
+    startedAt: typeof item.created_at === 'string' && item.created_at ? item.created_at : null,
+    cancelRequestedAt: typeof item.cancel_requested_at === 'string' ? item.cancel_requested_at : null,
+    dryRun: request?.dry_run === true,
+    progress: item.progress,
+    raceScope: request?.race_scope ?? 'all',
+  }
+}
+
+function activeJobFromStoredDryRun(stored: StoredDryRunJob): ActiveScrapeJob {
+  return {
+    jobId: stored.jobId,
+    status: 'queued',
+    startDate: stored.startDate,
+    endDate: stored.endDate,
+    startedAt: new Date(stored.startedAt).toISOString(),
+    cancelRequestedAt: null,
+    dryRun: true,
+    raceScope: stored.raceScope ?? 'all',
+  }
+}
+
+function activeDryRunStorageKey(userId: string): string {
+  return `${ACTIVE_DRY_RUN_JOB_KEY_PREFIX}:${userId}`
+}
+
+function removeStoredDryRunIfMatches(storageKey: string, jobId: string, ownerUserId: string): void {
+  try {
+    const raw = localStorage.getItem(storageKey)
+    if (!raw) return
+    const stored = JSON.parse(raw)
+    if (isObject(stored) && stored.jobId === jobId && stored.ownerUserId === ownerUserId) {
+      localStorage.removeItem(storageKey)
+    }
+  } catch {
+    // A malformed or unavailable storage area must not trigger a blind delete.
+  }
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError'
+}
+
+function waitForDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'))
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      window.clearTimeout(timer)
+      reject(new DOMException('Aborted', 'AbortError'))
+    }
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, milliseconds)
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
 }
 
 function hasStrictCompletedResult(payload: unknown): boolean {
@@ -184,19 +362,21 @@ function normalizeDryRunResult(resultPayload: any): ScrapeDryRunResult {
 }
 
 export default function DataCollectionPage() {
-  const { isAdmin } = useAuth()
+  const { userId } = useAuth()
+  const dryRunStorageKey = userId ? activeDryRunStorageKey(userId) : null
   const e2ePollIntervalRaw = process.env.NEXT_PUBLIC_E2E_BATCH_POLL_INTERVAL_MS
   const e2ePollInterval = e2ePollIntervalRaw ? Number(e2ePollIntervalRaw) : undefined
-  const batchScrapeOptions = Number.isFinite(e2ePollInterval) && (e2ePollInterval as number) >= 0
-    ? { pollIntervalMs: e2ePollInterval as number }
-    : undefined
+  const activeJobPollIntervalMs = Number.isFinite(e2ePollInterval)
+    ? Math.max(100, e2ePollInterval as number)
+    : ACTIVE_JOB_POLL_INTERVAL_MS
   // 期間指定用
   const now = new Date()
   const [startPeriod, setStartPeriod] = useState(`${now.getFullYear() - 1}-01`)
   const [endPeriod, setEndPeriod] = useState(
     `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
   )
-  const [forceRescrape, setForceRescrape] = useState(false)
+  const forceRescrape = false
+  const [raceScope, setRaceScope] = useState<ScrapeRaceScope>('jra')
 
   // A resume link lets an interrupted long-running batch reopen at the exact
   // month without relying on browser-specific month-input automation.
@@ -210,7 +390,6 @@ export default function DataCollectionPage() {
     if (!validation.ok) return
     setStartPeriod(resumeStart)
     setEndPeriod(resumeEnd)
-    setForceRescrape(params.get('repair') === '1')
   }, [])
   const [dryRunLoading, setDryRunLoading] = useState(false)
   const [dryRunStartedAt, setDryRunStartedAt] = useState<number | null>(null)
@@ -219,6 +398,7 @@ export default function DataCollectionPage() {
   const [dryRunResultReady, setDryRunResultReady] = useState(false)
   const [dryRunResult, setDryRunResult] = useState<ScrapeDryRunResult | null>(null)
   const [dryRunExecuted, setDryRunExecuted] = useState(false)
+  const [dryRunResultRaceScope, setDryRunResultRaceScope] = useState<ScrapeRaceScope | null>(null)
 
   useEffect(() => {
     if (dryRunStartedAt == null) return
@@ -233,7 +413,8 @@ export default function DataCollectionPage() {
   const [dryRunErrorMessage, setDryRunErrorMessage] = useState('')
   const [periodErrorMessage, setPeriodErrorMessage] = useState('')
   const [retrySnapshot, setRetrySnapshot] = useState<BatchRequestSnapshot | null>(null)
-  const [executeWarn, setExecuteWarn] = useState('')
+  const [retryRaceScope, setRetryRaceScope] = useState<ScrapeRaceScope>('jra')
+  const [requestSelectionReady, setRequestSelectionReady] = useState(false)
   const [persistedUncertainty, setPersistedUncertainty] = useState<PersistedUncertaintyLock | null>(null)
   const [uncertaintyHydrated, setUncertaintyHydrated] = useState(false)
   const [uncertaintyStorageBlocked, setUncertaintyStorageBlocked] = useState(false)
@@ -256,22 +437,66 @@ export default function DataCollectionPage() {
   const [serverReviewLastCheckedAt, setServerReviewLastCheckedAt] = useState<string | null>(null)
   const [fetchHistory, setFetchHistory] = useState<FetchSummaryHistoryItem[]>([])
   const [fetchHistoryLoading, setFetchHistoryLoading] = useState(false)
+  const [activeServerJob, setActiveServerJob] = useState<ActiveScrapeJob | null>(null)
+  const [activeJobHydrated, setActiveJobHydrated] = useState(false)
+  const [activeJobCheckError, setActiveJobCheckError] = useState('')
+  const [activeJobConflictPending, setActiveJobConflictPending] = useState(false)
+  const [dryRunStorageError, setDryRunStorageError] = useState('')
+  const [, setActiveJobLastCheckedAt] = useState<string | null>(null)
+  const [cancelLoadingJobId, setCancelLoadingJobId] = useState<string | null>(null)
+  const [cancelError, setCancelError] = useState('')
+  const activeJobRefreshPromiseRef = useRef<Promise<ActiveScrapeJob | null> | null>(null)
+  const dryRunPollingAbortRef = useRef<AbortController | null>(null)
+  const cancelInFlightRef = useRef(false)
+  const dryRunStopRequestedRef = useRef(false)
   const [toast, setToast] = useState({ visible: false, message: '', type: 'success' as 'success' | 'error' })
-  const showToast = (message: string, type: 'success' | 'error' = 'success') =>
+  const showToast = useCallback((message: string, type: 'success' | 'error' = 'success') => {
     setToast({ visible: true, message, type })
+  }, [])
+  const handleBatchJobAccepted = useCallback((job: BatchAcceptedJob) => {
+    setActiveServerJob({
+      jobId: job.jobId,
+      status: job.status,
+      startDate: job.startDate,
+      endDate: job.endDate,
+      startedAt: job.acceptedAt,
+      cancelRequestedAt: null,
+      dryRun: false,
+      raceScope: job.raceScope ?? 'all',
+    })
+    setActiveJobHydrated(true)
+    setActiveJobCheckError('')
+    setActiveJobLastCheckedAt(null)
+    setCancelError('')
+  }, [])
+  const batchScrapeOptions = Number.isFinite(e2ePollInterval) && (e2ePollInterval as number) >= 0
+    ? { ownerUserId: userId, pollIntervalMs: e2ePollInterval as number, onJobAccepted: handleBatchJobAccepted }
+    : { ownerUserId: userId, onJobAccepted: handleBatchJobAccepted }
 
-  // バッチスクレイピング（月単位ループ + ポーリングをフックが担当）
+  // 全期間をサーバーへ一度だけ投入し、画面は親ジョブを監視する。
   const {
     loading: batchLoading,
     status: batchStatus,
     error: batchError,
     failureKind,
+    monitoringIssue,
     canRetry,
+    canResubmit,
+    canRetire,
+    observationPhase,
+    retirementSupported,
+    retiredRequestDraft,
     isExecutionLocked,
     jobId: activeJobId,
+    raceScope: activeBatchRaceScope,
+    requestPeriod: activeBatchRequestPeriod,
     progress: batchProgress,
     result: batchResult,
     start: startBatchScrape,
+    reconnect: reconnectBatchScrape,
+    resubmit: resubmitBatchScrape,
+    retire: retireBatchScrape,
+    requestBatchStop,
     clearExecutionLockAfterReconciliation,
   } = useBatchScrape(batchScrapeOptions)
   const lastRequestSnapshotRef = useRef<BatchRequestSnapshot | null>(null)
@@ -290,46 +515,53 @@ export default function DataCollectionPage() {
     setServerReviewStatusLoading(false)
     setServerReviewLastCheckedAt(null)
   }, [])
-  const isBatchBusy = batchLoading || batchStatus === 'queued' || batchStatus === 'running'
-  const isOperationBusy = isBatchBusy || dryRunLoading
+  const isBatchBusy = batchLoading
+    || batchStatus === 'queued'
+    || batchStatus === 'running'
+    || batchStatus === 'cancelling'
+  // Disabled controls show the existing request, not unrelated new-form defaults.
+  // Keep the user's draft untouched so it returns after the active job finishes.
+  const serverStartMonth = requestDateMonth(activeServerJob?.startDate)
+  const serverEndMonth = requestDateMonth(activeServerJob?.endDate)
+  const hasConfirmedDisplayPeriod = serverStartMonth !== null && serverEndMonth !== null
+    && validatePeriodRange(serverStartMonth, serverEndMonth).ok
+  const reservedDisplayPeriod = activeJobId && activeBatchRequestPeriod?.jobId === activeJobId
+    && (isBatchBusy || isExecutionLocked) ? activeBatchRequestPeriod : null
+  const displayedStartPeriod = hasConfirmedDisplayPeriod ? serverStartMonth
+    : reservedDisplayPeriod?.startPeriod ?? startPeriod
+  const displayedEndPeriod = hasConfirmedDisplayPeriod ? serverEndMonth
+    : reservedDisplayPeriod?.endPeriod ?? endPeriod
+  const displayedRaceScope = activeServerJob?.raceScope
+    ?? (reservedDisplayPeriod ? activeBatchRaceScope : null) ?? raceScope
+  const batchAcceptanceVerified = activeServerJob?.jobId === activeJobId
+  const isCheckingPreviousRequest = batchStatus === 'queued' && !batchAcceptanceVerified
+    && observationPhase === 'monitoring'
+  const acquisitionDisplay = batchStatus === 'running' && !activeJobCheckError
+    && batchAcceptanceVerified && !activeServerJob?.dryRun
+    ? buildScrapeAcquisitionDisplay({ status: activeServerJob?.status, progress: activeServerJob?.progress })
+    : null
+  const serverJobBlocksExecution = !dryRunStorageKey
+    || !activeJobHydrated
+    || activeJobConflictPending
+    || Boolean(activeJobCheckError)
+    || Boolean(dryRunStorageError)
+    || activeServerJob !== null
+  const isOperationBusy = isBatchBusy
+    || dryRunLoading
+    || fetchHistoryLoading
+    || cancelLoadingJobId !== null
+    || serverJobBlocksExecution
   const periodValidation = validatePeriodRange(startPeriod, endPeriod)
   const isPeriodValid = periodValidation.ok
 
   // データ統計と表示
   const [dataStats, setDataStats] = useState({ totalRaces: 0, totalResults: 0, latestDate: '' })
-  const [showCollectedData, setShowCollectedData] = useState(false)
-  const [collectedRaces, setCollectedRaces] = useState<any[]>([])
-  const [selectedRaceDetail, setSelectedRaceDetail] = useState<any>(null)
-
-  // プロファイリング
-  const [showProfiling, setShowProfiling] = useState(false)
-  const [profilingJobId, setProfilingJobId] = useState<string | null>(null)
-  const [useOptimized, setUseOptimized] = useState(true)
-
-  // useJobPoller でプロファイリングのポーリングを管理
-  const { status: profilingStatus, progress: profilingMessage } = useJobPoller({
-    jobId: profilingJobId,
-    getStatusUrl: id => `/api/profiling/status/${id}`,
-    intervalMs: 5000,
-  })
-
-  const inferProgress = (msg: string): number => {
-    if (msg.includes('読み込み')) return 15
-    if (msg.includes('エンジニアリング')) return 35
-    if (msg.includes('最適化')) return 55
-    if (msg.includes('ydata-profiling') || msg.includes('生成中')) return 75
-    if (msg.includes('完了')) return 100
-    return 5
-  }
-  const profilingProgress =
-    profilingStatus === 'completed' ? 100
-    : profilingStatus === 'error' ? 0
-    : profilingMessage ? inferProgress(profilingMessage) : 0
 
   // ローカルAPI稼働チェック
   const [localApiStatus, setLocalApiStatus] = useState<LocalApiStatus>('checking')
   const [localApiReason, setLocalApiReason] = useState('')
-  const dryRunTrackingRef = useRef<string | null>(null)
+  const [jraScopeAvailable, setJraScopeAvailable] = useState(false)
+  const [safetyPolicyAvailable, setSafetyPolicyAvailable] = useState(false)
 
   const statusMeta: Record<LocalApiStatus, { label: string; dotClass: string; textClass: string }> = {
     checking: { label: '確認中', dotClass: 'bg-[#555] animate-pulse', textClass: 'text-[#555]' },
@@ -340,8 +572,11 @@ export default function DataCollectionPage() {
   }
 
   const isApiUnavailable = localApiStatus === 'unhealthy' || localApiStatus === 'unknown'
+  const isScopeUnavailable = raceScope === 'jra' && !jraScopeAvailable
   const effectivePeriodError = periodErrorMessage || (!isPeriodValid ? periodValidation.message || '' : '')
-  const transientUncertaintyKind: UncertaintyFailureKind | null = failureKind === 'monitoring' || failureKind === 'client_stop'
+  // New parent jobs have an owner-scoped durable ID. Do not create a second,
+  // global/jobless lock on a network interruption or when this screen unmounts.
+  const transientUncertaintyKind: UncertaintyFailureKind | null = !activeJobId && failureKind === 'monitoring'
     ? failureKind
     : null
   const effectiveTransientUncertainty = transientUncertaintyDismissed ? null : transientUncertaintyKind
@@ -604,8 +839,9 @@ export default function DataCollectionPage() {
   const checkLocalApi = async () => {
     setLocalApiStatus('checking')
     setLocalApiReason('')
+    setSafetyPolicyAvailable(false)
     try {
-      const res = await authFetch('/api/scrape/health', { signal: AbortSignal.timeout(4000) })
+      const res = await authFetch('/api/scrape/health', { cache: 'no-store', signal: AbortSignal.timeout(4000) })
       const data = await res.json().catch(() => ({}))
       const status = String(data?.status || '') as ScrapeHealthStatus
       const resolved: ScrapeHealthStatus = ['healthy', 'degraded', 'unhealthy', 'unknown'].includes(status)
@@ -614,10 +850,43 @@ export default function DataCollectionPage() {
           ? 'unknown'
           : 'unhealthy'
       setLocalApiStatus(resolved)
+      setJraScopeAvailable(res.ok && supportsJraScrape(data))
+      setSafetyPolicyAvailable(res.ok && supportsSafeAcquisition(data))
       setLocalApiReason(typeof data?.reason === 'string' ? data.reason : '')
     } catch {
       setLocalApiStatus('unknown')
+      setJraScopeAvailable(false)
+      setSafetyPolicyAvailable(false)
       setLocalApiReason('health check request failed')
+    }
+  }
+
+  // Recheck the running build before every new acquisition/re-send, not just
+  // when this page opened. Observing or retiring an old request remains possible.
+  const verifyAcquisitionSafety = async (scope: ScrapeRaceScope, signal?: AbortSignal) => {
+    let response: Response
+    try {
+      response = await authFetch('/api/health', {
+        cache: 'no-store', signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(4000)])
+          : AbortSignal.timeout(4000),
+      })
+    } catch (error) {
+      setSafetyPolicyAvailable(false)
+      if (signal?.aborted) throw error
+      setLocalApiStatus('unknown')
+      throw new Error('安全設定を確認できないため依頼を送信していません。API状態を再確認してください。')
+    }
+    const payload: unknown = await response.json().catch(() => null)
+    const jraSupported = response.ok && supportsJraScrape(payload)
+    const policySupported = response.ok && supportsSafeAcquisition(payload)
+    setJraScopeAvailable(jraSupported)
+    setSafetyPolicyAvailable(policySupported)
+    if (scope === 'jra' && !jraSupported) {
+      throw new Error('中央限定取得はサーバーへの反映待ちです。対象を保証できないため依頼を送信していません。')
+    }
+    if (!policySupported) {
+      throw new Error('安全設定はサーバーへの反映待ちです。新しい取得・再送は開始していません。API状態を再確認してください。')
     }
   }
 
@@ -770,34 +1039,350 @@ export default function DataCollectionPage() {
     if (!transientUncertaintyKind) return
     persistUncertaintyLock(transientUncertaintyKind, activeJobId, lastRequestSnapshotRef.current)
     if (transientUncertaintyKind === 'monitoring') {
-      setReconcileMessage(COMPLETED_CONTRACT_MESSAGE)
+      setReconcileMessage(batchError || '通信を確認できません。状態を再確認してください。')
     } else {
       setReconcileMessage('ブラウザ側の監視停止が発生しました。サーバージョブ継続の可能性があります。')
     }
-  }, [activeJobId, transientUncertaintyKind, persistUncertaintyLock])
+  }, [activeJobId, batchError, transientUncertaintyKind, persistUncertaintyLock])
 
-  const loadFetchSummaryHistory = useCallback(async () => {
-    setFetchHistoryLoading(true)
+  const loadFetchSummaryHistory = useCallback((silent = false): Promise<ActiveScrapeJob | null> => {
+    const existingRequest = activeJobRefreshPromiseRef.current
+    if (existingRequest) {
+      if (!silent) {
+        setFetchHistoryLoading(true)
+        void existingRequest.finally(() => setFetchHistoryLoading(false))
+      }
+      return existingRequest
+    }
+    if (!silent) setFetchHistoryLoading(true)
+
+    const request = (async (): Promise<ActiveScrapeJob | null> => {
+      try {
+        const res = await authFetch('/api/scrape/history?limit=10', {
+          signal: AbortSignal.timeout(10000),
+        })
+        if (!res.ok) throw new Error(res.status === 401 || res.status === 403
+          ? 'ログイン・管理者権限を再確認してください。取得はサーバーで継続します。'
+          : `HTTP ${res.status}`)
+        const data: unknown = await res.json().catch(() => null)
+        if (!isObject(data) || !Array.isArray(data.jobs)) {
+          throw new Error('invalid scrape history envelope')
+        }
+        if (!Number.isInteger(data.count) || data.count !== data.jobs.length) {
+          throw new Error('invalid scrape history count')
+        }
+        const parsedJobs = data.jobs.map(normalizeHistoryItem)
+        if (parsedJobs.some(item => item === null)) {
+          throw new Error('invalid scrape history item')
+        }
+        const jobs = parsedJobs as FetchSummaryHistoryItem[]
+        if (new Set(jobs.map(item => item.job_id)).size !== jobs.length) {
+          throw new Error('duplicate scrape history job')
+        }
+        const activeJobs = jobs.map(activeJobFromHistory).filter((item): item is ActiveScrapeJob => item !== null)
+        if (activeJobs.length > 1) {
+          throw new Error('multiple active scrape jobs')
+        }
+        const activeJob = activeJobs[0] ?? null
+        const activeParent = jobs.find(item => item.job_id === activeJob?.jobId && item.request_payload?.server_batch === true)
+        if (activeParent && activeJob) {
+          // Owner-scoped history is authoritative. This reconnect only performs
+          // status GETs; it never starts or restarts a month after login/reload.
+          void reconnectBatchScrape({
+            jobId: activeJob.jobId,
+            status: activeJob.status === 'queued' ? 'queued' : 'running',
+            startDate: activeJob.startDate,
+            endDate: activeJob.endDate,
+            acceptedAt: activeJob.startedAt || new Date().toISOString(),
+            raceScope: activeJob.raceScope ?? 'all',
+          }).catch(() => { /* The hook keeps the ID and displays the actual failure. */ })
+        }
+
+        if (dryRunStorageKey) {
+          try {
+            const storedRaw = localStorage.getItem(dryRunStorageKey)
+            const stored = storedRaw && userId ? parseStoredDryRunJob(JSON.parse(storedRaw), userId) : null
+            if (storedRaw && !stored) {
+              setDryRunStorageError('保存済みDry-runジョブの形式を確認できません。安全のため新しい処理を停止しています。')
+            } else if (!storedRaw || (stored && activeJob?.jobId === stored.jobId)) {
+              setDryRunStorageError('')
+            }
+            const terminalStoredJob = stored
+              ? jobs.find(item => item.job_id === stored.jobId && (
+                item.status === 'completed' || item.status === 'error' || item.status === 'cancelled'
+              ))
+              : null
+            if (terminalStoredJob && stored) {
+              removeStoredDryRunIfMatches(dryRunStorageKey, stored.jobId, stored.ownerUserId)
+              setDryRunStorageError('')
+              if (terminalStoredJob.status === 'completed') {
+                if (stored.totalMonths === 1) {
+                  try {
+                    const normalized = normalizeDryRunResult(terminalStoredJob.result)
+                    setDryRunResult(normalized)
+                    setDryRunResultReady(true)
+                    setDryRunExecuted(true)
+                    setDryRunResultRaceScope(stored.raceScope ?? 'all')
+                  } catch {
+                    // A completed non-Dry-run job or malformed result is ignored here.
+                  }
+                } else {
+                  setDryRunResult(null)
+                  setDryRunResultReady(false)
+                  setDryRunExecuted(false)
+                  setDryRunError(PARTIAL_DRY_RUN_RECOVERY_MESSAGE)
+                }
+              }
+            }
+          } catch {
+            // Storage evidence is left untouched when it cannot be read safely.
+            setDryRunStorageError('保存済みDry-runジョブを安全に読み取れません。新しい処理を停止しています。')
+          }
+        }
+
+        setFetchHistory(jobs.filter(item => item.fetch_summary !== undefined))
+        setActiveServerJob(activeJob)
+        if (!activeJob) {
+          setDryRunErrorMessage(current => current === OWNER_ACTIVE_JOB_MESSAGE ? '' : current)
+          setCancelError('')
+        }
+        setActiveJobHydrated(true)
+        setActiveJobCheckError('')
+        setActiveJobLastCheckedAt(new Date().toISOString())
+        return activeJob
+      } catch (error) {
+        console.error('fetch history load error:', error)
+        setActiveJobHydrated(true)
+        setActiveJobCheckError(error instanceof Error && error.message.startsWith('ログイン')
+          ? error.message
+          : '再接続中です。新しい取得は開始せず、サーバーの状態を再確認します。')
+        return null
+      }
+    })()
+
+    const trackedRequest = request.finally(() => {
+      if (activeJobRefreshPromiseRef.current === trackedRequest) {
+        activeJobRefreshPromiseRef.current = null
+      }
+      if (!silent) setFetchHistoryLoading(false)
+    })
+    activeJobRefreshPromiseRef.current = trackedRequest
+    return trackedRequest
+  }, [dryRunStorageKey, reconnectBatchScrape, userId])
+
+  const refreshActiveJobAfterConflict = useCallback(async (): Promise<ActiveScrapeJob | null> => {
+    setActiveJobConflictPending(true)
     try {
-      const res = await authFetch('/api/scrape/history?limit=10')
-      if (!res.ok) return
-      const data = await res.json().catch(() => ({}))
-      const jobs = Array.isArray(data?.jobs) ? data.jobs : []
-      setFetchHistory(jobs.filter((j: any) => !!j?.fetch_summary))
-    } catch (error) {
-      console.error('fetch history load error:', error)
+      const requestStartedBeforeConflict = activeJobRefreshPromiseRef.current
+      if (requestStartedBeforeConflict) {
+        await requestStartedBeforeConflict
+      }
+      return await loadFetchSummaryHistory(false)
     } finally {
-      setFetchHistoryLoading(false)
+      setActiveJobConflictPending(false)
+    }
+  }, [loadFetchSummaryHistory])
+
+  const handleCancelActiveJob = useCallback(async () => {
+    const target = activeServerJob
+    if (!target || target.status === 'cancelling' || cancelInFlightRef.current) return
+
+    const operationLabel = target.dryRun ? '事前確認' : '取得'
+    const confirmed = window.confirm(
+      `${operationLabel}を停止しますか？\n保存済みデータは残ります。`,
+    )
+    if (!confirmed) return
+
+    // Stop the durable parent through its API. Keep observing until the server
+    // acknowledges cancellation; closing this screen does not cancel anything.
+    requestBatchStop()
+    if (target.dryRun) dryRunStopRequestedRef.current = true
+    cancelInFlightRef.current = true
+    setCancelLoadingJobId(target.jobId)
+    setCancelError('')
+
+    try {
+      const response = await authFetch(`/api/scrape/cancel/${target.jobId}`, {
+        method: 'POST',
+        signal: AbortSignal.timeout(10000),
+      })
+      const payload: unknown = await response.json().catch(() => null)
+
+      if (response.status === 409) {
+        setCancelError('処理はすでに終了しています。最新状態を確認します。')
+        await refreshActiveJobAfterConflict()
+        return
+      }
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          throw new Error('管理機能の確認期限が切れた可能性があります。再認証画面が表示されたら、同じジョブの停止をもう一度実行してください')
+        }
+        const detail = isObject(payload) ? payload.detail : null
+        throw new Error(formatApiErrorDetail(detail, `HTTP ${response.status}`))
+      }
+      if (
+        !isObject(payload)
+        || payload.job_id !== target.jobId
+        || (payload.status !== 'cancelling' && payload.status !== 'cancelled')
+      ) {
+        throw new Error('停止応答の形式を確認できません')
+      }
+
+      if (payload.status === 'cancelling') {
+        setActiveServerJob(current => current?.jobId === target.jobId
+          ? {
+            ...current,
+            status: 'cancelling',
+            cancelRequestedAt: typeof payload.cancel_requested_at === 'string'
+              ? payload.cancel_requested_at
+              : current.cancelRequestedAt,
+          }
+          : current)
+        showToast('停止中です。')
+      } else {
+        showToast(target.dryRun ? DRY_RUN_CANCELLED_MESSAGE : SCRAPE_CANCELLED_MESSAGE)
+      }
+      await refreshActiveJobAfterConflict()
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : '不明なエラー'
+      const message = `停止要求の状態を確認できません（${detail}）。ジョブは継続中の可能性があるため、自動再確認を続けます。`
+      setCancelError(message)
+      showToast(message, 'error')
+    } finally {
+      cancelInFlightRef.current = false
+      setCancelLoadingJobId(current => current === target.jobId ? null : current)
+    }
+  }, [activeServerJob, refreshActiveJobAfterConflict, requestBatchStop, showToast])
+
+  useEffect(() => {
+    void loadFetchSummaryHistory(false)
+  }, [loadFetchSummaryHistory])
+
+  useEffect(() => {
+    if (!activeServerJob && !activeJobCheckError && !dryRunStorageError) return
+    const timer = window.setInterval(() => {
+      void loadFetchSummaryHistory(true)
+    }, activeJobPollIntervalMs)
+    return () => window.clearInterval(timer)
+  }, [activeJobCheckError, activeJobPollIntervalMs, activeServerJob, dryRunStorageError, loadFetchSummaryHistory])
+
+  const waitForDryRunResult = useCallback(async (
+    stored: StoredDryRunJob,
+    signal: AbortSignal,
+  ): Promise<ScrapeDryRunResult> => {
+    let consecutiveFailures = 0
+    let consecutiveNotFound = 0
+    let deadlineWarningShown = false
+
+    while (true) {
+      if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
+      if (!deadlineWarningShown && Date.now() - stored.startedAt > DRY_RUN_TIMEOUT_MS) {
+        deadlineWarningShown = true
+        setDryRunError('Dry-runが24時間を超えています。ジョブIDを保持したまま自動再確認しています。')
+      }
+      let statusRes: Response
+      try {
+        const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(10000)])
+        statusRes = await authFetch(`/api/scrape/status/${stored.jobId}`, { signal: requestSignal })
+      } catch (error) {
+        if (isAbortError(error) || signal.aborted) throw new DOMException('Aborted', 'AbortError')
+        consecutiveFailures += 1
+        if (consecutiveFailures >= 10) {
+          setDryRunError('Dry-runの状態確認に失敗しています。ジョブIDを保持したまま自動再確認しています。')
+        }
+        await waitForDelay(3000, signal)
+        continue
+      }
+
+      if (!statusRes.ok) {
+        if ([400, 401, 403, 404].includes(statusRes.status)) {
+          throw new DryRunPollingError(
+            `Dry-runの状態確認を継続できません (HTTP ${statusRes.status}, job_id: ${stored.jobId})。ジョブIDは保持しています。`,
+            false,
+          )
+        }
+        consecutiveFailures += 1
+        if (consecutiveFailures >= 10) {
+          setDryRunError('Dry-runの状態確認に失敗しています。ジョブIDを保持したまま自動再確認しています。')
+        }
+        await waitForDelay(3000, signal)
+        continue
+      }
+
+      const statusData = await statusRes.json().catch(() => null)
+      if (!isObject(statusData) || typeof statusData.status !== 'string') {
+        throw new DryRunPollingError(
+          `Dry-runの状態応答を確認できません (job_id: ${stored.jobId})。ジョブIDは保持しています。`,
+          false,
+        )
+      }
+
+      consecutiveFailures = 0
+      if (!deadlineWarningShown) setDryRunError('')
+      if (statusData.status === 'completed') {
+        try {
+          return normalizeDryRunResult(statusData.result)
+        } catch (error) {
+          throw new DryRunPollingError(
+            error instanceof Error ? error.message : 'Dry-run完了結果の形式が不正です。',
+            true,
+          )
+        }
+      }
+      if (statusData.status === 'error') {
+        throw new DryRunPollingError(
+          formatApiErrorDetail(statusData.error, `Dry-runジョブが失敗しました (job_id: ${stored.jobId})`),
+          true,
+        )
+      }
+      if (statusData.status === 'cancelled') {
+        throw new DryRunPollingError(DRY_RUN_CANCELLED_MESSAGE, true, true)
+      }
+      if (statusData.status === 'not_found') {
+        consecutiveNotFound += 1
+        if (consecutiveNotFound >= 10) {
+          throw new DryRunPollingError(
+            `Dry-runジョブを確認できません (job_id: ${stored.jobId})。ジョブIDは保持しています。`,
+            false,
+          )
+        }
+      } else if (isActiveJobStatus(statusData.status)) {
+        consecutiveNotFound = 0
+        const request = isObject(statusData.request_payload) ? statusData.request_payload : null
+        setActiveServerJob({
+          jobId: stored.jobId,
+          status: statusData.status,
+          startDate: typeof request?.start_date === 'string' ? request.start_date : stored.startDate,
+          endDate: typeof request?.end_date === 'string' ? request.end_date : stored.endDate,
+          startedAt: statusData.status === 'running' && typeof statusData.updated_at === 'string'
+            ? statusData.updated_at
+            : typeof statusData.created_at === 'string'
+              ? statusData.created_at
+              : new Date(stored.startedAt).toISOString(),
+          cancelRequestedAt: typeof statusData.cancel_requested_at === 'string'
+            ? statusData.cancel_requested_at
+            : null,
+          dryRun: true,
+          raceScope: isScrapeRaceScope(request?.race_scope)
+            ? request.race_scope : stored.raceScope ?? 'all',
+        })
+        setActiveJobHydrated(true)
+        setActiveJobCheckError('')
+        setActiveJobLastCheckedAt(new Date().toISOString())
+      } else {
+        throw new DryRunPollingError(
+          `Dry-runの状態を判定できません (${statusData.status}, job_id: ${stored.jobId})。ジョブIDは保持しています。`,
+          false,
+        )
+      }
+      await waitForDelay(1000, signal)
     }
   }, [])
 
-  useEffect(() => {
-    void loadFetchSummaryHistory()
-  }, [loadFetchSummaryHistory])
-
-  const pollDryRunJob = useCallback(async (stored: StoredDryRunJob) => {
-    if (dryRunTrackingRef.current === stored.jobId) return
-    dryRunTrackingRef.current = stored.jobId
+  const pollDryRunJob = useCallback(async (stored: StoredDryRunJob, signal: AbortSignal) => {
+    setActiveServerJob(activeJobFromStoredDryRun(stored))
+    setActiveJobHydrated(true)
+    setActiveJobCheckError('')
     setDryRunLoading(true)
     setDryRunStartedAt(stored.startedAt)
     setDryRunElapsedSeconds(Math.floor(Math.max(0, Date.now() - stored.startedAt) / 1000))
@@ -805,62 +1390,88 @@ export default function DataCollectionPage() {
     setDryRunResultReady(false)
     setDryRunResult(null)
 
-    let consecutiveFailures = 0
     try {
-      while (Date.now() - stored.startedAt <= DRY_RUN_TIMEOUT_MS) {
-        const statusRes = await authFetch(`/api/scrape/status/${stored.jobId}`)
-        if (!statusRes.ok) {
-          consecutiveFailures += 1
-          if (consecutiveFailures >= 10) throw new Error(`Dry-runステータス取得失敗 (job_id: ${stored.jobId})`)
-          await new Promise(resolve => setTimeout(resolve, 3000))
-          continue
-        }
-
-        consecutiveFailures = 0
-        const statusData = await statusRes.json().catch(() => ({}))
-        if (statusData?.status === 'completed') {
-          const normalized = normalizeDryRunResult(statusData?.result)
-          localStorage.removeItem(ACTIVE_DRY_RUN_JOB_KEY)
-          setDryRunResult(normalized)
-          setDryRunResultReady(true)
-          setDryRunExecuted(true)
-          setToast({ visible: true, message: 'Dry-run完了（HTTPアクセスなし）', type: 'success' })
-          await loadFetchSummaryHistory()
-          return
-        }
-        if (statusData?.status === 'error' || statusData?.status === 'not_found') {
-          localStorage.removeItem(ACTIVE_DRY_RUN_JOB_KEY)
-          throw new Error(statusData?.error || `Dry-runジョブが見つかりません (job_id: ${stored.jobId})`)
-        }
-        await new Promise(resolve => setTimeout(resolve, 1000))
+      const normalized = await waitForDryRunResult(stored, signal)
+      if (signal.aborted || !dryRunStorageKey) return
+      removeStoredDryRunIfMatches(dryRunStorageKey, stored.jobId, stored.ownerUserId)
+      setDryRunStorageError('')
+      setActiveServerJob(current => current?.jobId === stored.jobId ? null : current)
+      if (stored.totalMonths === 1) {
+        setDryRunResult(normalized)
+        setDryRunResultReady(true)
+        setDryRunExecuted(true)
+        setDryRunResultRaceScope(stored.raceScope ?? 'all')
+        setToast({ visible: true, message: 'Dry-run完了（HTTPアクセスなし）', type: 'success' })
+      } else {
+        setDryRunResult(null)
+        setDryRunResultReady(false)
+        setDryRunExecuted(false)
+        setDryRunError(PARTIAL_DRY_RUN_RECOVERY_MESSAGE)
+        setToast({ visible: true, message: PARTIAL_DRY_RUN_RECOVERY_MESSAGE, type: 'error' })
       }
-      throw new Error('Dry-runが24時間以内に完了しませんでした。バックエンド状態を確認してください。')
+      await loadFetchSummaryHistory()
     } catch (error: any) {
-      localStorage.removeItem(ACTIVE_DRY_RUN_JOB_KEY)
+      if (isAbortError(error) || signal.aborted) return
+      if (error instanceof DryRunPollingError && error.terminal) {
+        if (dryRunStorageKey) {
+          removeStoredDryRunIfMatches(dryRunStorageKey, stored.jobId, stored.ownerUserId)
+        }
+        setActiveServerJob(current => current?.jobId === stored.jobId ? null : current)
+      } else {
+        setDryRunStorageError('Dry-runの状態を確認できません。ジョブIDを保持し、新しい処理を停止しています。')
+      }
       setDryRunResult(null)
       setDryRunResultReady(false)
       setDryRunExecuted(false)
       const message = typeof error?.message === 'string' ? error.message : 'Dry-run結果を取得できませんでした。'
-      setDryRunError(message)
-      setToast({ visible: true, message: `Dry-runエラー: ${message}`, type: 'error' })
+      if (error instanceof DryRunPollingError && error.cancelled) {
+        setDryRunError('')
+        setDryRunErrorMessage('')
+        setToast({ visible: true, message, type: 'success' })
+      } else {
+        setDryRunError(message)
+        setToast({ visible: true, message: `Dry-runエラー: ${message}`, type: 'error' })
+      }
     } finally {
-      if (dryRunTrackingRef.current === stored.jobId) dryRunTrackingRef.current = null
-      setDryRunLoading(false)
-      setDryRunStartedAt(null)
+      if (!signal.aborted) {
+        setDryRunLoading(false)
+        setDryRunStartedAt(null)
+      }
     }
-  }, [loadFetchSummaryHistory])
+  }, [dryRunStorageKey, loadFetchSummaryHistory, waitForDryRunResult])
 
   useEffect(() => {
+    if (!dryRunStorageKey || !userId) return
+    let controller: AbortController | null = null
     try {
-      const raw = localStorage.getItem(ACTIVE_DRY_RUN_JOB_KEY)
-      const saved = raw ? JSON.parse(raw) : null
-      if (saved && typeof saved.jobId === 'string' && typeof saved.startedAt === 'number') {
-        void pollDryRunJob(saved as StoredDryRunJob)
+      const raw = localStorage.getItem(dryRunStorageKey)
+      if (!raw) {
+        setDryRunStorageError('')
+        return
       }
+      const saved = parseStoredDryRunJob(JSON.parse(raw), userId)
+      if (!saved) {
+        setDryRunStorageError('保存済みDry-runジョブの形式を確認できません。安全のため新しい処理を停止しています。')
+        return
+      }
+      setDryRunStorageError('')
+      dryRunPollingAbortRef.current?.abort()
+      controller = new AbortController()
+      dryRunPollingAbortRef.current = controller
+      void pollDryRunJob(saved, controller.signal).finally(() => {
+        if (dryRunPollingAbortRef.current === controller) {
+          dryRunPollingAbortRef.current = null
+        }
+      })
     } catch {
-      localStorage.removeItem(ACTIVE_DRY_RUN_JOB_KEY)
+      setDryRunStorageError('保存済みDry-runジョブを読み取れません。安全のため新しい処理を停止しています。')
     }
-  }, [pollDryRunJob])
+    return () => controller?.abort()
+  }, [dryRunStorageKey, pollDryRunJob, userId])
+
+  useEffect(() => () => {
+    dryRunPollingAbortRef.current?.abort()
+  }, [])
 
   const loadStats = async () => {
     try {
@@ -877,34 +1488,68 @@ export default function DataCollectionPage() {
     }
   }
 
-  const fetchCollectedData = async () => {
-    try {
-      const res = await authFetch('/api/races/recent?limit=50')
-      if (!res.ok) return
-      const data = await res.json()
-      setCollectedRaces(data.races || [])
-    } catch (error) {
-      console.error('データ取得エラー:', error)
-    }
-  }
-
-  const fetchRaceDetail = async (raceId: string) => {
-    try {
-      const res = await authFetch(`/api/races/${raceId}/horses`)
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}))
-        throw new Error(err.error || `HTTP ${res.status}`)
-      }
-      const data = await res.json()
-      setSelectedRaceDetail({ raceId, results: data.horses || [] })
-    } catch (error) {
-      console.error('レース詳細取得エラー:', error)
-    }
-  }
-
   // 🚀 期間指定バッチスクレイピング（バリデーション・確認ダイアログのみ担当）
-  const handlePeriodBatchScrape = async (override?: BatchRequestSnapshot) => {
+  const appliedRetiredDraftRef = useRef<RetiredScrapeDraft | null>(null)
+  const applyRetiredDraft = useCallback((retired: RetiredScrapeDraft) => {
+    setStartPeriod(retired.startPeriod)
+    setEndPeriod(retired.endPeriod)
+    // This is a new editable draft, not a change to the retired server request.
+    setRaceScope('jra')
+    setRequestSelectionReady(true)
+    setPeriodErrorMessage('')
+    setRetrySnapshot(null)
+    setDryRunResultReady(false)
+    setDryRunExecuted(false)
+    setDryRunResult(null)
+    setDryRunResultRaceScope(null)
+    setDryRunErrorMessage('')
+    setDryRunError('')
+    setCancelError('')
+    setReconcileMessage('')
+  }, [])
+
+  // A sealed retirement received by another tab or recovered after reload can
+  // also restore the editable draft, without silently starting any acquisition.
+  useEffect(() => {
+    if (!retiredRequestDraft) {
+      appliedRetiredDraftRef.current = null
+      return
+    }
+    if (appliedRetiredDraftRef.current === retiredRequestDraft) return
+    appliedRetiredDraftRef.current = retiredRequestDraft
+    applyRetiredDraft(retiredRequestDraft)
+    void loadFetchSummaryHistory(false)
+  }, [retiredRequestDraft, applyRetiredDraft, loadFetchSummaryHistory])
+
+  const handleSelectRequestAgain = async () => {
+    const previousJobId = activeJobId
+    try {
+      const retired = await retireBatchScrape(() => window.confirm(
+        '前回の未受付依頼を整理して選び直しますか？\nサーバーに取消記録を残し、遅れて届く受付や別タブからの再送を防ぎます。\n保存済みデータは削除しません。新しい取得も開始しません。',
+      ))
+      if (!retired) return
+      appliedRetiredDraftRef.current = retired
+      applyRetiredDraft(retired)
+      setActiveServerJob(current => current?.jobId === previousJobId ? null : current)
+      // Recheck for another owner job before enabling a new request.
+      void loadFetchSummaryHistory(false)
+    } catch {
+      // The hook retains the original ID/lock and publishes the verified reason.
+    }
+  }
+
+  const handlePeriodBatchScrape = async (
+    override?: BatchRequestSnapshot, requestedRaceScope: ScrapeRaceScope = raceScope,
+  ) => {
     if (isOperationBusy) return
+    if (requestedRaceScope === 'jra' && !jraScopeAvailable) {
+      showToast('中央限定取得はサーバーへの反映待ちです。取得は開始していません。', 'error')
+      return
+    }
+    if (!safetyPolicyAvailable) {
+      showToast('安全設定はサーバーへの反映待ちです。取得は開始していません。', 'error')
+      return
+    }
     if (executeBlockedByUncertainty) {
       showToast('実行状態を確認できません。履歴またはjob statusを確認するまで新規実行しないでください。', 'error')
       return
@@ -937,32 +1582,55 @@ export default function DataCollectionPage() {
       totalMonths++; m++; if (m > 12) { m = 1; y++ }
     }
 
-    if (!dryRunExecuted) {
-      setExecuteWarn('Dry-run未実行です。本実行は可能ですが、推定アクセス数の確認を推奨します。')
-    } else {
-      setExecuteWarn('')
-    }
+    const confirmationNote = dryRunExecuted ? '' : '\n事前確認は未完了です。'
+    if (!confirm(`${scrapeRaceScopeLabel(requestedRaceScope)}: ${startYear}年${startMonth}月～${endYear}年${endMonth}月（${totalMonths}ヶ月）を取得しますか？${confirmationNote}`)) return
 
-    const _dryRunState = dryRunExecuted ? 'Dry-run実行済み' : 'Dry-run未実行（推奨）'
-    if (!confirm(`${startYear}年${startMonth}月 ～ ${endYear}年${endMonth}月（${totalMonths}ヶ月分）を月単位で順次取得します。\nブラウザ側で停止しても開始済みのサーバージョブは継続している可能性があります。\n\n${_dryRunState}\n続行しますか？`)) return
-
+    setRequestSelectionReady(false)
     try {
-      const result = await startBatchScrape(target.startPeriod, target.endPeriod, target.forceRescrape)
-      showToast(`取得完了 — ${result.stats.total_months}ヶ月 / ${result.races_collected}レース / 所要: ${result.elapsed_time}秒`)
+      await verifyAcquisitionSafety(requestedRaceScope)
+      const result = await startBatchScrape(target.startPeriod, target.endPeriod, target.forceRescrape, requestedRaceScope)
+      showToast(`完了 · ${result.races_collected}レース · ${formatMaybeSeconds(result.elapsed_time)}`)
       setRetrySnapshot(null)
       setReconcileMessage('')
-      loadStats()
-      loadFetchSummaryHistory()
+      void loadStats()
+      void loadFetchSummaryHistory()
     } catch (error: any) {
       const safeToRetry = error instanceof BatchScrapeError ? error.safeToRetry : false
-      if (error instanceof BatchScrapeError && (error.kind === 'monitoring' || error.kind === 'client_stop')) {
-        persistUncertaintyLock(error.kind, activeJobId, target)
-        if (error.kind === 'monitoring') {
-          setReconcileMessage(COMPLETED_CONTRACT_MESSAGE)
-        }
+      if (error instanceof BatchScrapeError && error.kind === 'cancelled') {
+        setRetrySnapshot(null)
+        setReconcileMessage('')
+        showToast(error.message)
+        void loadStats()
+        void loadFetchSummaryHistory()
+        return
+      }
+      if (error instanceof BatchScrapeError && error.kind === 'busy') {
+        await refreshActiveJobAfterConflict()
+      }
+      // A detached page is not a failed job. Its owner-scoped parent ID was
+      // saved before POST and will be observed again on the next visit.
+      if (error instanceof BatchScrapeError && error.kind === 'client_stop') return
+      if (error instanceof BatchScrapeError && error.kind === 'monitoring' && !error.jobId) {
+        persistUncertaintyLock(error.kind, null, target)
+        setReconcileMessage(error.message)
       }
       setRetrySnapshot(safeToRetry ? target : null)
+      setRetryRaceScope(requestedRaceScope)
       showToast(`取得エラー: ${error.message}`, 'error')
+    }
+  }
+
+  const handleBatchResubmit = async () => {
+    if (isOperationBusy || !safetyPolicyAvailable) return
+    try {
+      // An active server job is already blocked by isOperationBusy. Re-send
+      // only the saved request's scope (legacy requests retain the all default).
+      await verifyAcquisitionSafety(activeBatchRaceScope ?? 'all')
+      await resubmitBatchScrape(() => window.confirm(
+        '受付記録が見つからない同じ依頼を再送しますか？期間・対象・ジョブIDは変更しません。',
+      ))
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '安全設定を確認できないため再送していません。', 'error')
     }
   }
 
@@ -977,18 +1645,23 @@ export default function DataCollectionPage() {
       }
 
       const payload = await res.json().catch(() => null)
-      if (!isObject(payload) || typeof payload.status !== 'string') {
+      if (!isObject(payload) || payload.job_id !== effectiveUncertaintyJobId || typeof payload.status !== 'string') {
         setReconcileMessage('状態応答形式が不正です。lockを維持します。')
         return
       }
 
-      if (payload.status === 'queued' || payload.status === 'running' || payload.status === 'not_found') {
+      if (
+        payload.status === 'queued'
+        || payload.status === 'running'
+        || payload.status === 'cancelling'
+        || payload.status === 'not_found'
+      ) {
         setReconcileMessage('対象jobは未終端です。lockを維持します。')
         return
       }
 
       if (payload.status === 'error') {
-        const unlocked = clearExecutionLockAfterReconciliation()
+        const unlocked = clearExecutionLockAfterReconciliation(effectiveUncertaintyJobId)
         if (!unlocked) {
           setReconcileMessage('状態再確認は完了しましたが、処理中のためlock解除は保留されました。')
           return
@@ -1006,7 +1679,7 @@ export default function DataCollectionPage() {
           setReconcileMessage(COMPLETED_CONTRACT_MESSAGE)
           return
         }
-        const unlocked = clearExecutionLockAfterReconciliation()
+        const unlocked = clearExecutionLockAfterReconciliation(effectiveUncertaintyJobId)
         if (!unlocked) {
           setReconcileMessage('対象jobは完了を確認しましたが、処理中のためlock解除は保留されました。')
           return
@@ -1016,6 +1689,20 @@ export default function DataCollectionPage() {
           return
         }
         setReconcileMessage('対象jobは完了。履歴で全体範囲を確認してください')
+        return
+      }
+
+      if (payload.status === 'cancelled') {
+        const unlocked = clearExecutionLockAfterReconciliation(effectiveUncertaintyJobId)
+        if (!unlocked) {
+          setReconcileMessage('停止完了は確認しましたが、処理中のためlock解除は保留されました。')
+          return
+        }
+        if (!clearPersistedUncertainty()) {
+          setReconcileMessage('停止完了は確認しましたが、lock保存領域を更新できないため新規実行を停止しています。')
+          return
+        }
+        setReconcileMessage('対象jobの停止完了を確認し、lockを解除しました。')
         return
       }
 
@@ -1051,10 +1738,34 @@ export default function DataCollectionPage() {
     if (value == null) return '-'
     const parsed = Number(value)
     if (!Number.isFinite(parsed)) return '-'
-    return `${Math.ceil(parsed)} sec`
+    const seconds = Math.ceil(parsed)
+    return seconds < 60 ? `${seconds}秒` : `約${Math.ceil(seconds / 60)}分`
+  }
+
+  const formatSummaryDate = (value: unknown): string => {
+    const text = typeof value === 'string' ? value.trim() : ''
+    if (/^\d{8}$/.test(text)) {
+      return `${text.slice(0, 4)}/${text.slice(4, 6)}/${text.slice(6, 8)}`
+    }
+    return text || '-'
+  }
+
+  const formatSummaryTimestamp = (value: unknown): string => {
+    if (typeof value !== 'string' || !value.trim()) return ''
+    const parsed = new Date(value)
+    return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString('ja-JP')
   }
 
   const handleDryRun = async () => {
+    if (isOperationBusy || !dryRunStorageKey || !userId) return
+    if (isScopeUnavailable) {
+      showToast('中央限定取得はサーバーへの反映待ちです。事前確認は開始していません。', 'error')
+      return
+    }
+    if (!safetyPolicyAvailable) {
+      showToast('安全設定はサーバーへの反映待ちです。事前確認は開始していません。', 'error')
+      return
+    }
     const validation = validatePeriodRange(startPeriod, endPeriod)
     if (!validation.ok) {
       const message = validation.message || '期間指定が不正です'
@@ -1064,22 +1775,31 @@ export default function DataCollectionPage() {
       showToast(message, 'error')
       return
     }
+    dryRunStopRequestedRef.current = false
     setPeriodErrorMessage('')
     setDryRunLoading(true)
     setDryRunStartedAt(Date.now())
     setDryRunElapsedSeconds(0)
     setDryRunResult(null)
     setDryRunResultReady(false)
-    setExecuteWarn('')
     setDryRunPendingMessage('')
     setDryRunErrorMessage('')
+    setDryRunError('')
+    dryRunPollingAbortRef.current?.abort()
+    const controller = new AbortController()
+    dryRunPollingAbortRef.current = controller
     try {
-      setExecuteWarn('')
       const months = enumerateMonthDateRanges(startPeriod, endPeriod)
       const monthlyResults: ScrapeDryRunResult[] = []
+      let stoppedAfterCompletedMonth = false
 
       for (const [index, month] of months.entries()) {
-        setDryRunPendingMessage(`Dry-run見積もり中 (${index + 1}/${months.length}): ${month.label}`)
+        if (dryRunStopRequestedRef.current) {
+          throw new DryRunPollingError(DRY_RUN_CANCELLED_MESSAGE, true, true)
+        }
+        if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError')
+        await verifyAcquisitionSafety(raceScope, controller.signal)
+        setDryRunPendingMessage(`確認中 ${index + 1}/${months.length} · ${month.label}`)
         const startRes = await authFetch('/api/scrape', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1088,12 +1808,19 @@ export default function DataCollectionPage() {
             end_date: month.endDateStr,
             force_rescrape: forceRescrape,
             dry_run: true,
+            race_scope: raceScope,
           }),
+          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]),
         })
 
         if (!startRes.ok) {
           const err = await startRes.json().catch(() => ({}))
-          throw new Error(`${month.label}: ${formatApiErrorDetail(err?.detail ?? err, `HTTP ${startRes.status}`)}`)
+          const detail = formatApiErrorDetail(err?.detail ?? err, `HTTP ${startRes.status}`)
+          if (startRes.status === 409 && detail === 'owner-active-job') {
+            await refreshActiveJobAfterConflict()
+            throw new Error(OWNER_ACTIVE_JOB_MESSAGE)
+          }
+          throw new Error(`${month.label}: ${detail}`)
         }
 
         const startPayload = await startRes.json().catch(() => ({}))
@@ -1102,44 +1829,88 @@ export default function DataCollectionPage() {
           throw new Error(`${month.label}: Dry-run開始応答にjob_idがありません`)
         }
 
-        let resultPayload: unknown = null
-        for (let attempt = 0; attempt < 120; attempt += 1) {
-          await new Promise(resolve => setTimeout(resolve, 500))
-          const statusRes = await authFetch(`/api/scrape/status/${jobId}`)
-          if (!statusRes.ok) continue
-          const statusData = await statusRes.json().catch(() => ({}))
-          if (statusData?.status === 'completed') {
-            resultPayload = statusData?.result
+        const storedJob: StoredDryRunJob = {
+          ownerUserId: userId,
+          jobId,
+          startedAt: Date.now(),
+          startDate: month.startDateStr,
+          endDate: month.endDateStr,
+          batchStartPeriod: startPeriod,
+          batchEndPeriod: endPeriod,
+          monthIndex: index,
+          totalMonths: months.length,
+          raceScope,
+        }
+        setActiveServerJob(activeJobFromStoredDryRun(storedJob))
+        setActiveJobHydrated(true)
+        setActiveJobCheckError('')
+        try {
+          localStorage.setItem(dryRunStorageKey, JSON.stringify(storedJob))
+          setDryRunStorageError('')
+        } catch {
+          setDryRunStorageError('Dry-runのジョブIDを保存できません。安全のため新しい処理を停止しています。')
+          throw new DryRunPollingError(
+            `Dry-runは開始されましたが、ジョブIDを保存できませんでした (job_id: ${jobId})`,
+            false,
+          )
+        }
+        try {
+          const monthlyResult = await waitForDryRunResult(storedJob, controller.signal)
+          removeStoredDryRunIfMatches(dryRunStorageKey, jobId, userId)
+          setActiveServerJob(current => current?.jobId === jobId ? null : current)
+          monthlyResults.push(monthlyResult)
+          if (dryRunStopRequestedRef.current) {
+            stoppedAfterCompletedMonth = true
             break
           }
-          if (statusData?.status === 'error' || statusData?.status === 'not_found') {
-            throw new Error(`${month.label}: ${formatApiErrorDetail(statusData?.error, 'Dry-run failed')}`)
+        } catch (error) {
+          if (error instanceof DryRunPollingError && error.terminal) {
+            removeStoredDryRunIfMatches(dryRunStorageKey, jobId, userId)
+            setActiveServerJob(current => current?.jobId === jobId ? null : current)
+          } else if (error instanceof DryRunPollingError) {
+            setDryRunStorageError('Dry-runの状態を確認できません。ジョブIDを保持し、新しい処理を停止しています。')
           }
+          throw error
         }
-
-        if (!resultPayload) {
-          throw new Error(`${month.label}: Dry-runが60秒以内に完了しませんでした`)
-        }
-        monthlyResults.push(normalizeDryRunResult(resultPayload))
       }
 
       setDryRunResult(aggregateDryRunResults(monthlyResults))
+      setDryRunResultRaceScope(raceScope)
       setDryRunResultReady(true)
-      setDryRunExecuted(true)
-      setDryRunPendingMessage('')
+      const completedFullRange = monthlyResults.length === months.length
+      setDryRunExecuted(completedFullRange)
+      setDryRunPendingMessage(stoppedAfterCompletedMonth && !completedFullRange
+        ? PARTIAL_DRY_RUN_CANCEL_COMPLETION_MESSAGE
+        : '')
+      setDryRunError('')
       setDryRunErrorMessage('')
-      showToast(`Dry-run完了（${months.length}ヶ月、HTTPアクセスなし）`)
-      loadFetchSummaryHistory()
+      showToast(stoppedAfterCompletedMonth && !completedFullRange
+        ? `${PARTIAL_DRY_RUN_CANCEL_COMPLETION_MESSAGE}（${monthlyResults.length}/${months.length}ヶ月）`
+        : `Dry-run完了（${months.length}ヶ月、HTTPアクセスなし）`)
+      void loadFetchSummaryHistory()
     } catch (error: any) {
+      if (isAbortError(error) || controller.signal.aborted) return
       setDryRunResult(null)
       setDryRunResultReady(false)
       setDryRunExecuted(false)
       setDryRunPendingMessage('')
-      setDryRunErrorMessage(error?.message || 'Dry-run failed')
-      showToast(`Dry-runエラー: ${error.message}`, 'error')
+      if (error instanceof DryRunPollingError && error.cancelled) {
+        setDryRunError('')
+        setDryRunErrorMessage('')
+        showToast(error.message)
+        void loadFetchSummaryHistory()
+      } else {
+        setDryRunErrorMessage(error?.message || 'Dry-run failed')
+        showToast(`Dry-runエラー: ${error.message}`, 'error')
+      }
     } finally {
-      setDryRunLoading(false)
-      setDryRunStartedAt(null)
+      if (dryRunPollingAbortRef.current === controller) {
+        dryRunPollingAbortRef.current = null
+      }
+      if (!controller.signal.aborted) {
+        setDryRunLoading(false)
+        setDryRunStartedAt(null)
+      }
     }
   }
 
@@ -1149,48 +1920,11 @@ export default function DataCollectionPage() {
     void loadFetchSummaryHistory()
   }, [batchResult, loadFetchSummaryHistory])
 
-  const handleStartProfiling = async () => {
-    if (!isAdmin) {
-      showToast('特徴量プロファイリングはAdmin専用です。', 'error')
-      return
-    }
-    setProfilingJobId(null)
-    try {
-      const res = await authFetch('/api/profiling', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ use_optimized: useOptimized }),
-      })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const { job_id } = await res.json()
-      setProfilingJobId(job_id)
-    } catch (e: any) {
-      showToast(e.message, 'error')
-    }
-  }
-
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-white">
       <header className="border-b border-[#1e1e1e] px-6 py-4 flex items-center justify-between">
         <Logo href="/home" />
-        <div className="flex items-center gap-4">
-          <Link href="/data-collection/refresh-plan" className="text-xs text-[#666] hover:text-white transition-colors">
-            Refresh Plan
-          </Link>
-          <Link href="/data-collection/p0-repair-plan" className="text-xs text-[#666] hover:text-white transition-colors">
-            P0 Repair Plan
-          </Link>
-          <Link href="/data-collection/targeted-refetch-plan" className="text-xs text-[#666] hover:text-white transition-colors">
-            Targeted Refetch Plan
-          </Link>
-          <Link href="/data-collection/live-validation" className="text-xs text-[#b45309] hover:text-white transition-colors" data-testid="phase3d-header-link">
-            Live Validation
-          </Link>
-          {isAdmin && (
-            <Link href="/data-collection/uncertainty-reviews" className="text-xs text-[#38bdf8] hover:text-white transition-colors" data-testid="phase3g-review-queue-link">
-              Review Queue
-            </Link>
-          )}
+        <div className="flex flex-wrap items-center justify-end gap-3 sm:gap-4">
           <Link href="/home" className="flex items-center gap-1 text-xs text-[#555] hover:text-white transition-colors">
             <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
@@ -1198,18 +1932,25 @@ export default function DataCollectionPage() {
             ホーム
           </Link>
           {/* コンパクトAPI状態 */}
-          <div className="flex items-center gap-2 px-3 py-1.5 bg-[#111] border border-[#1e1e1e] rounded-full">
+          <div className="flex items-center gap-2 px-3 py-1.5 bg-[#111] border border-[#1e1e1e] rounded-full"
+            title="サーバー接続の状態です。データ取得の受付・進捗は別に確認します。">
             <span className={`w-1.5 h-1.5 rounded-full ${statusMeta[localApiStatus].dotClass}`} />
             <span className={`text-xs font-medium ${statusMeta[localApiStatus].textClass}`}>
-              バックエンドAPI {statusMeta[localApiStatus].label}
+              API {statusMeta[localApiStatus].label}
             </span>
-            <button onClick={checkLocalApi} className="text-[#444] hover:text-[#888] transition-colors ml-1">
+            <button
+              type="button"
+              onClick={checkLocalApi}
+              aria-label="API状態を再確認"
+              title="API状態を再確認"
+              className="text-[#444] hover:text-[#888] transition-colors ml-1"
+            >
               <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
               </svg>
             </button>
           </div>
-          <span className="text-sm text-[#888]">データ取得</span>
+
         </div>
       </header>
 
@@ -1232,106 +1973,242 @@ export default function DataCollectionPage() {
 
         {/* データ取得フォーム */}
         <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-6 space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-medium text-white">期間指定一括取得</h2>
-            <p className="text-xs text-[#555]">月単位で自動分割して順次取得</p>
-          </div>
+          <h2 className="text-sm font-medium text-white">期間</h2>
 
-          <div className="grid grid-cols-2 gap-4">
+          {requestSelectionReady && (
+            <div className="rounded border border-[#1b4330] bg-[#0b1b14] px-3 py-2 text-xs leading-relaxed text-[#a7f3d0]"
+              role="status" data-testid="scrape-request-selection-ready">
+              前回の依頼を整理しました。期間は引き継ぎ、取得対象は中央競馬のみを初期選択しています。
+              対象と期間を確認して「取得開始」を押してください。まだ取得は開始していません。
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
-              <label className="block text-xs text-[#666] mb-2">開始年月</label>
+              <label htmlFor="start-period" className="block text-xs text-[#666] mb-2">開始</label>
               <input
+                id="start-period"
                 type="month"
-                value={startPeriod}
+                value={displayedStartPeriod}
                 data-testid="start-period-input"
                 disabled={isOperationBusy || executeBlockedByUncertainty}
                 onChange={e => {
                   setStartPeriod(e.target.value)
                   setPeriodErrorMessage('')
                 }}
-                max={endPeriod}
+                max={displayedEndPeriod}
                 className="w-full px-4 py-3 bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg text-white focus:outline-none focus:border-[#333] transition-colors"
               />
             </div>
             <div>
-              <label className="block text-xs text-[#666] mb-2">終了年月</label>
+              <label htmlFor="end-period" className="block text-xs text-[#666] mb-2">終了</label>
               <input
+                id="end-period"
                 type="month"
-                value={endPeriod}
+                value={displayedEndPeriod}
                 data-testid="end-period-input"
                 disabled={isOperationBusy || executeBlockedByUncertainty}
                 onChange={e => {
                   setEndPeriod(e.target.value)
                   setPeriodErrorMessage('')
                 }}
-                min={startPeriod}
+                min={displayedStartPeriod}
                 className="w-full px-4 py-3 bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg text-white focus:outline-none focus:border-[#333] transition-colors"
               />
             </div>
           </div>
 
-          {/* 期間情報 */}
-          {(() => {
-            const [sy, sm] = startPeriod.split('-').map(Number)
-            const [ey, em] = endPeriod.split('-').map(Number)
-            if (!sy || !ey) return null
-            const months = (ey - sy) * 12 + (em - sm) + 1
-            if (months <= 2) return null
-            return null
-          })()}
-
-          <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] px-3 py-2.5 text-xs text-[#9db4cc]">
-            Dry-run は HTTPアクセスを実行しません。アクセス予定数とポリシーを事前確認するためのプレビューです。
+          <p className="text-xs text-[#93a9bf]" data-testid="scrape-repair-mode">
+            正常データは再利用し、不足・未確定結果を補完します。
+          </p>
+          <p className={`text-xs ${safetyPolicyAvailable ? 'text-[#93a9bf]' : 'text-[#facc15]'}`}
+            role="status" data-testid="scrape-safety-policy">
+            {safetyPolicyAvailable ? ACQUISITION_SAFETY_POLICY_LABEL
+              : localApiStatus === 'checking' ? '安全設定を確認中です。取得は開始していません。'
+                : isApiUnavailable ? '安全設定を確認できません。API状態を再確認してください。既存ジョブの監視・停止・依頼整理は継続できます。'
+                : '安全設定はサーバーへの反映待ちです。API状態を再確認してください。既存ジョブの監視・停止・依頼整理は継続できます。'}
+          </p>
+          <div className="flex items-center gap-3 text-xs">
+            <label htmlFor="race-scope" className="text-[#888]">取得対象</label>
+            <select
+              id="race-scope"
+              data-testid="scrape-race-scope"
+              value={displayedRaceScope}
+              disabled={isOperationBusy || executeBlockedByUncertainty}
+              onChange={event => {
+                if (!isScrapeRaceScope(event.target.value)) return
+                setRaceScope(event.target.value)
+                setDryRunExecuted(false)
+                setDryRunResultReady(false)
+              }}
+              className="rounded border border-[#333] bg-[#0a0a0a] px-3 py-2 text-white disabled:opacity-50"
+            >
+              <option value="jra">中央競馬のみ</option>
+              <option value="all">中央・地方競馬</option>
+            </select>
           </div>
+          {isScopeUnavailable && (
+            <p className="text-xs text-[#facc15]" role="status" data-testid="jra-scrape-server-pending">
+              中央限定取得はサーバーへの反映待ちです。既存ジョブの監視・再接続は継続できます。
+            </p>
+          )}
 
-          <div className="flex items-center justify-between pt-1 gap-3">
-            <label className="flex items-center gap-2 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                data-testid="force-rescrape-input"
-                checked={forceRescrape}
-                disabled={isOperationBusy || executeBlockedByUncertainty}
-                onChange={e => setForceRescrape(e.target.checked)}
-                className="w-3.5 h-3.5 accent-white"
-              />
-              <span className="text-xs text-[#888]">修復取得（不足・品質未達レースのみ再取得）</span>
-            </label>
+          {activeServerJob && !(batchStatus === 'error' && activeServerJob.jobId === activeJobId) && (
+            <div
+              className="space-y-2 rounded border border-[#1e3a5f] bg-[#081522] px-4 py-3 text-xs text-[#bfdbfe]"
+              data-testid="active-scrape-job"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="font-medium text-white" role="status" aria-live="polite">
+                  {activeServerJob.status === 'cancelling'
+                    ? '停止中'
+                    : activeServerJob.status === 'queued'
+                      ? 'サーバー受付済み・開始待ち'
+                    : activeServerJob.status === 'waiting_resources' || activeServerJob.status === 'recovering'
+                      ? 'サーバーで待機中'
+                    : dryRunLoading && activeServerJob.dryRun
+                      ? '事前確認中'
+                      : activeServerJob.jobId === activeJobId
+                        ? 'サーバーで取得中'
+                        : '別の取得が実行中'}
+                </div>
+              </div>
+              <div className="grid grid-cols-1 gap-1 text-[#93a9bf] sm:grid-cols-2">
+                <div data-testid="active-scrape-race-scope">対象: {scrapeRaceScopeLabel(activeServerJob.raceScope ?? 'all')}</div>
+                <div>
+                  期間: {formatSummaryDate(activeServerJob.startDate)}～{formatSummaryDate(activeServerJob.endDate)}
+                </div>
+                <div>
+                  {activeServerJob.status === 'queued' ? '受付' : '開始'}: {formatSummaryTimestamp(activeServerJob.startedAt) || '確認中'}
+                </div>
+              </div>
+              <div className="break-all text-[11px] text-[#64748b]">
+                ID: {activeServerJob.jobId}
+              </div>
+              {!activeServerJob.dryRun && activeServerJob.jobId === activeJobId && (
+                <div className="text-[11px] text-[#93a9bf]">画面を閉じても継続します（PC・Pythonは起動したまま）。</div>
+              )}
+              {activeServerJob.status === 'cancelling' && (
+                <div className="rounded border border-[#854d0e] bg-[#1c1206] px-3 py-2 text-[#fde68a]">
+                  保存済みデータは残ります。
+                </div>
+              )}
+              {cancelError && (
+                <div role="alert" className="rounded border border-[#7f1d1d] bg-[#220d0d] px-3 py-2 text-[#fca5a5]">
+                  {cancelError}
+                </div>
+              )}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-[11px] text-[#64748b]">
+                  自動更新
+                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    data-testid="refresh-active-job-button"
+                    onClick={() => void loadFetchSummaryHistory(false)}
+                    disabled={fetchHistoryLoading}
+                    className={`rounded px-3 py-1.5 text-xs font-medium ${
+                      fetchHistoryLoading
+                        ? 'bg-[#222] text-[#555] cursor-not-allowed'
+                        : 'bg-white text-black hover:bg-[#eee]'
+                    }`}
+                  >
+                    {fetchHistoryLoading ? '確認中...' : '再確認'}
+                  </button>
+                  {activeServerJob.status !== 'cancelling' && (
+                    <button
+                      type="button"
+                      data-testid="cancel-active-job-button"
+                      onClick={() => void handleCancelActiveJob()}
+                      disabled={cancelLoadingJobId === activeServerJob.jobId}
+                      className={`rounded px-3 py-1.5 text-xs font-medium ${
+                        cancelLoadingJobId === activeServerJob.jobId
+                          ? 'bg-[#222] text-[#555] cursor-not-allowed'
+                          : 'border border-[#7f1d1d] bg-[#2a0d0d] text-[#fca5a5] hover:bg-[#3a1111]'
+                      }`}
+                    >
+                      {cancelLoadingJobId === activeServerJob.jobId
+                        ? '停止処理中...'
+                        : activeServerJob.status === 'queued' ? '取消' : '停止'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
-            <div className="flex items-center gap-2">
+          {!activeServerJob && (dryRunStorageError || (activeJobCheckError && batchStatus !== 'error')) && (
+            <div
+              className="space-y-2 rounded border border-[#4a3b0f] bg-[#201a08] px-3 py-2 text-xs text-[#facc15]"
+              role="alert"
+              data-testid="active-job-check-error"
+            >
+              <div>{dryRunStorageError || activeJobCheckError}</div>
               <button
-                onClick={handleDryRun}
-                data-testid="dry-run-button"
-                disabled={isOperationBusy || isApiUnavailable || !isPeriodValid || executeBlockedByUncertainty}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-lg font-medium text-sm transition-colors ${
-                  isOperationBusy || isApiUnavailable || !isPeriodValid || executeBlockedByUncertainty
-                    ? 'bg-[#222] text-[#555] cursor-not-allowed'
-                    : 'bg-[#1e293b] text-[#dbeafe] hover:bg-[#334155]'
-                }`}
+                type="button"
+                onClick={() => void loadFetchSummaryHistory(false)}
+                disabled={fetchHistoryLoading}
+                className="rounded bg-white px-3 py-1.5 font-medium text-black disabled:cursor-not-allowed disabled:bg-[#222] disabled:text-[#555]"
               >
-                {dryRunLoading ? 'Dry-run中...' : 'Dry-run'}
-              </button>
-
-              <button
-                onClick={() => handlePeriodBatchScrape()}
-                data-testid="execute-button"
-                disabled={isOperationBusy || isApiUnavailable || !isPeriodValid || executeBlockedByUncertainty}
-                className={`flex items-center gap-2 px-6 py-2.5 rounded-lg font-medium text-sm transition-colors ${
-                  isOperationBusy || isApiUnavailable || !isPeriodValid || executeBlockedByUncertainty
-                    ? 'bg-[#222] text-[#555] cursor-not-allowed'
-                    : 'bg-white text-black hover:bg-[#eee]'
-                }`}
-              >
-                {isBatchBusy ? (
-                  <>
-                    <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                    </svg>
-                    取得中...
-                  </>
-                ) : !uncertaintyHydrated || !reviewHydrated ? '状態確認中' : isApiUnavailable ? 'API確認不可' : !isPeriodValid ? '期間不正' : executeBlockedByUncertainty ? '実行確認待ち' : '取得開始'}
+                {fetchHistoryLoading ? '確認中...' : '状態を再確認'}
               </button>
             </div>
+          )}
+
+          <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+            <button
+              onClick={handleDryRun}
+              data-testid="dry-run-button"
+              disabled={isOperationBusy || isApiUnavailable || isScopeUnavailable || !safetyPolicyAvailable || !isPeriodValid || executeBlockedByUncertainty}
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-lg font-medium text-sm transition-colors ${
+                isOperationBusy || isApiUnavailable || isScopeUnavailable || !safetyPolicyAvailable || !isPeriodValid || executeBlockedByUncertainty
+                  ? 'bg-[#222] text-[#555] cursor-not-allowed'
+                  : 'bg-[#1e293b] text-[#dbeafe] hover:bg-[#334155]'
+              }`}
+            >
+              {dryRunLoading ? '確認中...' : '事前確認'}
+            </button>
+
+            <button
+              onClick={() => handlePeriodBatchScrape()}
+              data-testid="execute-button"
+              disabled={isOperationBusy || isApiUnavailable || isScopeUnavailable || !safetyPolicyAvailable || !isPeriodValid || executeBlockedByUncertainty}
+              className={`flex items-center gap-2 px-6 py-2.5 rounded-lg font-medium text-sm transition-colors ${
+                isOperationBusy || isApiUnavailable || isScopeUnavailable || !safetyPolicyAvailable || !isPeriodValid || executeBlockedByUncertainty
+                  ? 'bg-[#222] text-[#555] cursor-not-allowed'
+                  : 'bg-white text-black hover:bg-[#eee]'
+              }`}
+            >
+              {isBatchBusy ? (
+                <>
+                  <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  {batchStatus === 'queued'
+                    ? isCheckingPreviousRequest ? '前回の依頼を確認中...'
+                      : batchAcceptanceVerified ? '開始待ち...' : '受付確認中...'
+                    : '取得中...'}
+                </>
+              ) : !activeJobHydrated || !uncertaintyHydrated || !reviewHydrated || activeJobConflictPending
+                ? '状態確認中'
+                : activeServerJob
+                  ? '取得中...'
+                  : activeJobCheckError || dryRunStorageError
+                    ? '状態確認待ち'
+                    : isApiUnavailable
+                      ? 'API確認不可'
+                      : isScopeUnavailable
+                        ? '中央反映待ち'
+                      : !safetyPolicyAvailable
+                        ? '安全設定確認待ち'
+                      : !isPeriodValid
+                        ? '期間不正'
+                        : executeBlockedByUncertainty
+                          ? '実行確認待ち'
+                          : '取得開始'}
+            </button>
           </div>
 
           {uncertaintyStorageBlocked && (
@@ -1346,10 +2223,19 @@ export default function DataCollectionPage() {
             <div className="rounded border border-[#4a1d1d] bg-[#220d0d] px-3 py-2 text-xs text-[#fca5a5] space-y-1" role="alert" data-testid="uncertainty-panel">
               <div>実行状態不明</div>
               {effectiveUncertaintyJobId && <div>job_id: {effectiveUncertaintyJobId}</div>}
-              <div>{COMPLETED_CONTRACT_MESSAGE}</div>
+              <div>前回の取得状態を確認してください。</div>
               <div>開始済みのサーバージョブは継続している可能性があります</div>
               {!effectiveUncertaintyJobId && <div>job_idがないため自動解除できません。Phase 3Eでは承認依頼の記録だけを行い、lockは解除しません。</div>}
-              {reconcileMessage && <div>{reconcileMessage}</div>}
+              {reconcileMessage && reconcileMessage !== COMPLETED_CONTRACT_MESSAGE && <div>{reconcileMessage}</div>}
+              {!effectiveUncertaintyJobId && joblessReviewLock && (
+                <ScrapeJobRecovery
+                  lock={joblessReviewLock}
+                  disabled={reconcileLoading || batchLoading}
+                  onVerifiedJob={verifiedJobId => persistUncertaintyLock(
+                    joblessReviewLock.failureKind, verifiedJobId, joblessReviewLock.request,
+                  )}
+                />
+              )}
               {!effectiveUncertaintyJobId && joblessReviewLock && !pendingReview && (
                 <div className="mt-3 space-y-2 rounded border border-[#713f12] bg-[#1c1206] p-3 text-[#fde68a]" data-testid="phase3e-review-form">
                   <div className="font-medium">非実行型の承認依頼（pending review）</div>
@@ -1470,470 +2356,243 @@ export default function DataCollectionPage() {
             </div>
           )}
 
-          {dryRunPendingMessage && (
-            <div className="rounded border border-[#1e3a8a] bg-[#0b1220] px-3 py-2 text-xs text-[#93c5fd]" role="status" aria-live="polite">
-              {dryRunPendingMessage}
-            </div>
-          )}
-
-          {dryRunErrorMessage && (
-            <div className="rounded border border-[#4a1d1d] bg-[#220d0d] px-3 py-2 text-xs text-[#fca5a5]" role="alert">
-              Dry-run失敗: {dryRunErrorMessage}
-            </div>
-          )}
-
-          {executeWarn && (
-            <div className="rounded border border-[#4a3b0f] bg-[#201a08] px-3 py-2 text-xs text-[#facc15]">
-              {executeWarn}
+          {dryRunErrorMessage && !(activeServerJob && dryRunErrorMessage === OWNER_ACTIVE_JOB_MESSAGE) && (
+            <div
+              className="rounded border border-[#4a1d1d] bg-[#220d0d] px-3 py-2 text-xs text-[#fca5a5]"
+              role="alert"
+              data-testid="dry-run-error"
+            >
+              確認失敗: {dryRunErrorMessage}
             </div>
           )}
 
           {dryRunLoading && (
-            <div className="rounded-lg border border-[#1e1e1e] bg-[#0a0a0a] p-4 space-y-2">
-              <div className="flex items-center justify-between">
-                <h3 className="text-xs font-medium text-[#9db4cc]">Dry-run 実行中</h3>
-                <span className="text-[11px] text-[#6b7280]">経過秒: {dryRunElapsedSeconds} sec</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <h3 className="text-xs font-medium text-white">見積もり生成中</h3>
-              </div>
-              <div className="text-xs text-[#9db4cc]">
-                HTTPアクセスは実行していません
-              </div>
+            <div
+              className="flex items-center justify-between rounded-lg border border-[#1e1e1e] bg-[#0a0a0a] px-4 py-3 text-xs"
+              data-testid="dry-run-progress"
+            >
+              <span className="font-medium text-white">{dryRunPendingMessage || '事前確認中'}</span>
+              <span className="text-[#6b7280]">{dryRunElapsedSeconds}秒</span>
               {periodMonthSpan(startPeriod, endPeriod) >= 6 && (
-                <div className="text-xs text-[#facc15]">
-                  長期間の場合、月次カレンダー確認により数十秒かかる場合があります
-                </div>
+                <span className="text-[#facc15]">時間がかかる場合があります</span>
               )}
             </div>
           )}
 
-          {!dryRunLoading && dryRunError && (
+          {dryRunError && (
             <div className="rounded border border-[#5b1e1e] bg-[#1f0d0d] px-3 py-2 text-xs text-[#fca5a5]">
               {dryRunError}
             </div>
           )}
 
           {!dryRunLoading && dryRunResultReady && dryRunResult && (
-            <div className="rounded-lg border border-[#1e1e1e] bg-[#0a0a0a] p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <h3 className="text-xs font-medium text-white">Dry-run 結果（実取得なし）</h3>
-                <span className="text-[11px] text-[#6b7280]">HTTPアクセスしないプレビュー</span>
+            <div
+              className="rounded-lg border border-[#1e1e1e] bg-[#0a0a0a] p-4 space-y-3"
+              data-testid="dry-run-result"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-xs font-medium text-white">事前確認</h3>
+                {dryRunResultRaceScope && <span className="text-[11px] text-[#93a9bf]" data-testid="dry-run-race-scope">対象: {scrapeRaceScopeLabel(dryRunResultRaceScope)}</span>}
+                {dryRunPendingMessage && <span className="text-[11px] text-[#93c5fd]">{dryRunPendingMessage}</span>}
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">
-                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3 space-y-2">
-                  <div className="text-[#7dd3fc]">取得対象</div>
-                  <div className="text-[#aaa]">total target count: <span className="text-white">{dryRunResult.dry_run.total_target_count}</span></div>
-                  <div className="text-[#aaa]">unique URL count: <span className="text-white">{dryRunResult.dry_run.unique_url_count}</span></div>
+              <div className="grid grid-cols-1 gap-3 text-xs sm:grid-cols-3">
+                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3">
+                  <div className="text-[#666]">新規</div>
+                  <div className="mt-1 text-lg font-semibold text-white">{dryRunResult.dry_run.new_fetch_required_count.toLocaleString()}</div>
                 </div>
-
-                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3 space-y-2">
-                  <div className="text-[#7dd3fc]">新規取得が必要</div>
-                  <div className="text-[#aaa]">new fetch required count: <span className="text-white">{dryRunResult.dry_run.new_fetch_required_count}</span></div>
-                  <div className="text-[#aaa]">estimated request count: <span className="text-white">{dryRunResult.dry_run.estimated_request_count}</span></div>
-                  <div className="text-[#aaa]">cache miss count: <span className="text-white">{dryRunResult.dry_run.cache_miss_count}</span></div>
+                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3">
+                  <div className="text-[#666]">既存</div>
+                  <div className="mt-1 text-lg font-semibold text-white">{dryRunResult.dry_run.already_covered_count.toLocaleString()}</div>
                 </div>
-
-                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3 space-y-2">
-                  <div className="text-[#7dd3fc]">既存DBでカバー済み</div>
-                  <div className="text-[#aaa]">already covered count: <span className="text-white">{dryRunResult.dry_run.already_covered_count}</span></div>
-                  <div className="text-[#aaa]">DB existing skip count: <span className="text-white">{dryRunResult.dry_run.db_existing_skip_count}</span></div>
-                  <div className="text-[#aaa]">DB existing race count: <span className="text-white">{dryRunResult.dry_run.db_existing_race_count}</span></div>
-                  <div className="text-[#aaa]">DB existing horse count: <span className="text-white">{dryRunResult.dry_run.db_existing_horse_count}</span></div>
-                  <div className="text-[#aaa]">DB existing result count: <span className="text-white">{dryRunResult.dry_run.db_existing_result_count}</span></div>
-                  <div className="text-[#aaa]">DB existing pedigree count: <span className="text-white">{dryRunResult.dry_run.db_existing_pedigree_count}</span></div>
-                </div>
-
-                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3 space-y-2">
-                  <div className="text-[#7dd3fc]">HTTPキャッシュ / resume でスキップ</div>
-                  <div className="text-[#aaa]">cache hit count: <span className="text-white">{dryRunResult.dry_run.cache_hit_count}</span></div>
-                  <div className="text-[#aaa]">resume hit count: <span className="text-white">{dryRunResult.dry_run.resume_hit_count}</span></div>
-                  <div className="text-[#aaa]">skipped count: <span className="text-white">{dryRunResult.dry_run.skipped_count}</span></div>
-                </div>
-
-                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3 space-y-2">
-                  <div className="text-[#7dd3fc]">推定HTTPリクエスト</div>
-                  <div className="text-[#aaa]">estimated request count: <span className="text-white">{dryRunResult.dry_run.estimated_request_count}</span></div>
-                </div>
-
-                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3 space-y-2">
-                  <div className="text-[#7dd3fc]">推定実行時間</div>
-                  <div className="text-[#aaa]">estimated runtime: <span className="text-white">{Math.ceil(dryRunResult.dry_run.estimated_runtime_sec)} sec</span></div>
+                <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3">
+                  <div className="text-[#666]">通信の最低目安</div>
+                  <div className="mt-1 text-lg font-semibold text-white">{formatMaybeSeconds(dryRunResult.dry_run.estimated_runtime_sec)}</div>
                 </div>
               </div>
-
-              <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] px-3 py-2 text-xs text-[#9db4cc] space-y-1">
-                <div>DB existing skip count は、既にDBに保存済みのため再取得不要と判定された件数です。</div>
-                <div>cache hit はHTTPキャッシュで再取得不要と判定された件数です。</div>
-                <div>resume hit は過去に成功済みのURLとして再実行をスキップできる件数です。</div>
-                <div>new fetch required は今回新たに取得が必要と推定される件数です。</div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-[11px]">
-                <div className="rounded border border-[#1e1e1e] p-2">
-                  <div className="text-[#7dd3fc] mb-1">rate limit policy</div>
-                  <div className="text-[#aaa]">min_interval_sec: {dryRunResult.rate_limit_policy?.min_interval_sec ?? '-'}</div>
-                  <div className="text-[#aaa]">scope: {dryRunResult.rate_limit_policy?.scope || '-'}</div>
-                </div>
-                <div className="rounded border border-[#1e1e1e] p-2">
-                  <div className="text-[#7dd3fc] mb-1">retry/backoff policy</div>
-                  <div className="text-[#aaa]">max_retries: {dryRunResult.retry_backoff_policy?.max_retries ?? '-'}</div>
-                  <div className="text-[#aaa]">backoff: {dryRunResult.retry_backoff_policy?.backoff?.type || '-'}</div>
-                  <div className="text-[#aaa]">retry_after: {dryRunResult.retry_backoff_policy?.retry_after || '-'}</div>
-                </div>
-                <div className="rounded border border-[#1e1e1e] p-2">
-                  <div className="text-[#7dd3fc] mb-1">circuit breaker policy</div>
-                  <div className="text-[#aaa]">failure_threshold: {dryRunResult.circuit_breaker_policy?.failure_threshold ?? '-'}</div>
-                  <div className="text-[#aaa]">cooldown_sec: {dryRunResult.circuit_breaker_policy?.cooldown_sec ?? '-'}</div>
-                </div>
-              </div>
+              <p className="text-[11px] text-[#777]">
+                一覧確認の通信間隔に基づく目安です。レース・馬情報の追加取得、再試行、解析・保存を含む全体の所要時間ではありません。
+              </p>
             </div>
           )}
 
           {/* 実行状態パネル */}
           {batchStatus !== 'idle' && (
             <div className="rounded-lg border border-[#1e1e1e] bg-[#0a0a0a] p-4 space-y-2" data-testid="batch-status-panel">
-              {(batchStatus === 'queued' || batchStatus === 'running') && (
+              {batchStatus !== 'error' && activeJobId && activeBatchRaceScope && (
+                <div className="text-xs text-[#93a9bf]" data-testid="batch-scrape-race-scope">
+                  依頼対象: {scrapeRaceScopeLabel(activeBatchRaceScope)}
+                </div>
+              )}
+              {(batchStatus === 'queued' || batchStatus === 'running' || batchStatus === 'cancelling') && (
                 <div className="space-y-1.5" role="status" aria-live="polite">
                   <div className="flex justify-between text-xs text-[#888]">
                     <span>
-                      {batchStatus === 'queued' ? '開始待ち' : '取得実行中'}
-                      {activeJobId ? ` · job_id: ${activeJobId}` : ''}
+                      {batchStatus === 'queued'
+                        ? isCheckingPreviousRequest
+                          ? '前回の依頼を確認中・取得は開始していません'
+                          : scrapeQueueTitle(batchAcceptanceVerified)
+                        : batchStatus === 'cancelling'
+                          ? '停止処理中'
+                          : '取得実行中'}
+                      {activeJobId ? ` · ID: ${activeJobId}` : ''}
                     </span>
                     <span className="flex gap-3">
                       {batchProgress.eta && <span className="text-yellow-400">{batchProgress.eta}</span>}
-                      <span>{batchProgress.current}%</span>
+                      {batchAcceptanceVerified && <span>{batchProgress.current}%</span>}
                     </span>
                   </div>
-                  <div className="text-xs text-[#666]">{batchProgress.message || (batchStatus === 'queued' ? '開始待ち' : '取得実行中')}</div>
-                  <div className="grid grid-cols-2 gap-2 pt-1 text-[11px] md:grid-cols-4" data-testid="scrape-progress-counters">
-                    <div className="rounded border border-[#1e1e1e] px-2 py-1.5 text-[#aaa]">
-                      新規保存レース <span className="text-white">{batchProgress.newSavedRaces ?? 0}</span>
-                    </div>
-                    <div className="rounded border border-[#1e1e1e] px-2 py-1.5 text-[#aaa]">
-                      新規保存頭数 <span className="text-white">{batchProgress.newSavedHorses ?? 0}</span>
-                    </div>
-                    <div className="rounded border border-[#1e1e1e] px-2 py-1.5 text-[#aaa]">
-                      既存品質合格スキップ <span className="text-white">{batchProgress.existingRacesSkipped ?? 0}</span>
-                    </div>
-                    <div className="rounded border border-[#1e1e1e] px-2 py-1.5 text-[#aaa]">
-                      正常非開催日 <span className="text-white">{batchProgress.verifiedNoRaceDates ?? 0}</span>
-                    </div>
+                  <div className="text-xs text-[#666]">
+                    {batchStatus === 'queued' && !batchAcceptanceVerified
+                      ? '保存したジョブIDで受付状態を確認しています。新しい取得は開始しません。'
+                      : batchProgress.message || (
+                      batchStatus === 'queued'
+                        ? '開始待ち'
+                        : batchStatus === 'cancelling'
+                          ? '安全な区切りで停止中'
+                          : '取得実行中'
+                    )}
                   </div>
-                  <div className="w-full bg-[#1e1e1e] rounded-full h-1.5 overflow-hidden">
+                  {acquisitionDisplay && (
+                    <div className="space-y-1 text-[11px] text-[#93a9bf]" data-testid="scrape-acquisition-policy">
+                      <div>{acquisitionDisplay.parallelism}</div>
+                      {(acquisitionDisplay.speed || acquisitionDisplay.interval) && (
+                        <div>{[acquisitionDisplay.speed, acquisitionDisplay.interval].filter(Boolean).join(' · ')}</div>
+                      )}
+                    </div>
+                  )}
+                  {batchAcceptanceVerified && <div className="grid grid-cols-2 gap-2 pt-1 text-[11px] md:grid-cols-4" data-testid="scrape-progress-counters">
+                    <div className="rounded border border-[#1e1e1e] px-2 py-1.5 text-[#aaa]">
+                      レース <span className="text-white">{batchProgress.newSavedRaces ?? 0}</span>
+                    </div>
+                    <div className="rounded border border-[#1e1e1e] px-2 py-1.5 text-[#aaa]">
+                      出走馬 <span className="text-white">{batchProgress.newSavedHorses ?? 0}</span>
+                    </div>
+                    <div className="rounded border border-[#1e1e1e] px-2 py-1.5 text-[#aaa]">
+                      既存 <span className="text-white">{batchProgress.existingRacesSkipped ?? 0}</span>
+                    </div>
+                    <div className="rounded border border-[#1e1e1e] px-2 py-1.5 text-[#aaa]">
+                      非開催 <span className="text-white">{batchProgress.verifiedNoRaceDates ?? 0}</span>
+                    </div>
+                  </div>}
+                  {batchAcceptanceVerified && <div
+                    className="w-full bg-[#1e1e1e] rounded-full h-1.5 overflow-hidden"
+                    role="progressbar"
+                    aria-label="取得進捗"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={batchProgress.current}
+                  >
                     <div className="bg-white h-1.5 rounded-full transition-all duration-500" style={{ width: `${batchProgress.current}%` }} />
-                  </div>
+                  </div>}
                 </div>
               )}
 
               {batchStatus === 'completed' && batchResult && (
                 <div className="text-xs text-[#4ade80]" role="status" aria-live="polite">
-                  {batchResult.races_collected === 0
-                    ? '取得完了: 0レース（0レース・正常完了） / '
-                    : '取得完了: '}
-                  新規{batchResult.races_collected}レース・{batchResult.saved_horses}頭 / 既存品質合格{batchResult.existing_races_skipped}レースをスキップ / 正常非開催日{batchResult.verified_no_race_dates}日
+                  完了 · {batchResult.races_collected}レース · {batchResult.saved_horses}頭
+                </div>
+              )}
+
+              {batchStatus === 'cancelled' && (
+                <div className="text-xs text-[#facc15]" role="status" aria-live="polite">
+                  {SCRAPE_CANCELLED_MESSAGE}
                 </div>
               )}
 
               {batchStatus === 'error' && (
-                <div className="space-y-2" role="alert">
-                  <div className="text-xs text-[#fca5a5]">
-                    {(() => {
-                      const titles: Record<string, string> = {
-                        execution: '取得失敗',
-                        start_rejected: '開始拒否',
-                        monitoring: '実行状態不明',
-                        client_stop: 'ブラウザ側の監視停止',
-                        validation: '入力エラー',
-                        busy: '取得処理中',
-                      }
-                      const key = typeof failureKind === 'string' ? failureKind : 'execution'
-                      const title = titles[key] || '取得失敗'
-                      return `${title}: ${batchError || '不明なエラー'}`
-                    })()}
-                  </div>
-                  {canRetry && retrySnapshot && (failureKind === 'execution' || failureKind === 'start_rejected') && (
-                    <button
-                      data-testid="retry-button"
-                      onClick={() => handlePeriodBatchScrape(retrySnapshot)}
-                      disabled={isOperationBusy || isApiUnavailable}
-                      className={`px-4 py-2 rounded text-xs font-medium transition-colors ${
-                        isOperationBusy || isApiUnavailable
-                          ? 'bg-[#222] text-[#555] cursor-not-allowed'
-                          : 'bg-white text-black hover:bg-[#eee]'
-                      }`}
-                    >
-                      再実行
-                    </button>
-                  )}
-                </div>
+                <ScrapeBatchRecoveryNotice
+                  failureKind={failureKind}
+                  monitoringIssue={monitoringIssue}
+                  error={batchError}
+                  jobId={activeJobId}
+                  acceptanceVerified={batchAcceptanceVerified}
+                  raceScope={activeBatchRaceScope ?? activeServerJob?.raceScope ?? null}
+                  startPeriod={displayedStartPeriod}
+                  endPeriod={displayedEndPeriod}
+                  loading={batchLoading}
+                  canRetry={canRetry && Boolean(retrySnapshot)}
+                  retryDisabled={isOperationBusy || isApiUnavailable || !safetyPolicyAvailable}
+                  canResubmit={canResubmit && safetyPolicyAvailable}
+                  canRetire={canRetire}
+                  retirementSupported={retirementSupported}
+                  onReconnect={() => void reconnectBatchScrape().catch(() => {})}
+                  onRetry={() => retrySnapshot && void handlePeriodBatchScrape(retrySnapshot, retryRaceScope)}
+                  onResubmit={() => void handleBatchResubmit()}
+                  onRetire={() => void handleSelectRequestAgain()}
+                />
               )}
             </div>
           )}
         </div>
 
-        {/* 取得完了サマリー */}
-        {batchStatus === 'completed' && batchResult && batchResult.stats?.period && (
-          <div className="bg-[#0a1a0a] border border-[#1a3a1a] rounded-lg px-5 py-4 flex flex-wrap gap-5 items-center">
-            <span className="text-xs text-[#4ade80] font-medium">✓ 取得完了</span>
-            <span className="text-xs text-[#888]">{batchResult.stats.period} · {batchResult.stats.total_months}ヶ月</span>
-            <span className="text-xs text-white font-medium">新規{batchResult.races_collected}レース</span>
-            <span className="text-xs text-[#888]">既存{batchResult.existing_races_skipped}レースをスキップ</span>
-            <span className="text-xs text-[#555]">{batchResult.elapsed_time}秒</span>
-            {batchResult.races_collected === 0 && <span className="text-xs text-[#93c5fd]">0レース・正常完了</span>}
+        {/* 最新結果は一行だけ表示する */}
+        {fetchHistory.length > 0 && !dryRunResultReady && batchStatus !== 'completed' && (
+          <div className="bg-[#111] border border-[#1e1e1e] rounded-lg px-4 py-3" data-testid="latest-fetch-summary">
+            {(() => {
+              const item = fetchHistory[0]
+              const summary = item.fetch_summary || {}
+              const dry = summary.dry_run || {}
+              const isDryRun = summary.mode === 'dry-run'
+              return (
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-[#777]">
+                  <span className="font-medium text-white">最新</span>
+                  <span>{isDryRun ? '確認' : '取得'}</span>
+                  <span>{formatSummaryDate(summary.start_date)}～{formatSummaryDate(summary.end_date)}</span>
+                  <span className="text-white">
+                    {isDryRun
+                      ? `新規 ${formatMaybeNumber(dry.new_fetch_required_count)}`
+                      : `${formatMaybeNumber(summary.saved_races)}レース`}
+                  </span>
+                  <span>{formatMaybeSeconds(isDryRun ? dry.estimated_runtime_sec : summary.elapsed_time_sec)}</span>
+                  <button
+                    type="button"
+                    aria-label="更新"
+                    title="更新"
+                    data-testid="refresh-history-button"
+                    onClick={() => void loadFetchSummaryHistory(false)}
+                    disabled={fetchHistoryLoading}
+                    className="ml-auto text-[#555] transition-colors hover:text-white disabled:cursor-not-allowed"
+                  >
+                    <svg className={`h-3.5 w-3.5 ${fetchHistoryLoading ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                  </button>
+                </div>
+              )
+            })()}
           </div>
         )}
-
-        {/* 完了後の品質確認ブリッジ（read-only導線のみ） */}
-        {batchStatus === 'completed' && (
-          <div className="bg-[#111827] border border-[#1f2937] rounded-lg px-5 py-4 space-y-2" data-testid="quality-bridge-card">
-            <div className="text-xs text-[#93c5fd]">取得は完了しましたが、品質確認は未実施です</div>
-            <div className="text-xs text-[#6b7280]">以下は read-only preview です（自動実行・自動遷移は行いません）。</div>
-            <div className="flex flex-wrap gap-3 pt-1">
-              <Link href="/data-collection/refresh-plan" className="text-xs text-[#bfdbfe] hover:text-white transition-colors" data-testid="quality-bridge-refresh-link">
-                Refresh Plan（read-only preview）
-              </Link>
-              <Link href="/data-collection/p0-repair-plan" className="text-xs text-[#bfdbfe] hover:text-white transition-colors" data-testid="quality-bridge-p0-link">
-                P0 Repair Plan（read-only preview）
-              </Link>
-              <Link href="/data-collection/targeted-refetch-plan" className="text-xs text-[#bfdbfe] hover:text-white transition-colors" data-testid="quality-bridge-targeted-refetch-link">
-                Targeted Refetch Plan（read-only preview）
-              </Link>
-              <Link href="/data-collection/live-validation" className="text-xs text-[#fbbf24] hover:text-white transition-colors" data-testid="quality-bridge-live-validation-link">
-                Live Validation（Admin・外部HTTP最大3件）
-              </Link>
-            </div>
-          </div>
-        )}
-
-        {/* fetch summary 履歴 */}
-        <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-5">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-medium text-white">fetch summary 履歴</h2>
-            <button
-              data-testid="refresh-history-button"
-              onClick={loadFetchSummaryHistory}
-              className="text-xs text-[#555] hover:text-[#888] transition-colors"
-            >
-              {fetchHistoryLoading ? '更新中...' : '更新'}
-            </button>
-          </div>
-
-          {fetchHistory.length === 0 ? (
-            <div className="text-xs text-[#555] py-3">履歴がありません（Dry-run または 取得実行後に表示されます）</div>
-          ) : (
-            <div className="space-y-2">
-              {fetchHistory.map((item) => {
-                const summary = item.fetch_summary || {}
-                const metrics = summary.metrics || {}
-                const dry = summary.dry_run || {}
-                const mode = summary.mode || '-'
-                return (
-                  <div key={item.job_id} className="rounded border border-[#1e1e1e] bg-[#0a0a0a] p-3">
-                    <div className="flex flex-wrap items-center gap-2 mb-2">
-                      <span className="text-[11px] px-2 py-0.5 rounded bg-[#1f2937] text-[#dbeafe]">{mode}</span>
-                      <span className="text-[11px] text-[#888]">job: {item.job_id}</span>
-                      <span className="text-[11px] text-[#666]">{summary.start_date || '-'} ~ {summary.end_date || '-'}</span>
-                      <span className="text-[11px] text-[#666]">updated: {item.updated_at || '-'}</span>
-                    </div>
-                    {mode === 'dry-run' ? (
-                      <div className="grid grid-cols-2 md:grid-cols-6 gap-2 text-[11px]">
-                        <div className="text-[#aaa]">est req: <span className="text-white">{formatMaybeNumber(dry.estimated_request_count)}</span></div>
-                        <div className="text-[#aaa]">new fetch: <span className="text-white">{formatMaybeNumber(dry.new_fetch_required_count)}</span></div>
-                        <div className="text-[#aaa]">already covered: <span className="text-white">{formatMaybeNumber(dry.already_covered_count)}</span></div>
-                        <div className="text-[#aaa]">cache hit: <span className="text-white">{formatMaybeNumber(dry.cache_hit_count)}</span></div>
-                        <div className="text-[#aaa]">cache miss: <span className="text-white">{formatMaybeNumber(dry.cache_miss_count)}</span></div>
-                        <div className="text-[#aaa]">resume hit: <span className="text-white">{formatMaybeNumber(dry.resume_hit_count)}</span></div>
-                        <div className="text-[#aaa]">db existing: <span className="text-white">{formatMaybeNumber(dry.db_existing_skip_count)}</span></div>
-                        <div className="text-[#aaa]">est runtime: <span className="text-white">{formatMaybeSeconds(dry.estimated_runtime_sec)}</span></div>
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-[11px]">
-                        <div className="text-[#aaa]">saved races: <span className="text-white">{summary.saved_races ?? '-'}</span></div>
-                        <div className="text-[#aaa]">saved horses: <span className="text-white">{summary.saved_horses ?? '-'}</span></div>
-                        <div className="text-[#aaa]">existing races skipped: <span className="text-white">{summary.existing_races_skipped ?? '-'}</span></div>
-                        <div className="text-[#aaa]">verified no-race dates: <span className="text-white">{summary.verified_no_race_dates ?? '-'}</span></div>
-                        <div className="text-[#aaa]">mode: <span className="text-white">{summary.execution_mode ?? '-'}</span></div>
-                        <div className="text-[#aaa]">elapsed: <span className="text-white">{Math.ceil(Number(summary.elapsed_time_sec || 0))} sec</span></div>
-                        <div className="text-[#aaa]">network req: <span className="text-white">{metrics.network_requests ?? '-'}</span></div>
-                        <div className="text-[#aaa]">retries: <span className="text-white">{metrics.retry_count ?? '-'}</span></div>
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          )}
-        </div>
 
         {/* 取得済みデータ統計 */}
         <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-5">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-medium text-white">取得済みデータ</h2>
-            <button
-              onClick={() => { setShowCollectedData(v => !v); if (!showCollectedData) fetchCollectedData() }}
-              className="text-xs text-[#555] hover:text-[#888] transition-colors"
-            >
-              {showCollectedData ? '閉じる ▲' : 'レース一覧を見る ▼'}
-            </button>
+          <div className="mb-4">
+            <h2 className="text-sm font-medium text-white">保存済み</h2>
+            <p className="mt-2 text-xs leading-relaxed text-[#888]">
+              取得したデータは次回のモデル作成と再予測に利用できます。取得だけでは使用中モデルは更新されません。
+            </p>
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div className="bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg p-3">
-              <div className="text-xs text-[#666] mb-1">総レース数</div>
+              <div className="text-xs text-[#666] mb-1">レース</div>
               <div className="text-xl font-bold text-white">{dataStats.totalRaces.toLocaleString()}</div>
             </div>
             <div className="bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg p-3">
-              <div className="text-xs text-[#666] mb-1">総出走馬数</div>
+              <div className="text-xs text-[#666] mb-1">出走馬</div>
               <div className="text-xl font-bold text-white">{dataStats.totalResults.toLocaleString()}</div>
             </div>
             <div className="bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg p-3">
-              <div className="text-xs text-[#666] mb-1">最終取得日</div>
+              <div className="text-xs text-[#666] mb-1">最終</div>
               <div className="text-sm font-medium text-[#aaa]">
                 {dataStats.latestDate ? new Date(dataStats.latestDate).toLocaleDateString('ja-JP') : '未取得'}
               </div>
             </div>
           </div>
-
-          {/* レース一覧（折りたたみ） */}
-          {showCollectedData && (
-            <div className="mt-4 border-t border-[#1e1e1e] pt-4">
-              <div className="flex justify-between items-center mb-3">
-                <span className="text-xs text-[#555]">最近取得したレース（最新50件）</span>
-                <button onClick={fetchCollectedData} className="text-xs text-[#555] hover:text-[#888] transition-colors">更新</button>
-              </div>
-              <div className="space-y-1 max-h-96 overflow-y-auto">
-                {collectedRaces.length === 0 ? (
-                  <div className="py-8 text-center text-xs text-[#444]">データがまだ取得されていません</div>
-                ) : collectedRaces.map(race => (
-                  <div key={race.race_id} className="flex items-center justify-between px-3 py-2.5 rounded bg-[#0a0a0a] hover:bg-[#161616] transition-colors group">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-xs font-medium text-white">{race.race_name || `${race.venue} ${race.race_no}R`}</span>
-                        <span className="text-xs text-[#555]">{race.venue}</span>
-                        <span className="text-xs text-[#444]">{race.track_type} {race.distance}m</span>
-                      </div>
-                      <div className="text-[10px] text-[#333] mt-0.5">{race.date || race.created_at?.slice(0, 10) || ''}</div>
-                    </div>
-                    <button
-                      onClick={() => fetchRaceDetail(race.race_id)}
-                      className="text-xs text-[#444] hover:text-[#888] transition-colors opacity-0 group-hover:opacity-100 ml-3 shrink-0"
-                    >
-                      詳細
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* レース詳細モーダル */}
-        {selectedRaceDetail && (
-          <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setSelectedRaceDetail(null)}>
-            <div className="bg-[#111] border border-[#1e1e1e] rounded-lg max-w-4xl w-full max-h-[85vh] overflow-hidden" onClick={e => e.stopPropagation()}>
-              <div className="flex items-center justify-between px-5 py-4 border-b border-[#1e1e1e]">
-                <h3 className="text-sm font-medium">レース詳細</h3>
-                <button onClick={() => setSelectedRaceDetail(null)} className="text-[#555] hover:text-white text-xl leading-none">×</button>
-              </div>
-              <div className="overflow-auto max-h-[calc(85vh-56px)]">
-                <table className="w-full text-xs">
-                  <thead className="bg-[#0a0a0a] sticky top-0">
-                    <tr>
-                      {['着', '枠', '馬番', '馬名', '性齢', '斤量', '騎手', 'タイム', 'オッズ', '人気'].map(h => (
-                        <th key={h} className="px-3 py-2.5 text-left font-medium text-[#555] first:pl-5">{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {selectedRaceDetail.results.map((result: any, i: number) => (
-                      <tr key={i} className={`border-b border-[#1a1a1a] hover:bg-[#161616] transition-colors ${result.finish_position === 1 ? 'bg-[#0a1500]' : ''}`}>
-                        <td className={`px-3 py-2.5 pl-5 font-bold ${result.finish_position <= 3 ? 'text-[#4ade80]' : 'text-[#888]'}`}>{result.finish_position}</td>
-                        <td className="px-3 py-2.5 text-[#666]">{result.bracket_number}</td>
-                        <td className="px-3 py-2.5 font-bold">{result.horse_number}</td>
-                        <td className="px-3 py-2.5 font-medium text-white">{result.horse_name}</td>
-                        <td className="px-3 py-2.5 text-[#888]">{result.sex_age || `${result.sex || ''}${result.age || ''}`}</td>
-                        <td className="px-3 py-2.5 text-[#888]">{result.jockey_weight}kg</td>
-                        <td className="px-3 py-2.5 text-[#888]">{result.jockey_name}</td>
-                        <td className="px-3 py-2.5 font-mono text-[#aaa]">{result.finish_time?.toFixed(1)}</td>
-                        <td className="px-3 py-2.5 font-medium">{result.odds?.toFixed(1)}</td>
-                        <td className="px-3 py-2.5 text-[#666]">{result.popularity}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+          <div className="mt-4 flex flex-wrap gap-4 text-xs">
+            <Link href="/train" className="text-white hover:underline">このデータでモデルを作成 →</Link>
+            <Link href="/predict-batch" className="text-[#93c5fd] hover:underline">最新データで予測 →</Link>
           </div>
-        )}
-
-        {/* プロファイリング（折りたたみ） */}
-        <div className="border border-[#1e1e1e] rounded-lg overflow-hidden">
-          <button
-            onClick={() => setShowProfiling(v => !v)}
-            className="w-full flex items-center justify-between px-5 py-3.5 bg-[#111] hover:bg-[#161616] transition-colors"
-          >
-            <span className="text-xs text-[#555]">特徴量プロファイリングレポート（オプション）</span>
-            <svg className={`w-3 h-3 text-[#444] transition-transform ${showProfiling ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-            </svg>
-          </button>
-          {showProfiling && (
-            <div className="px-5 pb-5 pt-4 bg-[#0d0d0d] border-t border-[#1e1e1e] space-y-3">
-              <label className="flex items-center gap-2 text-xs text-[#888] cursor-pointer select-none">
-                <input type="checkbox" checked={useOptimized} onChange={e => setUseOptimized(e.target.checked)} className="w-3.5 h-3.5 accent-white" />
-                LightGBM最適化済み（リーク除去・変換適用）
-              </label>
-              {!isAdmin && (
-                <div className="rounded border border-[#3f2b0b] bg-[#171107] px-3 py-2 text-xs text-[#d6a85f]">
-                  特徴量プロファイリングの生成・閲覧はAdmin専用です。
-                </div>
-              )}
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={handleStartProfiling}
-                  disabled={!isAdmin || profilingStatus === 'running'}
-                  className={`px-4 py-2 rounded text-xs font-medium transition-colors ${!isAdmin || profilingStatus === 'running' ? 'bg-[#1a1a1a] text-[#555] cursor-not-allowed' : 'bg-white text-black hover:bg-[#eee]'}`}
-                >
-                  {profilingStatus === 'running' ? '生成中...' : 'レポート生成'}
-                </button>
-                {profilingStatus === 'completed' && profilingJobId && (
-                  <Link href={`/data-collection/profiling/${profilingJobId}`} className="text-xs text-[#4ade80] hover:underline">認証付きビューアで開く →</Link>
-                )}
-              </div>
-              {profilingStatus === 'running' && (
-                <div className="space-y-1">
-                  <div className="flex justify-between text-xs text-[#555]">
-                    <span>{profilingMessage}</span>
-                    <span>{profilingProgress}%</span>
-                  </div>
-                  <div className="w-full bg-[#1e1e1e] rounded-full h-1 overflow-hidden">
-                    <div className="bg-[#555] h-1 rounded-full transition-all duration-700" style={{ width: `${profilingProgress}%` }} />
-                  </div>
-                </div>
-              )}
-              {profilingStatus === 'error' && <p className="text-xs text-red-400">{profilingMessage}</p>}
-            </div>
-          )}
-        </div>
-
-        {/* 次のステップ */}
-        <div className="p-5 bg-[#111] border border-[#1e1e1e] rounded-lg flex items-center justify-between gap-4">
-          <div>
-            <div className="text-xs text-[#666] mb-0.5">次のステップ — 02</div>
-            <div className="text-sm font-medium">モデル学習</div>
-            <div className="text-xs text-[#555] mt-0.5">収集したデータでAIモデルをトレーニング</div>
-          </div>
-          <Link
-            href="/train"
-            className="shrink-0 flex items-center gap-1.5 bg-white text-black text-sm font-medium px-5 py-2.5 rounded hover:bg-[#eee] transition-colors"
-          >
-            モデル学習へ
-            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-            </svg>
-          </Link>
         </div>
       </main>
 
@@ -1946,4 +2605,3 @@ export default function DataCollectionPage() {
     </div>
   )
 }
-

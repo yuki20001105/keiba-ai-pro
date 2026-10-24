@@ -156,33 +156,33 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
     progress = subparsers.add_parser("progress")
     progress.add_argument(
-        "--json-output", type=Path, default=Path("reports/phase3n_observation_progress.json")
+        "--json-output", type=Path, default=Path("reports/generated/phase3n/phase3n_observation_progress.json")
     )
     progress.add_argument(
-        "--markdown-output", type=Path, default=Path("reports/phase3n_observation_progress.md")
+        "--markdown-output", type=Path, default=Path("reports/generated/phase3n/phase3n_observation_progress.md")
     )
     progress.set_defaults(func=command_progress)
     reconcile = subparsers.add_parser("reconcile-results")
     reconcile.set_defaults(func=command_reconcile)
     cache = subparsers.add_parser("cache-rebuild")
     cache.add_argument(
-        "--cache-output", type=Path, default=Path("reports/phase3n_observation_cache.json")
+        "--cache-output", type=Path, default=Path("reports/generated/phase3n/phase3n_observation_cache.json")
     )
     cache.set_defaults(func=command_cache_rebuild)
     integrity = subparsers.add_parser("cache-integrity")
     integrity.add_argument(
-        "--cache-output", type=Path, default=Path("reports/phase3n_observation_cache.json")
+        "--cache-output", type=Path, default=Path("reports/generated/phase3n/phase3n_observation_cache.json")
     )
     integrity.add_argument(
         "--evidence-output",
         type=Path,
-        default=Path("reports/phase3n_cache_integrity_evidence.json"),
+        default=Path("reports/generated/phase3n/phase3n_cache_integrity_evidence.json"),
     )
     integrity.set_defaults(func=command_cache_integrity)
     export = subparsers.add_parser("export-model-source")
     export.add_argument("--initial-bankroll", required=True, type=float)
     export.add_argument(
-        "--output", type=Path, default=Path("reports/model_evaluation_observations.json.gz")
+        "--output", type=Path, default=Path("reports/generated/phase3n/model_evaluation_observations.json.gz")
     )
     export.set_defaults(func=command_export)
     return parser.parse_args(argv)

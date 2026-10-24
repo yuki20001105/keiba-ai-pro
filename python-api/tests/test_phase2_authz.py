@@ -90,11 +90,17 @@ def test_user_metadata_escalation_is_rejected(monkeypatch: pytest.MonkeyPatch):
 
 def test_train_start_denied_does_not_create_job(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(deps_auth, "_get_profile_from_db", lambda _uid: {"role": "user", "subscription_tier": "free"})
-    before = len(train._train_jobs)
+    runtime_calls = 0
+
+    def unexpected_runtime_access():
+        nonlocal runtime_calls
+        runtime_calls += 1
+        raise AssertionError("authorization must run before durable job access")
+
+    monkeypatch.setattr(train, "_get_local_retrain_runtime", unexpected_runtime_access)
     res = _run_request("POST", "/api/train/start", token="free", json={})
-    after = len(train._train_jobs)
     assert res.status_code == 403
-    assert after == before
+    assert runtime_calls == 0
 
 
 class _FakeRpcResult:

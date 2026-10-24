@@ -5,11 +5,21 @@ import sqlite3
 import sys
 
 import httpx
+import pytest
 
 sys.path.insert(0, "python-api")
 import main  # type: ignore  # noqa: E402
 from middleware import auth as middleware_auth  # type: ignore  # noqa: E402
 from routers import scrape  # type: ignore  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def isolated_health_job_store(monkeypatch, tmp_path):
+    """Health contracts must not open the running application's job store."""
+    from scraping import jobs
+
+    monkeypatch.setattr(jobs, "_JOBS_DB_PATH", tmp_path / "health-jobs.db")
+    jobs._init_jobs_db()
 
 
 async def _request(method: str, path: str) -> httpx.Response:
@@ -22,13 +32,41 @@ def _set_auth_mode(enabled: bool) -> None:
     # middleware.auth reads SUPABASE_URL as a module-level value.
     middleware_auth.SUPABASE_URL = "http://127.0.0.1:54321" if enabled else ""
 
-def test_health_contract() -> None:
+def test_health_contract(monkeypatch) -> None:
+    monkeypatch.delenv("SCRAPE_RACE_CONCURRENCY", raising=False)
     _set_auth_mode(True)
     res = asyncio.run(_request("GET", "/health"))
     assert res.status_code == 200
     payload = res.json()
     assert isinstance(payload, dict)
     assert payload.get("status") == "ok"
+    assert payload["scrape_capabilities"] == {
+        "race_scopes": ["all", "jra"], "jra_month_reuse": True,
+        "race_task_concurrency": 3, "max_concurrent_http_requests": 1,
+        "safety_policy_version": "normal-acquisition-safe-v1",
+        "minimum_provider_interval_seconds": 3,
+        "halt_http400": True, "preserve_saved_values": True,
+    }
+
+
+def test_health_routes_share_the_implemented_safety_contract(monkeypatch) -> None:
+    from scraping import acquisition_http_policy
+
+    expected = {
+        "safety_policy_version": "test-contract-only",
+        "minimum_provider_interval_seconds": 7,
+        "halt_http400": True, "preserve_saved_values": False,
+        "max_concurrent_http_requests": 1,
+    }
+    monkeypatch.setattr(acquisition_http_policy, "acquisition_safety_capabilities", lambda: dict(expected))
+    monkeypatch.setattr(scrape, "get_scrape_runtime_health", lambda: {
+        "database_ok": True, "stale_job_ids": [],
+    })
+    monkeypatch.setattr(scrape, "_purge_old_jobs", lambda _jobs: None)
+    generic = asyncio.run(main.health())["scrape_capabilities"]
+    acquisition = asyncio.run(scrape.scrape_health())["scrape_capabilities"]
+    assert generic == acquisition
+    assert {key: generic[key] for key in expected} == expected
 
 
 def test_lifespan_initializes_empty_ephemeral_sqlite(monkeypatch, tmp_path) -> None:
@@ -36,6 +74,9 @@ def test_lifespan_initializes_empty_ephemeral_sqlite(monkeypatch, tmp_path) -> N
     events: list[str] = []
 
     monkeypatch.setattr(main, "ULTIMATE_DB", db_path)
+    # Startup reconciliation has its own tests; it must never touch real jobs
+    # during this empty-schema lifecycle contract.
+    monkeypatch.setattr(main.train, "reconcile_interrupted_train_jobs", lambda: 0)
     monkeypatch.setattr(main, "start_scheduler", lambda: events.append("scheduler-start"))
     monkeypatch.setattr(main, "stop_scheduler", lambda: events.append("scheduler-stop"))
 

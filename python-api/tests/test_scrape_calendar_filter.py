@@ -1,8 +1,18 @@
 import asyncio
 import json
 import sqlite3
+from datetime import date
 
 from scraping import jobs
+
+
+def test_recent_and_future_dates_defer_empty_confirmation() -> None:
+    today = date(2026, 9, 13)
+
+    assert jobs._is_recent_or_future_race_date("20260913", today=today)
+    assert jobs._is_recent_or_future_race_date("20260901", today=today)
+    assert jobs._is_recent_or_future_race_date("20260920", today=today)
+    assert not jobs._is_recent_or_future_race_date("20260829", today=today)
 
 
 def test_calendar_builder_returns_only_scheduled_dates(monkeypatch) -> None:

@@ -117,6 +117,8 @@ class LightGBMFeatureOptimizer:
         self.label_encoders = {}
         self.categorical_features = []
         self.feature_stats = {}
+        self._high_missing_cols = []
+        self._zero_var_cols = []
         self.fitted = False
     
     def fit_transform(self, df: pd.DataFrame, target_col: Optional[str] = None) -> Tuple[pd.DataFrame, List[str]]:
@@ -131,6 +133,8 @@ class LightGBMFeatureOptimizer:
         """
         df = df.copy()
         self.categorical_features = []
+        self._high_missing_cols = []
+        self._zero_var_cols = []
 
         # ===== L3-1: 未来情報列を強制除外（データリーク防止） =====
         _bl_present = [c for c in FUTURE_INFO_BLACKLIST if c in df.columns]
@@ -482,6 +486,7 @@ class LightGBMFeatureOptimizer:
             if drop_miss:
                 print(f"\n  ⚠️  欠損率90%超の列を除去 ({len(drop_miss)}列): {drop_miss[:8]}{'...' if len(drop_miss)>8 else ''}")
                 df = df.drop(columns=drop_miss, errors='ignore')
+                self._high_missing_cols = list(drop_miss)
 
         # ===== 重複列の除去 =====
         dup_cols = df.columns[df.columns.duplicated()].tolist()
@@ -501,7 +506,7 @@ class LightGBMFeatureOptimizer:
                 print(f"  ⚠️  [fix-D] ゼロ分散列を除去 ({len(_zero_var)}列): {_zero_var}")
                 df = df.drop(columns=_zero_var, errors='ignore')
                 # 学習済みモデルのバンドルに記録しておく
-                self._zero_var_cols = getattr(self, '_zero_var_cols', []) + _zero_var
+                self._zero_var_cols = list(_zero_var)
 
         # ===== S-2チェック: track_type_encoded と corner_radius_encoded の独立性検証 =====
         if 'track_type_encoded' in df.columns and 'corner_radius_encoded' in df.columns:
@@ -620,6 +625,16 @@ class LightGBMFeatureOptimizer:
 
         # 特徴量変換（対数変換・ベイズ平滑化）
         df = self._add_feature_transforms(df)
+
+        # Missingness and variance decisions are fitted on training rows only.
+        # Apply exactly those decisions to validation/inference rows; deriving
+        # them again from holdout data would leak its distribution into the
+        # feature contract.
+        fitted_drop_columns = list(getattr(self, '_high_missing_cols', [])) + list(
+            getattr(self, '_zero_var_cols', [])
+        )
+        if fitted_drop_columns:
+            df = df.drop(columns=fitted_drop_columns, errors='ignore')
 
         # pandas nullable dtypes may keep pd.NA, which breaks downstream np.isfinite.
         df = self._normalize_nullable_values(df)

@@ -4,21 +4,22 @@ Pydantic リクエスト / レスポンスモデル
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from scraping.scrape_request_contract import parse_scrape_date, validate_scrape_date_range
+from scraping.scrape_request_contract import build_scrape_months, parse_scrape_date, validate_scrape_date_range
 
 
 class TrainRequest(BaseModel):
     """学習リクエスト"""
     model_config = {"protected_namespaces": ()}
 
-    target: str = "win"
-    model_type: str = "logistic_regression"
-    test_size: float = 0.2
-    cv_folds: int = 5
+    target: Literal["win", "place3", "win_tie", "speed_deviation", "rank"] = "win"
+    model_type: Literal["lightgbm"] = "lightgbm"
+    test_size: float = Field(0.2, ge=0.1, le=0.5)
+    cv_folds: int = Field(5, ge=2, le=10)
     use_sqlite: bool = True
     ultimate_mode: bool = True  # Phase 0: 常に True（87特徴量モード固定）
     use_optimizer: bool = True
@@ -28,15 +29,35 @@ class TrainRequest(BaseModel):
     training_date_from: Optional[str] = None
     training_date_to: Optional[str] = None
     force_sync: bool = True
+    # Omitted by historical approval contracts; only the local UI opts in.
+    feature_pipeline: Literal["legacy", "local-db-shared-v1", "local-db-shared-optimized-v1", "local-db-context-v1"] = "legacy"
+    # Scheduling controls are bound by the local job request, not added to the
+    # source-pinned historical approval contract.
+    compute_device: Literal["auto", "cpu", "gpu"] = "auto"
+    reuse_features: bool = True
 
     @field_validator("training_date_from", "training_date_to", mode="before")
     @classmethod
     def _validate_ym(cls, v: Optional[str]) -> Optional[str]:
         if v is None or v == "":
             return None
-        if not re.match(r"^\d{4}-\d{2}$", str(v)):
+        if not re.fullmatch(r"\d{4}-\d{2}", str(v)):
             raise ValueError("YYYY-MM 形式で入力してください (例: 2025-01)")
-        return v
+        try:
+            datetime.strptime(str(v), "%Y-%m")
+        except ValueError as exc:
+            raise ValueError("存在する年月を入力してください") from exc
+        return str(v)
+
+    @model_validator(mode="after")
+    def _validate_training_range(self) -> "TrainRequest":
+        if (
+            self.training_date_from
+            and self.training_date_to
+            and self.training_date_from > self.training_date_to
+        ):
+            raise ValueError("学習期間の開始年月は終了年月以前にしてください")
+        return self
 
 
 class TrainResponse(BaseModel):
@@ -47,6 +68,7 @@ class TrainResponse(BaseModel):
     model_id: str
     model_path: str
     metrics: Dict[str, float]
+    evaluation: Dict[str, Any] = Field(default_factory=dict)
     data_count: int
     race_count: int
     feature_count: int
@@ -55,6 +77,12 @@ class TrainResponse(BaseModel):
     optuna_executed: bool = False
     optuna_error: Optional[str] = None
     feature_columns: List[str] = []
+    training_eligibility: Dict[str, Any] = Field(default_factory=dict)
+    feature_pipeline: Optional[str] = None
+    probability_validation: Dict[str, Any] = Field(default_factory=dict)
+    training_parallel_workers: Optional[int] = None
+    native_threads: Optional[int] = None
+    acceleration: Dict[str, Any] = Field(default_factory=dict)
 
 
 class PredictRequest(BaseModel):
@@ -63,6 +91,9 @@ class PredictRequest(BaseModel):
 
     model_id: Optional[str] = None
     horses: List[Dict[str, Any]]
+    # Reference winner and shared-DB pipelines require actual race metadata;
+    # never infer a calendar date or field identity from a model/race ID.
+    race_info: Optional[Dict[str, Any]] = None
 
 
 class PredictResponse(BaseModel):
@@ -73,6 +104,7 @@ class PredictResponse(BaseModel):
     predictions: List[Dict[str, Any]]
     model_id: str
     message: str
+    input_diagnostics: Optional[Dict[str, Any]] = None
 
 
 class ModelInfo(BaseModel):
@@ -92,13 +124,18 @@ class AnalyzeRaceRequest(BaseModel):
     model_config = {"protected_namespaces": ()}
 
     race_id: str
-    bankroll: int = 10000
+    bankroll: int = Field(10000, ge=100, le=10_000_000)
     risk_mode: Literal["aggressive", "balanced", "conservative"] = "balanced"
     use_kelly: bool = True
     dynamic_unit: bool = True
     min_ev: float = Field(1.2, ge=1.0, le=10.0)
     model_id: Optional[str] = None
+    include_explanation: bool = False
     ultimate_mode: bool = True  # Phase 0: 常に True（87特徴量モード固定）
+    # Manual re-prediction rebuilds features from the saved DB without silently
+    # scraping or changing the fitted model. Legacy callers keep auto repair.
+    force_recompute: bool = False
+    data_refresh: Literal["auto", "saved_db"] = "auto"
 
 
 class AnalyzeRaceResponse(BaseModel):
@@ -106,7 +143,16 @@ class AnalyzeRaceResponse(BaseModel):
     model_config = {"protected_namespaces": ()}
 
     success: bool
+    model_id: Optional[str] = None
+    explanation_method: Optional[str] = None
+    performance_snapshot_id: Optional[str] = None
+    performance_recording_error: Optional[str] = None
+    processing_timings: Optional[Dict[str, float]] = None
+    freshness: Optional[Dict[str, Any]] = None
+    input_diagnostics: Optional[Dict[str, Any]] = None
     race_info: Dict[str, Any]
+    reference_bets: Optional[Dict[str, Any]] = None
+    reference_expectation: Optional[Dict[str, Any]] = None
     pro_evaluation: Dict[str, Any]
     predictions: List[Dict[str, Any]]
     bet_types: Dict[str, List[Dict[str, Any]]]
@@ -122,6 +168,9 @@ class BatchAnalyzeRequest(BaseModel):
 
     race_ids: List[str] = Field(min_length=1, max_length=100)
     model_id: Optional[str] = None
+    include_explanation: bool = False
+    force_recompute: bool = False
+    data_refresh: Literal["auto", "saved_db"] = "auto"
     bankroll: int = Field(10000, ge=100, le=10_000_000)
     risk_mode: Literal["aggressive", "balanced", "conservative"] = "balanced"
     use_kelly: bool = True
@@ -160,6 +209,10 @@ class ScrapeRequest(BaseModel):
     end_date: str
     force_rescrape: bool = False
     dry_run: bool = False
+    server_batch: bool = False
+    # Historical requests omitted scope and therefore retain all-venue semantics.
+    # Explicit JRA requests receive a distinct durable request binding.
+    race_scope: Literal["all", "jra"] = "all"
     # Phase 3N operational execution binding. Deployed environments require
     # the complete tuple; explicit local/test mode may generate the two IDs.
     job_id: Optional[str] = None
@@ -181,7 +234,10 @@ class ScrapeRequest(BaseModel):
 
     @model_validator(mode="after")
     def _validate_scrape_date_range(self) -> "ScrapeRequest":
-        validate_scrape_date_range(self.start_date, self.end_date)
+        if self.server_batch:
+            build_scrape_months(self.start_date, self.end_date)
+        else:
+            validate_scrape_date_range(self.start_date, self.end_date)
         return self
 
 

@@ -44,7 +44,7 @@ def test_manifest_is_strict_ordered_and_content_addressed(runner: ModuleType) ->
     manifest = runner.load_manifest(MANIFEST_PATH)
     assert manifest.schema_version == 1
     assert manifest.postgres_image == EXPECTED_IMAGE == runner.IMAGE
-    assert len(manifest.migrations) == 21
+    assert len(manifest.migrations) == 22
     assert [entry.version for entry in manifest.migrations] == sorted(
         entry.version for entry in manifest.migrations
     )
@@ -52,10 +52,15 @@ def test_manifest_is_strict_ordered_and_content_addressed(runner: ModuleType) ->
     assert re.fullmatch(r"[0-9a-f]{64}", manifest.sha256)
     assert re.fullmatch(r"[0-9a-f]{64}", manifest.chain_digest)
     assert all(re.fullmatch(r"[0-9a-f]{64}", entry.sha256) for entry in manifest.migrations)
-    assert [entry.version for entry in manifest.migrations[-2:]] == [
+    assert [entry.version for entry in manifest.migrations[-3:]] == [
         "20260802148000",
         "20260802149000",
+        "20260912150000",
     ]
+    assert manifest.migrations[-1].path == (
+        "supabase/migrations/20260912_scrape_operational_cancellation.sql"
+    )
+    assert manifest.migrations[-1].source == "phase3n-ha-extension"
 
 
 def test_gate_accepts_only_the_canonical_manifest_path(
@@ -192,6 +197,7 @@ def test_target_preflight_rejects_partial_hosted_bootstrap_signatures(
         "'list_model_retrain_orphan_candidates'",
         "'record_model_retrain_orphan_reconciliation'",
         "'list_dispatchable_model_retrain_jobs'",
+        "'request_cancel_scrape_operational_job'",
         "FROM storage.buckets AS b",
         "b.id = 'models' OR b.name = 'models'",
         "FROM storage.objects AS o",

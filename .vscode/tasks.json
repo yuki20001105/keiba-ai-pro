@@ -62,7 +62,7 @@
       "label": "Start FastAPI",
       "type": "shell",
       "command": "${workspaceFolder}/python-api/.venv/Scripts/python.exe",
-      "args": ["main.py"],
+      "args": ["-X", "utf8", "main.py"],
       "options": {
         "cwd": "${workspaceFolder}/python-api"
       },
@@ -116,8 +116,8 @@
     {
       "label": "Set Admin (Prompt Email)",
       "type": "shell",
-      "command": "${workspaceFolder}/.venv/Scripts/python.exe",
-      "args": ["set_admin.py", "${input:adminEmail}"],
+      "command": "${workspaceFolder}/python-api/.venv/Scripts/python.exe",
+      "args": ["-X", "utf8", "set_admin.py", "${input:adminEmail}"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -131,8 +131,8 @@
     {
       "label": "List All Users",
       "type": "shell",
-      "command": "${workspaceFolder}/.venv/Scripts/python.exe",
-      "args": ["set_admin.py", "--list"],
+      "command": "${workspaceFolder}/python-api/.venv/Scripts/python.exe",
+      "args": ["-X", "utf8", "set_admin.py", "--list"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -163,8 +163,8 @@
     {
       "label": "Test: Python (pytest)",
       "type": "shell",
-      "command": "${workspaceFolder}/keiba/Scripts/python.exe",
-      "args": ["-m", "pytest", "keiba/keiba_ai/tests/", "-v", "--tb=short"],
+      "command": "${workspaceFolder}/python-api/.venv/Scripts/python.exe",
+      "args": ["-X", "utf8", "-m", "pytest", "keiba/keiba_ai/tests/", "-v", "--tb=short"],
       "options": {
         "cwd": "${workspaceFolder}"
       },

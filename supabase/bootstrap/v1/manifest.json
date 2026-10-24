@@ -128,6 +128,12 @@
       "path": "supabase/migrations/20260802_phase3n_observation_ha.sql",
       "source": "phase3n-ha-extension",
       "description": "Immutable model observation ledger and fenced HA maintenance jobs"
+    },
+    {
+      "version": "20260912150000",
+      "path": "supabase/migrations/20260912_scrape_operational_cancellation.sql",
+      "source": "phase3n-ha-extension",
+      "description": "Owner-scoped durable cooperative cancellation for operational scrape jobs"
     }
   ]
 }

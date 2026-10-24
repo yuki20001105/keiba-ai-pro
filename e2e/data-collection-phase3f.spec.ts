@@ -13,7 +13,7 @@ import {
 } from '../src/lib/scrape-uncertainty-review-server'
 import { mockSupabaseIdentity, setSupabaseTestSession } from './helpers/mock-api'
 
-const SUPABASE_ORIGIN = 'http://127.0.0.1:54321'
+const SUPABASE_ORIGIN = process.env.NEXT_PUBLIC_SUPABASE_URL || 'http://127.0.0.1:54321'
 const SERVER_REQUEST_ID = '22222222-2222-4222-8222-222222222222'
 const LOCK: PersistedUncertaintyLock = {
   version: 1,
@@ -78,7 +78,7 @@ async function authorizeAdmin(page: Page, baseURL: string) {
   await mockSupabaseIdentity(page, { authenticated: true, role: 'admin', tier: 'premium' })
   await page.route('**/api/scrape/health**', route => route.fulfill({ status: 200, json: { status: 'healthy' } }))
   await page.route('**/api/data-stats**', route => route.fulfill({ status: 200, json: { total_races: 1, total_horses: 1, latest_date: '2026-07-01' } }))
-  await page.route('**/api/scrape/history**', route => route.fulfill({ status: 200, json: { jobs: [] } }))
+  await page.route('**/api/scrape/history**', route => route.fulfill({ status: 200, json: { count: 0, jobs: [] } }))
 }
 
 async function seedReviewState(page: Page, locator?: unknown) {

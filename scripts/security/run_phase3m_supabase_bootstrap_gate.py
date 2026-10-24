@@ -62,6 +62,7 @@ REQUIRED_MARKERS = frozenset(
         "model_retrain_orphan_reconciliation",
         "model_retrain_dispatch_queue",
         "phase3n_observation_ha",
+        "scrape_operational_cancellation",
     }
 )
 
@@ -87,6 +88,7 @@ TARGET_PREFLIGHT_REQUIRED_FRAGMENTS = (
     "'list_model_retrain_orphan_candidates'",
     "'record_model_retrain_orphan_reconciliation'",
     "'list_dispatchable_model_retrain_jobs'",
+    "'request_cancel_scrape_operational_job'",
     "'phase3n_prediction_observations'",
     "'record_phase3n_prediction_observation'",
     "'phase3n_ha_fencing_seq'",
@@ -185,6 +187,7 @@ BEGIN
                   'phase3n_operational_runtime_health',
                   'enqueue_scrape_operational_job', 'claim_scrape_operational_outbox',
                   'heartbeat_scrape_operational_outbox', 'settle_scrape_operational_outbox',
+                  'request_cancel_scrape_operational_job',
                   '_phase3n_reject_immutable_mutation',
                   'register_phase3n_model_manifest',
                   'record_phase3n_prediction_observation',

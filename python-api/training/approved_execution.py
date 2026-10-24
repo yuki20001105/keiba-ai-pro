@@ -7,7 +7,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Collection, Iterable
+from typing import ClassVar, Collection, Iterable
 
 
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -43,6 +43,11 @@ def _validate_features(values: Iterable[str], *, label: str) -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class ApprovedTrainingExecution:
+    execution_policy: ClassVar[str] = "approved-retrain"
+    uses_explicit_oot_split: ClassVar[bool] = True
+    allows_calibration: ClassVar[bool] = False
+    allows_remote_side_effects: ClassVar[bool] = False
+
     job_id: str
     approved_payload_hash: str
     data_snapshot_sha256: str

@@ -1,4 +1,6 @@
 import { createClient, type SupabaseClient, type User } from '@supabase/supabase-js'
+import { isAdminModeConfigured, verifyAdminModeRequest } from '@/lib/admin-mode'
+import { usesLocalAdminSession } from '@/lib/local-admin-session-policy'
 
 type AuthzRole = 'admin' | 'user'
 type AuthzTier = 'free' | 'premium'
@@ -24,6 +26,7 @@ export type AuthzResult =
 
 type VerifyOptions = {
   requireAdmin?: boolean
+  requireAdminMode?: boolean
   requirePremiumOrAdmin?: boolean
 }
 
@@ -73,7 +76,16 @@ export async function verifyRequestAuth(request: Request, options: VerifyOptions
     return { ok: false, status: 503, detail: 'Supabase service role configuration missing' }
   }
 
-  const { data: userData, error: userError } = await authClient.auth.getUser()
+  let userResult: Awaited<ReturnType<typeof authClient.auth.getUser>>
+  try {
+    userResult = await authClient.auth.getUser()
+  } catch {
+    return { ok: false, status: 503, detail: 'Authentication backend unavailable' }
+  }
+  const { data: userData, error: userError } = userResult
+  if (userError && ((userError.status ?? 0) < 400 || userError.status === 429 || (userError.status ?? 0) >= 500)) {
+    return { ok: false, status: 503, detail: 'Authentication backend unavailable' }
+  }
   if (userError || !userData.user) {
     return { ok: false, status: 401, detail: 'Authentication required' }
   }
@@ -98,11 +110,20 @@ export async function verifyRequestAuth(request: Request, options: VerifyOptions
   const isAdmin = role === 'admin'
   const isPremiumOrAdmin = isAdmin || tier === 'premium'
 
-  if (options.requireAdmin && !isAdmin) {
+  if ((options.requireAdmin || options.requireAdminMode) && !isAdmin) {
     return { ok: false, status: 403, detail: 'Admin role required' }
   }
   if (options.requirePremiumOrAdmin && !isPremiumOrAdmin) {
     return { ok: false, status: 403, detail: 'Premium or admin role required' }
+  }
+  // Local mode removes only the extra fifteen-minute step-up, never JWT or role checks.
+  if (options.requireAdminMode && !usesLocalAdminSession(request)) {
+    if (!isAdminModeConfigured()) {
+      return { ok: false, status: 503, detail: 'Admin mode configuration missing' }
+    }
+    if (!verifyAdminModeRequest(request, userData.user.id, token)) {
+      return { ok: false, status: 403, detail: 'Admin mode verification required' }
+    }
   }
 
   return {

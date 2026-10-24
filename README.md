@@ -584,38 +584,45 @@ Kelly % = (p × odds - 1) / (odds - 1)
 ```
 1. ローカルFastAPI稼働チェック → GET /api/scrape/health
 2. 期間指定入力 (開始年月〜終了年月)
-3. [データ取得開始] → POST /api/scrape (ジョブ開始)
+3. [Dry-run] → POST /api/scrape (`dry_run=true`、外部HTTPなし)
+4. [取得開始] → POST /api/scrape (`force_rescrape=false`固定でジョブ開始)
    → GET /api/scrape/status/{job_id} ポーリング (3秒間隔)
-4. 取得済みデータ確認 → GET /api/races/recent?limit=50 (1回だけ)
-5. 詳細表示 → GET /api/races/{race_id}/horses (ML推論なし・軽量)
+5. [取得を停止] → POST /api/scrape/cancel/{job_id}（保存済みデータを残し、安全な区切りで協調停止）
+6. 実行状態が不明な場合だけ同じstatus APIで安全に再確認（確認完了まで新規実行をロック）
+7. 最新fetch summary 1件 → GET /api/scrape/history
+8. 取得済み3指標 → GET /api/data-stats
 ```
+
+通常画面には上記だけを表示します。Refresh/P0/Targeted Refetch計画、Live Validation、Review Queue、全履歴、最近取得一覧/詳細、特徴量プロファイリングのページ/APIは保守用として存続しますが、通常のデータ収集画面からは非表示です。
 
 ### 本番前チェック画面 (`/production-readiness`)
 
 ```
-1. Premium/Admin 権限で [本番前チェックを実行]
-2. POST /api/production-readiness
-3. read-only checks を順次実行
+1. 保守用URL `/production-readiness` を直接開き、操作境界で本人確認
+2. Admin 権限で [本番前チェックを実行]
+3. POST /api/production-readiness
+4. read-only checks を順次実行
   - Frontend build
   - FastAPI health / scrape health
   - analyze_race smoke / smoke suite summary
   - secret scan (Notion token prefix)
   - git status 注意
   - write flag / APP_ENV safety
-4. pass / warn / fail / unknown をカード表示
+5. pass / warn / fail / unknown をカード表示
   - 認証トークン未設定時の 401/403 は auth-required (warn) として表示
   - KEIBA_AUTH_BEARER_TOKEN 設定時は認証必須 smoke を通常の pass/fail で評価
-5. write API は呼ばない（sandbox write-readback は別管理）
+6. write API は呼ばない（sandbox write-readback は別管理）
 ```
 
 ### 学習画面 (`/train`)
 
 ```
-1. 条件設定 (target: win / place3 / win_tie / speed_deviation / 期間 / Optuna試行数 / CV分割数)
-2. [学習開始] → POST /api/train/start
-3. GET /api/train/status/{job_id} ポーリング
-4. 完了 → AUC / LogLoss / CV統計 表示
-5. 特徴量ラボへのリンク → /feature-lab
+1. `/home` の [02 モデル作成] を開き、必要な場合は操作境界で本人確認
+2. 条件設定 (target: win / place3 / win_tie / speed_deviation / 期間 / Optuna試行数 / CV分割数)
+3. [学習開始] → POST /api/ml/train/start（Next API）
+4. GET /api/ml/train/status/{job_id} ポーリング（Next API）
+5. 完了 → AUC / LogLoss / CV統計 表示
+6. 特徴量ラボへのリンク → /feature-lab
 ```
 
 ### 特徴量ラボ画面 (`/feature-lab`)
@@ -646,19 +653,28 @@ Kelly % = (p × odds - 1) / (odds - 1)
 2. GET /api/purchase_history, GET /api/statistics
 ```
 
-### 管理画面 (`/admin`)
+### 共通ホーム (`/home`)
 
 ```
-1. モデル管理・スクレイプ実行（管理者専用）
-2. GET /api/models, POST /api/scrape/start
+1. Adminロールでは 01データ取得・02モデル作成・03予測実行・04成績確認・05ユーザー管理を表示
+2. 一般ユーザーには03予測実行・04成績確認だけを表示
+3. 画面モードの切り替え操作は設けない
+4. Admin専用機能を開く操作境界で、現在のアカウントのパスワードを確認
+5. 確認grantは15分有効で、再読み込み後も同一セッション内だけ復元
+6. 05ユーザー管理はread-onlyとし、Admin／Userロール変更UIは表示しない
+7. 旧 `/admin` は `/home` へリダイレクト
 ```
+
+Admin専用の01・02・05は一般ユーザー（Premiumを含む）に表示しません。既存クライアントとの互換性のため、一部の運用APIに残る`PremiumOrAdmin`認可は別契約であり、管理画面を開く権限には使用しません。
+
+操作境界のパスワード確認はページ表示前のUI pre-checkです。ユーザー一覧APIは短期grantも検証し、その他の操作APIは既存のロール認可・環境フラグ・承認状態を正本とします。
 
 ### 認証・権限
 
 | ロール | 権限 |
 |-------|------|
 | `user` | 一般ユーザー（予測・閲覧） |
-| `admin` | 管理者（スクレイプ開始・モデル管理含む全機能）|
+| `admin` | 管理者（5機能を表示し、管理操作の入口で本人確認。実行可否は各APIの認可・環境フラグ・承認状態にも従う）|
 
 ---
 
@@ -669,6 +685,7 @@ Kelly % = (p × odds - 1) / (odds - 1)
 | POST | `/api/scrape` | スクレイプ同期実行（結果を直接返却、土日月のみ対応） |
 | POST | `/api/scrape/start` | Admin用スクレイプ開始（非同期ジョブ） |
 | GET | `/api/scrape/status/{job_id}` | スクレイプ進捗取得 |
+| POST | `/api/scrape/cancel/{job_id}` | 所有者Adminによる永続的な協調停止要求 |
 | GET | `/api/races/by_date?date=YYYYMMDD` | 指定日のレース一覧 |
 | GET | `/api/races/recent?limit=50` | 最近取得したレース一覧（軽量） |
 | GET | `/api/races/{race_id}/horses` | 出走馬一覧（ML推論なし） |
@@ -691,9 +708,9 @@ Kelly % = (p × odds - 1) / (odds - 1)
 | POST | `/api/realtime-odds/refresh` | オッズ強制再取得（Playwright） |
 | POST | `/api/export/bet-list` | 馬券購入リスト出力（JSON） |
 | POST | `/api/export/bet-list/csv` | 馬券購入リスト出力（CSV） |
-| POST | `/api/profiling/start` | ydata-profiling レポート生成ジョブ開始 |
-| GET | `/api/profiling/status/{job_id}` | プロファイリングジョブ進捗 |
-| GET | `/api/profiling/html/{job_id}` | プロファイリング HTML レポート取得 |
+| POST | `/api/profiling/start` | ydata-profiling レポート生成ジョブ開始（保守用、通常UI非表示） |
+| GET | `/api/profiling/status/{job_id}` | プロファイリングジョブ進捗（保守用、通常UI非表示） |
+| GET | `/api/profiling/html/{job_id}` | プロファイリング HTML レポート取得（保守用、通常UI非表示） |
 | POST | `/api/backfill/nar-pedigree` | NAR血統情報バックフィル |
 | POST | `/api/backfill/coat-color` | 毛色情報バックフィル |
 | GET | `/health` | サーバー死活確認 |
@@ -705,7 +722,7 @@ Kelly % = (p × odds - 1) / (odds - 1)
 ### 必要環境
 
 - Python 3.11+
-- Node.js 18+
+- Node.js 24.x
 - `python-api/.venv` (FastAPI 用)
 
 ### ローカル起動
@@ -730,6 +747,8 @@ npm run dev
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
 SUPABASE_SERVICE_ROLE_KEY=
+# 管理操作の短期確認cookie専用（32文字以上を推奨。未設定時はservice role keyを使用）
+ADMIN_MODE_SIGNING_SECRET=
 
 # FastAPI エンドポイント
 NEXT_PUBLIC_API_URL=http://localhost:8000
@@ -739,9 +758,10 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 
 ```
 1. FastAPI 起動 (python-api/main.py)
-2. /data-collection ページでデータ取得（期間指定）
-3. /train ページでモデル学習
-4. /predict-batch ページで当日レース予測
+2. Adminロールで `/home` の5機能を確認
+3. /data-collection を開き、操作境界の本人確認後にデータ取得（期間指定）
+4. /train ページでモデル状態を確認（通常のProduction環境では学習開始は無効）
+5. /predict-batch ページで当日レース予測
 ```
 
 ### keibaAI 実行ガイド（Notebook E2E / API Smoke / Notion）
@@ -799,12 +819,15 @@ python scripts/smoke_analyze_race_api.py
 **UI での本番前チェック手順**
 
 ```
-1. /production-readiness を開く
-2. [本番前チェックを実行] を押す
-3. fail/warn があるカードの summary を確認
-4. write flag が false であることを確認
-5. sandbox write-readback は別管理であることを確認
+1. 保守用URL /production-readiness を直接開く
+2. 操作境界で現在のパスワードを確認
+3. [本番前チェックを実行] を押す
+4. fail/warn があるカードの summary を確認
+5. write flag が false であることを確認
+6. sandbox write-readback は別管理であることを確認
 ```
+
+ここでのread-onlyは、業務DBやproduction/base tableへ書き込まないという意味です。build・compile・smokeの実行により、ローカル生成物や計算負荷が発生する場合があります。
 
 **本番運用ルール**
 
@@ -831,6 +854,9 @@ python scripts/smoke_netkeiba_race_write_guard.py --expect-sandbox-write-readbac
 
 **1) Notebook E2E audit**
 
+実行順は依存関係に合わせて `00 → 01 → 02 → 03 → 05 → 04 → 06 → 07 → 08`
+です。特徴量分析の`04`は、学習モデルを生成する`05`の後に実行します。
+
 ```powershell
 cd C:\Users\yuki2\Documents\ws\keiba-ai-pro
 python-api\.venv\Scripts\python.exe scripts\run_keiba_notebook_e2e.py --mode audit
@@ -839,7 +865,7 @@ python-api\.venv\Scripts\python.exe scripts\run_keiba_notebook_e2e.py --mode aud
 結果確認:
 
 ```powershell
-Get-Content reports\keiba_notebook_e2e_result.json -Raw
+Get-Content reports\generated\notebooks\keiba_notebook_e2e_result.json -Raw
 ```
 
 **2) Analyze Race API smoke**
@@ -1011,7 +1037,7 @@ cd C:\Users\yuki2\Documents\ws\keiba-ai-pro\python-api
 $env:NETKEIBA_RACE_WRITE_ENABLED = "true"
 $env:ALLOW_STAGING_WRITE = "true"
 $env:APP_ENV = "staging"
-..\.venv\Scripts\python.exe main.py
+.venv\Scripts\python.exe main.py
 ```
 
 別ターミナルで enabled-mode smoke:
@@ -1040,7 +1066,7 @@ cd C:\Users\yuki2\Documents\ws\keiba-ai-pro\python-api
 $env:NETKEIBA_RACE_WRITE_ENABLED = "true"
 $env:ALLOW_STAGING_WRITE = "false"
 $env:APP_ENV = "development"
-..\.venv\Scripts\python.exe main.py
+.venv\Scripts\python.exe main.py
 ```
 
 ```powershell
@@ -1055,7 +1081,7 @@ cd C:\Users\yuki2\Documents\ws\keiba-ai-pro\python-api
 $env:NETKEIBA_RACE_WRITE_ENABLED = "true"
 $env:ALLOW_STAGING_WRITE = "true"
 $env:APP_ENV = "production"
-..\.venv\Scripts\python.exe main.py
+.venv\Scripts\python.exe main.py
 ```
 
 ```powershell
@@ -1070,7 +1096,7 @@ cd C:\Users\yuki2\Documents\ws\keiba-ai-pro\python-api
 $env:NETKEIBA_RACE_WRITE_ENABLED = "true"
 $env:ALLOW_STAGING_WRITE = "false"
 $env:APP_ENV = "staging"
-..\.venv\Scripts\python.exe main.py
+.venv\Scripts\python.exe main.py
 ```
 
 ```powershell
@@ -1092,7 +1118,7 @@ cd C:\Users\yuki2\Documents\ws\keiba-ai-pro\python-api
 $env:NETKEIBA_RACE_WRITE_ENABLED = "true"
 $env:ALLOW_STAGING_WRITE = "true"
 $env:APP_ENV = "staging"
-..\.venv\Scripts\python.exe main.py
+.venv\Scripts\python.exe main.py
 ```
 
 ```powershell
@@ -1217,6 +1243,7 @@ python-api\.venv\Scripts\python.exe scripts\smoke_fetch_summary_history.py
 - `KEIBA_AUTH_BEARER_TOKEN` 未設定時は `auth-required` として warn
 - `limit` パラメータの適用、secret非露出、read-only（scrape_jobs row count不変）を検証
 - 空履歴は `warn` 扱いで fail にはしない
+- 通常UIは履歴APIの最新1件だけを表示し、全履歴コンソールは露出しない
 
 **Scrape speed benchmark (small + 10y estimate)**
 
@@ -1259,8 +1286,9 @@ git status --short
 
 ### 生成物の保存先
 
-- Notebook実行済みファイル: `reports/e2e_notebooks/`
-- Notebook E2E結果JSON: `reports/keiba_notebook_e2e_result.json`
+- Notebookソース: `notebooks/00_config.ipynb`〜`notebooks/08_reporting.ipynb`
+- Notebook実行済みファイル: `reports/generated/notebooks/executed/`
+- Notebook E2E結果JSON: `reports/generated/notebooks/keiba_notebook_e2e_result.json`
 - Analyze Race smoke結果JSON: `reports/analyze_race_smoke_result.json`
 - Race-list proxy smoke結果JSON: `reports/netkeiba_race_list_proxy_smoke_result.json`
 - Race preflight smoke結果JSON: `reports/netkeiba_race_preflight_smoke_result.json`
@@ -1318,37 +1346,20 @@ git status --short
 
 ## 11. ディレクトリ構成
 
+追跡対象とローカル生成物の境界、依存環境およびDBの保管方針は
+[ローカルディレクトリ構成](docs/setup/LOCAL_DIRECTORY_LAYOUT.md)を正とします。
+API用Python環境は`npm run setup:api`、研究・Notebookを含む完全な環境は`npm run setup:research`で`python-api/.venv`へ再構築できます。
+
 ```
 keiba-ai-pro/
-├── src/                        # Next.js フロントエンド (App Router)
-│   ├── app/                    # ページ・APIルート
-│   ├── components/             # UIコンポーネント
-│   ├── contexts/               # React コンテキスト
-│   ├── hooks/                  # カスタムフック
-│   └── lib/                    # ユーティリティ・API設定
-├── python-api/                 # FastAPI バックエンド
-│   ├── main.py                 # エントリポイント
-│   ├── routers/                # APIルーター群
-│   ├── scraping/               # スクレイピング処理
-│   ├── models/                 # 学習済みモデル (.joblib)
-│   │   └── archive/            # 旧バージョンモデル
-│   ├── middleware/             # 認証ミドルウェア
-│   └── tests/                  # pytest テスト
-├── keiba/                      # ML パイプライン (Python)
-│   └── keiba_ai/               # コアMLモジュール
-│       ├── db_ultimate_loader.py
-│       ├── feature_engineering.py
-│       ├── ultimate_features.py
-│       ├── lightgbm_feature_optimizer.py
-│       └── constants.py
-├── tools/                      # 開発・メンテナンスツール
-├── validation/                 # データ品質・特徴量検証
-├── scripts/                    # 起動・運用スクリプト
+├── src/                        # Next.js フロントエンド（Git追跡）
+├── python-api/                 # FastAPIと唯一のPython環境 .venv/
+├── keiba/                      # MLコードとローカル研究DB
+├── notebooks/                  # 追跡するNotebookソース
+├── reports/                    # evidence（追跡）/ generated（生成物）
+├── scripts/                    # 起動・検証・運用スクリプト
 ├── supabase/                   # DBスキーマ定義
-├── docs/                       # ドキュメント
-├── patch_missing_data.py       # DBデータ補完ツール（ルート固定）
-├── generate_feature_report.py  # 特徴量重要度レポート生成
-└── generate_profiling_report.py # データプロファイリングレポート生成
+└── docs/                       # ドキュメント
 ```
 
 ---
@@ -1391,13 +1402,13 @@ keiba-ai-pro/
 
 ```powershell
 # 確認のみ（DBは更新しない）
-.venv\Scripts\python.exe patch_missing_data.py --dry-run
+python-api\.venv\Scripts\python.exe patch_missing_data.py --dry-run
 
 # Phase 指定実行
-.venv\Scripts\python.exe patch_missing_data.py --phase 3
+python-api\.venv\Scripts\python.exe patch_missing_data.py --phase 3
 
 # 全フェーズ実行（バックグラウンド）
-Start-Process .venv\Scripts\python.exe -ArgumentList "patch_missing_data.py" `
+Start-Process python-api\.venv\Scripts\python.exe -ArgumentList "patch_missing_data.py" `
   -RedirectStandardOutput tools\logs\patch_log.txt `
   -RedirectStandardError tools\logs\patch_log_err.txt
 ```
@@ -1432,16 +1443,16 @@ Start-Process .venv\Scripts\python.exe -ArgumentList "patch_missing_data.py" `
 
 ```powershell
 # 充填率確認（パッチ完了後に必ず実行）
-.venv\Scripts\python.exe validation\check_null_rates3.py
+python-api\.venv\Scripts\python.exe validation\check_null_rates3.py
 
 # データリーク診断
-.venv\Scripts\python.exe validation\check_date_leakage.py
+python-api\.venv\Scripts\python.exe validation\check_date_leakage.py
 
 # 特徴量詳細確認
-.venv\Scripts\python.exe validation\check_features_detail.py
+python-api\.venv\Scripts\python.exe validation\check_features_detail.py
 
 # 最終特徴量一覧
-.venv\Scripts\python.exe validation\check_final_features.py
+python-api\.venv\Scripts\python.exe validation\check_final_features.py
 ```
 
 | ファイル | 用途 | 実行タイミング |

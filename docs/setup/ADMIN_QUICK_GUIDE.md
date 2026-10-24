@@ -61,15 +61,16 @@ SELECT email, role FROM public.profiles;
 python set_admin.py --list
 ```
 
-または、ブラウザで `/home` を開いて「👑 管理者ダッシュボード」カードが表示されるか確認。
+または、ブラウザで`/home`を開いて、データ取得、モデル作成、予測実行、成績確認、ユーザー管理の5機能が表示されるか確認します。Admin専用機能を開く際に現在のパスワードで本人確認します。
 
 ---
 
 ### Q: 管理者権限で何ができるの？
 
-- **👑 管理者ダッシュボード** (`/admin`): ユーザー管理・統計情報
+- **共通ホーム** (`/home`): Adminロールでは5機能を自動表示し、管理操作の入口で本人確認
 - **📊 データ収集** (`/data-collection`): ネットケイバからスクレイピング
-- **🧠 モデル学習** (`/train`): AIモデルのトレーニング
+- **🧠 モデル作成** (`/train`): AIモデルの学習設定と作成
+- **👥 ユーザー管理** (`/user-management`): 登録ユーザーをread-onlyで確認
 
 ---
 
@@ -94,7 +95,7 @@ SET role = 'user'
 WHERE email = 'downgrade-user@example.com';
 ```
 
-または、`/admin` ページのユーザー管理テーブルからドロップダウンで変更。
+画面からのAdmin／Userロール変更は現在提供していません。
 
 ---
 
@@ -122,11 +123,12 @@ CHECK (role IN ('admin', 'user'));
 
 ---
 
-### 管理者ダッシュボードが表示されない
+### 管理者向け5機能が表示されない
 
 1. ブラウザをハードリロード: **Ctrl+Shift+R**
 2. ログアウト → 再ログイン
-3. ブラウザのキャッシュをクリア
+3. `profiles.role`が`admin`であることを確認
+4. `profiles.role`の更新後に再ログイン
 
 ---
 
@@ -134,4 +136,5 @@ CHECK (role IN ('admin', 'user'));
 
 - [完全セットアップガイド](./ADMIN_SETUP.md)
 - [Supabaseスキーマ](../../supabase/setup_admin.sql)
-- [管理者ダッシュボード実装](../../src/app/admin/page.tsx)
+- [共通ホーム実装](../../src/app/home/page.tsx)
+- [ユーザー管理実装](../../src/app/user-management/page.tsx)

@@ -15,7 +15,8 @@ from typing import Any
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_DB_PATH = ROOT_DIR / "keiba" / "data" / "keiba_ultimate.db"
-DEFAULT_OUTPUT_JSON = ROOT_DIR / "reports" / "scrape_missingness_audit.json"
+RUNTIME_INPUT_DIR = ROOT_DIR / "keiba" / "data" / "live-validation-inputs"
+DEFAULT_OUTPUT_JSON = RUNTIME_INPUT_DIR / "scrape_missingness_audit.json"
 
 CORE_REQUIRED_FIELDS = [
     "race_id",

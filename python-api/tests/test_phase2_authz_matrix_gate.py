@@ -12,7 +12,10 @@ from phase2_authz_runtime import (  # type: ignore
     _detect_auth_header_read,
     _detect_direct_policy,
     _extract_auth_helper_policies,
+    _extract_json_passthrough_helpers,
     _extract_proxy_targets,
+    _infer_next_infos,
+    FastAPIRouteInfo,
     classify_fastapi_route,
     classify_fastapi_route_with_runtime,
     extract_next_routes,
@@ -143,6 +146,76 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ job_
     assert _extract_proxy_targets(ts) == ["/api/profiling/status/{param}"]
 
 
+def test_encoded_identifier_is_still_a_route_parameter_not_a_query() -> None:
+    ts = """
+export async function PUT(request: NextRequest) {
+  const response = await fetch(`${ML_API_URL}/api/models/${encodeURIComponent(id)}/activate`, { method: 'PUT' })
+}
+"""
+    assert _extract_proxy_targets(ts) == ["/api/models/{param}/activate"]
+
+
+def test_encoded_arbitrary_expression_is_not_treated_as_a_path_parameter() -> None:
+    ts = """
+export async function PUT(request: NextRequest) {
+  const response = await fetch(`${ML_API_URL}/api/models/${encodeURIComponent(id + '/unsafe')}/activate`)
+}
+"""
+    assert _extract_proxy_targets(ts) != ["/api/models/{param}/activate"]
+
+
+def test_pure_no_store_helper_proves_upstream_status_and_body_passthrough() -> None:
+    ts = """
+function noStoreJson(body: unknown, status: number) {
+  return NextResponse.json(body, { status, headers: { 'Cache-Control': 'no-store' } })
+}
+export async function DELETE(request: NextRequest) {
+  const authz = await verifyRequestAuth(request, { requireAdminMode: true })
+  const response = await fetch(`${ML_API_URL}/api/models/${encodeURIComponent(id)}`, {
+    method: 'DELETE', headers: { Authorization: `Bearer ${authz.context.token}` },
+  })
+  const data: unknown = await response.json().catch(() => null)
+  return noStoreJson(data, response.status)
+}
+"""
+    backend = [FastAPIRouteInfo("/api/models/{model_id}", "DELETE", "Admin", ("require_admin",), "fixture")]
+    info = _infer_next_infos("/api/models/[id]", ts, ["DELETE"], backend, "fixture")[0]
+    assert info.backend_endpoint == "/api/models/{param}"
+    assert info.backend_policy == info.policy == "Admin"
+    assert info.status_propagation and info.detail_error_passthrough
+
+
+def test_json_helper_must_not_change_payload_status_or_execute_other_statements() -> None:
+    helpers = (
+        "function wrapped(body: unknown, status: number) { return NextResponse.json({ ok: true }, { status, headers: { 'Cache-Control': 'no-store' } }) }",
+        "function wrapped(body: unknown, status: number) { return NextResponse.json(body, { status: 200, headers: { 'Cache-Control': 'no-store' } }) }",
+        "function wrapped(body: unknown, status: number) { status = 200; return NextResponse.json(body, { status, headers: { 'Cache-Control': 'no-store' } }) }",
+        "function wrapped(body: unknown, code: number) { return NextResponse.json(body, { code, headers: { 'Cache-Control': 'no-store' } }) }",
+    )
+    for helper in helpers:
+        assert not _extract_json_passthrough_helpers(helper)
+        ts = helper + "\nexport async function GET(request: NextRequest) { return wrapped(data, response.status) }"
+        info = _infer_next_infos("/api/fixture", ts, ["GET"], [], "fixture")[0]
+        assert not info.status_propagation
+        assert not info.detail_error_passthrough
+
+
+def test_registered_personal_performance_routes_are_authenticated_not_public() -> None:
+    routes = {(row.route, row.method): row for row in extract_next_routes()}
+    for path, method in (("/api/performance", "GET"), ("/api/performance/records", "POST")):
+        row = routes[(path, method)]
+        assert row.policy == row.backend_policy == "Authenticated"
+        assert row.auth_header_forward and row.status_propagation and row.detail_error_passthrough
+    row = routes[("/api/prediction-explanation", "POST")]
+    assert row.policy == "PremiumOrAdmin"
+    assert not row.auth_header_forward
+
+
+def test_current_source_authorization_gate_passes_without_unclassified_routes() -> None:
+    failures = gate_next_routes(extract_next_routes(), load_next_policy_canonical())
+    assert not failures, failures
+
+
 def test_shared_auth_helper_is_detected_as_authenticated() -> None:
     ts = """
 export async function GET(request: NextRequest) {
@@ -152,6 +225,26 @@ export async function GET(request: NextRequest) {
 }
 """
     assert _detect_direct_policy(ts, "/api/example") == "Authenticated"
+
+
+def test_admin_mode_guard_is_detected_as_admin() -> None:
+    ts = """
+export async function GET(request: NextRequest) {
+  const authz = await verifyRequestAuth(request, { requireAdminMode: true })
+  if (!authz.ok) return NextResponse.json({ detail: authz.detail }, { status: authz.status })
+  return NextResponse.json({ ok: true })
+}
+"""
+    assert _detect_direct_policy(ts, "/api/admin/profiles") == "Admin"
+
+
+def test_admin_unlock_delete_is_an_explicit_public_lock_action() -> None:
+    ts = """
+export async function DELETE() {
+  return NextResponse.json({ unlocked: false })
+}
+"""
+    assert _detect_direct_policy(ts, "/api/admin/unlock") == "Public"
 
 
 def test_custom_premium_or_admin_helper_is_detected() -> None:

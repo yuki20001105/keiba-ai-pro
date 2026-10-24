@@ -8,7 +8,19 @@ The upgrade path never rewrites, deletes, truncates, or replaces `phase3m_intern
 
 This path preserves an operational Staging database. It does **not** make that database eligible for the current Phase 3N fresh-bootstrap attestation, which still requires all history rows to bind to one manifest-equivalent applied commit. Use a disposable isolated Preview Branch and the fresh renderer for that evidence boundary.
 
-## Rendering the observed 11-to-19 upgrade
+## Current 21-to-22 boundary
+
+The current candidate canonical manifest contains 22 migrations. Ordinal 22
+adds durable, owner-scoped cooperative cancellation for operational scrape
+jobs. A hosted database whose retained evidence records 21 history rows is not
+to be relabelled or rewritten: those rows are an immutable, valid prefix of the
+new candidate. Advancing such a database requires a separately approved run of
+this append-only renderer, an applied-manifest commit that resolves to the exact
+21-entry prefix, and contiguous history segments covering ordinals 1 through
+21 at their original introduction commits. This repository change does not
+apply ordinal 22 to any hosted database.
+
+## Historical 11-to-19 rendering example
 
 The existing Staging history was created from commit `861f46c18b086578e97c15d6eaa12aed89222169` and contains ordinals 1 through 11. From an exact checkout of the candidate commit:
 

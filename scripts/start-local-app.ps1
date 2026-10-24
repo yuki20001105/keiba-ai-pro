@@ -134,7 +134,9 @@ function Stop-StartedProcessTree([System.Diagnostics.Process]$Process) {
 
 function Test-ProductionBuildCurrent {
     $buildMarker = Join-Path $RepoRoot '.next\BUILD_ID'
-    if (-not (Test-Path -LiteralPath $buildMarker -PathType Leaf)) {
+    $standaloneServer = Join-Path $RepoRoot '.next\standalone\server.js'
+    if (-not (Test-Path -LiteralPath $buildMarker -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $standaloneServer -PathType Leaf)) {
         return $false
     }
     $buildTime = (Get-Item -LiteralPath $buildMarker).LastWriteTimeUtc
@@ -200,18 +202,14 @@ if ((Test-Endpoint -Url $ApiHealthUrl) -and (Test-Endpoint -Url $WebHealthUrl)) 
     exit 0
 }
 
-$pythonCandidates = @(
-    (Join-Path $RepoRoot 'python-api\.venv\Scripts\python.exe'),
-    (Join-Path $RepoRoot '.venv\Scripts\python.exe')
-)
-$PythonExe = $pythonCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
-if (-not $PythonExe) {
-    throw 'Python virtual environment was not found. Create python-api\.venv and install python-api\requirements-lock.txt.'
+$PythonExe = Join-Path $RepoRoot 'python-api\.venv\Scripts\python.exe'
+if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) {
+    throw 'Python virtual environment was not found. Run npm run setup:api.'
 }
 
 $NpmCommand = Get-Command npm.cmd -ErrorAction SilentlyContinue
 if (-not $NpmCommand) {
-    throw 'npm.cmd was not found. Install Node.js 18.17 or later.'
+    throw 'npm.cmd was not found. Install Node.js 24.x.'
 }
 if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot 'node_modules\.bin\next.cmd'))) {
     throw 'Node dependencies were not found. Run npm ci in the repository root.'
@@ -226,7 +224,6 @@ if (-not (Test-Path -LiteralPath (Join-Path $ConfigRoot '.env.local') -PathType 
 }
 
 Assert-PortAvailableOrHealthy -Port 8000 -HealthUrl $ApiHealthUrl
-Assert-PortAvailableOrHealthy -Port 3000 -HealthUrl $WebHealthUrl
 
 # Load local configuration into child processes without printing values.
 Import-DotEnv -Path (Join-Path $ConfigRoot '.env')
@@ -236,6 +233,14 @@ Import-DotEnv -Path (Join-Path $ConfigRoot 'python-api\.env')
 # Local mode is deliberately fail-closed for automatic jobs and real betting.
 $env:PYTHONPATH = $RepoRoot
 $env:APP_ENV = 'development'
+$env:PREDICTION_SOURCE_TRACKING_LOCAL_ENABLED = 'true'
+$env:LOCAL_ADMIN_SESSION_ENABLED = 'true'
+$env:MODEL_TRAINING_LOCAL_ENABLED = 'true'
+$env:MODEL_ACTIVATION_LOCAL_ENABLED = 'true'
+$env:MODEL_DELETION_LOCAL_ENABLED = 'true'
+$env:API_HOST = '127.0.0.1'
+$env:HOSTNAME = '127.0.0.1'
+$env:NEXT_STANDALONE_BUILD = '1'
 $env:SCHEDULER_ENABLED = 'false'
 $env:SUPABASE_DATA_ENABLED = 'false'
 $env:NETKEIBA_RACE_WRITE_ENABLED = 'false'
@@ -275,11 +280,14 @@ try {
     }
     Wait-Endpoint -Name 'FastAPI' -Url $ApiHealthUrl -TimeoutSeconds $ApiTimeoutSeconds -StartedProcess $ApiProcess
 
+    # The frontend health endpoint depends on FastAPI. During an API-only
+    # restart it can legitimately return 503 until the backend is ready.
+    Assert-PortAvailableOrHealthy -Port 3000 -HealthUrl $WebHealthUrl
     if (Test-Endpoint -Url $WebHealthUrl) {
         Write-Step 'Next.js is already running; reusing it.'
     }
     else {
-        $WebCommand = 'npm run dev'
+        $WebCommand = 'npm run dev -- --hostname 127.0.0.1'
         $FrontendMode = 'development'
         if (-not $DevelopmentFrontend) {
             if (-not (Test-ProductionBuildCurrent)) {

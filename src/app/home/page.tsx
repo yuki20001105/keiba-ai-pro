@@ -1,172 +1,116 @@
 'use client'
 
-import { useState, useEffect } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthContext'
 import { Logo } from '@/components/Logo'
 import { supabase } from '@/lib/supabase'
-import { authFetch } from '@/lib/auth-fetch'
 
 const FLOW_STEPS = [
-  { href: '/data-collection', label: 'データ取得',   desc: 'netkeibaからレース情報を自動収集', step: '01' },
-  { href: '/train',           label: 'モデル学習',   desc: 'AIモデルをトレーニング',           step: '02' },
-  { href: '/predict-batch',   label: '予測実行',     desc: 'レース結果を予測・購入推奨',       step: '03' },
-  { href: '/dashboard',       label: '成績確認',     desc: '購入履歴と損益・回収率を分析',     step: '04' },
-]
-const EXTRA_ITEMS = [
-  { href: '/race-analysis', label: '予測スコア詳細', desc: '馬ごとの予測スコア・特徴量を確認' },
-  { href: '/prediction-history', label: '予測履歴', desc: '過去の予測と実際の着順を比較' },
-  { href: '/production-readiness', label: '本番前チェック', desc: 'health/smoke/flag を read-only で確認' },
-  { href: '/notion-report', label: 'Notionレポート出力', desc: 'Premium/Admin向けに preview -> send を実行' },
-  { href: '/model-redesign-workbench', label: 'モデル再設計ワークベンチ', desc: 'read-only / preview 中心のMVP' },
-]
+  {
+    href: '/data-collection',
+    label: 'データ取得',
+    desc: '期間を指定してレース情報を取得',
+    step: '01',
+    adminOnly: true,
+  },
+  {
+    href: '/train',
+    label: 'モデル作成',
+    desc: '学習条件を設定して予測モデルを作成',
+    step: '02',
+    adminOnly: true,
+  },
+  {
+    href: '/predict-batch',
+    label: '予測実行',
+    desc: 'レースを選び、予測・購入推奨を確認',
+    step: '03',
+    adminOnly: false,
+  },
+  {
+    href: '/dashboard',
+    label: '成績確認',
+    desc: '購入履歴と損益・回収率を分析',
+    step: '04',
+    adminOnly: false,
+  },
+  {
+    href: '/user-management',
+    label: 'ユーザー管理',
+    desc: '登録ユーザーと利用状況を確認',
+    step: '05',
+    adminOnly: true,
+  },
+] as const
 
 export default function HomePage() {
-  const { isAdmin } = useAuth()
-  const [status, setStatus] = useState<{
-    apiOnline: boolean | null
-    totalRaces: number | null
-    totalModels: number | null
-  }>({ apiOnline: null, totalRaces: null, totalModels: null })
+  const router = useRouter()
+  const { isAdmin, loading: authLoading } = useAuth()
 
-  useEffect(() => {
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 5000)
-
-    const loadStatus = async () => {
-      Promise.all([
-        fetch('/api/health', { signal: controller.signal }).then(r => r.ok).catch(() => false),
-        authFetch('/api/data-stats', { signal: controller.signal }).then(r => r.ok ? r.json() : null).catch(() => null),
-      ]).then(([online, stats]) => {
-        clearTimeout(timeout)
-        setStatus({
-          apiOnline: online as boolean,
-          totalRaces: stats?.total_races ?? null,
-          totalModels: stats?.total_models ?? null,
-        })
-      })
-    }
-
-    void loadStatus()
-
-    return () => { clearTimeout(timeout); controller.abort() }
-  }, [])
+  const visibleSteps = FLOW_STEPS.filter(step => !step.adminOnly || isAdmin)
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-white">
-      {/* Header */}
-      <header className="border-b border-[#1e1e1e] px-6 py-4 flex items-center justify-between">
+      <header className="flex items-center justify-between border-b border-[#1e1e1e] px-4 py-4 sm:px-6">
         <Logo href="/home" />
-        <div className="flex items-center gap-4">
-          {isAdmin && (
-            <Link
-              href="/admin"
-              className="text-xs text-[#888] hover:text-white transition-colors"
-            >
-              管理者
-            </Link>
-          )}
-          <button
-            onClick={async () => { await supabase.auth.signOut(); window.location.href = '/login' }}
-            className="text-xs text-[#888] hover:text-white transition-colors"
-          >
-            ログアウト
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={async () => {
+            await supabase.auth.signOut()
+            router.replace('/login')
+          }}
+          className="text-xs text-[#888] transition-colors hover:text-white"
+        >
+          ログアウト
+        </button>
       </header>
 
-      {/* Main */}
-      <main className="max-w-2xl mx-auto px-6 py-16">
-        <h1 className="text-3xl font-bold mb-2">AI競馬予測</h1>
-        <p className="text-[#888] mb-8 text-sm">機械学習による競馬予測・資金管理システム</p>
+      <main className="mx-auto max-w-2xl px-6 py-16">
+        <h1 className="mb-2 text-3xl font-bold">AI競馬予測</h1>
+        <p className="mb-8 text-sm text-[#888]">必要な機能を順番に操作できます</p>
 
-        {/* System status */}
-        <div className="grid grid-cols-3 gap-3 mb-10">
-          <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-4 flex flex-col gap-1">
-            <div className="text-xs text-[#666]">API</div>
-            <div className="flex items-center gap-1.5">
-              {status.apiOnline === null
-                ? <span className="text-[#444] text-sm">確認中…</span>
-                : status.apiOnline
-                  ? <><span className="w-2 h-2 rounded-full bg-green-500 shrink-0" /><span className="text-sm text-green-400">オンライン</span></>
-                  : <><span className="w-2 h-2 rounded-full bg-red-500 shrink-0" /><span className="text-sm text-red-400">オフライン</span></>
-              }
-            </div>
-          </div>
-          <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-4 flex flex-col gap-1">
-            <div className="text-xs text-[#666]">レース数</div>
-            <div className="text-sm text-white font-medium">
-              {status.totalRaces === null ? '…' : status.totalRaces.toLocaleString()}
-            </div>
-          </div>
-          <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-4 flex flex-col gap-1">
-            <div className="text-xs text-[#666]">モデル数</div>
-            <div className="text-sm text-white font-medium">
-              {status.totalModels === null ? '…' : status.totalModels}
-            </div>
-          </div>
-        </div>
-
-        {/* ── 4ステップ フロー ── */}
         <div className="mb-2">
-          <p className="text-xs text-[#555] mb-4 tracking-wider uppercase">基本的な使い方 — 4ステップ</p>
-          <div className="space-y-2">
-            {FLOW_STEPS.map((item, idx) => (
-              <div key={item.href}>
-                <Link href={item.href}>
-                  <div className="group flex items-center justify-between p-4 bg-[#111] border border-[#1e1e1e] rounded-lg hover:border-[#333] hover:bg-[#161616] transition-all cursor-pointer">
-                    <div className="flex items-center gap-4">
-                      <span className="text-xs text-[#4ade80] font-mono font-bold w-5 shrink-0">{item.step}</span>
-                      <div>
-                        <div className="font-medium text-white">{item.label}</div>
-                        <div className="text-xs text-[#666] mt-0.5">{item.desc}</div>
+          <p className="mb-4 text-xs uppercase tracking-wider text-[#555]">
+            {authLoading
+              ? '利用権限を確認中'
+              : isAdmin
+                ? '基本的な使い方 — 5ステップ'
+                : '利用できる機能 — 2件'}
+          </p>
+          {authLoading ? (
+            <div role="status" aria-live="polite" className="rounded-lg border border-[#1e1e1e] bg-[#111] px-4 py-8 text-center text-sm text-[#888]">
+              利用できる機能を確認しています…
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {visibleSteps.map((item, index) => (
+                <div key={item.href}>
+                  <Link href={item.href}>
+                    <div className="group flex cursor-pointer items-center justify-between rounded-lg border border-[#1e1e1e] bg-[#111] p-4 transition-all hover:border-[#333] hover:bg-[#161616]">
+                      <div className="flex items-center gap-4">
+                        <span className="w-5 shrink-0 font-mono text-xs font-bold text-[#4ade80]">{item.step}</span>
+                        <div>
+                          <div className="font-medium text-white">{item.label}</div>
+                          <div className="mt-0.5 text-xs text-[#666]">{item.desc}</div>
+                        </div>
                       </div>
+                      <svg className="h-4 w-4 shrink-0 text-[#444] transition-colors group-hover:text-[#888]" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                      </svg>
                     </div>
-                    <svg className="w-4 h-4 text-[#444] group-hover:text-[#888] transition-colors shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                    </svg>
-                  </div>
-                </Link>
-                {idx < FLOW_STEPS.length - 1 && (
-                  <div className="flex items-center justify-start pl-[22px] py-0.5">
-                    <svg className="w-3 h-3 text-[#333]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                    </svg>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* ── サブメニュー ── */}
-        <div className="mt-6 border-t border-[#1e1e1e] pt-5">
-          <p className="text-xs text-[#444] mb-3">詳細分析</p>
-          {EXTRA_ITEMS.map(item => (
-            <Link key={item.href} href={item.href}>
-              <div className="group flex items-center justify-between px-4 py-3 rounded-lg hover:bg-[#111] transition-all cursor-pointer">
-                <div>
-                  <div className="text-sm text-[#888] group-hover:text-white transition-colors">{item.label}</div>
-                  <div className="text-xs text-[#444] mt-0.5">{item.desc}</div>
+                  </Link>
+                  {index < visibleSteps.length - 1 && (
+                    <div className="flex items-center justify-start py-0.5 pl-[22px]" aria-hidden="true">
+                      <svg className="h-3 w-3 text-[#333]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                      </svg>
+                    </div>
+                  )}
                 </div>
-                <svg className="w-3.5 h-3.5 text-[#333] group-hover:text-[#555] transition-colors shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                </svg>
-              </div>
-            </Link>
-          ))}
-        </div>
-
-        <div className="mt-6 pt-6 border-t border-[#1e1e1e]">
-          <Link
-            href="/data-collection"
-            className="flex items-center justify-center gap-2 w-full py-3 bg-white text-black text-sm font-medium rounded-lg hover:bg-[#eee] transition-colors"
-          >
-            Step 01 から始める
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-            </svg>
-          </Link>
+              ))}
+            </div>
+          )}
         </div>
       </main>
     </div>

@@ -38,8 +38,9 @@ except Exception:  # pragma: no cover
         return False
 
 
-DEFAULT_REFETCH_PLAN_INPUT = ROOT_DIR / "reports" / "p0_targeted_refetch_plan.json"
-DEFAULT_OUTPUT = ROOT_DIR / "reports" / "p0_targeted_refetch_live_validation.json"
+GENERATED_SCRAPE_DIR = ROOT_DIR / "reports" / "generated" / "scraping"
+DEFAULT_REFETCH_PLAN_INPUT = GENERATED_SCRAPE_DIR / "plans" / "p0_targeted_refetch_plan.json"
+DEFAULT_OUTPUT = GENERATED_SCRAPE_DIR / "diagnostics" / "p0_targeted_refetch_live_validation.json"
 DEFAULT_CACHE_DB = ROOT_DIR / "keiba" / "data" / "fetch_cache.db"
 
 ALLOWED_ORIGIN = "https://db.netkeiba.com"

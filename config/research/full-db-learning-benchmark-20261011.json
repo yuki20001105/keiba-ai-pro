@@ -1,0 +1,43 @@
+{
+  "schema": "full-db-learning-speed-protocol-v1",
+  "period": ["2016-01", "2026-09"],
+  "snapshot_sha256": "8880c290e31ae614f2c837dd00bc773f07e24ef6919e611a3f645927bc679a7e",
+  "feature_pipeline": "local-db-shared-v1",
+  "feature_count": 47,
+  "test_size": 0.2,
+  "fixed_presets": ["lean", "standard"],
+  "uncached_repetitions": 2,
+  "cached_repetitions": 3,
+  "uncached_modes": ["A", "C"],
+  "cached_modes": ["A", "B", "C", "GPU_BUILD_CPU", "GPU"],
+  "modes": {
+    "A": {"device": "cpu", "workers": 1, "threads": 4, "runtime": "app", "label": "CPU sequential candidates 4 threads"},
+    "B": {"device": "cpu", "workers": 2, "threads": 2, "runtime": "app", "label": "CPU parallel 2 candidates x 2 threads"},
+    "C": {"device": "cpu", "workers": 2, "threads": 4, "runtime": "app", "label": "Current CPU parallel 2 candidates x 4 threads"},
+    "GPU_BUILD_CPU": {"device": "cpu", "workers": 1, "threads": 4, "runtime": "gpu", "label": "GPU-enabled build CPU device control"},
+    "GPU": {"device": "gpu", "workers": 1, "threads": 4, "runtime": "gpu", "label": "One GPU candidate at a time with CPU support"}
+  },
+  "cpu_prediction_absolute_tolerance": 1e-10,
+  "gpu_quality_bounds": {
+    "rank_correlation_absolute_difference": 0.001,
+    "rmse_relative_deterioration": 0.001,
+    "nll_relative_deterioration": 0.001,
+    "brier_relative_deterioration": 0.001,
+    "selected_preset_must_match": true,
+    "probability_gate_results_must_match": true
+  },
+  "full_row_fit_timing_modes": ["A", "GPU_BUILD_CPU", "GPU"],
+  "full_row_fit_timing_repetitions": 3,
+  "full_row_fixed_preset": "standard",
+  "full_row_calibration_and_test_claimed": false,
+  "cache": "raw point-in-time 47 features only; snapshot+period+source+schema hashes checked; TRAIN-only encoding is regenerated",
+  "cold_semantics": "Recompute DB read and raw features, not a claim that OS disk cache is empty",
+  "timing_scope": "fixed-snapshot DB preparation through fit, calibration, evaluation and isolated artifact write+reload; no live API queue/lease/new snapshot copy/production publication",
+  "quality_comparison_does_not_select_feature_formula_or_presets_on_test": true,
+  "models_published": false,
+  "active_model_changed": false,
+  "forward_collection_changed": false,
+  "roi_evaluated": false,
+  "commit_push": false,
+  "real_purchase": false
+}

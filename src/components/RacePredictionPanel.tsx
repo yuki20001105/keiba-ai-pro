@@ -1,5 +1,10 @@
 'use client'
 import type { RacePredictResult } from '@/lib/race-analysis-types'
+import { BettingRecommendationPanel } from '@/components/BettingRecommendationPanel'
+import { PredictionInputNotice } from '@/components/PredictionInputNotice'
+import { predictionInputVerified } from '@/lib/prediction-input-contract'
+import { predictionExpectationDisplay, REFERENCE_EXPECTATION_CAVEAT, REFERENCE_EXPECTATION_NOTE } from '@/lib/prediction-expectation-display'
+import { useBettingClock } from '@/hooks/useBettingClock'
 
 function probColor(p: number): string {
   if (p > 0.3) return 'bg-[#86efac]'
@@ -13,70 +18,25 @@ type Props = { result: RacePredictResult }
 export function RacePredictionPanel({ result }: Props) {
   const preds = result.predictions
   const rec = result.recommendation
-  const maxPRaw = Math.max(...preds.map(p => p.p_raw), 0.001)
+  const calibrated = rec?.probability_basis === 'calibrated' && rec.input_verified === true && predictionInputVerified(result.input_diagnostics)
+  const bettingNow = useBettingClock(preds.length > 0)
+  const expectation = predictionExpectationDisplay(result, rec, bettingNow)
+  const maxReferenceRatio = Math.max(...preds.map(p => p.p_norm), 0.001)
 
   return (
     <div className="flex-1 overflow-auto p-4 space-y-4">
+      <PredictionInputNotice diagnostics={result.input_diagnostics} />
       {/* 推奨カード */}
-      {rec && (
-        <div className={`p-4 rounded border ${rec.action === '見送り' ? 'bg-[#111] border-[#1e1e1e] text-[#666]' : 'bg-[#0a1a0a] border-[#1e3a1e]'}`}>
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <div className="text-xs text-[#666] mb-1">推奨アクション</div>
-              <div className={`text-base font-bold ${rec.action === '見送り' ? 'text-[#888]' : 'text-[#86efac]'}`}>
-                {rec.action} · {result.best_bet_type || '—'}
-              </div>
-              <div className="text-xs text-[#555] mt-1">{rec.reason}</div>
-            </div>
-            {rec.action !== '見送り' && (
-              <div className="flex gap-3 shrink-0 text-right">
-                <div>
-                  <div className="text-[10px] text-[#555]">購入点数</div>
-                  <div className="text-sm font-bold">{rec.purchase_count}点</div>
-                </div>
-                <div>
-                  <div className="text-[10px] text-[#555]">単価</div>
-                  <div className="text-sm font-bold">¥{rec.unit_price?.toLocaleString()}</div>
-                </div>
-                <div>
-                  <div className="text-[10px] text-[#555]">合計</div>
-                  <div className="text-sm font-bold">¥{rec.total_cost?.toLocaleString()}</div>
-                </div>
-                <div>
-                  <div className="text-[10px] text-[#555]">期待回収</div>
-                  <div className="text-sm font-bold text-[#7dd3fc]">¥{rec.expected_return?.toLocaleString()}</div>
-                </div>
-              </div>
-            )}
-          </div>
-          {/* 買い目 */}
-          {rec.action !== '見送り' && (() => {
-            const combos = result.best_bet_type && result.bet_types?.[result.best_bet_type]
-              ? result.bet_types[result.best_bet_type].slice(0, rec.purchase_count)
-              : []
-            if (combos.length === 0) return null
-            return (
-              <div className="mt-3 pt-3 border-t border-[#1e2a1e]">
-                <div className="text-[10px] text-[#555] mb-1.5">買い目（{result.best_bet_type}）</div>
-                <div className="flex flex-wrap gap-2">
-                  {combos.map((c, ci) => (
-                    <span key={ci} className="text-xs px-2.5 py-1 bg-[#0a0a0a] border border-[#2a3a2a] rounded font-mono text-[#86efac]">
-                      {c.combination}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )
-          })()}
-        </div>
-      )}
+      <div className="rounded border border-[#1e1e1e]"><BettingRecommendationPanel recommendation={rec} diagnostics={result.input_diagnostics} snapshotId={result.performance_snapshot_id} referenceBets={result.reference_bets} /></div>
+      {expectation.mode === 'reference' && <p className="text-xs text-[#888]" title={REFERENCE_EXPECTATION_CAVEAT}>{REFERENCE_EXPECTATION_NOTE}</p>}
 
       {/* 馬一覧 */}
       <div className="space-y-2">
         {preds.map((p) => {
-          const barW = maxPRaw > 0 ? Math.round((p.p_raw / maxPRaw) * 100) : 0
+          const barW = Math.max(0, Math.min(100, Math.round((p.p_norm / maxReferenceRatio) * 100)))
           const isTop = p.predicted_rank === 1
           const isTop3 = p.predicted_rank <= 3
+          const expectedValue = expectation.values.get(p.horse_number)
           return (
             <div
               key={p.horse_number}
@@ -97,7 +57,7 @@ export function RacePredictionPanel({ result }: Props) {
                     <div className="text-sm font-mono font-bold text-[#7dd3fc]">{(p.p_raw * 100).toFixed(1)}</div>
                   </div>
                   <div>
-                    <div className="text-[10px] text-[#555]">正規化</div>
+                    <div className="text-[10px] text-[#555]">{calibrated ? '勝率' : '参考比率'}</div>
                     <div className="text-sm font-mono">{(p.p_norm * 100).toFixed(1)}%</div>
                   </div>
                   <div>
@@ -105,9 +65,9 @@ export function RacePredictionPanel({ result }: Props) {
                     <div className="text-sm font-mono">{p.odds != null ? `${p.odds}倍` : '—'}</div>
                   </div>
                   <div>
-                    <div className="text-[10px] text-[#555]">期待値</div>
-                    <div className={`text-sm font-mono ${p.expected_value != null && p.expected_value >= 1 ? 'text-[#86efac]' : 'text-[#f87171]'}`}>
-                      {p.expected_value != null ? p.expected_value.toFixed(2) : '—'}
+                    <div className="text-[10px] text-[#555]">{expectation.label}</div>
+                    <div className={`text-sm font-mono ${expectedValue === undefined ? 'text-[#555]' : expectation.mode === 'reference' ? 'text-[#888]' : expectedValue >= 1 ? 'text-[#86efac]' : 'text-[#f87171]'}`}>
+                      {expectedValue !== undefined ? expectedValue.toFixed(2) : '—'}
                     </div>
                   </div>
                   <div>

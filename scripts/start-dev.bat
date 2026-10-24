@@ -12,7 +12,7 @@ echo.
 echo 起動中...
 echo.
 
-cd /d %~dp0
+cd /d "%~dp0\.."
 
 REM PATHを最新状態に更新（npmコマンドが見つからない問題を回避）
 for /f "tokens=2*" %%a in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v Path') do set "MachinePath=%%b"

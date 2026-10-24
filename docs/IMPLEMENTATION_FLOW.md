@@ -61,12 +61,18 @@ keiba_ultimate.db (SQLite)        models/*.joblib
 
 ```
 [/data-collection ページ]
-  ↓ 期間指定（開始年月〜終了年月）＋ 強制再取得フラグ
+  ↓ API health確認
+  ↓ 期間（開始〜終了）
+  ↓ 事前確認（外部HTTPなし）
+  ↓ 取得開始（force_rescrape=false固定）
   ↓ useBatchScrape フック
     for month in months:
       POST /api/scrape  → { job_id }
       ↓ 3秒ポーリング
       GET /api/scrape/status/{job_id}  → { status, progress }
+      ├─ 停止操作 → POST /api/scrape/cancel/{job_id}
+      │              cancelling中は自動ポーリングと実行lockを継続
+      │              cancelledで終了（保存済みデータは保持）
       ↓ completed になったら次の月へ
 ```
 
@@ -74,7 +80,7 @@ keiba_ultimate.db (SQLite)        models/*.joblib
 
 ```
 POST /api/scrape
-  { start_date: "YYYYMMDD", end_date: "YYYYMMDD", force_rescrape: bool }
+  { start_date: "YYYYMMDD", end_date: "YYYYMMDD", force_rescrape: false }
   ↓
 routers/scrape.py
   ↓ バックグラウンドスレッド起動（Windows ProactorEventLoop 対応）
@@ -84,6 +90,8 @@ routers/scrape.py
         └─ 各 race_id: shutuba (出馬表) + result (着順) + payout (払戻)
             └─ SQLite: races_ultimate + race_results_ultimate + return_tables_ultimate
 ```
+
+通常画面は進捗・完了・エラーに加え、実行状態が不明な場合だけ再確認操作を表示します。現在の結果がない場合は「最新」を1行で表示し、「保存済み」に「レース」「出走馬」「最終」の3指標を表示します。修復/再取得計画、限定ライブ検証、監査キュー、全履歴、最近取得したレース詳細、プロファイリングは保守用のページ/APIとして存続しますが、通常画面からは非表示です。
 
 ### 2-3. DB テーブル構成
 
@@ -474,9 +482,9 @@ routers/predict.py
 | GET  | `/api/export-data` | CSV エクスポート |
 | GET  | `/api/export-db` | SQLite DB ダウンロード |
 | DELETE | `/api/data/all` | 全データ削除（要確認） |
-| POST | `/api/profiling/start` | 特徴量プロファイリング起動 |
-| GET  | `/api/profiling/status/{job_id}` | プロファイリング進捗 |
-| GET  | `/api/profiling/html/{job_id}` | HTML レポート取得 |
+| POST | `/api/profiling/start` | 特徴量プロファイリング起動（保守用、通常UI非表示） |
+| GET  | `/api/profiling/status/{job_id}` | プロファイリング進捗（保守用、通常UI非表示） |
+| GET  | `/api/profiling/html/{job_id}` | HTML レポート取得（保守用、通常UI非表示） |
 | POST | `/api/backfill/nar-pedigree` | NAR 血統データ補完 |
 
 ### 購入履歴
@@ -497,8 +505,9 @@ routers/predict.py
 src/app/
 ├─ page.tsx               ランディングページ
 ├─ home/page.tsx          ダッシュボードハブ（システム状態・ナビ）
-├─ data-collection/       スクレイピング UI
-│   └─ page.tsx
+├─ data-collection/       必要機能に限定した通常スクレイピング UI
+│   ├─ page.tsx           health / 期間 / 事前確認 / 取得開始 / 状態 / 最新 / 保存済み
+│   └─ ...                保守用ページ（通常UIから非表示）
 ├─ train/page.tsx         モデル学習 UI
 ├─ predict-batch/page.tsx バッチ予測 UI
 ├─ race-analysis/         レース分析 UI

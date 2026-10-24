@@ -12,7 +12,7 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import roc_auc_score
 import numpy as np
 import pandas as pd
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, Tuple, Optional, Sequence
 import warnings
 import logging
 
@@ -87,7 +87,8 @@ class OptunaLightGBMOptimizer:
         trial: optuna.Trial,
         X: np.ndarray,
         y: np.ndarray,
-        categorical_features: list = None
+        categorical_features: list = None,
+        folds: Optional[Sequence[tuple[np.ndarray, np.ndarray]]] = None,
     ) -> float:
         """
         Optunaの目的関数
@@ -145,16 +146,21 @@ class OptunaLightGBMOptimizer:
             params['drop_rate'] = trial.suggest_float('drop_rate', 0.0, 0.5)
             params['skip_drop'] = trial.suggest_float('skip_drop', 0.0, 0.5)
         
-        # クロスバリデーション
-        skf = StratifiedKFold(
-            n_splits=self.cv_folds,
-            shuffle=True,
-            random_state=self.random_state
-        )
+        # The caller can bind forward-time, race-safe folds.  The legacy
+        # stratified fallback remains for standalone callers without race/date
+        # metadata, but release training always supplies explicit folds.
+        fold_iterator = folds
+        if fold_iterator is None:
+            skf = StratifiedKFold(
+                n_splits=self.cv_folds,
+                shuffle=True,
+                random_state=self.random_state
+            )
+            fold_iterator = list(skf.split(X, y))
         
         cv_scores = []
         
-        for fold_idx, (train_idx, valid_idx) in enumerate(skf.split(X, y)):
+        for fold_idx, (train_idx, valid_idx) in enumerate(fold_iterator):
             X_train, X_valid = X[train_idx], X[valid_idx]
             y_train, y_valid = y[train_idx], y[valid_idx]
             
@@ -206,7 +212,8 @@ class OptunaLightGBMOptimizer:
         X: np.ndarray,
         y: np.ndarray,
         categorical_features: list = None,
-        study_name: str = "lightgbm_optimization"
+        study_name: str = "lightgbm_optimization",
+        folds: Optional[Sequence[tuple[np.ndarray, np.ndarray]]] = None,
     ) -> Tuple[Dict[str, Any], float]:
         """
         ハイパーパラメータ最適化を実行
@@ -294,7 +301,13 @@ class OptunaLightGBMOptimizer:
         print(f"[OPT-006] ★★★ study.optimize()呼び出し直前 ★★★")
         # 最適化実行
         self.study.optimize(
-            lambda trial: self._objective(trial, X, y, categorical_features),
+            lambda trial: self._objective(
+                trial,
+                X,
+                y,
+                categorical_features,
+                folds,
+            ),
             n_trials=self.n_trials,
             timeout=self.timeout,
             show_progress_bar=self.show_progress
