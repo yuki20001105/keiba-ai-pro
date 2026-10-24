@@ -60,6 +60,7 @@ Operational notes:
 | /api/profiling/html/[job_id] | FastAPI /api/profiling/html/{job_id} | data-collection |
 | /api/scrape | FastAPI /api/scrape/start | data-collection, useScrape/useBatchScrape |
 | /api/scrape/cancel/[jobId] | FastAPI /api/scrape/cancel/{job_id} | data-collection owner-scoped cooperative stop |
+| /api/scrape/retire/[jobId] | FastAPI /api/scrape/retire/{job_id} | data-collection local-only absent-request retirement; no scrape execution |
 | /api/scrape/status/[jobId] | FastAPI /api/scrape/status/{job_id} | predict-batch, useScrape/useBatchScrape |
 | /api/scrape/health | FastAPI /api/scrape/health | data-collection |
 | /api/export/bet-list | FastAPI /api/export/bet-list(/csv) | predict-batch |
@@ -70,6 +71,8 @@ Operational notes:
 |---|---|---|
 | /api/ai-correct | OpenAI/Gemini | optional OCR post-process flow |
 | /api/ocr | Vision/OCR service | optional OCR flow |
+| /api/performance | FastAPI GET /api/performance | local authenticated dashboard; owner-scoped official-result reconciliation, no external scraping |
+| /api/performance/records | FastAPI POST /api/performance/records | local prediction UI; immutable server snapshot selections, paper/explicit actual separated; never submits purchases |
 | /api/netkeiba/calendar | external scrape service | utility/integration route |
 | /api/netkeiba/race-list | FastAPI /api/netkeiba/race-list | migrated read-only proxy route (P1-4) |
 | /api/netkeiba/race | external scrape + Supabase write | mixed write path (not canonical) |
@@ -103,7 +106,7 @@ Operational notes:
 | /api/ml/train/capability | approval-bound durable retrain job runner | loopback-only capability check; requires exact local/test opt-in plus verified Admin mode |
 | /api/ml/train/start | approval-bound durable retrain job runner | direct `.joblib` writer is enabled only on loopback with exact local/test opt-in and verified Admin mode; deployed/unknown environments fail closed |
 | /api/ml/train/status/[job_id] | approval-bound durable retrain job status | local compatibility job status; requires a verified Admin and a canonical job UUID |
-| /api/models/[id] DELETE | separate durable model-retirement approval | local/Supabase artifact deletion is available only by exact local/test opt-in; deployed/unknown environments fail closed and the UI action is disabled |
+| /api/models/[id] DELETE | separate durable model-retirement approval | local/test only with exact opt-in, loopback boundaries, and current-password Admin mode; the active model is protected and deployed/unknown environments fail closed |
 | /api/models/[id]/activate | separate durable model-switch approval | pointer mutation is available only by exact local/test opt-in; deployed/unknown environments fail closed and the UI action is disabled |
 
 ### unused (current UI)
@@ -134,6 +137,7 @@ Operational notes:
 - /api/realtime-odds/refresh
 - /api/scrape/start
 - /api/scrape/cancel/{job_id}
+- /api/scrape/retire/{job_id}
 - /api/scrape/status/{job_id}
 - /api/scrape/health
 - /api/profiling/start
@@ -153,6 +157,8 @@ Operational notes:
 ### experimental
 
 - /api/predict (older inference endpoint kept available)
+- /api/performance (local authenticated owner-scoped paper/actual summary; settled-only ROI, pending payouts excluded)
+- /api/performance/records (local immutable first-choice ledger; actual requires explicit confirmed=true; no real purchase)
 - /api/train (legacy synchronous endpoint; disabled in favor of serialized async start)
 - /api/netkeiba/race-list (read-only proxy to scrape service, introduced in P1-4)
 - /api/netkeiba/race/preflight (read-only preflight contract for write path decomposition, introduced in P1-5)

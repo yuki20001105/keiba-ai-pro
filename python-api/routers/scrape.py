@@ -17,11 +17,12 @@ import time
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import aiohttp
 from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, StrictBool, field_validator
 
 from app_config import (  # type: ignore
     ULTIMATE_DB,
@@ -69,6 +70,75 @@ _SANDBOX_TABLE_MAP = {
 _DEPLOYED_ENVIRONMENTS = frozenset({"staging", "stage", "production", "prod", "prd", "live"})
 _LOCAL_ENVIRONMENTS = frozenset({"local", "development", "dev", "test", "ci"})
 _EXPLICIT_TRUE = frozenset({"1", "true", "yes", "on"})
+
+
+class RetireUnacceptedScrapeRequest(BaseModel):
+    """Original client intent, not a new acquisition request."""
+    model_config = ConfigDict(extra="forbid")
+    operation_id: str
+    start_date: str
+    end_date: str
+    force_rescrape: StrictBool
+    server_batch: Literal[True]
+    race_scope: Literal["all", "jra"] = "all"
+
+    @field_validator("server_batch", mode="before")
+    @classmethod
+    def _strict_server_batch(cls, value: Any) -> bool:
+        if value is not True:
+            raise ValueError("server_batch must be the boolean true")
+        return True
+
+
+def _retirement_supported(runtime: Any) -> bool:
+    return bool(
+        runtime.enabled
+        and runtime.config.mode is OperationalSagaMode.LOCAL_SQLITE
+        and runtime.config.environment in _LOCAL_ENVIRONMENTS
+        and str(APP_ENV or "").strip().lower() in _LOCAL_ENVIRONMENTS
+    )
+
+
+def _check_legacy_retirement_safety(job_id: str, owner_user_id: str) -> None:
+    """Fail closed if a legacy acceptance or unresolved owner worker exists.
+
+    An absent saga row alone is not evidence that old runner work never began.
+    Read the old runner ledger without creating it or modifying any job. Do not
+    disclose cross-owner records: only a generic conflict leaves the UI locked.
+    """
+    from scraping import jobs as legacy_jobs
+
+    terminal = {"completed", "error", "cancelled"}
+    with _JOBS_LOCK:
+        for stored_id, job in _scrape_jobs.items():
+            if str(stored_id).lower() == job_id.lower():
+                raise HTTPException(status_code=409, detail="legacy-request-recorded")
+            if str(job.get("owner_user_id") or "") == owner_user_id:
+                if job.get("_store_unavailable") is True:
+                    raise JobStoreUnavailable("legacy worker state is unavailable")
+                if str(job.get("status") or "") not in terminal:
+                    raise HTTPException(status_code=409, detail="owner-legacy-job-unresolved")
+    connection = None
+    try:
+        legacy_path = legacy_jobs._JOBS_DB_PATH.resolve(strict=False)
+        connection = sqlite3.connect(f"{legacy_path.as_uri()}?mode=ro", uri=True)
+        recorded = connection.execute(
+            "SELECT 1 FROM scrape_jobs WHERE job_id=? COLLATE NOCASE LIMIT 1", (job_id,),
+        ).fetchone()
+        if recorded is not None:
+            raise HTTPException(status_code=409, detail="legacy-request-recorded")
+        unresolved = connection.execute(
+            "SELECT 1 FROM scrape_jobs WHERE owner_user_id=? "
+            "AND (status IS NULL OR status NOT IN ('completed','error','cancelled')) LIMIT 1",
+            (owner_user_id,),
+        ).fetchone()
+        if unresolved is not None:
+            raise HTTPException(status_code=409, detail="owner-legacy-job-unresolved")
+    except sqlite3.Error as exc:
+        raise JobStoreUnavailable("legacy worker state is unavailable") from exc
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 def _require_legacy_scrape_write_allowed() -> None:
@@ -287,6 +357,11 @@ async def scrape_start(request: ScrapeRequest, admin_user: dict = Depends(requir
         raise HTTPException(status_code=403, detail="server batch is available only in local mode")
     if request.server_batch:
         await require_current_admin(admin_user)
+    if not isinstance(request.race_scope, str) or request.race_scope not in {"all", "jra"}:
+        raise HTTPException(status_code=400, detail="race_scope must be all or jra")
+    if request.race_scope == "jra" and runtime.config.mode is not OperationalSagaMode.LOCAL_SQLITE:
+        # Deployed authorization payloads have not approved the new scope key.
+        raise HTTPException(status_code=403, detail="JRA scope is available only in local mode")
 
     required_binding = (
         request.job_id,
@@ -318,6 +393,10 @@ async def scrape_start(request: ScrapeRequest, admin_user: dict = Depends(requir
     }
     if request.server_batch:
         request_payload["server_batch"] = True
+    if request.race_scope == "jra":
+        # Do not add an explicit all key: legacy retries must preserve their
+        # original payload and request hash byte for byte.
+        request_payload["race_scope"] = "jra"
     request_hash = hashlib.sha256(
         json.dumps(
             request_payload,
@@ -340,6 +419,7 @@ async def scrape_start(request: ScrapeRequest, admin_user: dict = Depends(requir
             expected_authorization_version=request.expected_authorization_version,
             consume_request_id=request.consume_request_id,
         )
+        job_id, operation_id = enqueue_request.job_id, enqueue_request.operation_id
         queued = await asyncio.to_thread(
             runtime.enqueue,
             enqueue_request,
@@ -359,7 +439,77 @@ async def scrape_start(request: ScrapeRequest, admin_user: dict = Depends(requir
         "mode": "dry-run" if request.dry_run else "execute",
         "duplicate": queued.code is MutationCode.DUPLICATE,
         "server_batch": request.server_batch,
+        **({"retired": True, "replacement_allowed": True} if (queued.job or {}).get("retired") else {}),
     }
+
+
+@router.post("/api/scrape/retire/{job_id}")
+async def scrape_retire_unaccepted(
+    job_id: str,
+    request: RetireUnacceptedScrapeRequest,
+    admin_user: dict = Depends(require_admin),
+):
+    """Retire a never-accepted local intent, never start or cancel a job."""
+    runtime = get_operational_saga_runtime()
+    if not runtime.enabled:
+        raise HTTPException(status_code=503, detail="operational scrape runtime is disabled")
+    if not _retirement_supported(runtime):
+        raise HTTPException(status_code=403, detail="request retirement is available only in local mode")
+    await require_current_admin(admin_user)
+    owner_user_id = str(admin_user.get("user_id") or "").strip()
+    if not owner_user_id:
+        raise HTTPException(status_code=503, detail="管理者IDを確認できません")
+    try:
+        # Reuse the start request's exact date/scope normalization and hash.
+        original = ScrapeRequest(
+            start_date=request.start_date, end_date=request.end_date,
+            force_rescrape=request.force_rescrape, server_batch=request.server_batch,
+            race_scope=request.race_scope,
+        )
+        payload = {
+            "start_date": original.start_date.strip(), "end_date": original.end_date.strip(),
+            "force_rescrape": original.force_rescrape, "dry_run": False, "server_batch": True,
+        }
+        if original.race_scope == "jra":
+            payload["race_scope"] = "jra"
+        request_hash = hashlib.sha256(json.dumps(
+            payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        bound = EnqueueRequest(
+            job_id=job_id, operation_id=request.operation_id, owner_user_id=owner_user_id,
+            request_hash=request_hash, request_payload=payload,
+        )
+        # Verify a readable existing ledger before the compatibility lookup;
+        # the old lookup opens SQLite normally and must not create an empty DB.
+        await asyncio.to_thread(_check_legacy_retirement_safety, bound.job_id, owner_user_id)
+        legacy_job = await asyncio.to_thread(
+            get_legacy_scrape_job, bound.job_id, owner_user_id=owner_user_id,
+        )
+        if legacy_job is not None:
+            raise HTTPException(status_code=409, detail="legacy-request-recorded")
+        retired = await asyncio.to_thread(runtime.retire_unaccepted, bound)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="保存した依頼のID・期間・取得対象を確認してください") from exc
+    except OperationalSagaUnavailable as exc:
+        raise HTTPException(status_code=503, detail="依頼の整理状態を安全に保存できません") from exc
+    except JobStoreUnavailable as exc:
+        raise HTTPException(status_code=503, detail="以前の取得処理を安全に確認できません") from exc
+    if retired.code is MutationCode.CONFLICT:
+        raise HTTPException(status_code=409, detail=retired.reason or "依頼の受付状態が変わりました")
+    if retired.code not in {MutationCode.APPLIED, MutationCode.DUPLICATE}:
+        raise HTTPException(status_code=503, detail=retired.reason or "依頼を安全に整理できません")
+    job = retired.job or {}
+    if job.get("status") != "cancelled" or job.get("retired") is not True:
+        raise HTTPException(status_code=503, detail="依頼の整理状態を確認できません")
+    return JSONResponse(
+        content={
+            "job_id": job["job_id"], "operation_id": job["operation_id"],
+            "status": "cancelled", "retired": True, "replacement_allowed": True,
+            "request_payload": job["request_payload"],
+            "duplicate": retired.code is MutationCode.DUPLICATE,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get("/api/scrape/status/{job_id}")
@@ -375,9 +525,10 @@ async def scrape_status(job_id: str, admin_user: dict = Depends(require_admin)):
     owner_user_id = str(admin_user.get("user_id") or "").strip()
     if not owner_user_id:
         raise HTTPException(status_code=503, detail="管理者IDを確認できません")
+    runtime = get_operational_saga_runtime()
     try:
         job = await asyncio.to_thread(
-            get_operational_saga_runtime().get_job, job_id, owner_user_id
+            runtime.get_job, job_id, owner_user_id
         )
     except OperationalSagaUnavailable as exc:
         raise HTTPException(status_code=503, detail="ジョブ状態を安全に確認できません") from exc
@@ -388,6 +539,7 @@ async def scrape_status(job_id: str, admin_user: dict = Depends(require_admin)):
             "progress": {},
             "result": None,
             "error": f"ジョブ {job_id} が見つかりません（サーバー再起動の可能性）",
+            "retirement_supported": _retirement_supported(runtime),
         }
     # The saga ledger owns authorization and terminal settlement, while the
     # durable local runner has the detailed active phase/progress. Project the
@@ -423,6 +575,7 @@ async def scrape_status(job_id: str, admin_user: dict = Depends(require_admin)):
                     job[field] = value
     return {
         "job_id": job_id,
+        "operation_id": job.get("operation_id"),
         "status": job["status"],
         "progress": job["progress"],
         "result": job.get("result"),
@@ -434,6 +587,10 @@ async def scrape_status(job_id: str, admin_user: dict = Depends(require_admin)):
         "resume_count": int(job.get("resume_count", 0) or 0),
         "worker_pid": job.get("worker_pid"),
         "cancel_requested_at": job.get("cancel_requested_at"),
+        **({
+            "retired": True, "replacement_allowed": True,
+            "retirement_supported": _retirement_supported(runtime),
+        } if job.get("retired") else {}),
     }
 
 
@@ -505,13 +662,26 @@ async def scrape_history(limit: int = 20, admin_user: dict = Depends(require_adm
 
 
 @router.get("/api/netkeiba/race-list")
-async def netkeiba_race_list(date: str, _: dict = Depends(require_admin)):
+async def netkeiba_race_list(
+    date: str, _: dict = Depends(require_admin), race_scope: Literal["all", "jra"] = "all",
+):
     """Scrape Service の race_list を FastAPI 経由で read-only プロキシする。"""
     date_str = (date or "").strip().replace("-", "")
     if not re.fullmatch(r"\d{8}", date_str):
         raise HTTPException(status_code=400, detail="date は YYYY-MM-DD または YYYYMMDD 形式で指定してください")
 
     try:
+        if race_scope == "jra":
+            # The retired proxy and historical all-venue inventories are not
+            # evidence for the explicitly selected JRA scope.
+            from scraping.jra_listing import fetch_jra_race_ids
+
+            races, source = await fetch_jra_race_ids(date_str)
+            races = [race_id for race_id in races if _is_scoped_jra_id(race_id, date_str)]
+            return {
+                "success": True, "date": date_str, "raceIds": races,
+                "count": len(races), "source": source, "race_scope": "jra",
+            }
         timeout = aiohttp.ClientTimeout(total=20)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
@@ -554,6 +724,15 @@ async def netkeiba_race_list(date: str, _: dict = Depends(require_admin)):
                 "detail": str(e),
             },
         )
+
+
+def _is_scoped_jra_id(race_id: object, race_date: str) -> bool:
+    """Final identity guard independent of list route/cache provenance."""
+    return (
+        isinstance(race_id, str) and re.fullmatch(r"\d{12}", race_id) is not None
+        and race_id[:4] == race_date[:4]
+        and 1 <= int(race_id[4:6]) <= 10 and 1 <= int(race_id[-2:]) <= 12
+    )
 
 
 @router.get("/api/netkeiba/race/preflight")
@@ -1708,6 +1887,14 @@ async def scrape_health() -> dict:
     """スクレイプ系サービスのヘルスチェック（read-only, 契約固定）。"""
     timestamp = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
     try:
+        from scraping.bounded_work import race_task_concurrency
+        from scraping.acquisition_http_policy import acquisition_safety_capabilities
+
+        scrape_capabilities = {
+            "race_scopes": ["all", "jra"], "jra_month_reuse": True,
+            "race_task_concurrency": race_task_concurrency(), "max_concurrent_http_requests": 1,
+            **acquisition_safety_capabilities(),
+        }
         runtime = get_scrape_runtime_health()
         with _JOBS_LOCK:
             _purge_old_jobs(_scrape_jobs)
@@ -1727,6 +1914,7 @@ async def scrape_health() -> dict:
                 "service": "scrape",
                 "timestamp": timestamp,
                 "reason": "recent scrape job errors detected",
+                "scrape_capabilities": scrape_capabilities,
                 "metrics": {
                     "active_jobs": active_jobs,
                     "error_jobs": error_jobs,
@@ -1740,6 +1928,7 @@ async def scrape_health() -> dict:
             "status": "healthy",
             "service": "scrape",
             "timestamp": timestamp,
+            "scrape_capabilities": scrape_capabilities,
             "metrics": {
                 "active_jobs": active_jobs,
                 "error_jobs": error_jobs,
@@ -1825,11 +2014,17 @@ async def scrape_data(request: ScrapeRequest, _: dict = Depends(require_admin)):
                     continue
 
                 race_ids = list(dict.fromkeys(re.findall(r"/race/(\d{12})/", html)))
+                if request.race_scope == "jra":
+                    race_ids = [rid for rid in race_ids if _is_scoped_jra_id(rid, date)]
                 logger.info(f"  {len(race_ids)}レース発見")
 
                 for race_id in race_ids:
                     race_data = await scrape_race_full(session, race_id, date_hint=date)
                     if race_data and race_data["horses"]:
+                        if request.race_scope == "jra" and race_data.get("race_info", {}).get("race_id") != race_id:
+                            logger.warning("JRA race identity mismatch; refusing legacy save: %s", race_id)
+                            error_dates.append(date)
+                            continue
                         _save_race_to_ultimate_db(race_data, ULTIMATE_DB, overwrite=True)
                         saved_races += 1
                         saved_horses += len(race_data["horses"])

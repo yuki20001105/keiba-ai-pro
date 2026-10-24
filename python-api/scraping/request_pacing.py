@@ -19,6 +19,14 @@ from threading import RLock
 from urllib.parse import urlsplit
 
 
+# Recovery is deliberately faster than the legacy 50-success/10% decay, which
+# could leave a healthy job at a 4-6 second interval for hours.  The provider
+# guard still admits only one request at a time and never goes below one second.
+_RECOVERY_SUCCESS_TARGET = 20
+_RECOVERY_STABLE_SEC = 45
+_RECOVERY_FACTOR = 0.75
+
+
 class AccessPaused(RuntimeError):
     pass
 
@@ -183,9 +191,12 @@ class RequestPacer:
                     connection.execute("UPDATE request_pacing SET interval = ? WHERE family = ?",
                                        (min(60.0, max(2.0, state["interval"] * 1.5)), family))
                     successes, stable_since, baseline, durations = 0, now, 0, []
-                elif successes >= 50 and now - stable_since >= 120:
+                elif (
+                    successes >= _RECOVERY_SUCCESS_TARGET
+                    and now - stable_since >= _RECOVERY_STABLE_SEC
+                ):
                     connection.execute("UPDATE request_pacing SET interval = ? WHERE family = ?",
-                                       (max(1.0, state["interval"] * 0.9), family))
+                                       (max(1.0, state["interval"] * _RECOVERY_FACTOR), family))
                     successes, stable_since, baseline = 0, now, p95
             connection.execute("""UPDATE request_pacing_samples SET successes = ?, stable_since = ?, baseline = ?, durations = ?
                 WHERE family = ? AND kind = ?""", (successes, stable_since, baseline, json.dumps(durations), family, kind))

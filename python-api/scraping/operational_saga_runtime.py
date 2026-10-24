@@ -50,6 +50,9 @@ class OperationalEffectCancelled(OperationalSagaError):
 
 
 CANCELLED_BY_OWNER = "cancelled-by-owner"
+# A terminal record for an ID whose original request never reached the ledger.
+# Unlike cancellation, retirement must not create an executable outbox entry.
+RETIRED_UNACCEPTED_REQUEST = "retired-unaccepted-request"
 
 
 class OperationalSagaMode(str, Enum):
@@ -204,6 +207,9 @@ class EnqueueRequest:
                 raise ValueError(f"{name.replace('_', '-')}-invalid") from exc
             if canonical != str(getattr(self, name)).lower():
                 raise ValueError(f"{name.replace('_', '-')}-invalid")
+            # UUID spelling cannot create a second ledger ID and bypass a
+            # terminal tombstone (SQLite text keys are case-sensitive).
+            object.__setattr__(self, name, canonical)
         if _OWNER_RE.fullmatch(self.owner_user_id) is None:
             raise ValueError("owner-user-id-invalid")
         if _HEX64_RE.fullmatch(self.request_hash) is None:
@@ -216,6 +222,30 @@ class EnqueueRequest:
         return hashlib.sha256(
             f"scrape-operational-effect-v1|{self.operation_id}|{self.job_id}|{self.request_hash}".encode()
         ).hexdigest()
+
+
+def _validate_retirement_request(request: EnqueueRequest) -> None:
+    """Accept only the exact original local, non-dry-run server-batch tuple."""
+    payload = request.request_payload
+    required = {"start_date", "end_date", "force_rescrape", "dry_run", "server_batch"}
+    allowed = required | ({"race_scope"} if "race_scope" in payload else set())
+    if set(payload) != allowed or not required.issubset(payload):
+        raise ValueError("retirement-payload-invalid")
+    if (
+        type(payload["force_rescrape"]) is not bool
+        or payload["dry_run"] is not False
+        or payload["server_batch"] is not True
+        or ("race_scope" in payload and payload["race_scope"] != "jra")
+    ):
+        raise ValueError("retirement-payload-invalid")
+    from scraping.scrape_request_contract import build_scrape_months
+
+    build_scrape_months(payload["start_date"], payload["end_date"])
+    expected_hash = hashlib.sha256(json.dumps(
+        payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    if request.request_hash != expected_hash:
+        raise ValueError("retirement-request-hash-invalid")
 
 
 @dataclass(frozen=True)
@@ -361,7 +391,7 @@ class SQLiteOperationalSagaStore:
         raw_error = json.loads(row["error"]) if row["error"] else None
         if raw_status == "running" and row["cancel_requested_at_epoch"] is not None:
             status = "cancelling"
-        elif raw_status == "error" and raw_error == CANCELLED_BY_OWNER:
+        elif raw_status == "error" and raw_error in (CANCELLED_BY_OWNER, RETIRED_UNACCEPTED_REQUEST):
             status = "cancelled"
         else:
             status = raw_status
@@ -382,6 +412,7 @@ class SQLiteOperationalSagaStore:
             ),
             "created_at": iso_timestamp(row["created_at_epoch"]),
             "updated_at": iso_timestamp(row["updated_at_epoch"]),
+            "retired": raw_status == "error" and raw_error == RETIRED_UNACCEPTED_REQUEST,
         }
 
     @staticmethod
@@ -405,7 +436,7 @@ class SQLiteOperationalSagaStore:
         try:
             connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
-                "SELECT * FROM operational_scrape_jobs WHERE job_id=?", (request.job_id,)
+                "SELECT * FROM operational_scrape_jobs WHERE job_id=? COLLATE NOCASE", (request.job_id,)
             ).fetchone()
             if existing is not None:
                 if (
@@ -418,6 +449,14 @@ class SQLiteOperationalSagaStore:
                     return Mutation(MutationCode.DUPLICATE, job=self._job(existing))
                 connection.rollback()
                 return Mutation(MutationCode.CONFLICT, "job-id-binding-conflict")
+            # Also fail closed for pre-canonicalization legacy operation IDs.
+            operation = connection.execute(
+                "SELECT job_id FROM operational_scrape_jobs WHERE operation_id=? COLLATE NOCASE",
+                (request.operation_id,),
+            ).fetchone()
+            if operation is not None:
+                connection.rollback()
+                return Mutation(MutationCode.CONFLICT, "operation-id-binding-conflict")
             active = connection.execute(
                 "SELECT 1 FROM operational_scrape_jobs WHERE owner_user_id=? "
                 "AND status IN ('queued','running') LIMIT 1",
@@ -447,13 +486,84 @@ class SQLiteOperationalSagaStore:
                 (request.job_id, now_epoch, now_epoch),
             )
             row = connection.execute(
-                "SELECT * FROM operational_scrape_jobs WHERE job_id=?", (request.job_id,)
+                "SELECT * FROM operational_scrape_jobs WHERE job_id=? COLLATE NOCASE", (request.job_id,)
             ).fetchone()
             connection.commit()
             return Mutation(MutationCode.APPLIED, job=self._job(row))
         except sqlite3.Error as exc:
             connection.rollback()
             raise OperationalSagaUnavailable("operational-enqueue-failed") from exc
+        finally:
+            connection.close()
+
+    def retire_unaccepted(self, request: EnqueueRequest, now_epoch: int) -> Mutation:
+        """Seal an absent request ID without scheduling or cancelling work.
+
+        BEGIN IMMEDIATE serializes this with enqueue: either the original start
+        wins, in which case retirement is refused, or the tombstone wins and all
+        later starts with this ID resolve to a terminal duplicate. The complete
+        owner/operation/payload binding is retained permanently.
+        """
+        _validate_retirement_request(request)
+        payload = json.dumps(request.request_payload, sort_keys=True, separators=(",", ":"))
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT * FROM operational_scrape_jobs WHERE job_id=? COLLATE NOCASE", (request.job_id,)
+            ).fetchone()
+            if existing is not None:
+                if not (
+                    existing["operation_id"] == request.operation_id
+                    and existing["owner_user_id"] == request.owner_user_id
+                    and existing["request_hash"] == request.request_hash
+                    and existing["request_payload"] == payload
+                ):
+                    connection.rollback()
+                    return Mutation(MutationCode.CONFLICT, "job-id-binding-conflict")
+                job = self._job(existing)
+                if not job["retired"]:
+                    connection.rollback()
+                    return Mutation(MutationCode.CONFLICT, "request-already-accepted")
+            operation = connection.execute(
+                "SELECT job_id FROM operational_scrape_jobs WHERE operation_id=? COLLATE NOCASE", (request.operation_id,)
+            ).fetchone()
+            if operation is not None and operation["job_id"] != request.job_id:
+                connection.rollback()
+                return Mutation(MutationCode.CONFLICT, "operation-id-binding-conflict")
+            active = connection.execute(
+                "SELECT 1 FROM operational_scrape_jobs WHERE owner_user_id=? "
+                "AND status IN ('queued','running') LIMIT 1", (request.owner_user_id,),
+            ).fetchone()
+            if active is not None:
+                connection.rollback()
+                return Mutation(MutationCode.CONFLICT, "owner-active-job")
+            if existing is not None:
+                connection.commit()
+                return Mutation(MutationCode.DUPLICATE, job=self._job(existing))
+            connection.execute(
+                "INSERT INTO operational_scrape_jobs "
+                "(job_id,operation_id,owner_user_id,request_hash,request_payload,idempotency_key,"
+                "status,progress,error,created_at_epoch,updated_at_epoch) "
+                "VALUES (?,?,?,?,?,?,'error','{}',?,?,?)",
+                (
+                    request.job_id, request.operation_id, request.owner_user_id,
+                    request.request_hash, payload, request.idempotency_key,
+                    json.dumps(RETIRED_UNACCEPTED_REQUEST), now_epoch, now_epoch,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM operational_scrape_jobs WHERE job_id=?", (request.job_id,)
+            ).fetchone()
+            connection.commit()
+            assert row is not None
+            return Mutation(MutationCode.APPLIED, job=self._job(row))
+        except sqlite3.IntegrityError:
+            connection.rollback()
+            return Mutation(MutationCode.CONFLICT, "retirement-binding-conflict")
+        except (sqlite3.Error, ValueError, TypeError, KeyError) as exc:
+            connection.rollback()
+            raise OperationalSagaUnavailable("operational-retirement-failed") from exc
         finally:
             connection.close()
 
@@ -1031,8 +1141,14 @@ class ScrapeJobEffectExecutor:
 
         payload = claim.request_payload
         required = {"start_date", "end_date", "force_rescrape", "dry_run"}
+        scoped = {"race_scope"} if "race_scope" in payload else set()
+        race_scope = payload.get("race_scope", "all")
+        if not isinstance(race_scope, str) or race_scope not in {"all", "jra"}:
+            raise OperationalSagaError("scrape-payload-scope-invalid")
+        if race_scope == "jra" and not self._allow_unfenced_local_writes:
+            raise OperationalSagaUnavailable("jra-scope-local-runtime-required")
         if payload.get("server_batch") is True:
-            if set(payload) != required | {"server_batch"}:
+            if set(payload) != required | {"server_batch"} | scoped:
                 raise OperationalSagaError("scrape-payload-contract-invalid")
             if not self._allow_unfenced_local_writes or self._batch_store is None:
                 raise OperationalSagaUnavailable("server-batch-local-runtime-required")
@@ -1044,7 +1160,7 @@ class ScrapeJobEffectExecutor:
                 if claim.job_id in self._pending_cancellations:
                     cancel_event.set()
             return await execute_server_batch(claim, self._batch_store, cancel_event)
-        if set(payload) != required:
+        if set(payload) != required | scoped:
             raise OperationalSagaError("scrape-payload-contract-invalid")
         if payload.get("dry_run") is not True and not self._allow_unfenced_local_writes:
             raise OperationalSagaUnavailable("fenced-operational-execute-not-enabled")
@@ -1058,6 +1174,10 @@ class ScrapeJobEffectExecutor:
             "idempotency_key": claim.idempotency_key,
             "fencing_token": claim.fencing_token,
         }
+        if race_scope == "jra":
+            # Scope must survive a legacy runner checkpoint as well as the
+            # authoritative operational claim; recovery may not widen it.
+            job["request"] = dict(payload)
         with _JOBS_LOCK:
             existing = _scrape_jobs.get(claim.job_id)
             if existing is not None and existing.get("request_hash") != claim.request_hash:
@@ -1075,6 +1195,7 @@ class ScrapeJobEffectExecutor:
             bool(payload["force_rescrape"]),
             bool(payload["dry_run"]),
             cancel_requested=cancel_event.is_set,
+            **({"race_scope": "jra"} if race_scope == "jra" else {}),
         ))
         try:
             await asyncio.shield(runner_task)
@@ -1152,6 +1273,8 @@ class OperationalSagaRuntime:
         if not self.enabled:
             return Mutation(MutationCode.UNAVAILABLE, "operational-runtime-disabled")
         assert self._store is not None
+        if request.request_payload.get("race_scope", "all") == "jra" and self.config.mode is not OperationalSagaMode.LOCAL_SQLITE:
+            return Mutation(MutationCode.UNAVAILABLE, "jra-scope-local-runtime-required")
         if request.request_payload.get("server_batch") is True:
             if self.config.mode is not OperationalSagaMode.LOCAL_SQLITE:
                 return Mutation(MutationCode.UNAVAILABLE, "server-batch-local-runtime-required")
@@ -1161,6 +1284,17 @@ class OperationalSagaRuntime:
                 request.request_payload.get("start_date"), request.request_payload.get("end_date")
             )
         return self._store.enqueue(request, int(time.time()))
+
+    def retire_unaccepted(self, request: EnqueueRequest) -> Mutation:
+        if not self.enabled:
+            return Mutation(MutationCode.UNAVAILABLE, "operational-runtime-disabled")
+        if (
+            self.config.mode is not OperationalSagaMode.LOCAL_SQLITE
+            or self.config.environment not in _LOCAL_ENVS
+            or not isinstance(self._store, SQLiteOperationalSagaStore)
+        ):
+            return Mutation(MutationCode.UNAVAILABLE, "retirement-local-runtime-required")
+        return self._store.retire_unaccepted(request, int(time.time()))
 
     def request_cancel(self, job_id: str, owner_user_id: str) -> Mutation:
         if not self.enabled:

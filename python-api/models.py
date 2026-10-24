@@ -29,6 +29,12 @@ class TrainRequest(BaseModel):
     training_date_from: Optional[str] = None
     training_date_to: Optional[str] = None
     force_sync: bool = True
+    # Omitted by historical approval contracts; only the local UI opts in.
+    feature_pipeline: Literal["legacy", "local-db-shared-v1", "local-db-shared-optimized-v1", "local-db-context-v1"] = "legacy"
+    # Scheduling controls are bound by the local job request, not added to the
+    # source-pinned historical approval contract.
+    compute_device: Literal["auto", "cpu", "gpu"] = "auto"
+    reuse_features: bool = True
 
     @field_validator("training_date_from", "training_date_to", mode="before")
     @classmethod
@@ -72,6 +78,11 @@ class TrainResponse(BaseModel):
     optuna_error: Optional[str] = None
     feature_columns: List[str] = []
     training_eligibility: Dict[str, Any] = Field(default_factory=dict)
+    feature_pipeline: Optional[str] = None
+    probability_validation: Dict[str, Any] = Field(default_factory=dict)
+    training_parallel_workers: Optional[int] = None
+    native_threads: Optional[int] = None
+    acceleration: Dict[str, Any] = Field(default_factory=dict)
 
 
 class PredictRequest(BaseModel):
@@ -80,6 +91,9 @@ class PredictRequest(BaseModel):
 
     model_id: Optional[str] = None
     horses: List[Dict[str, Any]]
+    # Reference winner and shared-DB pipelines require actual race metadata;
+    # never infer a calendar date or field identity from a model/race ID.
+    race_info: Optional[Dict[str, Any]] = None
 
 
 class PredictResponse(BaseModel):
@@ -90,6 +104,7 @@ class PredictResponse(BaseModel):
     predictions: List[Dict[str, Any]]
     model_id: str
     message: str
+    input_diagnostics: Optional[Dict[str, Any]] = None
 
 
 class ModelInfo(BaseModel):
@@ -109,7 +124,7 @@ class AnalyzeRaceRequest(BaseModel):
     model_config = {"protected_namespaces": ()}
 
     race_id: str
-    bankroll: int = 10000
+    bankroll: int = Field(10000, ge=100, le=10_000_000)
     risk_mode: Literal["aggressive", "balanced", "conservative"] = "balanced"
     use_kelly: bool = True
     dynamic_unit: bool = True
@@ -117,6 +132,10 @@ class AnalyzeRaceRequest(BaseModel):
     model_id: Optional[str] = None
     include_explanation: bool = False
     ultimate_mode: bool = True  # Phase 0: 常に True（87特徴量モード固定）
+    # Manual re-prediction rebuilds features from the saved DB without silently
+    # scraping or changing the fitted model. Legacy callers keep auto repair.
+    force_recompute: bool = False
+    data_refresh: Literal["auto", "saved_db"] = "auto"
 
 
 class AnalyzeRaceResponse(BaseModel):
@@ -126,7 +145,14 @@ class AnalyzeRaceResponse(BaseModel):
     success: bool
     model_id: Optional[str] = None
     explanation_method: Optional[str] = None
+    performance_snapshot_id: Optional[str] = None
+    performance_recording_error: Optional[str] = None
+    processing_timings: Optional[Dict[str, float]] = None
+    freshness: Optional[Dict[str, Any]] = None
+    input_diagnostics: Optional[Dict[str, Any]] = None
     race_info: Dict[str, Any]
+    reference_bets: Optional[Dict[str, Any]] = None
+    reference_expectation: Optional[Dict[str, Any]] = None
     pro_evaluation: Dict[str, Any]
     predictions: List[Dict[str, Any]]
     bet_types: Dict[str, List[Dict[str, Any]]]
@@ -143,6 +169,8 @@ class BatchAnalyzeRequest(BaseModel):
     race_ids: List[str] = Field(min_length=1, max_length=100)
     model_id: Optional[str] = None
     include_explanation: bool = False
+    force_recompute: bool = False
+    data_refresh: Literal["auto", "saved_db"] = "auto"
     bankroll: int = Field(10000, ge=100, le=10_000_000)
     risk_mode: Literal["aggressive", "balanced", "conservative"] = "balanced"
     use_kelly: bool = True
@@ -182,6 +210,9 @@ class ScrapeRequest(BaseModel):
     force_rescrape: bool = False
     dry_run: bool = False
     server_batch: bool = False
+    # Historical requests omitted scope and therefore retain all-venue semantics.
+    # Explicit JRA requests receive a distinct durable request binding.
+    race_scope: Literal["all", "jra"] = "all"
     # Phase 3N operational execution binding. Deployed environments require
     # the complete tuple; explicit local/test mode may generate the two IDs.
     job_id: Optional[str] = None

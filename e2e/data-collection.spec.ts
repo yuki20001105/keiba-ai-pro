@@ -3,14 +3,18 @@ import { mockAuth, mockDataStats } from './helpers/mock-api'
 
 test.describe('データ取得ページ', () => {
   test.beforeEach(async ({ page }) => {
+    await page.route('**/api/**', route => route.fulfill({ status: 503, json: { detail: 'unmocked-test-api' } }))
     await mockAuth(page)
     await mockDataStats(page)
+    await page.route('/api/health**', route => route.fulfill({ json: {
+      status: 'ok', scrape_capabilities: { race_scopes: ['all', 'jra'], jra_month_reuse: true },
+    } }))
     await page.route('/api/scrape/history**', route =>
       route.fulfill({ status: 200, json: { count: 0, jobs: [] } })
     )
     // ローカルAPIヘルスチェック
     await page.route('/api/scrape/health**', route =>
-      route.fulfill({ json: { status: 'healthy' } })
+      route.fulfill({ json: { status: 'healthy', scrape_capabilities: { race_scopes: ['all', 'jra'], jra_month_reuse: true } } })
     )
   })
 

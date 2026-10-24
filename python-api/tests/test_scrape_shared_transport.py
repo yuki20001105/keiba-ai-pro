@@ -271,4 +271,7 @@ def test_job_wait_checkpoints_are_throttled_without_delaying_cancellation(monkey
         "wait-test", "20250101", "20250131", cancel_requested=lambda: cancelled,
     ))
     assert checkpoints == [1]
-    assert job["progress"]["message"] == "応答状況に合わせて自動減速中"
+    assert job["progress"]["message"] == "保護速度で取得中（3.0秒/回）"
+    cancelled = False
+    callbacks[0]({"interval": 2.0, "cooldown_until": 0})
+    assert job["progress"]["message"] == "保護速度で取得中（3.0秒/回）"

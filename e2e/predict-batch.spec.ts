@@ -1,9 +1,10 @@
 import { test, expect } from '@playwright/test'
-import { mockAuth, mockRacesByDate, mockPredict } from './helpers/mock-api'
+import { mockAuth, mockHealth, mockRacesByDate, mockPredict } from './helpers/mock-api'
 
 test.describe('一括予測ページ', () => {
   test.beforeEach(async ({ page }) => {
     await mockAuth(page, { role: 'user', tier: 'free' })
+    await mockHealth(page)
     await mockRacesByDate(page)
     await mockPredict(page)
   })
@@ -106,8 +107,8 @@ test.describe('一括予測ページ', () => {
     await predictBtn.click()
     // 予測結果カードが現れる
     await expect(page.getByText('テスト馬A').first()).toBeVisible({ timeout: 8000 })
-    await expect(page.getByRole('heading', { name: '③ 予測結果・スコア詳細' })).toBeVisible()
-    for (const heading of ['順位', 'スコア', '勝率', '複勝圏', 'アンサンブル', '期待値', 'オッズ', '人気']) {
+    await expect(page.getByRole('heading', { name: '③ 予測結果・買い目' })).toBeVisible()
+    for (const heading of ['順位', 'スコア', '勝率', '複勝参考', '合成参考', '期待値', 'オッズ', '人気']) {
       await expect(page.getByRole('columnheader', { name: heading })).toBeVisible()
     }
     const explanationButton = page.getByRole('button', { name: /AIの判断を見る/ })
@@ -138,8 +139,11 @@ test.describe('一括予測ページ', () => {
     if (await checkboxes.count() > 0) await checkboxes.first().check()
     await page.getByRole('button', { name: /予測実行|一括予測/ }).last().click()
 
-    await expect(page.getByText('AI 買い目')).toBeVisible({ timeout: 8000 })
-    await expect(page.getByText('¥1,000 × 1点')).toBeVisible()
+    await expect(page.getByRole('region', { name: '買い目判定' })).toBeVisible({ timeout: 8000 })
+    await expect(page.getByRole('region', { name: '買い目判定' })).toContainText('購入候補')
+    await expect(page.getByRole('region', { name: '買い目判定' })).toContainText('合計 ¥300')
+    await expect(page.getByText(/AI参考として記録しました/)).toBeVisible()
+    await expect(page.getByRole('button', { name: '購入済みとして記録' })).toBeVisible()
     for (const removedText of [
       '手動追加',
       '購入を記録する',

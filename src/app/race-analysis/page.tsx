@@ -1,5 +1,5 @@
 'use client'
-import { Suspense, useState, useEffect, useCallback } from 'react'
+import { Suspense, useState, useEffect, useCallback, useRef } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { Logo } from '@/components/Logo'
 import Link from 'next/link'
@@ -12,6 +12,12 @@ import type { RacePredictResult } from '@/lib/race-analysis-types'
 import { authFetch } from '@/lib/auth-fetch'
 import { useAuth } from '@/contexts/AuthContext'
 import { PremiumRequiredNotice } from '@/components/PremiumRequiredNotice'
+import { bettingDecisionLabel } from '@/components/BettingRecommendationPanel'
+import { useBettingClock } from '@/hooks/useBettingClock'
+import { savePerformanceRecord } from '@/lib/performance-records'
+import { safeRecommendationForInput } from '@/lib/betting-policy'
+import { parsePredictionFreshness, predictionCacheStatus, savedPredictionForDisplay, supportsSavedDbRecompute, type PredictionCacheStatus } from '@/lib/prediction-freshness'
+import { PredictionFreshnessNotice } from '@/components/PredictionFreshnessNotice'
 
 // ── 結果照合タブの型 ─────────────────────────────────────────────────
 type PredictionLogEntry = {
@@ -48,7 +54,8 @@ export default function RaceAnalysisPage() {
 }
 
 function RaceAnalysisPageContent() {
-  const { isPremium, loading: authLoading } = useAuth()
+  const { isPremium, loading: authLoading, userId } = useAuth()
+  const bettingNow = useBettingClock()
   const searchParams = useSearchParams()
   const initialDate = toInputDate((searchParams.get('date') ?? todayStr()).replace(/-/g, ''))
   const initialRaceId = searchParams.get('race_id') ?? ''
@@ -68,14 +75,30 @@ function RaceAnalysisPageContent() {
   const [predictResult, setPredictResult] = useState<RacePredictResult | null>(null)
   const [dataLoading, setDataLoading] = useState(false)
   const [error, setError] = useState('')
+  const [performanceNotice, setPerformanceNotice] = useState('')
   const [fromCache, setFromCache] = useState(false)
   const [cachedAt, setCachedAt] = useState<number | null>(null)
+  const [cacheStatus, setCacheStatus] = useState<PredictionCacheStatus | 'computed'>('computed')
   const [fallbackHorses, setFallbackHorses] = useState<{
     race_name: string; venue: string; date: string; distance: number; track_type: string
     horses: { horse_number: number; bracket_number: number; horse_name: string; sex_age: string; jockey_name: string; odds: number | null; popularity: number | null; trainer_name: string }[]
   } | null>(null)
 
-  const raceCache = useRaceCache()
+  const raceCache = useRaceCache(userId)
+  const raceViewGeneration = useRef(0)
+  const previousOwner = useRef(userId)
+
+  useEffect(() => {
+    if (previousOwner.current === userId) return
+    previousOwner.current = userId
+    ++raceViewGeneration.current
+    setSelectedRaceId('')
+    setPredictResult(null)
+    setDataLoading(false)
+    setRacesLoading(false)
+    setPerformanceNotice('')
+    setFromCache(false)
+  }, [userId])
 
   // 結果照合データを取得
   const loadResultData = useCallback(async (raceId: string) => {
@@ -106,23 +129,28 @@ function RaceAnalysisPageContent() {
   }, [isPremium])
 
   const loadRaces = useCallback(async () => {
+    const generation = ++raceViewGeneration.current
     setRacesLoading(true)
     setRaces([])
     setSelectedRaceId('')
     setPredictResult(null)
+    setDataLoading(false)
+    setResultData(null)
+    setResultLoading(false)
     setFallbackHorses(null)
     setFromCache(false)
     setCachedAt(null)
     setError('')
+    setPerformanceNotice('')
     try {
       const d = date.replace(/-/g, '')
-      const res = await authFetch(`/api/races/by-date?date=${d}`)
+      const res = await authFetch(`/api/races/by-date?date=${d}`, { cache: 'no-store' })
       if (res.ok) {
         const fetchedRaces: RaceItem[] = (await res.json()).races || []
-        setRaces(fetchedRaces)
+        if (generation === raceViewGeneration.current) setRaces(fetchedRaces)
       }
     } catch { }
-    finally { setRacesLoading(false) }
+    finally { if (generation === raceViewGeneration.current) setRacesLoading(false) }
   }, [date])
 
   useEffect(() => { loadRaces() }, [loadRaces])
@@ -137,55 +165,130 @@ function RaceAnalysisPageContent() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [races, authLoading])
 
-  const loadRaceData = useCallback(async (raceId: string) => {
+  const loadRaceData = useCallback(async (raceId: string, forceRecompute = false) => {
+    const generation = ++raceViewGeneration.current
     setSelectedRaceId(raceId)
     setError('')
+    setPerformanceNotice('')
     setResultData(null)  // レース切り替え時に結果照合をリセット
 
     const cacheKey = raceId
-    const cached = raceCache.get(cacheKey)
+    const savedBeforeRefresh = raceCache.get(cacheKey, false, true)
+    const cached = forceRecompute ? null : raceCache.get(cacheKey, false, true)
     if (cached) {
-      setPredictResult(cached.predictResult)
+      const stored = cached.predictResult
+      setDataLoading(true)
+      let freshness = null
+      try {
+        const res = await authFetch('/api/prediction-freshness', { cache: 'no-store', signal: AbortSignal.timeout(5000) })
+        if (res.ok) { const data = await res.json(); freshness = parsePredictionFreshness(data.freshness ?? data) }
+      } catch { /* Saved output is unverified while offline/using an old server. */ }
+      if (generation !== raceViewGeneration.current) return
+      const status = predictionCacheStatus(stored, freshness, cached.cachedAt, cached.ownerMatches === true)
+      setPredictResult(savedPredictionForDisplay({ ...stored, recommendation: safeRecommendationForInput(stored.recommendation, stored.input_diagnostics) ?? null }, status))
+      setCacheStatus(status)
       setFromCache(true)
       setCachedAt(cached.cachedAt)
+      setPerformanceNotice(cached.predictResult.performance_recording_error || '')
+      setDataLoading(false)
       return
     }
 
     setDataLoading(true)
     setFromCache(false)
     setCachedAt(null)
+    setCacheStatus('computed')
     setPredictResult(null)
     setFallbackHorses(null)
     try {
-      const body: Record<string, unknown> = { race_id: raceId, bankroll: 10000, risk_mode: 'balanced' }
+      const capabilityResponse = await authFetch('/api/prediction-freshness', { cache: 'no-store', signal: AbortSignal.timeout(5000) })
+      const capability = capabilityResponse.ok ? await capabilityResponse.json() : null
+      if (!supportsSavedDbRecompute(capability)) throw new Error('最新データで再予測できるか確認できません。APIの更新・接続状態を確認してください。')
+      if (generation !== raceViewGeneration.current) return
+      const body: Record<string, unknown> = { race_id: raceId, bankroll: 10000, risk_mode: 'balanced', force_recompute: true, data_refresh: 'saved_db' }
       body.include_explanation = isPremium
       const predRes = await authFetch('/api/analyze-race', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(180000),
         body: JSON.stringify(body),
       })
       if (!predRes.ok) {
         const e = await predRes.json()
         throw new Error(e.detail || `HTTP ${predRes.status}`)
       }
-      const pred = await predRes.json()
+      const received = await predRes.json()
+      const pred = { ...received, recommendation: safeRecommendationForInput(received.recommendation, received.input_diagnostics) ?? null }
+      if (generation !== raceViewGeneration.current) return
       const now = Date.now()
       raceCache.set(cacheKey, { predictResult: pred, featData: null, cachedAt: now })
       setPredictResult(pred)
       setFromCache(false)
       setCachedAt(now)
+      try {
+        const saved = await savePerformanceRecord(pred.performance_snapshot_id, pred.recommendation)
+        if (!saved.selection_matches && generation === raceViewGeneration.current) {
+          const display = { ...pred, performance_snapshot_id: null }
+          setPredictResult(display)
+          raceCache.set(cacheKey, { predictResult: display, featData: null, cachedAt: now })
+        }
+        if (generation === raceViewGeneration.current) setPerformanceNotice(saved.existing ? '成績は記録済みです。最初の買い目を保持しています。' : 'AI参考として成績に記録しました。')
+      } catch (recordError) {
+        if (generation === raceViewGeneration.current) setPerformanceNotice(recordError instanceof Error ? recordError.message : '成績の記録に失敗しました。')
+      }
     } catch (e: unknown) {
+      if (generation !== raceViewGeneration.current) return
       setError(e instanceof Error ? e.message : 'エラーが発生しました')
+      if (savedBeforeRefresh) {
+        setPredictResult(savedPredictionForDisplay(savedBeforeRefresh.predictResult, 'unverified'))
+        setFromCache(true)
+        setCachedAt(savedBeforeRefresh.cachedAt)
+        setCacheStatus('unverified')
+        return
+      }
       // 予測失敗時でもDBの出走馬データを取得して表示する
       try {
         const fbRes = await authFetch(`/api/races/${raceId}/horses`)
         if (fbRes.ok) {
           const fb = await fbRes.json()
-          if (fb.horses?.length > 0) setFallbackHorses(fb)
+          if (generation === raceViewGeneration.current && fb.horses?.length > 0) setFallbackHorses(fb)
         }
       } catch { }
-    } finally { setDataLoading(false) }
+    } finally { if (generation === raceViewGeneration.current) setDataLoading(false) }
   }, [isPremium, raceCache])
+
+  useEffect(() => {
+    if (!predictResult || dataLoading) return
+    let disposed = false
+    let checking = false
+    const check = async () => {
+      if (disposed || checking || document.visibilityState === 'hidden') return
+      checking = true
+      const generation = raceViewGeneration.current
+      let current = null
+      try {
+        const response = await authFetch('/api/prediction-freshness', { cache: 'no-store', signal: AbortSignal.timeout(5000) })
+        if (response.ok) { const data = await response.json(); current = parsePredictionFreshness(data.freshness ?? data) }
+      } catch { /* Preserve the saved ranking without current-input authority. */ }
+      checking = false
+      if (disposed || generation !== raceViewGeneration.current) return
+      const status = predictionCacheStatus(predictResult, current,
+        cachedAt ?? Date.parse(predictResult.freshness?.generated_at ?? ''), true)
+      if (status !== 'current') {
+        setPredictResult(savedPredictionForDisplay(predictResult, status))
+        setCacheStatus(status)
+        setFromCache(true)
+      }
+    }
+    const onReturn = () => { void check() }
+    window.addEventListener('focus', onReturn)
+    document.addEventListener('visibilitychange', onReturn)
+    return () => {
+      disposed = true
+      window.removeEventListener('focus', onReturn)
+      document.removeEventListener('visibilitychange', onReturn)
+    }
+  }, [predictResult, dataLoading, cachedAt])
 
   const ri = predictResult?.race_info
   const preds = predictResult?.predictions ?? []
@@ -196,16 +299,7 @@ function RaceAnalysisPageContent() {
         <div className="flex items-center gap-4">
           <Logo href="/home" />
           <span className="text-sm text-[#888]">予測結果確認</span>
-          {fromCache && cachedAt && (
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] px-2 py-0.5 bg-[#1a1a00] border border-[#333300] rounded text-[#bbbb00]">
-                キャッシュ済み · {(() => {
-                  const mins = Math.round((Date.now() - cachedAt) / 60000)
-                  return mins < 1 ? 'たった今' : `${mins}分前`
-                })()}
-              </span>
-            </div>
-          )}
+          {fromCache && <span className="text-xs text-[#aaa]">保存予測</span>}
         </div>
         <Link href="/home" className="flex items-center gap-1 text-xs text-[#555] hover:text-white transition-colors">
           <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -268,6 +362,14 @@ function RaceAnalysisPageContent() {
 
         {/* 右パネル: レースカード + タブ + コンテンツ */}
         <main className="flex-1 overflow-hidden flex flex-col">
+          {selectedRaceId && <div className="px-6 py-3 border-b border-[#1e1e1e] space-y-2">
+            <button type="button" onClick={() => loadRaceData(selectedRaceId, true)} disabled={dataLoading}
+              className="px-4 py-2 bg-white text-black rounded text-sm disabled:opacity-40">
+              {dataLoading ? '予測中...' : '最新データで再予測'}
+            </button>
+            <p className="text-xs text-[#888]">保存済みデータを読み直します。オッズ等の再取得・再学習は別操作です。記録済みの買い目は保持します。</p>
+            {predictResult && !dataLoading && <PredictionFreshnessNotice result={predictResult} status={cacheStatus} cachedAt={cachedAt} />}
+          </div>}
           {!selectedRaceId && !dataLoading && (
             <div className="flex-1 flex items-center justify-center text-[#333] text-sm">
               ← 左のレースを選択してください
@@ -337,11 +439,9 @@ function RaceAnalysisPageContent() {
                       <span className="text-xs text-[#666]">{ri?.venue}</span>
                       <span className="text-xs text-[#666]">·</span>
                       <span className="text-xs text-[#666]">{ri?.date}</span>
-                      {predictResult.pro_evaluation && (
-                        <span className="ml-1 text-[10px] px-1.5 py-0.5 bg-[#1e1e1e] border border-[#333] rounded text-[#888]">
-                          {predictResult.pro_evaluation.race_level} · 信頼度 {Math.round(predictResult.pro_evaluation.confidence * 100)}%
-                        </span>
-                      )}
+                      <span className="ml-1 text-[10px] px-1.5 py-0.5 bg-[#1e1e1e] border border-[#333] rounded text-[#888]">
+                        {bettingDecisionLabel(predictResult.recommendation, bettingNow, predictResult.input_diagnostics)}
+                      </span>
                     </div>
                     <h2 className="text-lg font-bold">{ri?.race_name || `${ri?.venue} レース`}</h2>
                   </div>
@@ -360,6 +460,7 @@ function RaceAnalysisPageContent() {
                 </div>
               </div>
 
+              {performanceNotice && <p role="status" className="px-6 py-2 text-xs text-[#aaa]">{performanceNotice} <Link href="/dashboard" className="text-[#7dd3fc] hover:underline">成績確認へ</Link></p>}
               {/* タブバー */}
               <div className="flex gap-0 border-b border-[#1e1e1e] shrink-0 px-6">
                 {([
@@ -517,7 +618,7 @@ function ResultComparePanel({
             <tr className="border-b border-[#1a1a1a] text-[#444]">
               <th className="px-4 py-2 text-left font-normal w-8">予</th>
               <th className="px-4 py-2 text-left font-normal">馬名</th>
-              <th className="px-4 py-2 text-right font-normal">勝率</th>
+              <th className="px-4 py-2 text-right font-normal">参考比率</th>
               <th className="px-4 py-2 text-right font-normal">予オッズ</th>
               <th className="px-4 py-2 text-right font-normal w-20">実際の着</th>
               <th className="px-4 py-2 text-right font-normal">タイム</th>

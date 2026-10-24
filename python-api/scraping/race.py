@@ -5,19 +5,25 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import hashlib
 import re
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
+from urllib.parse import parse_qs, urlsplit
 
 from bs4 import BeautifulSoup
 
 from scraping.constants import HTML_STRAINER, VENUE_MAP, is_cloudflare_block
-from scraping.fetch_pipeline import fetch_text
+from scraping.fetch_pipeline import _looks_like_access_block, record_fetch_metric
+from scraping.acquisition_http_policy import acquisition_policy_active, fetch_text
 from scraping.horse import scrape_horse_detail
 from scraping.mobile_race import parse_mobile_race
+from scraping.last3f_evidence import clock_column
 from scraping.odds import fetch_tansho_odds_api
 from scraping.parsed_cache import prefer_mobile_endpoint, remember_mobile_endpoint
 from scraping.quality import classify_race_quality
+from scraping.result_reuse import cached_result_url
+from scraping.source_normalization import finish_column_evidence_from_html, normalize_race_payload
 
 try:
     from app_config import logger  # type: ignore
@@ -29,6 +35,120 @@ except ImportError:
 def _find_result_table(soup: BeautifulSoup):
     """Return only a recognized settled-result table variant."""
     return soup.select_one("table.race_table_01, table.RaceTable01")
+
+
+async def _no_horse_details(*_args, **_kwargs):
+    """Explicit result-only repair mode: no per-horse HTTP enrichment."""
+    return {}
+
+
+def _result_source_evidence(fetched, html, race_id, horses):
+    """Non-model metadata; observed now, never backdated to the race date."""
+    soup = BeautifulSoup(html, "lxml")
+    parts = [soup.title.get_text(" ", strip=True)] if soup.title else []
+    parts.extend(tag.get_text(" ", strip=True) for tag in soup.select("p.smalltxt, .RaceHeader_Value"))
+    days = set()
+    for part in parts:
+        for year, month, day in re.findall(r"(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})(?:日|\b)", part):
+            try:
+                days.add(date(int(year), int(month), int(day)).strftime("%Y%m%d"))
+            except ValueError:
+                continue
+    body = getattr(fetched, "body", None)
+    return {"schema": "result-acquisition-source-evidence-v1", "race_id": race_id,
+        "source_url": str(getattr(fetched, "normalized_url", "") or getattr(fetched, "url", "")),
+        "body_sha256": hashlib.sha256(body).hexdigest() if isinstance(body, bytes) else None,
+        "decoded_html_sha256": hashlib.sha256(html.encode("utf-8")).hexdigest(),
+        "source_date": next(iter(days)) if len(days) == 1 else None,
+        "source_date_semantics": "uniquely displayed race date, not publication/capture time; no date_hint substitution",
+        "transport_source": getattr(fetched, "source", None),
+        "http_status": getattr(fetched, "status", None),
+        "observed_at_utc": datetime.now(timezone.utc).isoformat(),
+        "observation_time_is_source_event_time": False,
+        "runner_identity": [{"horse_number": horse.get("horse_number"), "horse_id": horse.get("horse_id"),
+                             "horse_name": horse.get("horse_name")} for horse in horses]}
+
+
+def _entry_card_date_allowed(race_id: str, date_hint: str, *, today: date | None = None) -> bool:
+    """Only a dated, near-term JRA request may use a new result-missing route."""
+    if not re.fullmatch(r"\d{12}", race_id) or not 1 <= int(race_id[4:6]) <= 10:
+        return False
+    if not re.fullmatch(r"\d{8}", date_hint):
+        return False
+    try:
+        target = datetime.strptime(date_hint, "%Y%m%d").date()
+    except ValueError:
+        return False
+    current = today or datetime.now(timezone(timedelta(hours=9))).date()
+    return race_id[:4] == date_hint[:4] and -1 <= (target - current).days <= 14
+
+
+def _prefer_entry_card_for_target(
+    race_id: str,
+    date_hint: str,
+    *,
+    today: date | None = None,
+) -> bool:
+    """Skip the known-empty result endpoint for today's and future cards."""
+    current = today or datetime.now(timezone(timedelta(hours=9))).date()
+    # Keep the ordinary call signature compatible with the existing routing
+    # seam; tests and controlled callers may replace the bounded-date gate.
+    allowed = (
+        _entry_card_date_allowed(race_id, date_hint)
+        if today is None
+        else _entry_card_date_allowed(race_id, date_hint, today=current)
+    )
+    if not allowed:
+        return False
+    try:
+        target = datetime.strptime(date_hint, "%Y%m%d").date()
+    except ValueError:
+        return False
+    return target >= current
+
+
+def _verified_entry_card_date(soup: BeautifulSoup, race_id: str, date_hint: str) -> str | None:
+    """Bind an entry card to its displayed date, never to an arbitrary hint.
+
+    Only the page title and explicitly selected race-date navigation count as
+    date evidence. Unselected links and unrelated body/footer dates do not.
+    """
+    if not re.fullmatch(r"\d{12}", race_id):
+        return None
+    dates: set[str] = set()
+    headings = [soup.title.get_text(" ", strip=True)] if soup.title else []
+    headings.extend(str(tag.get("content", "")) for tag in soup.select('meta[property="og:title"]'))
+    candidates: list[str] = []
+    for heading in headings:
+        candidates.extend(
+            f"{int(year):04d}{int(month):02d}{int(day):02d}"
+            for year, month, day in re.findall(r"(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})(?:日|\b)", heading)
+        )
+    for anchor in soup.select('.RaceList_DateList .Active a[href], .RaceList_DateList a.Active[href]'):
+        candidates.extend(parse_qs(urlsplit(str(anchor["href"])).query).get("kaisai_date", []))
+    for candidate in candidates:
+        if not re.fullmatch(r"\d{8}", candidate):
+            return None
+        try:
+            parsed = datetime.strptime(candidate, "%Y%m%d").date()
+        except ValueError:
+            return None
+        dates.add(parsed.strftime("%Y%m%d"))
+    if len(dates) != 1:
+        return None
+    source_date = next(iter(dates))
+    if source_date[:4] != race_id[:4] or (date_hint and date_hint != source_date):
+        return None
+    for tag in soup.select('link[rel="canonical"], meta[property="og:url"], input[name="race_id"]'):
+        if tag.name == "input":
+            stated_ids = [str(tag.get("value", ""))]
+        else:
+            url = str(tag.get("href") or tag.get("content") or "")
+            stated_ids = parse_qs(urlsplit(url).query).get("race_id", [])
+            stated_ids.extend(re.findall(r"/race/(\d{12})(?:/|$)", urlsplit(url).path))
+        if any(stated_id != race_id for stated_id in stated_ids):
+            return None
+    return source_date
 
 
 def parse_current_result_snapshot(html: str, race_id: str) -> Optional[dict]:
@@ -119,6 +239,8 @@ async def scrape_race_full(
     date_hint: str = "",
     quick_mode: bool = False,
     force_refresh: bool = False,
+    enrich_horse_details: bool = True,
+    results_required: bool = False,
 ) -> Optional[dict]:
     """
     単一レースの完全データを netkeiba.com から取得。
@@ -126,10 +248,38 @@ async def scrape_race_full(
     date_hint: YYYYMMDD 形式の日付（リストページから判明した場合に渡す）
     quick_mode: True=毛色SPフォールバックをスキップして高速化（バックフィルAPIで後処理）
     force_refresh: incomplete lifecycle repair時は古いentry/middleキャッシュを使用しない
+    enrich_horse_details: False=結果限定補完。馬詳細通信をせず、元データは呼出側で差分mergeする
+    results_required: Explicit settlement caller only; never substitute a same-day entry card for required results.
     """
     _quick_mode = quick_mode
+    allow_entry_fallback = not results_required and _entry_card_date_allowed(race_id, date_hint)
+
+    # A same-day/future race cannot have a settled result yet. Probing the
+    # historical result endpoint first adds one provider request per race and
+    # always falls back to the exact same verified entry card. Route directly
+    # while retaining the card's strict race/date identity validation.
+    if not results_required and _prefer_entry_card_for_target(race_id, date_hint):
+        record_fetch_metric("direct_entry_card_routes")
+        record_fetch_metric("known_empty_result_requests_avoided")
+        return await _scrape_shutuba_fallback(
+            session,
+            race_id,
+            date_hint,
+            force_refresh=force_refresh,
+            **({"enrich_horse_details": False} if not enrich_horse_details else {}),
+        )
 
     preferred_mobile = prefer_mobile_endpoint("race-result")
+    # Ordinary acquisition already checked for either host's valid HTML. Use
+    # the matching endpoint rather than spending HTTP on an unrelated global
+    # preference. Keep forward/direct consumers and forced refresh unchanged.
+    if not force_refresh and acquisition_policy_active():
+        cached_url = await asyncio.to_thread(
+            cached_result_url, race_id, prefer_mobile=preferred_mobile,
+        )
+        if cached_url is not None:
+            preferred_mobile = urlsplit(cached_url).hostname == "db.sp.netkeiba.com"
+    mobile_attempted = preferred_mobile
     url = f"https://{'db.sp.netkeiba.com' if preferred_mobile else 'db.netkeiba.com'}/race/{race_id}/"
     _fetch, html = await fetch_text(
         session,
@@ -145,6 +295,8 @@ async def scrape_race_full(
         circuit_threshold=3,
         circuit_cooldown_sec=120.0,
     )
+    if _looks_like_access_block(_fetch.body):
+        return None
     mobile_source = preferred_mobile and _fetch.status == 200
     if preferred_mobile and _fetch.status in (400, 404):
         remember_mobile_endpoint("race-result", valid=False)
@@ -157,8 +309,10 @@ async def scrape_race_full(
             circuit_threshold=3, circuit_cooldown_sec=120.0,
         )
         preferred_mobile = False
+        if _looks_like_access_block(_fetch.body):
+            return None
     desktop_rejected = not preferred_mobile and _fetch.status == 400
-    if desktop_rejected:
+    if desktop_rejected and not mobile_attempted:
         mobile_url = f"https://db.sp.netkeiba.com/race/{race_id}/"
         _fetch, html = await fetch_text(
             session,
@@ -176,17 +330,29 @@ async def scrape_race_full(
         )
         url = mobile_url
         mobile_source = _fetch.status == 200
+    if _looks_like_access_block(_fetch.body):
+        return None
     if _fetch.status != 200:
         logger.warning(f"HTTP {_fetch.status}: {url}")
+        if allow_entry_fallback and _fetch.status in (400, 404):
+            return await _scrape_shutuba_fallback(
+                session, race_id, date_hint, force_refresh=force_refresh,
+                **({"enrich_horse_details": False} if not enrich_horse_details else {}),
+            )
+        return None
+    if not html:
+        logger.error(f"空レスポンス: {race_id}")
+        if allow_entry_fallback:
+            return await _scrape_shutuba_fallback(
+                session, race_id, date_hint, force_refresh=force_refresh,
+                **({"enrich_horse_details": False} if not enrich_horse_details else {}),
+            )
         return None
     if is_cloudflare_block(_fetch.body):
         logger.error(
             f"Cloudflare ブロック検知 ({len(_fetch.body)}B): {url} — "
             f"SCRAPE_PROXY_URL 環境変数でプロキシを設定してください"
         )
-        return None
-    if not html:
-        logger.error(f"空レスポンス: {race_id}")
         return None
     if mobile_source:
         parsed = await parse_mobile_race(
@@ -195,12 +361,23 @@ async def scrape_race_full(
             html,
             date_hint=date_hint,
             quick_mode=_quick_mode,
-            horse_detail_fetcher=scrape_horse_detail,
+            horse_detail_fetcher=scrape_horse_detail if enrich_horse_details else _no_horse_details,
         )
+        if parsed is not None:
+            evidence = (finish_column_evidence_from_html(html, race_id=race_id, source_url=url)
+                        if any("降" in str(horse.get("finish_position") or "") for horse in parsed["horses"]) else None)
+            parsed = normalize_race_payload(parsed, finish_column_evidence=evidence)
+            if not enrich_horse_details:
+                parsed["_source_evidence"] = _result_source_evidence(_fetch, html, race_id, parsed["horses"])
         if desktop_rejected and parsed and classify_race_quality(parsed).valid_for_date_completion:
             remember_mobile_endpoint("race-result")
         elif preferred_mobile and not parsed:
             remember_mobile_endpoint("race-result", valid=False)
+        if parsed is None and allow_entry_fallback:
+            return await _scrape_shutuba_fallback(
+                session, race_id, date_hint, force_refresh=force_refresh,
+                **({"enrich_horse_details": False} if not enrich_horse_details else {}),
+            )
         return parsed
     if "\ufffd" in html[:500]:
         logger.debug(f"EUC-JP 変換警告 (先頭500文字に置換文字あり): {race_id}")
@@ -219,6 +396,11 @@ async def scrape_race_full(
     mainrace_div = soup.find("div", class_="mainrace_data")
     if mainrace_div:
         info_text = mainrace_div.get_text(" ")
+    elif soup.select_one(".RaceData01") is not None:
+        # Public result pages use these explicit race-header blocks. Do not
+        # infer their conditions from navigation text or a previous snapshot.
+        info_text = " ".join(node.get_text(" ", strip=True)
+                             for node in soup.select(".RaceData01, .RaceData02"))
     else:
         smalltxt = _smalltxt_p or soup.find("div", class_="smalltxt")
         info_text = smalltxt.get_text(" ") if smalltxt else html[:3000]
@@ -226,8 +408,21 @@ async def scrape_race_full(
     # ---- 距離・芝/ダート ----
     # L1-2: より多くのパターンに対応（全角m、ドット区切り、障害、方向なし、「右 外」のようにスペース入りなど）
     # 例: 芝右1200m / 芝右 外1200m / ダート左1600m / 障害3200m
+    # Result headers also declare a jump course as e.g. "障芝 外-内2850m".
+    # Match its explicit obstacle prefix before an embedded 芝 can be treated
+    # as a flat course. Keep the existing flat-course expression unchanged.
+    jump_dist_m = re.search(r"障(?:害)?(?:芝(?:\s+ダート)?|ダ(?:ート)?)?[\s・右左直外内-]{0,8}(\d{3,4})\s*[mｍ]", info_text)
+    jump_declared = re.search(r"(?:^|[\s/／])障", info_text)
     dist_m = re.search(r"(芝|ダ(?:ート)?|障(?:害)?)[\s・右左直外内障]{0,8}(\d{3,4})\s*[mｍ]", info_text)
-    if dist_m:
+    if jump_dist_m:
+        track_type = "障害"
+        distance = int(jump_dist_m.group(1))
+    elif jump_declared:
+        # An unknown jump-course suffix must not become 芝 through the
+        # numeric-only fallback. Explicit type is known; distance is not.
+        track_type = "障害"
+        distance = 0
+    elif dist_m:
         _tt_raw = dist_m.group(1)
         track_type = "芝" if _tt_raw == "芝" else ("障害" if _tt_raw.startswith("障") else "ダート")
         distance = int(dist_m.group(2))
@@ -311,6 +506,8 @@ async def scrape_race_full(
     # ---- 発走時刻 ----
     post_time = ""
     pt_m = re.search(r"発走\s*[:/：]?\s*(\d{1,2}:\d{2})", info_text)
+    if not pt_m:
+        pt_m = re.search(r"(\d{1,2}:\d{2})\s*発走", info_text)
     if pt_m:
         post_time = pt_m.group(1)
 
@@ -389,12 +586,16 @@ async def scrape_race_full(
     # a schedule/entry table can never be mistaken for a settled result.
     table = _find_result_table(soup)
     if not table:
+        if not allow_entry_fallback:
+            logger.warning(f"race_table_01 not found: {race_id} → 確定結果は未取得（出馬表への代替なし）")
+            return None
         logger.warning(f"race_table_01 not found: {race_id} → 出馬表ページへフォールバック")
         return await _scrape_shutuba_fallback(
             session,
             race_id,
             date_hint,
             force_refresh=force_refresh,
+            **({"enrich_horse_details": False} if not enrich_horse_details else {}),
         )
 
     all_rows = table.find_all("tr")
@@ -422,7 +623,8 @@ async def scrape_race_full(
     IDX_TIME = col_idx(["タイム"], 7)
     IDX_MARGIN = col_idx(["着差"], 8)
     IDX_CORNER = col_idx(["通過", "コーナー"], -1)
-    IDX_LAST3F = col_idx(["上り"], -1)
+    # A final-3F clock is not the similarly named paid performance index.
+    IDX_LAST3F = clock_column(header_texts)
     IDX_ODDS = col_idx(["単勝"], -1)
     IDX_POP = col_idx(["人気"], -1)
     IDX_WEIGHT = col_idx(["馬体重"], -1)
@@ -679,6 +881,9 @@ async def scrape_race_full(
     # ---- 払い戻し表パース（soupを解放する前に実行） ----
     return_tables = _parse_return_tables(soup, race_id)
 
+    finish_evidence = (finish_column_evidence_from_html(html, race_id=race_id, source_url=url)
+                       if any("降" in str(horse.get("finish_position") or "") for horse in horses) else None)
+    source_evidence = _result_source_evidence(_fetch, html, race_id, horses) if not enrich_horse_details else None
     del soup, html
 
     # ---- pedigreeタスク待機 ----
@@ -701,9 +906,10 @@ async def scrape_race_full(
         h.update(detail)
         del detail
 
-    for _ci in range(0, len(unique_horses), 4):
-        _chunk = unique_horses[_ci : _ci + 4]
-        await asyncio.gather(*[_fetch_detail(h) for h in _chunk])
+    if enrich_horse_details:
+        for _ci in range(0, len(unique_horses), 4):
+            _chunk = unique_horses[_ci : _ci + 4]
+            await asyncio.gather(*[_fetch_detail(h) for h in _chunk])
     # Every actual HTTP attempt is paced by the shared fetch pipeline.
     # Cached horse details need neither a fixed sleep nor a full GC per chunk.
     gc.collect()
@@ -711,10 +917,14 @@ async def scrape_race_full(
     # distance=0 のレースは _invalid_distance フラグを付与（ローダーが除外する）
     _invalid_dist_flag = (distance == 0 or distance is None)
 
-    return _build_race_result(race_id, race_name, venue, date_str, post_time, race_class,
+    snapshot = _build_race_result(race_id, race_name, venue, date_str, post_time, race_class,
                               kai, day, course_direction, distance, track_type, weather,
                               field_condition, num_horses, lap_cumulative, lap_sectional,
                               horses, _invalid_dist_flag, return_tables=return_tables)
+    snapshot = normalize_race_payload(snapshot, finish_column_evidence=finish_evidence)
+    if source_evidence is not None:
+        snapshot["_source_evidence"] = source_evidence
+    return snapshot
 
 
 def _parse_return_tables(soup, race_id: str) -> list[dict]:
@@ -854,6 +1064,7 @@ async def _scrape_shutuba_fallback(
     date_hint: str = "",
     *,
     force_refresh: bool = False,
+    enrich_horse_details: bool = True,
 ) -> Optional[dict]:
     """
     db.netkeiba.com に結果がない（当日・未来レース）場合に
@@ -877,8 +1088,25 @@ async def _scrape_shutuba_fallback(
     if _fetch.status != 200:
         logger.warning(f"shutuba HTTP {_fetch.status}: {race_id}")
         return None
+    if not html or is_cloudflare_block(_fetch.body):
+        return None
+    final_url = str(getattr(_fetch, "url", "") or "")
+    if final_url.startswith(("http://", "https://")):
+        try:
+            final = urlsplit(final_url)
+        except ValueError:
+            return None
+        if (final.scheme != "https" or final.hostname != "race.netkeiba.com"
+                or final.path != "/race/shutuba.html"
+                or parse_qs(final.query).get("race_id") != [race_id]):
+            logger.warning(f"shutuba response identity mismatch: {race_id}")
+            return None
 
     soup = BeautifulSoup(html, "lxml")
+    date_str = _verified_entry_card_date(soup, race_id, date_hint)
+    if date_str is None:
+        logger.warning(f"shutuba date/identity could not be verified: {race_id} ({date_hint})")
+        return None
 
     # ---- レース名 ----
     race_name = ""
@@ -936,13 +1164,6 @@ async def _scrape_shutuba_fallback(
     if not race_class:
         race_class = "不明"
 
-    # 日付
-    date_str = date_hint
-    if not date_str:
-        dm = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})日", html)
-        if dm:
-            date_str = f"{dm.group(1)}{int(dm.group(2)):02d}{int(dm.group(3)):02d}"
-
     # コース方向
     dir_m = re.search(r"[（(](右|左|直線)[）)]", info1) or re.search(r"(右|左)", info1)
     course_direction = dir_m.group(1) if dir_m else ""
@@ -981,7 +1202,7 @@ async def _scrape_shutuba_fallback(
         horse_url = ""
         if horse_a:
             horse_url = horse_a["href"]
-            hm = re.search(r"/horse/([\w]+)", horse_url)
+            hm = re.search(r"/horse/(?:result/)?([A-Za-z0-9]+)(?:/|$)", horse_url)
             horse_id = hm.group(1) if hm else ""
 
         sex_age = _txt(4)
@@ -1096,9 +1317,10 @@ async def _scrape_shutuba_fallback(
         )
         horse.update(detail)
 
-    for chunk_start in range(0, len(horses), 4):
-        chunk = horses[chunk_start : chunk_start + 4]
-        await asyncio.gather(*(_fetch_shutuba_detail(horse) for horse in chunk))
+    if enrich_horse_details:
+        for chunk_start in range(0, len(horses), 4):
+            chunk = horses[chunk_start : chunk_start + 4]
+            await asyncio.gather(*(_fetch_shutuba_detail(horse) for horse in chunk))
 
     for horse in horses:
         horse["odds_status"] = _odds_status
@@ -1111,4 +1333,7 @@ async def _scrape_shutuba_fallback(
         (distance == 0)
     )
     snapshot["race_info"]["odds_status"] = _odds_status
+    snapshot = normalize_race_payload(snapshot)
+    if not enrich_horse_details:
+        snapshot["_source_evidence"] = _result_source_evidence(_fetch, html, race_id, horses)
     return snapshot

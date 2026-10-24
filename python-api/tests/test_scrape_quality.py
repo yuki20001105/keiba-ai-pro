@@ -45,6 +45,7 @@ def _race(race_id: str, *, settled: bool = False, distance: int = 1600) -> dict:
             "date": "20200104",
             "venue": "Tokyo",
             "distance": distance,
+            "num_horses": len(horses),
         },
         "horses": horses,
         "return_tables": [{"bet_type": "win", "payout": 300}] if settled else [],

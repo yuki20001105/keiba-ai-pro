@@ -28,6 +28,7 @@ from scraping.operational_saga_runtime import (
     SQLiteOperationalSagaStore,
 )
 from scraping.scrape_request_contract import build_scrape_months
+from scraping.acquisition_scope import normalize_race_scope
 
 
 def month_job_id(parent_job_id: str, start: str, end: str) -> str:
@@ -233,6 +234,7 @@ def _totals(results: dict[int, dict[str, Any]]) -> dict[str, int]:
 def batch_progress(
     months: list[tuple[str, str]], results: dict[int, dict[str, Any]],
     current: dict[str, Any] | None = None,
+    *, race_scope: str = "all",
 ) -> dict[str, Any]:
     completed_count, count = len(results), len(months)
     current = current or {}
@@ -245,6 +247,7 @@ def batch_progress(
     return {
         **counters,
         "server_batch": True,
+        "race_scope": normalize_race_scope(race_scope),
         "done": min(count * 1000, completed_count * 1000 + int(fraction * 1000)),
         "total": count * 1000,
         "current_month": f"{current_month[:4]}-{current_month[4:]}",
@@ -255,6 +258,18 @@ def batch_progress(
                     f"{current_month[:4]}年{current_month[4:]}月（{completed_count + 1}/{count}） "
                     + str(child.get("message") or "取得中")),
         "fetch_control": child.get("fetch_control"),
+        # This telemetry belongs to the CURRENT child attempt, never the
+        # accumulated whole-range wall clock. Unknown values remain unknown.
+        "race_task_concurrency": child.get("race_task_concurrency"),
+        "max_concurrent_http_requests": child.get("max_concurrent_http_requests"),
+        "http_pacing_scope": child.get("http_pacing_scope"),
+        "fetch_metrics": child.get("fetch_metrics"),
+        "fetch_metrics_scope": child.get("fetch_metrics_scope"),
+        "attempt_elapsed_sec": child.get("attempt_elapsed_sec"),
+        "network_requests_per_min": child.get("network_requests_per_min"),
+        "current_date": child.get("current_date"),
+        "current_date_total_races": child.get("current_date_total_races"),
+        "current_date_processed_races": child.get("current_date_processed_races"),
     }
 
 
@@ -277,6 +292,7 @@ def _aggregate(
         "start_date": claim.request_payload["start_date"],
         "end_date": claim.request_payload["end_date"],
         "server_batch": True,
+        "race_scope": normalize_race_scope(claim.request_payload.get("race_scope", "all")),
         "completed_months": len(results),
         "total_months": len(results),
         "elapsed_time_sec": elapsed,
@@ -310,6 +326,7 @@ def _aggregate(
         "success": success,
         "dry_run": dry_run,
         "server_batch": True,
+        "race_scope": normalize_race_scope(claim.request_payload.get("race_scope", "all")),
         "races_collected": totals["saved_races"],
         "saved_horses": totals["saved_horses"],
         "existing_races_skipped": totals["existing_races_skipped"],
@@ -332,7 +349,9 @@ async def execute_server_batch(
     # ScrapeJobEffectExecutor holds the shared owner effect lock around both
     # this path and the old single-month path. Never take a second lock here.
     checkpoint = BatchCheckpointStore(store, claim)
-    return await _execute_months(claim, checkpoint, cancel_event)
+    from scraping.acquisition_http_policy import acquisition_http_policy
+    with acquisition_http_policy():
+        return await _execute_months(claim, checkpoint, cancel_event)
 
 
 async def _execute_months(
@@ -341,6 +360,7 @@ async def _execute_months(
     from scraping import jobs
 
     payload = claim.request_payload
+    race_scope = normalize_race_scope(payload.get("race_scope", "all"))
     months = build_scrape_months(payload["start_date"], payload["end_date"])
     results = await asyncio.to_thread(checkpoint.completed)
     if len(results) > len(months):
@@ -377,22 +397,24 @@ async def _execute_months(
                     "start_date": start, "end_date": end,
                     "force_rescrape": payload["force_rescrape"], "dry_run": payload["dry_run"],
                     "operational_parent_job_id": claim.job_id,
+                    **({"race_scope": "jra"} if race_scope == "jra" else {}),
                 },
                 "resume_count": int((child or {}).get("resume_count", 0)) + (1 if child else 0),
             }
             with jobs._JOBS_LOCK:
                 jobs._scrape_jobs[child_id] = child
-            await asyncio.to_thread(checkpoint.save, batch_progress(months, results, child))
+            await asyncio.to_thread(checkpoint.save, batch_progress(months, results, child, race_scope=race_scope))
             if cancelled():
                 raise OperationalEffectCancelled(CANCELLED_BY_OWNER)
             child_task = asyncio.create_task(jobs._run_scrape_job(
                 child_id, start, end, payload["force_rescrape"], payload["dry_run"],
                 cancel_requested=cancelled,
+                **({"race_scope": "jra"} if race_scope == "jra" else {}),
             ))
             try:
                 while not child_task.done():
                     await asyncio.wait({child_task}, timeout=1.0)
-                    await asyncio.to_thread(checkpoint.save, batch_progress(months, results, child))
+                    await asyncio.to_thread(checkpoint.save, batch_progress(months, results, child, race_scope=race_scope))
                 await child_task
             finally:
                 if not child_task.done():
@@ -413,13 +435,13 @@ async def _execute_months(
         # A crash between the child receipt and parent checkpoint reuses the
         # persisted terminal child; it must not fetch the month again.
         if child.get("status") == "cancelled":
-            await asyncio.to_thread(checkpoint.save, batch_progress(months, results, child))
+            await asyncio.to_thread(checkpoint.save, batch_progress(months, results, child, race_scope=race_scope))
             raise OperationalEffectCancelled(CANCELLED_BY_OWNER)
         if child.get("status") != "completed" or not isinstance(child.get("result"), dict):
             raise OperationalSagaError(str(child.get("error") or "batch-child-failed"))
         results[index] = dict(child["result"])
         await asyncio.to_thread(
-            checkpoint.save, batch_progress(months, results), month_index=index,
+            checkpoint.save, batch_progress(months, results, race_scope=race_scope), month_index=index,
             child_job_id=child_id, result=results[index],
         )
         # Cancellation racing the last completed child may settle completed;

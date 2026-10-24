@@ -6,7 +6,6 @@ POST /api/analyze_race
 from __future__ import annotations
 
 import json
-import gc
 import os
 import re
 import traceback
@@ -14,7 +13,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import pandas as pd
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 from app_config import (  # type: ignore
     SUPABASE_DATA_ENABLED,
@@ -46,6 +45,8 @@ from services.race_snapshot import (  # type: ignore
     save_valid_race_snapshot,
     stored_rows_need_refresh,
 )
+from betting.value_policy import POLICY_VERSION, build_live_context  # type: ignore
+from training.db_context_registry import SHARED_PIPELINES  # type: ignore
 
 import asyncio
 import time as _time
@@ -158,6 +159,11 @@ def _resolve_model_path(model_id: "str | None") -> "Path":
     """model_id 指定 → アクティブモデル → latest の順でモデルパスを解決する。"""
     from app_config import list_models_from_supabase  # type: ignore
     if model_id:
+        candidate = _local_candidate_spec(model_id=model_id)
+        if candidate is not None:
+            # Research candidates are explicit selections only, never latest
+            # or active fallbacks, and never a downloaded/unsigned artifact.
+            return Path(candidate["source_path"])
         p = _ensure_model_local(model_id)
         if not p:
             raise HTTPException(status_code=404, detail=f"モデル {model_id} が見つかりません")
@@ -179,6 +185,77 @@ def _resolve_model_path(model_id: "str | None") -> "Path":
     return p
 
 
+def _resolve_saved_model_path(model_id: "str | None") -> "Path":
+    """Resolve local artifacts only; freshness checks/reruns never download."""
+    selected = model_id or get_active_model_id()
+    if selected:
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,200}", selected):
+            raise HTTPException(status_code=400, detail="モデルIDが不正です")
+        candidate = _local_candidate_spec(model_id=selected)
+        if candidate is not None:
+            path = Path(candidate["source_path"])
+        else:
+            path = MODELS_DIR / f"{selected}.joblib"
+            if not path.is_file():
+                matches = sorted(MODELS_DIR.glob(f"*{selected}*.joblib"))
+                if len(matches) == 1:
+                    path = matches[0]
+        if path.is_file():
+            return path
+        raise HTTPException(status_code=404, detail="モデルがこのPCにありません。保存済みモデルを選択してください。")
+    path = get_latest_model()
+    if path is None:
+        raise HTTPException(status_code=404, detail="保存済みの学習モデルがありません")
+    return path
+
+
+@router.get("/api/prediction-freshness")
+async def prediction_freshness(response: Response, model_id: str | None = Query(None, max_length=200)):
+    """Authenticated, read-only revision check without predictions or quota."""
+    from services.prediction_freshness import freshness_metadata
+    response.headers["Cache-Control"] = "no-store"
+    model_path = await asyncio.to_thread(_resolve_saved_model_path, model_id)
+    if not Path(ULTIMATE_DB).is_file():
+        raise HTTPException(status_code=503, detail="保存済みDBを確認できません")
+    try:
+        return await asyncio.to_thread(
+            freshness_metadata, db_path=ULTIMATE_DB, model_path=model_path, source="saved_db",
+        )
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail="保存済みデータとモデルの更新状態を確認できません") from exc
+
+
+def _local_candidate_spec(*, model_id: str | None = None, path: str | Path | None = None) -> dict | None:
+    from app_config import APP_ENV
+    if APP_ENV not in {"development", "local", "test"}:
+        return None
+    from services.local_candidate_input import candidate_specs
+    for spec in candidate_specs():
+        if (model_id is not None and spec["model_id"] == model_id
+                or path is not None and Path(spec["source_path"]).resolve() == Path(path).resolve()):
+            return spec
+    return None
+
+
+def _load_served_model_bundle(path: Path) -> dict:
+    if path.name.startswith("model_win_reference_"):
+        from services.win_nll_reference_input import load_published_bundle
+        return dict(load_published_bundle(path), model_id=path.stem)
+    candidate = _local_candidate_spec(path=path)
+    if candidate is not None:
+        from services.local_candidate_input import load_candidate_bundle
+        return load_candidate_bundle(path, model_id=candidate["model_id"])
+    from services.db_shared_input import PREFIX, validate_published_artifact
+    if path.name.startswith(PREFIX):
+        digest = validate_published_artifact(path)
+        bundle = load_model_bundle(path)
+        if validate_published_artifact(path) != digest:
+            raise ValueError("shared-artifact-changed-during-load")
+        bundle["_shared_artifact_sha256"] = digest
+        return bundle
+    return load_model_bundle(path)
+
+
 def _drop_non_features(df: "pd.DataFrame") -> "pd.DataFrame":
     """未来情報・識別子・ object型列を推論入力から除外する（INV-01）。"""
     _exclude = (
@@ -187,7 +264,10 @@ def _drop_non_features(df: "pd.DataFrame") -> "pd.DataFrame":
            "win", "place"}
     )
     df = df.drop([c for c in _exclude if c in df.columns], axis=1)
-    obj_cols = df.select_dtypes(include=["object"]).columns.tolist()
+    obj_cols = [column for column in df.columns if (
+        pd.api.types.is_object_dtype(df[column].dtype)
+        or pd.api.types.is_string_dtype(df[column].dtype)
+    )]
     if obj_cols:
         df = df.drop(columns=obj_cols)
     return df
@@ -246,21 +326,35 @@ class ModelPredictor:
     各モデル固有の推論フロー（特徴量エンジニアリング → optimizer → 予測 → スコア変換）を実行する。
 
     ポリシー:
-    - 特徴量不足は NaN 補間せず HTTP 500 を返す（再学習を促す）
+    - 過半数の未計算列は HTTP 500、それ以下は既存のNaN補完と参考表示を維持
+    - 入力構造と学習時ソースの不一致はdiagnosticsで公開（同等性を保証しない）
     - optimizer.transform 失敗は HTTP 500 を返す（フォールバックなし）
     - スコア変換はターゲット種別（分類/回帰/ランカー）ごとに自動決定
     """
 
-    def __init__(self, bundle: dict, model_path: "str | Path | None" = None):
+    def __init__(self, bundle: dict, model_path: "str | Path | None" = None, *, inference_threads: int | None = None, db_path: str | Path | None = None, race_info: dict | None = None, trusted_input_context: dict | None = None):
         self.bundle = bundle
         self.model_name: str = Path(model_path).name if model_path else bundle.get("created_at", "unknown")
         self.target: str = bundle.get("target", "win")
         self.model = bundle["model"]
         self.optimizer = bundle.get("optimizer")
         self.calibrator = bundle.get("calibrator")
+        self.calibrator_applied = False
         self.feature_columns: list[str] = bundle.get("feature_columns", [])
         self.pipeline_config: dict = bundle.get("pipeline_config", {})
         self.is_ranker: bool = bool(bundle.get("_is_ranker", False))
+        self.inference_threads = inference_threads
+        self.input_diagnostics: dict | None = None
+        self.db_path = Path(db_path) if db_path is not None else ULTIMATE_DB
+        self.race_info = race_info
+        self.model_path = Path(model_path) if model_path else None
+        self.trusted_input_context = trusted_input_context
+
+    def _thread_options(self, model: object) -> dict:
+        # Only LightGBM supports this keyword; retain non-LightGBM contracts.
+        if self.inference_threads is not None and type(model).__module__.startswith("lightgbm"):
+            return {"num_threads": self.inference_threads}
+        return {}
 
     # ── 特徴量構築 ──────────────────────────────────────────────────────────
 
@@ -274,10 +368,32 @@ class ModelPredictor:
         各ステップの失敗時の挙動:
         - add_derived_features 失敗 → 警告のみ（部分失敗は次の strict check で検出）
         - optimizer.transform 失敗 → HTTP 500（モデルと特徴量セットの不一致。再学習必要）
-        - feature_columns 不足 → HTTP 500（不足列名を列挙して原因を明示）
-        NaN補間は行わない。
+        - feature_columns 過半数不足 → HTTP 500（不足列名を明示）
+        - それ以下の不足 → 既存NaN補完。欠落をdiagnosticsに保持して参考表示
         """
+        if self.bundle.get("_win_nll_reference") is True:
+            from services.win_nll_reference_input import build_input
+            features, self.input_diagnostics = build_input(
+                self.bundle, df, db_path=self.db_path, race_info=self.race_info,
+                model_path=self.model_path,
+            )
+            return features
+        if self.bundle.get("_local_candidate"):
+            from services.local_candidate_input import build_candidate_input
+            features, self.input_diagnostics = build_candidate_input(
+                self.bundle, df, db_path=self.db_path, race_info=self.race_info,
+            )
+            return features
+        if self.bundle.get("feature_pipeline") in SHARED_PIPELINES:
+            from services.db_shared_input import build_shared_input
+            features, self.input_diagnostics = build_shared_input(
+                self.bundle, df, db_path=self.db_path, race_info=self.race_info,
+                model_path=self.model_path, trusted_context=self.trusted_input_context,
+            )
+            return features
         from keiba_ai.feature_engineering import add_derived_features as _adf  # type: ignore
+        from services.prediction_input_contract import describe_input
+        self.input_diagnostics = None
 
         # Step 1: 派生特徴量エンジニアリング（部分失敗は許容 → strict check で捕捉）
         try:
@@ -319,19 +435,21 @@ class ModelPredictor:
         # the current optimizer removes. Restore only fields that were really
         # computed from the pre-race input; never invent or zero-fill absent
         # history. The final bundle-order verification remains authoritative.
+        restored_columns = []
         for required_column in self.feature_columns:
             if required_column in df.columns or required_column not in engineered_df.columns:
                 continue
             source = engineered_df[required_column]
             if pd.api.types.is_numeric_dtype(source) or pd.api.types.is_bool_dtype(source):
                 df[required_column] = pd.to_numeric(source, errors="coerce")
+                restored_columns.append(required_column)
 
         # Step 3: 未来情報・識別子列を除外
         X = _drop_non_features(df)
 
         # Step 4: 特徴量チェック（50%超の欠損は再学習を促す HTTP 500、それ以下は NaN 補完で続行）
         if self.feature_columns:
-            from app_config import assert_feature_columns, verify_feature_columns  # type: ignore
+            from app_config import verify_feature_columns  # type: ignore
             missing = [c for c in self.feature_columns if c not in X.columns]
             if missing:
                 _missing_rate = len(missing) / len(self.feature_columns)
@@ -349,7 +467,14 @@ class ModelPredictor:
                     f"[ModelPredictor:{self.target}] {len(missing)}/{len(self.feature_columns)} 特徴量が未計算"
                     f" → NaN 補完で続行: {missing[:15]}"
                 )
-            return verify_feature_columns(X, self.bundle)
+            X = verify_feature_columns(X, self.bundle)
+            self.input_diagnostics = describe_input(
+                self.bundle, X, missing_columns=missing, restored_columns=restored_columns,
+            )
+            return X
+        self.input_diagnostics = describe_input(
+            self.bundle, X, missing_columns=[], restored_columns=restored_columns,
+        )
         return X
 
     # ── 推論・スコア変換 ────────────────────────────────────────────────────
@@ -366,8 +491,35 @@ class ModelPredictor:
         Returns:
             (raw_scores, proba_norm) — 両方 shape (n_horses,)
         """
+        if self.bundle.get("_win_nll_reference") is True:
+            from services.win_nll_reference_input import predict
+            result = predict(self.bundle, X, model_path=self.model_path)
+            # Rank by the actually served, conditioned candidate probability,
+            # not the residual or pre-calibration rank. Live calibration and
+            # purchase eligibility remain unverified, despite the CAL fit.
+            self.calibrator_applied = False
+            return result["probability"].copy(), result["probability"]
+        if self.bundle.get("_local_candidate"):
+            from services.local_candidate_input import predict_candidate_scores
+            self.calibrator_applied = False
+            return predict_candidate_scores(self.bundle, X, num_threads=self.inference_threads or 2)
+        if self.bundle.get("feature_pipeline") in SHARED_PIPELINES:
+            from training.db_context_registry import fit_module
+            profile = fit_module(self.bundle["feature_pipeline"])
+            raw, probabilities = profile.predict_encoded_shared_scores(
+                self.bundle, X, n_threads=self.inference_threads or 2,
+            )
+            if probabilities is None:
+                weights = np.exp(raw - raw.max())
+                probabilities = weights / weights.sum()
+            self.calibrator_applied = bool(
+                self.bundle.get("probability_validation", {}).get("validated") is True
+                and self.bundle.get("calibrator") is not None
+            )
+            return raw, probabilities
         import numpy as _np_p
-        raw = _np_p.array(self.model.predict(X), dtype=float)
+        self.calibrator_applied = False
+        raw = _np_p.array(self.model.predict(X, **self._thread_options(self.model)), dtype=float)
 
         if self.target in ("speed_deviation", "rank"):
             finite = _np_p.isfinite(raw)
@@ -381,7 +533,14 @@ class ModelPredictor:
             proba = _np_p.clip(raw.copy(), 0.0, 1.0)
             if self.calibrator is not None:
                 try:
-                    proba = self.calibrator.predict(proba)
+                    calibrated_proba = _np_p.asarray(self.calibrator.predict(proba), dtype=float)
+                    if (calibrated_proba.shape != raw.shape
+                        or not _np_p.isfinite(calibrated_proba).all()
+                        or not ((calibrated_proba >= 0) & (calibrated_proba <= 1)).all()
+                        or calibrated_proba.sum() <= 0):
+                        raise ValueError("校正器の確率出力が不正です")
+                    proba = calibrated_proba
+                    self.calibrator_applied = True
                 except Exception as _cal_err:
                     logger.warning(
                         f"[ModelPredictor:{self.target}] キャリブレーション失敗: {_cal_err}"
@@ -402,13 +561,20 @@ class ModelPredictor:
         TreeSHAP 寄与度だけを高速に計算する。未対応モデルでは例外を返し、
         呼び出し側が説明なしで通常予測を継続する。
         """
+        if self.bundle.get("_win_nll_reference") is True:
+            # Residual TreeSHAP alone would not explain the market-conditioned
+            # winner probability. Do not mislabel it as a speed contribution.
+            raise ValueError("win-nll-reference-probability-explanation-not-validated")
+        if self.bundle.get("_local_candidate"):
+            from services.local_candidate_input import explain_candidate_scores
+            return explain_candidate_scores(self.bundle, X, top_n=top_n, num_threads=self.inference_threads or 2)
         import numpy as _np_exp
 
         booster = getattr(self.model, "booster_", None) or self.model
         if not hasattr(booster, "predict"):
             raise TypeError("このモデルは特徴量寄与度の計算に対応していません")
 
-        raw_contrib = booster.predict(X, pred_contrib=True)
+        raw_contrib = booster.predict(X, pred_contrib=True, **self._thread_options(booster))
         contrib = _np_exp.asarray(raw_contrib, dtype=float)
         expected_width = len(X.columns) + 1
         if contrib.ndim != 2 or contrib.shape != (len(X), expected_width):
@@ -466,7 +632,9 @@ def _feature_description_map() -> "dict[str, str]":
     try:
         from routers.feature_analysis import _build_desc_map, _get_catalog  # type: ignore
 
-        return _build_desc_map(_get_catalog())
+        descriptions = _build_desc_map(_get_catalog())
+        from training.db_context_features import FEATURE_LABELS
+        return {**descriptions, **FEATURE_LABELS}
     except Exception as exc:
         logger.warning(f"特徴量カタログの読み込みに失敗: {exc}")
         return {}
@@ -486,8 +654,10 @@ async def predict(request: PredictRequest, http_req: Request):
     await check_and_consume_pred_count(http_req)
     try:
         # モデルロード → ModelPredictor 初期化（モデル固有パイプラインを決定）
-        model_path = _resolve_model_path(request.model_id)
-        bundle = load_model_bundle(model_path)
+        model_path = await asyncio.to_thread(_resolve_model_path, request.model_id)
+        _model_stat = model_path.stat()
+        _model_identity = (_model_stat.st_mtime_ns, _model_stat.st_size)
+        bundle = await asyncio.to_thread(_load_served_model_bundle, model_path)
         predictor = ModelPredictor(bundle, model_path)
 
         # レース後フィールドを除去して DataFrame 化
@@ -516,28 +686,16 @@ async def predict(request: PredictRequest, http_req: Request):
         if "race_id" not in df.columns:
             df["race_id"] = "202500000000"
 
-        # [INV-01] request-scoped history (expanding window, target excluded)
-        # NOTE: history SQL / build_features are synchronous CPU-bound work.
-        #       asyncio.to_thread でスレッドプールに移し、イベントループをブロックしない
-        try:
-            _target_race_ids = {str(value) for value in df['race_id'].dropna()}
-            _hist_df = await asyncio.to_thread(
-                _load_prediction_history, df, _target_race_ids
-            )
-            _full_hist = pd.concat([_hist_df, df], ignore_index=True, copy=False)
-        except Exception:
-            _full_hist = df
-
-        # ModelPredictor で特徴量構築（不足時は HTTP 500）
-        X = await asyncio.to_thread(predictor.build_features, df, _full_hist)
-        if '_hist_df' in locals():
-            del _hist_df
-        if _full_hist is not df:
-            del _full_hist
-        gc.collect()
-
-        # ModelPredictor でスコア計算（ターゲット種別に応じて自動選択）
-        p_raw, p_norm = predictor.predict_scores(X)
+        from services.prediction_compute import run_prediction_compute, ensure_model_identity
+        computed = await run_prediction_compute(
+            frame=df, db_path=str(ULTIMATE_DB), model_path=str(model_path),
+            excluded_race_ids={str(value) for value in df['race_id'].dropna()},
+            expected_model_identity=_model_identity,
+            include_explanation=False,
+            race_info=request.race_info,
+        )
+        p_raw, p_norm = computed["raw"], computed["probabilities"]
+        ensure_model_identity(model_path, _model_identity)
 
         predictions = []
         for i, (_, row) in enumerate(df.iterrows()):
@@ -563,6 +721,7 @@ async def predict(request: PredictRequest, http_req: Request):
             predictions=predictions,
             model_id=model_id,
             message=f"{len(predictions)}頭の予測が完了しました",
+            input_diagnostics=computed.get("input_diagnostics"),
         )
 
     except HTTPException:
@@ -574,22 +733,66 @@ async def predict(request: PredictRequest, http_req: Request):
 async def _analyze_race_impl(request: AnalyzeRaceRequest):
     """レース分析と購入推奨エンドポイント"""
     _observation_started_at = _time.perf_counter()
-    # ── キャッシュチェック（TTL=5分、bankroll/risk_mode が同一の場合のみ）
+    # Bind both caches and queued workers to the resolved artifact, including
+    # default-model changes. Never reuse a previous active model's response.
+    model_path = await asyncio.to_thread(
+        _resolve_saved_model_path if request.data_refresh == "saved_db" else _resolve_model_path,
+        request.model_id,
+    )
+    if model_path.name.startswith("model_win_reference_"):
+        # Cached responses must not outlive the publication or frozen input
+        # source contract. Check before any response-cache early return.
+        from services.win_nll_reference_input import validate_published_artifact
+        await asyncio.to_thread(validate_published_artifact, model_path)
+    _model_stat = model_path.stat()
+    _model_identity = (_model_stat.st_mtime_ns, _model_stat.st_size)
+    _candidate_spec = _local_candidate_spec(path=model_path)
+    if _candidate_spec is not None:
+        from services.local_candidate_input import validate_candidate_sources
+        _validated_spec = await asyncio.to_thread(validate_candidate_sources, model_path)
+        if _validated_spec["model_id"] != _candidate_spec["model_id"]:
+            raise ValueError("local-candidate-selected-model-id-mismatch")
+    from services.db_shared_input import PREFIX, verify_bundle_sources, shared_pre_race_input_needs_refresh
+    _shared_model = model_path.name.startswith(PREFIX)
+    if _shared_model:
+        # A cached skip can still carry EV/probability labels. Revalidate the
+        # exact publisher/hash and regenerate time-sensitive DB evidence.
+        _shared_bundle = await asyncio.to_thread(_load_served_model_bundle, model_path)
+        await asyncio.to_thread(verify_bundle_sources, _shared_bundle)
+    from services.prediction_freshness import data_revision, model_runtime_revision, freshness_metadata
+    _initial_data_revision = await asyncio.to_thread(data_revision, ULTIMATE_DB)
+    _runtime_revision = await asyncio.to_thread(model_runtime_revision, model_path)
+    # New/repaired DB history, WAL writes, model and serving changes invalidate
+    # old responses. An explicit saved-DB rerun always bypasses response reuse.
     _cache_key = (
-        f"{request.race_id}:{request.model_id}:{request.bankroll}:"
-        f"{request.risk_mode}:{int(request.include_explanation)}"
+        f"{request.race_id}:{model_path}:{_model_identity}:{request.bankroll}:"
+        f"{request.risk_mode}:{int(request.include_explanation)}:"
+        f"{request.min_ev}:{request.use_kelly}:{request.dynamic_unit}:{POLICY_VERSION}:"
+        f"{request.data_refresh}:{_initial_data_revision}:{_runtime_revision}"
     )
     _now = _time.time()
-    _cached = _ANALYZE_CACHE.get(_cache_key)
+    _cached = None if request.force_recompute else _ANALYZE_CACHE.get(_cache_key)
     if _cached and (_now - _cached[0]) < _ANALYZE_CACHE_TTL:
         _cached_predictions = _cached[1].get("predictions", [])
         _cached_market_complete = bool(_cached_predictions) and all(
             prediction.get("odds") not in (None, 0, 0.0, "")
             for prediction in _cached_predictions
         )
-        if _cached_market_complete:
+        _cached_policy = _cached[1].get("recommendation", {})
+        # A purchase recommendation must be rebuilt from fresh evidence; do
+        # not serve a five-minute-old stake across the start of a race.
+        if _cached_market_complete and _cached_policy.get("decision") == "skip" and not _shared_model:
             logger.info(f"[cache hit] analyze_race {request.race_id} (age={(int(_now - _cached[0]))}s)")
-            return AnalyzeRaceResponse(**_cached[1])
+            data = {**_cached[1]}
+            data["freshness"] = await asyncio.to_thread(
+                freshness_metadata, db_path=ULTIMATE_DB, model_path=model_path,
+                source=request.data_refresh, cache_hit=True,
+                initial_revision=_initial_data_revision,
+                generated_at=(_cached[1].get("freshness") or {}).get("generated_at"),
+            )
+            if (not data["freshness"]["data_changed_during_prediction"]
+                    and data["freshness"]["model_runtime_revision"] == _runtime_revision):
+                return AnalyzeRaceResponse(**data)
         logger.info(f"[cache bypass] analyze_race {request.race_id}: market data incomplete")
 
     try:
@@ -599,9 +802,7 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
         db_path = ULTIMATE_DB
 
         # モデルロード（model_id指定 → active model pointer → latest の順）
-        model_path = _resolve_model_path(request.model_id)
-
-        bundle = load_model_bundle(model_path)
+        bundle = await asyncio.to_thread(_load_served_model_bundle, model_path)
         _row_explanations: list[dict] | None = None
 
         # Phase 0: 常に ultimate モードでデータを取得（87特徴量固定）
@@ -615,6 +816,8 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
             _rrow = _cur.fetchone()
             if not _rrow:
                 _conn.close()
+                if request.data_refresh == "saved_db":
+                    raise HTTPException(status_code=404, detail="保存済みDBにレースがありません。データ取得後に再予測してください。")
                 # DBにない場合 → オンデマンドスクレイプして保存してから再試行
                 logger.info(f"[analyze] レース {request.race_id} がDBに未登録 → オンデマンドスクレイプ開始")
                 try:
@@ -661,6 +864,8 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
             _hrows = _cur.fetchall()
             _conn.close()
             if not _hrows:
+                if request.data_refresh == "saved_db":
+                    raise HTTPException(status_code=404, detail="保存済みDBに出走馬がありません。データ取得後に再予測してください。")
                 # 馬データなし → レース情報はあるが horse データが未登録のためオンデマンド再スクレイプ
                 logger.info(f"[analyze] レース {request.race_id} は races_ultimate にあるが horse データなし → 再スクレイプ")
                 try:
@@ -711,7 +916,14 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
             # Existing Render SQLite rows may be an incomplete pre-publication
             # snapshot.  Refresh the whole race (not odds alone), validate it,
             # and replace metadata + every horse row in one transaction.
-            if stored_rows_need_refresh(request.race_id, _race_data, _hrows):
+            # Only a published, source-verified shared DB model adds a freshness
+            # reason. Preserve legacy/past/result repair behavior unchanged.
+            _shared_stale_input = _shared_model and shared_pre_race_input_needs_refresh(
+                bundle, request.race_id, _race_data, _hrows, trusted_db_card=True,
+            )
+            if request.data_refresh != "saved_db" and (
+                stored_rows_need_refresh(request.race_id, _race_data, _hrows) or _shared_stale_input
+            ):
                 try:
                     import aiohttp as _aiohttp_refresh
                     from scraping.constants import get_random_headers as _refresh_headers  # type: ignore
@@ -746,6 +958,7 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
             # Rebuild from the final in-memory snapshot. This also covers the
             # "race row exists but horse rows were missing" repair path above.
             race_info = {
+                **_race_data,
                 "race_id": request.race_id,
                 "race_name": _race_data.get("race_name", ""),
                 "venue": _race_data.get("venue", ""),
@@ -755,6 +968,9 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
                 "weather": _race_data.get("weather", ""),
                 "field_condition": _race_data.get("field_condition", ""),
                 "num_horses": _race_data.get("num_horses", 0),
+                "post_time": _race_data.get("post_time", ""),
+                "data_observed_at": _race_data.get("data_observed_at"),
+                "odds_status": _race_data.get("odds_status"),
             }
 
             _horse_records = []
@@ -765,6 +981,8 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
                     if _k not in _hd or _hd[_k] is None:
                         _hd[_k] = _v
                 _horse_records.append(_hd)
+
+            _betting_source_records = _horse_records
 
             df_pred = pd.DataFrame(_horse_records)
 
@@ -793,6 +1011,10 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
                 ("trainer_url", "trainer_id", "trainer_name"),
                 ("horse_url", "horse_id", "horse_name"),
             ]:
+                if (bundle.get("_local_candidate") or bundle.get("_win_nll_reference") is True or bundle.get("feature_pipeline") in SHARED_PIPELINES) and _id_col == "horse_id":
+                    # Never substitute a profile URL/name for canonical identity.
+                    df_pred[_id_col] = [row.get("horse_id") or "" for row in _horse_records]
+                    continue
                 if _id_col not in df_pred.columns:
                     if _url_col in df_pred.columns:
                         df_pred[_id_col] = df_pred[_url_col].str.extract(r"/([^/]+)/?$")[0]
@@ -829,7 +1051,7 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
                 or (df_pred["odds"].fillna(0) == 0).all()  # 全馬 0.0 もオッズ未取得扱い
             )
             _metadata_invalid = race_metadata_invalid(df_pred)
-            if _odds_missing or _metadata_invalid:
+            if request.data_refresh != "saved_db" and (_odds_missing or _metadata_invalid):
                 try:
                     import aiohttp as _aiohttp2
                     from scraping.constants import get_random_headers as _get_rh  # type: ignore
@@ -846,6 +1068,10 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
                             race_info,
                             _fresh,
                         )
+                        # Bind new market values to the snapshot that supplied
+                        # them, not the old DB timestamp. No result fields are
+                        # merged into the model features.
+                        _betting_source_records = _fresh["horses"]
                         _odds_map = {
                             h["horse_number"]: h.get("odds")
                             for h in _fresh["horses"]
@@ -972,71 +1198,54 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
             except Exception as _qe_a:
                 logger.warning(f"[Quality Gate /analyze] スキップ: {_qe_a}")
 
-            # [INV-01] Load only history groups that can affect this race.
-            # The target race itself is excluded in SQL.
-            #       asyncio.to_thread でスレッドプールに移し、イベントループをブロックしない
-            try:
-                _hist_df2 = await asyncio.to_thread(
-                    _load_prediction_history, df_pred, {request.race_id}
-                )
-                _full_hist2 = pd.concat(
-                    [_hist_df2, df_pred], ignore_index=True, copy=False
-                )
-            except Exception:
-                _full_hist2 = df_pred
-
-            # ModelPredictor: per-model feature build（strict, NaN補間なし）
-            # NOTE: ModelPredictor.build_features が add_derived_features を内部で呼ぶため
-            #       ここでの手動呼び出しは不要（二重適用防止）。
+            # CPU-bound history/features/inference use isolated, bounded local
+            # processes. External requests still use the shared provider pacer.
+            from services.prediction_compute import run_prediction_compute, ensure_model_identity
             predictor = ModelPredictor(bundle, model_path)
-            X_pred = await asyncio.to_thread(predictor.build_features, df_pred, _full_hist2)
-
-            # ModelPredictor: per-model scoring（ターゲット種別に応じて自動選択）
+            _place3_model_files = sorted(
+                MODELS_DIR.glob("model_place3_*.joblib"),
+                key=lambda path: path.stat().st_mtime, reverse=True,
+            )
+            _computed = await run_prediction_compute(
+                frame=df_pred, db_path=str(ULTIMATE_DB), model_path=str(model_path),
+                excluded_race_ids={request.race_id},
+                expected_model_identity=_model_identity,
+                include_explanation=request.include_explanation,
+                race_info=race_info,
+                trusted_input_context={
+                    "trusted_db_card": True,
+                    "race_has_result": any(row.get(key) not in (None, "", 0, "0")
+                                           for row in _betting_source_records
+                                           for key in ("finish_position", "finish")),
+                },
+                place3_model_path=(str(_place3_model_files[0]) if _place3_model_files and not bundle.get("_local_candidate") and bundle.get("_win_nll_reference") is not True and bundle.get("feature_pipeline") not in SHARED_PIPELINES else None),
+            )
+            if request.data_refresh == "saved_db" and (
+                await asyncio.to_thread(data_revision, ULTIMATE_DB) != _initial_data_revision
+            ):
+                # Do not publish mixed-version card/history input or attach a
+                # purchasing/performance snapshot after a concurrent repair.
+                raise HTTPException(status_code=409, detail="予測中に保存済みデータが更新されました。データ取得が完了してから、最新データで再予測してください。")
+            X_pred = _computed["features"]
+            predictor.calibrator_applied = _computed["calibrator_applied"]
+            predictor.input_diagnostics = _computed.get("input_diagnostics")
             import numpy as _np2
-            _wp_raw, win_probs = predictor.predict_scores(X_pred)
+            _wp_raw, win_probs = _computed["raw"], _computed["probabilities"]
             _bundle_target = predictor.target
             _wp_sum = win_probs.sum()
             _wp_norm = (win_probs / _wp_sum) if _wp_sum > 0 else win_probs
-
-            # 説明性は Premium UI から明示要求された場合だけ計算する。
-            # 予測と同じ X_pred / model を再利用するため、二重予測は発生しない。
-            if request.include_explanation:
-                try:
-                    _row_explanations = await asyncio.to_thread(
-                        predictor.explain_scores,
-                        X_pred,
-                        6,
-                    )
-                except Exception as _explain_error:
-                    logger.warning(
-                        f"[explain] {request.race_id}: 特徴量寄与度の計算を省略: "
-                        f"{_explain_error}"
-                    )
-
-            # ── place3 モデルによる複勝圏確率 ──────────────────────────────────
+            _row_explanations = _computed["explanations"]
             _place3_probs: "_np2.ndarray | None" = None
             _place3_norm: "_np2.ndarray | None" = None
-            try:
-                _place3_model_files = sorted(
-                    MODELS_DIR.glob("model_place3_*.joblib"),
-                    key=lambda _p: _p.stat().st_mtime, reverse=True,
-                )
-                if _place3_model_files:
-                    _sub_result = _predict_sub_model(_place3_model_files[0], df_pred, full_hist=_full_hist2)
-                    if _sub_result is not None:
-                        _place3_probs, _place3_norm = _sub_result
-                        logger.info(
-                            f"[analyze] place3モデル ({_place3_model_files[0].name}) 適用: "
-                            f"top={_place3_norm.max():.3f}"
-                        )
-            except Exception as _p3e:
-                logger.warning(f"[analyze] place3モデルロード失敗: {_p3e}")
-
-            if '_hist_df2' in locals():
-                del _hist_df2
-            if _full_hist2 is not df_pred:
-                del _full_hist2
-            gc.collect()
+            if _computed["place3"] is not None:
+                _place3_probs, _place3_norm = _computed["place3"]
+            _compute_timings = _computed["timings"]
+            logger.info(
+                "[prediction timing] race=%s history_rows=%s timing=%s",
+                request.race_id, _computed["history_rows"], _compute_timings,
+            )
+            del _computed
+            ensure_model_identity(model_path, _model_identity)
 
             # ── アンサンブルスコア（win/speed + place3 の加重平均）──────────────
             # _place3_norm を使用（正規化済み分布で win_probs と整合）
@@ -1104,11 +1313,17 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
             bankroll=request.bankroll, risk_mode=request.risk_mode,
             use_kelly=request.use_kelly, dynamic_unit=request.dynamic_unit, min_ev=request.min_ev,
         )
-        result = recommender.analyze_and_recommend(predictions, race_info)
+        ensure_model_identity(model_path, _model_identity)
+        _betting_context = build_live_context(
+            model_path=model_path, predictor=predictor,
+            source_records=_betting_source_records, feature_frame=X_pred,
+        )
+        result = recommender.analyze_and_recommend(predictions, race_info, context=_betting_context)
 
         _resp_data = dict(
             success=True,
-            model_id=model_path.stem,
+            model_id=bundle.get("model_id", model_path.stem),
+            input_diagnostics=predictor.input_diagnostics,
             explanation_method=("tree_shap" if _row_explanations else None),
             race_info=result["race_info"],
             pro_evaluation=result["pro_evaluation"],
@@ -1118,6 +1333,20 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
             best_bet_info=result["best_bet_info"],
             race_level=result["race_level"],
             recommendation=result["recommendation"],
+            processing_timings={
+                **_compute_timings,
+                "elapsed_seconds": _time.perf_counter() - _observation_started_at,
+            },
+        )
+        from betting.reference import build_reference_bets
+        _resp_data["reference_bets"] = build_reference_bets(
+            result["predictions"], runner_count=result["race_info"].get("num_horses"),
+        )
+        from app_config import APP_ENV
+        from betting.reference_value import build_reference_expectation
+        _resp_data["reference_expectation"] = build_reference_expectation(
+            result["predictions"], result["race_info"], result["recommendation"],
+            context=_betting_context, model_id=_resp_data["model_id"], environment=APP_ENV,
         )
         # Phase 3N strict observation capture is an explicit deployed-runtime
         # opt-in. Production is accepted only in the independently authorized
@@ -1168,16 +1397,33 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
                     detail="strict observation capture failed closed",
                 ) from _observation_error
             logger.debug("[phase3n-observation] disabled")
-        # 予測ログをDBに非同期保存（レスポンスをブロックしない）
+        ensure_model_identity(model_path, _model_identity)
+        _resp_data["processing_timings"]["elapsed_seconds"] = (
+            _time.perf_counter() - _observation_started_at
+        )
+        # Complete this derived display log before taking the revision. Paper
+        # decisions, purchases and sealed forward records stay separate.
         try:
             _model_id_log = bundle.get("model_id", bundle.get("created_at", "unknown"))
-            asyncio.create_task(asyncio.to_thread(
+            await asyncio.to_thread(
                 _save_prediction_log,
                 request.race_id, result["race_info"], result["predictions"],
                 _model_id_log, str(ULTIMATE_DB)
-            ))
+            )
         except Exception as _log_err:
             logger.warning(f"[prediction_log] save failed: {_log_err}")
+        _resp_data["freshness"] = await asyncio.to_thread(
+            freshness_metadata, db_path=ULTIMATE_DB, model_path=model_path,
+            source=request.data_refresh, initial_revision=_initial_data_revision,
+        )
+        if _resp_data["freshness"]["model_runtime_revision"] != _runtime_revision:
+            raise HTTPException(status_code=503, detail="予測中にモデルまたは入力処理が更新されました。最新データで再予測してください。")
+        if request.data_refresh == "saved_db" and _resp_data["freshness"]["data_changed_during_prediction"]:
+            raise HTTPException(status_code=409, detail="予測中に保存済みデータが更新されました。データ取得が完了してから、最新データで再予測してください。")
+        # Cache only when the DB did not change while the input was built. This
+        # stamp is invalidation metadata, not a pre-race capture receipt.
+        if _resp_data["freshness"]["data_changed_during_prediction"]:
+            return AnalyzeRaceResponse(**_resp_data)
         # キャッシュに保存（上限超過時は最古エントリを削除）
         if len(_ANALYZE_CACHE) >= _ANALYZE_CACHE_MAX:
             _oldest_keys = sorted(_ANALYZE_CACHE.keys(), key=lambda k: _ANALYZE_CACHE[k][0])
@@ -1198,7 +1444,9 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
 async def analyze_race(request: AnalyzeRaceRequest, http_req: Request):
     """単一レース分析（1リクエスト = 1 quota unit）。"""
     await check_and_consume_pred_count(http_req, units=1)
-    return await _analyze_race_impl(request)
+    from routers.performance import attach_performance_snapshot
+    response = await _analyze_race_impl(request)
+    return await attach_performance_snapshot(response, getattr(http_req.state, "user_id", None), request.race_id)
 
 
 @router.post("/api/analyze_races_batch")
@@ -1212,12 +1460,16 @@ async def analyze_races_batch(request: BatchAnalyzeRequest, http_req: Request):
 
     await check_and_consume_pred_count(http_req, units=len(unique_race_ids))
 
-    results: dict = {}
-    for race_id in unique_race_ids:
+    from services.prediction_compute import worker_count
+    slots = asyncio.Semaphore(worker_count())
+
+    async def analyze_one(race_id: str) -> tuple[str, dict]:
         req = AnalyzeRaceRequest(
             race_id=race_id,
             model_id=request.model_id,
             include_explanation=request.include_explanation,
+            force_recompute=request.force_recompute,
+            data_refresh=request.data_refresh,
             bankroll=request.bankroll,
             risk_mode=request.risk_mode,
             use_kelly=request.use_kelly,
@@ -1225,12 +1477,18 @@ async def analyze_races_batch(request: BatchAnalyzeRequest, http_req: Request):
             min_ev=request.min_ev,
         )
         try:
-            resp = await _analyze_race_impl(req)
-            results[race_id] = {"success": True, "data": resp.dict()}
+            async with slots:
+                resp = await _analyze_race_impl(req)
+                from routers.performance import attach_performance_snapshot
+                resp = await attach_performance_snapshot(resp, getattr(http_req.state, "user_id", None), race_id)
+                return race_id, {"success": True, "data": resp.model_dump()}
         except HTTPException as e:
-            results[race_id] = {"success": False, "error": e.detail}
+            return race_id, {"success": False, "error": e.detail}
         except Exception as e:
-            results[race_id] = {"success": False, "error": str(e)}
+            return race_id, {"success": False, "error": str(e)}
+
+    # Gather preserves request order; one failed race does not cancel siblings.
+    results = dict(await asyncio.gather(*(analyze_one(race_id) for race_id in unique_race_ids)))
     return {
         "results": results,
         "total": len(unique_race_ids),

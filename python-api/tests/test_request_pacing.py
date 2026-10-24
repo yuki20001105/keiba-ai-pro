@@ -136,6 +136,22 @@ def test_timeout_and_connection_failure_attempts_are_counted_in_job_scope():
     assert fetch.get_fetch_control_status()["owner"] is None
 
 
+def test_healthy_responses_recover_backoff_without_crossing_safe_floor():
+    pacer = fetch._REQUEST_PACER
+    pacer.observe("netkeiba.com", kind="race", status=503, failure=True)
+    assert pacer.status()["interval"] == 3.0
+
+    for _ in range(120):
+        owner, _waited = run(pacer.acquire("netkeiba.com"))
+        pacer.observe("netkeiba.com", kind="race", status=200, latency=0.1)
+        pacer.release("netkeiba.com", owner)
+
+    state = pacer.status()
+    assert state["failures"] == 0
+    assert state["rate_limits"] == 0
+    assert state["interval"] == 1.0
+
+
 def test_cached_body_uses_no_network_or_rate_wait(monkeypatch):
     monkeypatch.setattr(fetch, "_read_cache", lambda _: {"url": "url", "status": 200, "body": b"valid"})
     session = Session([])
@@ -237,10 +253,10 @@ def test_stable_responses_accelerate_only_after_count_and_duration():
     assert pacer.status()["interval"] == 2
     run(pacer.sleep(121))
     pacer.observe("netkeiba.com", kind="race", status=200, latency=0.2)
-    assert pacer.status()["interval"] == pytest.approx(1.8)
+    assert pacer.status()["interval"] == pytest.approx(1.5)
     # Horse pages have a separate response-time baseline and stability counter.
     pacer.observe("netkeiba.com", kind="horse", status=200, latency=10)
-    assert pacer.status()["interval"] == pytest.approx(1.8)
+    assert pacer.status()["interval"] == pytest.approx(1.5)
     for _ in range(20):
         pacer.observe("netkeiba.com", kind="race", status=200, latency=1)
     assert pacer.status()["interval"] > 1.8

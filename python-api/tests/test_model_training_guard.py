@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import importlib
 import inspect
+import json
 import sqlite3
 import sys
 import uuid
@@ -78,6 +79,73 @@ def test_explicit_local_opt_in_allows_legacy_compatibility(monkeypatch: pytest.M
     monkeypatch.setenv("MODEL_TRAINING_LOCAL_ENABLED", "TRUE")
 
     assert train._require_legacy_model_training_allowed() is None
+
+
+def test_local_training_launcher_uses_isolated_process_and_stdin_capability(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeStdin:
+        def __init__(self) -> None:
+            self.value = ""
+            self.closed = False
+
+        def write(self, value: str) -> int:
+            self.value += value
+            return len(value)
+
+        def flush(self) -> None:
+            return None
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.stdin = FakeStdin()
+            self.killed = False
+
+        def kill(self) -> None:
+            self.killed = True
+
+    process = FakeProcess()
+
+    def fake_popen(command: list[str], **kwargs: object) -> FakeProcess:
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return process
+
+    worker = tmp_path / "local_retrain_worker_main.py"
+    worker.write_text("# worker", encoding="utf-8")
+    monkeypatch.setattr(train, "_LOCAL_RETRAIN_WORKER_ENTRYPOINT", worker)
+    monkeypatch.setattr(train, "_LOCAL_RETRAIN_WORKER_LOG", tmp_path / "worker.log")
+    monkeypatch.setattr(train.subprocess, "Popen", fake_popen)
+    job_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    token = "b" * 64
+
+    train._start_local_retrain_thread(
+        job_id,
+        prepare_request=models.TrainRequest(force_sync=False),
+        preparation_token=token,
+    )
+
+    command = captured["command"]
+    assert isinstance(command, list)
+    assert str(worker) in command
+    assert token not in " ".join(command)
+    envelope = json.loads(process.stdin.value)
+    assert envelope["mode"] == "prepare"
+    assert envelope["job_id"] == job_id
+    assert envelope["preparation_token"] == token
+    assert envelope["request"]["force_sync"] is False
+    assert process.stdin.closed is True
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["stdin"] is train.subprocess.PIPE
+    assert kwargs["stderr"] is train.subprocess.STDOUT
+    assert kwargs["close_fds"] is True
 
 
 def test_blocked_training_does_not_create_job_or_write_artifact(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -165,10 +233,24 @@ def test_capability_requires_exact_local_flag_database_and_model_storage(
     monkeypatch.setenv("MODEL_TRAINING_LOCAL_ENABLED", "true")
     monkeypatch.setenv("MODEL_RUNTIME_STATUS", "observation")
 
+    compute = {"devices": {"gpu": {"installed_and_pinned": False}}}
+    monkeypatch.setattr(importlib.import_module("training.db_shared_acceleration"),
+                        "get_compute_capability", lambda: compute)
+
     assert train._training_capability_state() == {
         "enabled": True,
         "mode": "local-admin",
         "reason": None,
+        "feature_profiles": [
+            {"pipeline": "local-db-shared-v1", "feature_count": 47},
+            {"pipeline": "local-db-shared-optimized-v1", "feature_count": 46},
+            {"pipeline": train.CONTEXT_PIPELINE, "feature_count": 80, "reference_only": True},
+        ],
+        "acceleration": {
+            "default_device": "auto", "gpu_available": False,
+            "feature_cache_supported": True, "gpu_reason": "GPU環境を確認できません",
+            "runtime": compute,
+        },
     }
 
     monkeypatch.setenv("MODEL_TRAINING_LOCAL_ENABLED", "1")
@@ -234,10 +316,23 @@ def test_capability_allows_legacy_active_schema_only_as_hashed_baseline(
     monkeypatch.setenv("MODEL_TRAINING_LOCAL_ENABLED", "true")
 
     assert {"running_style_num", "time_index"}.issubset(train.FUTURE_FIELDS)
+    compute = {"devices": {"gpu": {"installed_and_pinned": True}}}
+    monkeypatch.setattr(importlib.import_module("training.db_shared_acceleration"),
+                        "get_compute_capability", lambda: compute)
     assert train._training_capability_state() == {
         "enabled": True,
         "mode": "local-admin",
         "reason": None,
+        "feature_profiles": [
+            {"pipeline": "local-db-shared-v1", "feature_count": 47},
+            {"pipeline": "local-db-shared-optimized-v1", "feature_count": 46},
+            {"pipeline": train.CONTEXT_PIPELINE, "feature_count": 80, "reference_only": True},
+        ],
+        "acceleration": {
+            "default_device": "auto", "gpu_available": True,
+            "feature_cache_supported": True, "gpu_reason": None,
+            "runtime": compute,
+        },
     }
 
 
@@ -275,14 +370,9 @@ def test_start_is_single_active_and_status_is_owner_bound(
         lambda: {"enabled": True, "mode": "local-admin", "reason": None},
     )
 
-    class _DormantThread:
-        def __init__(self, **_kwargs):
-            pass
-
-        def start(self) -> None:
-            pass
-
-    monkeypatch.setattr(train.threading, "Thread", _DormantThread)
+    monkeypatch.setattr(train, "_start_local_retrain_thread", lambda *_args, **_kwargs: None)
+    # A different owner's lookup must not initialize the real legacy ledger.
+    monkeypatch.setattr(train, "load_train_job", lambda _job_id: None)
 
     owner_one = "11111111-1111-4111-8111-111111111111"
     owner_two = "22222222-2222-4222-8222-222222222222"

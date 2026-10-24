@@ -1,6 +1,8 @@
-import { render, screen } from '@testing-library/react'
-import { describe, expect, test } from 'vitest'
+import { cleanup, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, test } from 'vitest'
 import { ModelEvaluationSummary } from '@/components/ModelEvaluationSummary'
+
+afterEach(cleanup)
 
 describe('ModelEvaluationSummary', () => {
   test('shows only the five primary metrics before the details', () => {
@@ -22,7 +24,9 @@ describe('ModelEvaluationSummary', () => {
       time_slices: [{ period: '2026', race_count: 1000, top_pick_win_rate: 0.36, top_pick_win_rate_delta: -0.04, win_roi: 93 }],
     }} />)
 
-    expect(screen.getByText('順位相関')).toBeInTheDocument()
+    // Primary card and the newly added time-slice column both stay present.
+    expect(screen.getAllByText('順位相関')).toHaveLength(2)
+    expect(screen.getByRole('columnheader', { name: '順位相関' })).toBeInTheDocument()
     expect(screen.getByText('予測誤差')).toBeInTheDocument()
     expect(screen.getByText('1位推奨の勝率')).toBeInTheDocument()
     expect(screen.getByText('人気1位との差')).toBeInTheDocument()
@@ -35,5 +39,19 @@ describe('ModelEvaluationSummary', () => {
   test('does not present missing return data as zero', () => {
     render(<ModelEvaluationSummary target="speed_deviation" legacyAuc={0.7} legacyLogloss={0.8} />)
     expect(screen.getAllByText('未計測').length).toBeGreaterThan(0)
+  })
+  test('labels physical-speed error and the actual known evaluation period', () => {
+    render(<ModelEvaluationSummary target="speed_deviation" evaluation={{
+      rmse_unit: 'm/s', evaluation_label: '既知期間の事後検証 · 回収率は別評価',
+      primary: { rank_correlation: 0.43032355, rmse: 0.23652994, win_roi: null },
+      details: { mae: 0.174072, evaluation_date_from: '20250105', evaluation_date_to: '20251228', evaluation_race_count: 3009 },
+      time_slices: [{ period: '2025', race_count: 3009, rank_correlation: 0.43032355, rmse: 0.23652994 }],
+    }} />)
+    expect(screen.getByText('(RMSE m/s)')).toBeInTheDocument()
+    expect(screen.getByText('平均誤差 (MAE m/s)')).toBeInTheDocument()
+    expect(screen.getByText('2025/01/05〜2025/12/28')).toBeInTheDocument()
+    expect(screen.getByText('既知期間の事後検証 · 回収率は別評価')).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'RMSE (m/s)' })).toBeInTheDocument()
+    expect(screen.queryByText('0.0%')).not.toBeInTheDocument()
   })
 })

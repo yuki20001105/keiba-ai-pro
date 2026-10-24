@@ -186,7 +186,7 @@ The pre-existing direct `/api/models/{model_id}/activate` path cannot serve as a
 
 The pre-existing synchronous `/api/train` and asynchronous `/api/train/start` artifact writers also cannot serve as an approval bypass. The Next proxy rejects before forwarding, FastAPI rejects before allocating a job and again at the write-capable training boundary, and the normal `/train` UI action is disabled. Compatibility requires local/test `APP_ENV` plus exact `MODEL_TRAINING_LOCAL_ENABLED=true`; deployed and unknown environments reject even when that flag is set.
 
-Direct `DELETE /api/models/{model_id}` cannot bypass artifact lifecycle governance either. Next and FastAPI reject deletion in deployed and unknown environments before local or Supabase mutation, and `/train` does not offer an enabled delete action. Compatibility requires local/test `APP_ENV` plus exact `MODEL_DELETION_LOCAL_ENABLED=true`; a durable retirement approval is a separate future contract from retrain and promotion approval.
+Direct `DELETE /api/models/{model_id}` cannot bypass artifact lifecycle governance either. Next and FastAPI reject deletion in deployed and unknown environments before local or Supabase mutation. The local launcher enables exact `MODEL_DELETION_LOCAL_ENABLED=true`, but the request must still originate from loopback, target a loopback model API, and carry a current-password Admin mode grant. `/train` enables deletion only for a model that is not currently in use, asks for confirmation, and the backend deletes only the exact model artifact and its evaluation sidecar. A durable deployed retirement approval remains a separate future contract from retrain and promotion approval.
 
 ## 10. Implemented repository boundary
 

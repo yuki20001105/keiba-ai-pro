@@ -10,22 +10,34 @@ from scraping import fetch_pipeline
 from scraping.quality import classify_race_quality
 
 
-def has_cached_result(race_id: str) -> bool:
-    """Inspect metadata only: never load a large HTML body just to plan work."""
+def cached_result_url(race_id: str, *, prefer_mobile: bool = False) -> str | None:
+    """Return a valid cached endpoint, keeping the caller's preference on ties.
+
+    Inspect metadata only; the ordinary fetcher must still read and parse the
+    original body. Never copy a mobile body under a desktop cache/source URL.
+    """
     try:
         with fetch_pipeline._cache_connection() as connection:
             if connection is None:
-                return False
+                return None
             urls = [f"https://{host}/race/{race_id}/" for host in (
                 "db.netkeiba.com", "db.sp.netkeiba.com",
             )]
-            return connection.execute(
-                "SELECT 1 FROM http_cache WHERE normalized_url IN (?,?) "
-                "AND status=200 AND expires_at>=? AND length(body)>0 LIMIT 1",
+            if prefer_mobile:
+                urls.reverse()
+            available = {row[0] for row in connection.execute(
+                "SELECT normalized_url FROM http_cache WHERE normalized_url IN (?,?) "
+                "AND status=200 AND expires_at>? AND length(body)>0",
                 (*urls, time.time()),
-            ).fetchone() is not None
+            )}
+            return next((url for url in urls if url in available), None)
     except sqlite3.Error:
-        return False
+        return None
+
+
+def has_cached_result(race_id: str) -> bool:
+    """Inspect metadata only: never load a large HTML body just to plan work."""
+    return cached_result_url(race_id) is not None
 
 
 async def fetch_acquisition_race(

@@ -382,6 +382,9 @@ def _normalize_backend_path(path: str) -> str:
 
 
 def _param_name_from_expr(expr: str) -> str:
+    encoded = re.fullmatch(r"encodeURIComponent\(\s*([A-Za-z_][\w.]*)\s*\)", expr)
+    if encoded:
+        expr = encoded.group(1)
     m = re.search(r"([A-Za-z_]\w*)\s*$", expr)
     return m.group(1) if m else "param"
 
@@ -389,6 +392,11 @@ def _param_name_from_expr(expr: str) -> str:
 def _is_path_param_expr(expr: str) -> bool:
     if not expr:
         return False
+    # Encoding a single already-validated identifier does not change the route
+    # shape. Do not accept arbitrary calls, concatenations, or query expressions.
+    encoded = re.fullmatch(r"encodeURIComponent\(\s*([A-Za-z_][\w.]*)\s*\)", expr)
+    if encoded:
+        expr = encoded.group(1)
     lowered = expr.lower()
     if "?" in expr or "searchparams" in lowered or "query" in lowered or "encodeuri" in lowered:
         return False
@@ -542,9 +550,30 @@ def _find_fastapi_policy_by_next_style(path: str, method: str, fastapi_routes: l
     return "Unclassified"
 
 
+def _extract_json_passthrough_helpers(ts: str) -> set[str]:
+    """Recognize only pure JSON wrappers which preserve both supplied values.
+
+    Matching a helper name alone would silently approve a wrapper that replaces
+    the upstream body or status. This deliberately narrow source contract accepts
+    the typed two-argument wrappers used by our no-store routes, with no statements
+    other than the return and only a literal Cache-Control header.
+    """
+    pattern = re.compile(
+        r"(?:^|\n)\s*function\s+([A-Za-z_]\w*)\s*\("
+        r"\s*([A-Za-z_]\w*)\s*:\s*unknown\s*,"
+        r"\s*(status)\s*:\s*number\s*\)\s*\{"
+        r"\s*return\s+NextResponse\.json\(\s*\2\s*,\s*\{"
+        r"\s*\3\s*,\s*headers\s*:\s*\{"
+        r"\s*(['\"])Cache-Control\4\s*:\s*(['\"])no-store\5\s*,?\s*\}"
+        r"\s*,?\s*\}\s*\)\s*;?\s*\}",
+    )
+    return {match.group(1) for match in pattern.finditer(ts)}
+
+
 def _infer_next_infos(route_path: str, ts: str, methods: list[str], fastapi_routes: list[FastAPIRouteInfo], source: str) -> list[NextRouteInfo]:
     out: list[NextRouteInfo] = []
     helper_policies = _extract_auth_helper_policies(ts)
+    passthrough_helpers = _extract_json_passthrough_helpers(ts)
 
     for method in methods:
         block = _extract_method_block(ts, method)
@@ -555,6 +584,15 @@ def _infer_next_infos(route_path: str, ts: str, methods: list[str], fastapi_rout
             re.search(r"NextResponse\.json\(\s*data\s*(?:,|\))", block)
             or re.search(r"\{\s*detail\s*:\s*(?:message|errorData\.detail|data\.detail)\s*\}", block)
         )
+        for helper in passthrough_helpers:
+            # Prove that this method returns the upstream data and status through
+            # the pure helper, not just that the helper exists somewhere in file.
+            if re.search(
+                rf"\breturn\s+{re.escape(helper)}\(\s*data\s*,\s*(?:response|res)\.status\s*\)",
+                block,
+            ):
+                status_passthrough = True
+                detail_passthrough = True
         proxy_targets = _extract_proxy_targets(block)
 
         backend_endpoint = ""

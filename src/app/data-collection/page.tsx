@@ -5,9 +5,14 @@ import Link from 'next/link'
 import { Logo } from '@/components/Logo'
 import { Toast } from '@/components/Toast'
 import { ScrapeJobRecovery } from '@/components/ScrapeJobRecovery'
+import { ScrapeBatchRecoveryNotice } from '@/components/ScrapeBatchRecoveryNotice'
 import { useAuth } from '@/contexts/AuthContext'
 import { authFetch } from '@/lib/auth-fetch'
 import { formatApiErrorDetail } from '@/lib/api-error'
+import { buildScrapeAcquisitionDisplay, scrapeQueueTitle } from '@/lib/scrape-acquisition-display'
+import { isScrapeRaceScope, scrapeRaceScopeLabel, supportsJraScrape, type ScrapeRaceScope } from '@/lib/scrape-race-scope'
+import { ACQUISITION_SAFETY_POLICY_LABEL, supportsSafeAcquisition } from '@/lib/scrape-safety-policy'
+import type { RetiredScrapeDraft } from '@/lib/scrape-retirement'
 import {
   aggregateDryRunResults,
   enumerateMonthDateRanges,
@@ -67,11 +72,13 @@ type StoredDryRunJob = {
   batchEndPeriod: string
   monthIndex: number
   totalMonths: number
+  raceScope?: ScrapeRaceScope
 }
 
 type FetchSummaryHistoryItem = {
   job_id: string
   status: string
+  progress?: unknown
   created_at?: string
   updated_at?: string
   cancel_requested_at?: string
@@ -82,6 +89,7 @@ type FetchSummaryHistoryItem = {
     force_rescrape?: boolean
     dry_run?: boolean
     server_batch?: boolean
+    race_scope?: ScrapeRaceScope
   }
   result?: unknown
   fetch_summary?: {
@@ -126,6 +134,8 @@ type ActiveScrapeJob = {
   startedAt: string | null
   cancelRequestedAt: string | null
   dryRun: boolean
+  progress?: unknown
+  raceScope?: ScrapeRaceScope
 }
 
 type PeriodValidation = {
@@ -148,6 +158,14 @@ class DryRunPollingError extends Error {
 const PERIOD_PATTERN = /^(\d{4})-(0[1-9]|1[0-2])$/
 const COMPLETED_CONTRACT_MESSAGE = '完了応答の形式を確認できないため、サーバージョブの状態確認が必要'
 
+function requestDateMonth(value: unknown): string | null {
+  if (typeof value !== 'string' || !/^\d{8}$/.test(value)) return null
+  const iso = `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`
+  const parsed = new Date(`${iso}T00:00:00Z`)
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== iso) return null
+  return iso.slice(0, 7)
+}
+
 function parseStoredDryRunJob(value: unknown, expectedOwnerUserId: string): StoredDryRunJob | null {
   if (!isObject(value)) return null
   const candidate = value as Partial<StoredDryRunJob>
@@ -161,6 +179,7 @@ function parseStoredDryRunJob(value: unknown, expectedOwnerUserId: string): Stor
   if (!Number.isInteger(candidate.monthIndex) || (candidate.monthIndex as number) < 0) return null
   if (!Number.isInteger(candidate.totalMonths) || (candidate.totalMonths as number) < 1) return null
   if ((candidate.monthIndex as number) >= (candidate.totalMonths as number)) return null
+  if (candidate.raceScope !== undefined && !isScrapeRaceScope(candidate.raceScope)) return null
   const [startYear, startMonth] = candidate.batchStartPeriod.split('-').map(Number)
   const [endYear, endMonth] = candidate.batchEndPeriod.split('-').map(Number)
   const expectedTotalMonths = (endYear - startYear) * 12 + endMonth - startMonth + 1
@@ -186,6 +205,8 @@ function isKnownJobStatus(value: unknown): value is ActiveScrapeJob['status'] | 
 
 function normalizeHistoryItem(value: unknown): FetchSummaryHistoryItem | null {
   if (!isObject(value) || typeof value.job_id !== 'string' || !value.job_id || !isKnownJobStatus(value.status)) return null
+  if (isObject(value.request_payload) && value.request_payload.race_scope !== undefined
+    && !isScrapeRaceScope(value.request_payload.race_scope)) return null
   const result = isObject(value.result) ? value.result : null
   const nestedSummary = result && isObject(result.fetch_summary) ? result.fetch_summary : null
   const directSummary = isObject(value.fetch_summary) ? value.fetch_summary : null
@@ -206,6 +227,8 @@ function activeJobFromHistory(item: FetchSummaryHistoryItem): ActiveScrapeJob | 
     startedAt: typeof item.created_at === 'string' && item.created_at ? item.created_at : null,
     cancelRequestedAt: typeof item.cancel_requested_at === 'string' ? item.cancel_requested_at : null,
     dryRun: request?.dry_run === true,
+    progress: item.progress,
+    raceScope: request?.race_scope ?? 'all',
   }
 }
 
@@ -218,6 +241,7 @@ function activeJobFromStoredDryRun(stored: StoredDryRunJob): ActiveScrapeJob {
     startedAt: new Date(stored.startedAt).toISOString(),
     cancelRequestedAt: null,
     dryRun: true,
+    raceScope: stored.raceScope ?? 'all',
   }
 }
 
@@ -352,6 +376,7 @@ export default function DataCollectionPage() {
     `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
   )
   const forceRescrape = false
+  const [raceScope, setRaceScope] = useState<ScrapeRaceScope>('jra')
 
   // A resume link lets an interrupted long-running batch reopen at the exact
   // month without relying on browser-specific month-input automation.
@@ -373,6 +398,7 @@ export default function DataCollectionPage() {
   const [dryRunResultReady, setDryRunResultReady] = useState(false)
   const [dryRunResult, setDryRunResult] = useState<ScrapeDryRunResult | null>(null)
   const [dryRunExecuted, setDryRunExecuted] = useState(false)
+  const [dryRunResultRaceScope, setDryRunResultRaceScope] = useState<ScrapeRaceScope | null>(null)
 
   useEffect(() => {
     if (dryRunStartedAt == null) return
@@ -387,6 +413,8 @@ export default function DataCollectionPage() {
   const [dryRunErrorMessage, setDryRunErrorMessage] = useState('')
   const [periodErrorMessage, setPeriodErrorMessage] = useState('')
   const [retrySnapshot, setRetrySnapshot] = useState<BatchRequestSnapshot | null>(null)
+  const [retryRaceScope, setRetryRaceScope] = useState<ScrapeRaceScope>('jra')
+  const [requestSelectionReady, setRequestSelectionReady] = useState(false)
   const [persistedUncertainty, setPersistedUncertainty] = useState<PersistedUncertaintyLock | null>(null)
   const [uncertaintyHydrated, setUncertaintyHydrated] = useState(false)
   const [uncertaintyStorageBlocked, setUncertaintyStorageBlocked] = useState(false)
@@ -434,6 +462,7 @@ export default function DataCollectionPage() {
       startedAt: job.acceptedAt,
       cancelRequestedAt: null,
       dryRun: false,
+      raceScope: job.raceScope ?? 'all',
     })
     setActiveJobHydrated(true)
     setActiveJobCheckError('')
@@ -450,15 +479,23 @@ export default function DataCollectionPage() {
     status: batchStatus,
     error: batchError,
     failureKind,
+    monitoringIssue,
     canRetry,
     canResubmit,
+    canRetire,
+    observationPhase,
+    retirementSupported,
+    retiredRequestDraft,
     isExecutionLocked,
     jobId: activeJobId,
+    raceScope: activeBatchRaceScope,
+    requestPeriod: activeBatchRequestPeriod,
     progress: batchProgress,
     result: batchResult,
     start: startBatchScrape,
     reconnect: reconnectBatchScrape,
     resubmit: resubmitBatchScrape,
+    retire: retireBatchScrape,
     requestBatchStop,
     clearExecutionLockAfterReconciliation,
   } = useBatchScrape(batchScrapeOptions)
@@ -482,6 +519,27 @@ export default function DataCollectionPage() {
     || batchStatus === 'queued'
     || batchStatus === 'running'
     || batchStatus === 'cancelling'
+  // Disabled controls show the existing request, not unrelated new-form defaults.
+  // Keep the user's draft untouched so it returns after the active job finishes.
+  const serverStartMonth = requestDateMonth(activeServerJob?.startDate)
+  const serverEndMonth = requestDateMonth(activeServerJob?.endDate)
+  const hasConfirmedDisplayPeriod = serverStartMonth !== null && serverEndMonth !== null
+    && validatePeriodRange(serverStartMonth, serverEndMonth).ok
+  const reservedDisplayPeriod = activeJobId && activeBatchRequestPeriod?.jobId === activeJobId
+    && (isBatchBusy || isExecutionLocked) ? activeBatchRequestPeriod : null
+  const displayedStartPeriod = hasConfirmedDisplayPeriod ? serverStartMonth
+    : reservedDisplayPeriod?.startPeriod ?? startPeriod
+  const displayedEndPeriod = hasConfirmedDisplayPeriod ? serverEndMonth
+    : reservedDisplayPeriod?.endPeriod ?? endPeriod
+  const displayedRaceScope = activeServerJob?.raceScope
+    ?? (reservedDisplayPeriod ? activeBatchRaceScope : null) ?? raceScope
+  const batchAcceptanceVerified = activeServerJob?.jobId === activeJobId
+  const isCheckingPreviousRequest = batchStatus === 'queued' && !batchAcceptanceVerified
+    && observationPhase === 'monitoring'
+  const acquisitionDisplay = batchStatus === 'running' && !activeJobCheckError
+    && batchAcceptanceVerified && !activeServerJob?.dryRun
+    ? buildScrapeAcquisitionDisplay({ status: activeServerJob?.status, progress: activeServerJob?.progress })
+    : null
   const serverJobBlocksExecution = !dryRunStorageKey
     || !activeJobHydrated
     || activeJobConflictPending
@@ -502,6 +560,8 @@ export default function DataCollectionPage() {
   // ローカルAPI稼働チェック
   const [localApiStatus, setLocalApiStatus] = useState<LocalApiStatus>('checking')
   const [localApiReason, setLocalApiReason] = useState('')
+  const [jraScopeAvailable, setJraScopeAvailable] = useState(false)
+  const [safetyPolicyAvailable, setSafetyPolicyAvailable] = useState(false)
 
   const statusMeta: Record<LocalApiStatus, { label: string; dotClass: string; textClass: string }> = {
     checking: { label: '確認中', dotClass: 'bg-[#555] animate-pulse', textClass: 'text-[#555]' },
@@ -512,6 +572,7 @@ export default function DataCollectionPage() {
   }
 
   const isApiUnavailable = localApiStatus === 'unhealthy' || localApiStatus === 'unknown'
+  const isScopeUnavailable = raceScope === 'jra' && !jraScopeAvailable
   const effectivePeriodError = periodErrorMessage || (!isPeriodValid ? periodValidation.message || '' : '')
   // New parent jobs have an owner-scoped durable ID. Do not create a second,
   // global/jobless lock on a network interruption or when this screen unmounts.
@@ -778,8 +839,9 @@ export default function DataCollectionPage() {
   const checkLocalApi = async () => {
     setLocalApiStatus('checking')
     setLocalApiReason('')
+    setSafetyPolicyAvailable(false)
     try {
-      const res = await authFetch('/api/scrape/health', { signal: AbortSignal.timeout(4000) })
+      const res = await authFetch('/api/scrape/health', { cache: 'no-store', signal: AbortSignal.timeout(4000) })
       const data = await res.json().catch(() => ({}))
       const status = String(data?.status || '') as ScrapeHealthStatus
       const resolved: ScrapeHealthStatus = ['healthy', 'degraded', 'unhealthy', 'unknown'].includes(status)
@@ -788,10 +850,43 @@ export default function DataCollectionPage() {
           ? 'unknown'
           : 'unhealthy'
       setLocalApiStatus(resolved)
+      setJraScopeAvailable(res.ok && supportsJraScrape(data))
+      setSafetyPolicyAvailable(res.ok && supportsSafeAcquisition(data))
       setLocalApiReason(typeof data?.reason === 'string' ? data.reason : '')
     } catch {
       setLocalApiStatus('unknown')
+      setJraScopeAvailable(false)
+      setSafetyPolicyAvailable(false)
       setLocalApiReason('health check request failed')
+    }
+  }
+
+  // Recheck the running build before every new acquisition/re-send, not just
+  // when this page opened. Observing or retiring an old request remains possible.
+  const verifyAcquisitionSafety = async (scope: ScrapeRaceScope, signal?: AbortSignal) => {
+    let response: Response
+    try {
+      response = await authFetch('/api/health', {
+        cache: 'no-store', signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(4000)])
+          : AbortSignal.timeout(4000),
+      })
+    } catch (error) {
+      setSafetyPolicyAvailable(false)
+      if (signal?.aborted) throw error
+      setLocalApiStatus('unknown')
+      throw new Error('安全設定を確認できないため依頼を送信していません。API状態を再確認してください。')
+    }
+    const payload: unknown = await response.json().catch(() => null)
+    const jraSupported = response.ok && supportsJraScrape(payload)
+    const policySupported = response.ok && supportsSafeAcquisition(payload)
+    setJraScopeAvailable(jraSupported)
+    setSafetyPolicyAvailable(policySupported)
+    if (scope === 'jra' && !jraSupported) {
+      throw new Error('中央限定取得はサーバーへの反映待ちです。対象を保証できないため依頼を送信していません。')
+    }
+    if (!policySupported) {
+      throw new Error('安全設定はサーバーへの反映待ちです。新しい取得・再送は開始していません。API状態を再確認してください。')
     }
   }
 
@@ -999,6 +1094,7 @@ export default function DataCollectionPage() {
             startDate: activeJob.startDate,
             endDate: activeJob.endDate,
             acceptedAt: activeJob.startedAt || new Date().toISOString(),
+            raceScope: activeJob.raceScope ?? 'all',
           }).catch(() => { /* The hook keeps the ID and displays the actual failure. */ })
         }
 
@@ -1026,6 +1122,7 @@ export default function DataCollectionPage() {
                     setDryRunResult(normalized)
                     setDryRunResultReady(true)
                     setDryRunExecuted(true)
+                    setDryRunResultRaceScope(stored.raceScope ?? 'all')
                   } catch {
                     // A completed non-Dry-run job or malformed result is ignored here.
                   }
@@ -1266,6 +1363,8 @@ export default function DataCollectionPage() {
             ? statusData.cancel_requested_at
             : null,
           dryRun: true,
+          raceScope: isScrapeRaceScope(request?.race_scope)
+            ? request.race_scope : stored.raceScope ?? 'all',
         })
         setActiveJobHydrated(true)
         setActiveJobCheckError('')
@@ -1301,6 +1400,7 @@ export default function DataCollectionPage() {
         setDryRunResult(normalized)
         setDryRunResultReady(true)
         setDryRunExecuted(true)
+        setDryRunResultRaceScope(stored.raceScope ?? 'all')
         setToast({ visible: true, message: 'Dry-run完了（HTTPアクセスなし）', type: 'success' })
       } else {
         setDryRunResult(null)
@@ -1389,8 +1489,67 @@ export default function DataCollectionPage() {
   }
 
   // 🚀 期間指定バッチスクレイピング（バリデーション・確認ダイアログのみ担当）
-  const handlePeriodBatchScrape = async (override?: BatchRequestSnapshot) => {
+  const appliedRetiredDraftRef = useRef<RetiredScrapeDraft | null>(null)
+  const applyRetiredDraft = useCallback((retired: RetiredScrapeDraft) => {
+    setStartPeriod(retired.startPeriod)
+    setEndPeriod(retired.endPeriod)
+    // This is a new editable draft, not a change to the retired server request.
+    setRaceScope('jra')
+    setRequestSelectionReady(true)
+    setPeriodErrorMessage('')
+    setRetrySnapshot(null)
+    setDryRunResultReady(false)
+    setDryRunExecuted(false)
+    setDryRunResult(null)
+    setDryRunResultRaceScope(null)
+    setDryRunErrorMessage('')
+    setDryRunError('')
+    setCancelError('')
+    setReconcileMessage('')
+  }, [])
+
+  // A sealed retirement received by another tab or recovered after reload can
+  // also restore the editable draft, without silently starting any acquisition.
+  useEffect(() => {
+    if (!retiredRequestDraft) {
+      appliedRetiredDraftRef.current = null
+      return
+    }
+    if (appliedRetiredDraftRef.current === retiredRequestDraft) return
+    appliedRetiredDraftRef.current = retiredRequestDraft
+    applyRetiredDraft(retiredRequestDraft)
+    void loadFetchSummaryHistory(false)
+  }, [retiredRequestDraft, applyRetiredDraft, loadFetchSummaryHistory])
+
+  const handleSelectRequestAgain = async () => {
+    const previousJobId = activeJobId
+    try {
+      const retired = await retireBatchScrape(() => window.confirm(
+        '前回の未受付依頼を整理して選び直しますか？\nサーバーに取消記録を残し、遅れて届く受付や別タブからの再送を防ぎます。\n保存済みデータは削除しません。新しい取得も開始しません。',
+      ))
+      if (!retired) return
+      appliedRetiredDraftRef.current = retired
+      applyRetiredDraft(retired)
+      setActiveServerJob(current => current?.jobId === previousJobId ? null : current)
+      // Recheck for another owner job before enabling a new request.
+      void loadFetchSummaryHistory(false)
+    } catch {
+      // The hook retains the original ID/lock and publishes the verified reason.
+    }
+  }
+
+  const handlePeriodBatchScrape = async (
+    override?: BatchRequestSnapshot, requestedRaceScope: ScrapeRaceScope = raceScope,
+  ) => {
     if (isOperationBusy) return
+    if (requestedRaceScope === 'jra' && !jraScopeAvailable) {
+      showToast('中央限定取得はサーバーへの反映待ちです。取得は開始していません。', 'error')
+      return
+    }
+    if (!safetyPolicyAvailable) {
+      showToast('安全設定はサーバーへの反映待ちです。取得は開始していません。', 'error')
+      return
+    }
     if (executeBlockedByUncertainty) {
       showToast('実行状態を確認できません。履歴またはjob statusを確認するまで新規実行しないでください。', 'error')
       return
@@ -1424,10 +1583,12 @@ export default function DataCollectionPage() {
     }
 
     const confirmationNote = dryRunExecuted ? '' : '\n事前確認は未完了です。'
-    if (!confirm(`${startYear}年${startMonth}月～${endYear}年${endMonth}月（${totalMonths}ヶ月）を取得しますか？${confirmationNote}`)) return
+    if (!confirm(`${scrapeRaceScopeLabel(requestedRaceScope)}: ${startYear}年${startMonth}月～${endYear}年${endMonth}月（${totalMonths}ヶ月）を取得しますか？${confirmationNote}`)) return
 
+    setRequestSelectionReady(false)
     try {
-      const result = await startBatchScrape(target.startPeriod, target.endPeriod, target.forceRescrape)
+      await verifyAcquisitionSafety(requestedRaceScope)
+      const result = await startBatchScrape(target.startPeriod, target.endPeriod, target.forceRescrape, requestedRaceScope)
       showToast(`完了 · ${result.races_collected}レース · ${formatMaybeSeconds(result.elapsed_time)}`)
       setRetrySnapshot(null)
       setReconcileMessage('')
@@ -1454,7 +1615,22 @@ export default function DataCollectionPage() {
         setReconcileMessage(error.message)
       }
       setRetrySnapshot(safeToRetry ? target : null)
+      setRetryRaceScope(requestedRaceScope)
       showToast(`取得エラー: ${error.message}`, 'error')
+    }
+  }
+
+  const handleBatchResubmit = async () => {
+    if (isOperationBusy || !safetyPolicyAvailable) return
+    try {
+      // An active server job is already blocked by isOperationBusy. Re-send
+      // only the saved request's scope (legacy requests retain the all default).
+      await verifyAcquisitionSafety(activeBatchRaceScope ?? 'all')
+      await resubmitBatchScrape(() => window.confirm(
+        '受付記録が見つからない同じ依頼を再送しますか？期間・対象・ジョブIDは変更しません。',
+      ))
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '安全設定を確認できないため再送していません。', 'error')
     }
   }
 
@@ -1582,6 +1758,14 @@ export default function DataCollectionPage() {
 
   const handleDryRun = async () => {
     if (isOperationBusy || !dryRunStorageKey || !userId) return
+    if (isScopeUnavailable) {
+      showToast('中央限定取得はサーバーへの反映待ちです。事前確認は開始していません。', 'error')
+      return
+    }
+    if (!safetyPolicyAvailable) {
+      showToast('安全設定はサーバーへの反映待ちです。事前確認は開始していません。', 'error')
+      return
+    }
     const validation = validatePeriodRange(startPeriod, endPeriod)
     if (!validation.ok) {
       const message = validation.message || '期間指定が不正です'
@@ -1614,6 +1798,7 @@ export default function DataCollectionPage() {
           throw new DryRunPollingError(DRY_RUN_CANCELLED_MESSAGE, true, true)
         }
         if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError')
+        await verifyAcquisitionSafety(raceScope, controller.signal)
         setDryRunPendingMessage(`確認中 ${index + 1}/${months.length} · ${month.label}`)
         const startRes = await authFetch('/api/scrape', {
           method: 'POST',
@@ -1623,6 +1808,7 @@ export default function DataCollectionPage() {
             end_date: month.endDateStr,
             force_rescrape: forceRescrape,
             dry_run: true,
+            race_scope: raceScope,
           }),
           signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]),
         })
@@ -1653,6 +1839,7 @@ export default function DataCollectionPage() {
           batchEndPeriod: endPeriod,
           monthIndex: index,
           totalMonths: months.length,
+          raceScope,
         }
         setActiveServerJob(activeJobFromStoredDryRun(storedJob))
         setActiveJobHydrated(true)
@@ -1688,6 +1875,7 @@ export default function DataCollectionPage() {
       }
 
       setDryRunResult(aggregateDryRunResults(monthlyResults))
+      setDryRunResultRaceScope(raceScope)
       setDryRunResultReady(true)
       const completedFullRange = monthlyResults.length === months.length
       setDryRunExecuted(completedFullRange)
@@ -1744,7 +1932,8 @@ export default function DataCollectionPage() {
             ホーム
           </Link>
           {/* コンパクトAPI状態 */}
-          <div className="flex items-center gap-2 px-3 py-1.5 bg-[#111] border border-[#1e1e1e] rounded-full">
+          <div className="flex items-center gap-2 px-3 py-1.5 bg-[#111] border border-[#1e1e1e] rounded-full"
+            title="サーバー接続の状態です。データ取得の受付・進捗は別に確認します。">
             <span className={`w-1.5 h-1.5 rounded-full ${statusMeta[localApiStatus].dotClass}`} />
             <span className={`text-xs font-medium ${statusMeta[localApiStatus].textClass}`}>
               API {statusMeta[localApiStatus].label}
@@ -1761,6 +1950,7 @@ export default function DataCollectionPage() {
               </svg>
             </button>
           </div>
+
         </div>
       </header>
 
@@ -1785,20 +1975,28 @@ export default function DataCollectionPage() {
         <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-6 space-y-4">
           <h2 className="text-sm font-medium text-white">期間</h2>
 
+          {requestSelectionReady && (
+            <div className="rounded border border-[#1b4330] bg-[#0b1b14] px-3 py-2 text-xs leading-relaxed text-[#a7f3d0]"
+              role="status" data-testid="scrape-request-selection-ready">
+              前回の依頼を整理しました。期間は引き継ぎ、取得対象は中央競馬のみを初期選択しています。
+              対象と期間を確認して「取得開始」を押してください。まだ取得は開始していません。
+            </div>
+          )}
+
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
               <label htmlFor="start-period" className="block text-xs text-[#666] mb-2">開始</label>
               <input
                 id="start-period"
                 type="month"
-                value={startPeriod}
+                value={displayedStartPeriod}
                 data-testid="start-period-input"
                 disabled={isOperationBusy || executeBlockedByUncertainty}
                 onChange={e => {
                   setStartPeriod(e.target.value)
                   setPeriodErrorMessage('')
                 }}
-                max={endPeriod}
+                max={displayedEndPeriod}
                 className="w-full px-4 py-3 bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg text-white focus:outline-none focus:border-[#333] transition-colors"
               />
             </div>
@@ -1807,20 +2005,55 @@ export default function DataCollectionPage() {
               <input
                 id="end-period"
                 type="month"
-                value={endPeriod}
+                value={displayedEndPeriod}
                 data-testid="end-period-input"
                 disabled={isOperationBusy || executeBlockedByUncertainty}
                 onChange={e => {
                   setEndPeriod(e.target.value)
                   setPeriodErrorMessage('')
                 }}
-                min={startPeriod}
+                min={displayedStartPeriod}
                 className="w-full px-4 py-3 bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg text-white focus:outline-none focus:border-[#333] transition-colors"
               />
             </div>
           </div>
 
-          {activeServerJob && (
+          <p className="text-xs text-[#93a9bf]" data-testid="scrape-repair-mode">
+            正常データは再利用し、不足・未確定結果を補完します。
+          </p>
+          <p className={`text-xs ${safetyPolicyAvailable ? 'text-[#93a9bf]' : 'text-[#facc15]'}`}
+            role="status" data-testid="scrape-safety-policy">
+            {safetyPolicyAvailable ? ACQUISITION_SAFETY_POLICY_LABEL
+              : localApiStatus === 'checking' ? '安全設定を確認中です。取得は開始していません。'
+                : isApiUnavailable ? '安全設定を確認できません。API状態を再確認してください。既存ジョブの監視・停止・依頼整理は継続できます。'
+                : '安全設定はサーバーへの反映待ちです。API状態を再確認してください。既存ジョブの監視・停止・依頼整理は継続できます。'}
+          </p>
+          <div className="flex items-center gap-3 text-xs">
+            <label htmlFor="race-scope" className="text-[#888]">取得対象</label>
+            <select
+              id="race-scope"
+              data-testid="scrape-race-scope"
+              value={displayedRaceScope}
+              disabled={isOperationBusy || executeBlockedByUncertainty}
+              onChange={event => {
+                if (!isScrapeRaceScope(event.target.value)) return
+                setRaceScope(event.target.value)
+                setDryRunExecuted(false)
+                setDryRunResultReady(false)
+              }}
+              className="rounded border border-[#333] bg-[#0a0a0a] px-3 py-2 text-white disabled:opacity-50"
+            >
+              <option value="jra">中央競馬のみ</option>
+              <option value="all">中央・地方競馬</option>
+            </select>
+          </div>
+          {isScopeUnavailable && (
+            <p className="text-xs text-[#facc15]" role="status" data-testid="jra-scrape-server-pending">
+              中央限定取得はサーバーへの反映待ちです。既存ジョブの監視・再接続は継続できます。
+            </p>
+          )}
+
+          {activeServerJob && !(batchStatus === 'error' && activeServerJob.jobId === activeJobId) && (
             <div
               className="space-y-2 rounded border border-[#1e3a5f] bg-[#081522] px-4 py-3 text-xs text-[#bfdbfe]"
               data-testid="active-scrape-job"
@@ -1829,6 +2062,8 @@ export default function DataCollectionPage() {
                 <div className="font-medium text-white" role="status" aria-live="polite">
                   {activeServerJob.status === 'cancelling'
                     ? '停止中'
+                    : activeServerJob.status === 'queued'
+                      ? 'サーバー受付済み・開始待ち'
                     : activeServerJob.status === 'waiting_resources' || activeServerJob.status === 'recovering'
                       ? 'サーバーで待機中'
                     : dryRunLoading && activeServerJob.dryRun
@@ -1839,6 +2074,7 @@ export default function DataCollectionPage() {
                 </div>
               </div>
               <div className="grid grid-cols-1 gap-1 text-[#93a9bf] sm:grid-cols-2">
+                <div data-testid="active-scrape-race-scope">対象: {scrapeRaceScopeLabel(activeServerJob.raceScope ?? 'all')}</div>
                 <div>
                   期間: {formatSummaryDate(activeServerJob.startDate)}～{formatSummaryDate(activeServerJob.endDate)}
                 </div>
@@ -1902,7 +2138,7 @@ export default function DataCollectionPage() {
             </div>
           )}
 
-          {!activeServerJob && (activeJobCheckError || dryRunStorageError) && (
+          {!activeServerJob && (dryRunStorageError || (activeJobCheckError && batchStatus !== 'error')) && (
             <div
               className="space-y-2 rounded border border-[#4a3b0f] bg-[#201a08] px-3 py-2 text-xs text-[#facc15]"
               role="alert"
@@ -1924,9 +2160,9 @@ export default function DataCollectionPage() {
             <button
               onClick={handleDryRun}
               data-testid="dry-run-button"
-              disabled={isOperationBusy || isApiUnavailable || !isPeriodValid || executeBlockedByUncertainty}
+              disabled={isOperationBusy || isApiUnavailable || isScopeUnavailable || !safetyPolicyAvailable || !isPeriodValid || executeBlockedByUncertainty}
               className={`flex items-center gap-2 px-4 py-2.5 rounded-lg font-medium text-sm transition-colors ${
-                isOperationBusy || isApiUnavailable || !isPeriodValid || executeBlockedByUncertainty
+                isOperationBusy || isApiUnavailable || isScopeUnavailable || !safetyPolicyAvailable || !isPeriodValid || executeBlockedByUncertainty
                   ? 'bg-[#222] text-[#555] cursor-not-allowed'
                   : 'bg-[#1e293b] text-[#dbeafe] hover:bg-[#334155]'
               }`}
@@ -1937,9 +2173,9 @@ export default function DataCollectionPage() {
             <button
               onClick={() => handlePeriodBatchScrape()}
               data-testid="execute-button"
-              disabled={isOperationBusy || isApiUnavailable || !isPeriodValid || executeBlockedByUncertainty}
+              disabled={isOperationBusy || isApiUnavailable || isScopeUnavailable || !safetyPolicyAvailable || !isPeriodValid || executeBlockedByUncertainty}
               className={`flex items-center gap-2 px-6 py-2.5 rounded-lg font-medium text-sm transition-colors ${
-                isOperationBusy || isApiUnavailable || !isPeriodValid || executeBlockedByUncertainty
+                isOperationBusy || isApiUnavailable || isScopeUnavailable || !safetyPolicyAvailable || !isPeriodValid || executeBlockedByUncertainty
                   ? 'bg-[#222] text-[#555] cursor-not-allowed'
                   : 'bg-white text-black hover:bg-[#eee]'
               }`}
@@ -1950,7 +2186,10 @@ export default function DataCollectionPage() {
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                   </svg>
-                  取得中...
+                  {batchStatus === 'queued'
+                    ? isCheckingPreviousRequest ? '前回の依頼を確認中...'
+                      : batchAcceptanceVerified ? '開始待ち...' : '受付確認中...'
+                    : '取得中...'}
                 </>
               ) : !activeJobHydrated || !uncertaintyHydrated || !reviewHydrated || activeJobConflictPending
                 ? '状態確認中'
@@ -1960,6 +2199,10 @@ export default function DataCollectionPage() {
                     ? '状態確認待ち'
                     : isApiUnavailable
                       ? 'API確認不可'
+                      : isScopeUnavailable
+                        ? '中央反映待ち'
+                      : !safetyPolicyAvailable
+                        ? '安全設定確認待ち'
                       : !isPeriodValid
                         ? '期間不正'
                         : executeBlockedByUncertainty
@@ -2149,6 +2392,7 @@ export default function DataCollectionPage() {
             >
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h3 className="text-xs font-medium text-white">事前確認</h3>
+                {dryRunResultRaceScope && <span className="text-[11px] text-[#93a9bf]" data-testid="dry-run-race-scope">対象: {scrapeRaceScopeLabel(dryRunResultRaceScope)}</span>}
                 {dryRunPendingMessage && <span className="text-[11px] text-[#93c5fd]">{dryRunPendingMessage}</span>}
               </div>
 
@@ -2162,22 +2406,32 @@ export default function DataCollectionPage() {
                   <div className="mt-1 text-lg font-semibold text-white">{dryRunResult.dry_run.already_covered_count.toLocaleString()}</div>
                 </div>
                 <div className="rounded border border-[#1e1e1e] bg-[#0b0f14] p-3">
-                  <div className="text-[#666]">時間</div>
+                  <div className="text-[#666]">通信の最低目安</div>
                   <div className="mt-1 text-lg font-semibold text-white">{formatMaybeSeconds(dryRunResult.dry_run.estimated_runtime_sec)}</div>
                 </div>
               </div>
+              <p className="text-[11px] text-[#777]">
+                一覧確認の通信間隔に基づく目安です。レース・馬情報の追加取得、再試行、解析・保存を含む全体の所要時間ではありません。
+              </p>
             </div>
           )}
 
           {/* 実行状態パネル */}
           {batchStatus !== 'idle' && (
             <div className="rounded-lg border border-[#1e1e1e] bg-[#0a0a0a] p-4 space-y-2" data-testid="batch-status-panel">
+              {batchStatus !== 'error' && activeJobId && activeBatchRaceScope && (
+                <div className="text-xs text-[#93a9bf]" data-testid="batch-scrape-race-scope">
+                  依頼対象: {scrapeRaceScopeLabel(activeBatchRaceScope)}
+                </div>
+              )}
               {(batchStatus === 'queued' || batchStatus === 'running' || batchStatus === 'cancelling') && (
                 <div className="space-y-1.5" role="status" aria-live="polite">
                   <div className="flex justify-between text-xs text-[#888]">
                     <span>
                       {batchStatus === 'queued'
-                        ? '開始待ち'
+                        ? isCheckingPreviousRequest
+                          ? '前回の依頼を確認中・取得は開始していません'
+                          : scrapeQueueTitle(batchAcceptanceVerified)
                         : batchStatus === 'cancelling'
                           ? '停止処理中'
                           : '取得実行中'}
@@ -2185,11 +2439,13 @@ export default function DataCollectionPage() {
                     </span>
                     <span className="flex gap-3">
                       {batchProgress.eta && <span className="text-yellow-400">{batchProgress.eta}</span>}
-                      <span>{batchProgress.current}%</span>
+                      {batchAcceptanceVerified && <span>{batchProgress.current}%</span>}
                     </span>
                   </div>
                   <div className="text-xs text-[#666]">
-                    {batchProgress.message || (
+                    {batchStatus === 'queued' && !batchAcceptanceVerified
+                      ? '保存したジョブIDで受付状態を確認しています。新しい取得は開始しません。'
+                      : batchProgress.message || (
                       batchStatus === 'queued'
                         ? '開始待ち'
                         : batchStatus === 'cancelling'
@@ -2197,7 +2453,15 @@ export default function DataCollectionPage() {
                           : '取得実行中'
                     )}
                   </div>
-                  <div className="grid grid-cols-2 gap-2 pt-1 text-[11px] md:grid-cols-4" data-testid="scrape-progress-counters">
+                  {acquisitionDisplay && (
+                    <div className="space-y-1 text-[11px] text-[#93a9bf]" data-testid="scrape-acquisition-policy">
+                      <div>{acquisitionDisplay.parallelism}</div>
+                      {(acquisitionDisplay.speed || acquisitionDisplay.interval) && (
+                        <div>{[acquisitionDisplay.speed, acquisitionDisplay.interval].filter(Boolean).join(' · ')}</div>
+                      )}
+                    </div>
+                  )}
+                  {batchAcceptanceVerified && <div className="grid grid-cols-2 gap-2 pt-1 text-[11px] md:grid-cols-4" data-testid="scrape-progress-counters">
                     <div className="rounded border border-[#1e1e1e] px-2 py-1.5 text-[#aaa]">
                       レース <span className="text-white">{batchProgress.newSavedRaces ?? 0}</span>
                     </div>
@@ -2210,8 +2474,8 @@ export default function DataCollectionPage() {
                     <div className="rounded border border-[#1e1e1e] px-2 py-1.5 text-[#aaa]">
                       非開催 <span className="text-white">{batchProgress.verifiedNoRaceDates ?? 0}</span>
                     </div>
-                  </div>
-                  <div
+                  </div>}
+                  {batchAcceptanceVerified && <div
                     className="w-full bg-[#1e1e1e] rounded-full h-1.5 overflow-hidden"
                     role="progressbar"
                     aria-label="取得進捗"
@@ -2220,7 +2484,7 @@ export default function DataCollectionPage() {
                     aria-valuenow={batchProgress.current}
                   >
                     <div className="bg-white h-1.5 rounded-full transition-all duration-500" style={{ width: `${batchProgress.current}%` }} />
-                  </div>
+                  </div>}
                 </div>
               )}
 
@@ -2237,60 +2501,26 @@ export default function DataCollectionPage() {
               )}
 
               {batchStatus === 'error' && (
-                <div className="space-y-2" role="alert">
-                  <div className="text-xs text-[#fca5a5]">
-                    {(() => {
-                      const titles: Record<string, string> = {
-                        execution: '取得失敗',
-                        start_rejected: '開始拒否',
-                        monitoring: '再接続が必要です',
-                        authentication: '認証の再確認が必要です',
-                        client_stop: 'ブラウザ側の監視停止',
-                        validation: '入力エラー',
-                        busy: '取得処理中',
-                      }
-                      const key = typeof failureKind === 'string' ? failureKind : 'execution'
-                      const title = titles[key] || '取得失敗'
-                      return `${title}: ${batchError || '不明なエラー'}`
-                    })()}
-                  </div>
-                  {activeJobId && (failureKind === 'monitoring' || failureKind === 'authentication') && (
-                    <button
-                      type="button"
-                      data-testid="reconnect-batch-button"
-                      onClick={() => void reconnectBatchScrape().catch(() => {})}
-                      disabled={batchLoading}
-                      className="rounded bg-white px-3 py-1.5 text-xs font-medium text-black disabled:opacity-50"
-                    >
-                      状態を再確認
-                    </button>
-                  )}
-                  {canRetry && retrySnapshot && (failureKind === 'execution' || failureKind === 'start_rejected') && (
-                    <button
-                      data-testid="retry-button"
-                      onClick={() => handlePeriodBatchScrape(retrySnapshot)}
-                      disabled={isOperationBusy || isApiUnavailable}
-                      className={`px-4 py-2 rounded text-xs font-medium transition-colors ${
-                        isOperationBusy || isApiUnavailable
-                          ? 'bg-[#222] text-[#555] cursor-not-allowed'
-                          : 'bg-white text-black hover:bg-[#eee]'
-                      }`}
-                    >
-                      再実行
-                    </button>
-                  )}
-                  {canResubmit && (
-                    <button
-                      type="button"
-                      data-testid="resubmit-batch-button"
-                      disabled={batchLoading}
-                      onClick={() => void resubmitBatchScrape(() => window.confirm(
-                        '未受付の同じ依頼を再送しますか？期間とジョブIDは変更しません。',
-                      )).catch(() => {})}
-                      className="rounded border border-[#333] px-3 py-1.5 text-xs text-white disabled:opacity-50"
-                    >同じ依頼を再送</button>
-                  )}
-                </div>
+                <ScrapeBatchRecoveryNotice
+                  failureKind={failureKind}
+                  monitoringIssue={monitoringIssue}
+                  error={batchError}
+                  jobId={activeJobId}
+                  acceptanceVerified={batchAcceptanceVerified}
+                  raceScope={activeBatchRaceScope ?? activeServerJob?.raceScope ?? null}
+                  startPeriod={displayedStartPeriod}
+                  endPeriod={displayedEndPeriod}
+                  loading={batchLoading}
+                  canRetry={canRetry && Boolean(retrySnapshot)}
+                  retryDisabled={isOperationBusy || isApiUnavailable || !safetyPolicyAvailable}
+                  canResubmit={canResubmit && safetyPolicyAvailable}
+                  canRetire={canRetire}
+                  retirementSupported={retirementSupported}
+                  onReconnect={() => void reconnectBatchScrape().catch(() => {})}
+                  onRetry={() => retrySnapshot && void handlePeriodBatchScrape(retrySnapshot, retryRaceScope)}
+                  onResubmit={() => void handleBatchResubmit()}
+                  onRetire={() => void handleSelectRequestAgain()}
+                />
               )}
             </div>
           )}
@@ -2338,6 +2568,9 @@ export default function DataCollectionPage() {
         <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-5">
           <div className="mb-4">
             <h2 className="text-sm font-medium text-white">保存済み</h2>
+            <p className="mt-2 text-xs leading-relaxed text-[#888]">
+              取得したデータは次回のモデル作成と再予測に利用できます。取得だけでは使用中モデルは更新されません。
+            </p>
           </div>
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -2356,7 +2589,10 @@ export default function DataCollectionPage() {
               </div>
             </div>
           </div>
-
+          <div className="mt-4 flex flex-wrap gap-4 text-xs">
+            <Link href="/train" className="text-white hover:underline">このデータでモデルを作成 →</Link>
+            <Link href="/predict-batch" className="text-[#93c5fd] hover:underline">最新データで予測 →</Link>
+          </div>
         </div>
       </main>
 

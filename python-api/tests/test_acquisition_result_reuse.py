@@ -9,7 +9,7 @@ from scraping.quality import classify_race_quality
 
 def complete_race():
     return {
-        "race_info": {"race_id": "202001010101", "date": "20200104", "venue": "Tokyo", "distance": 1600},
+        "race_info": {"race_id": "202001010101", "date": "20200104", "venue": "Tokyo", "distance": 1600, "num_horses": 1},
         "horses": [{
             "horse_id": "2017000001", "horse_name": "Horse", "horse_number": 1,
             "finish_position": 1, "finish_time": "1:34.1", "odds": 2.0,

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { authFetch } from '@/lib/auth-fetch'
 import {
   buildLocalPredictionExplanation,
@@ -11,6 +11,18 @@ import type { FeatureContribution, RacePredictResult } from '@/lib/race-analysis
 
 type Props = {
   result: RacePredictResult
+}
+
+// The API advertises a 30 second budget. Allow a small transport/auth margin.
+const NARRATIVE_REQUEST_TIMEOUT_MS = 35_000
+
+function readNarrative(value: unknown): NarrativeResponse | null {
+  if (!value || typeof value !== 'object') return null
+  const record = value as Record<string, unknown>
+  return typeof record.explanation === 'string' && record.explanation.trim().length > 0
+    && typeof record.source === 'string' && ['openai', 'gemini', 'fallback'].includes(record.source)
+    ? { explanation: record.explanation, source: record.source as NarrativeResponse['source'] }
+    : null
 }
 
 function ContributionList({
@@ -54,9 +66,16 @@ export function RaceExplanationPanel({ result }: Props) {
     [result.predictions],
   )
   const [horseNumber, setHorseNumber] = useState(candidates[0]?.horse_number ?? 0)
-  const [narrative, setNarrative] = useState<NarrativeResponse | null>(null)
-  const [narrativeLoading, setNarrativeLoading] = useState(false)
-  const [narrativeError, setNarrativeError] = useState('')
+  const [narrativeState, setNarrativeState] = useState<{ identity: string; value: NarrativeResponse } | null>(null)
+  const [pendingIdentity, setPendingIdentity] = useState<string | null>(null)
+  const [narrativeFailure, setNarrativeFailure] = useState<{ identity: string; message: string } | null>(null)
+  const generationRef = useRef(0)
+  const requestControllerRef = useRef<AbortController | null>(null)
+  const stopNarrativeRequest = useCallback(() => {
+    ++generationRef.current
+    requestControllerRef.current?.abort()
+    requestControllerRef.current = null
+  }, [])
 
   const prediction = candidates.find(candidate => candidate.horse_number === horseNumber) ?? candidates[0]
   const features = prediction?.explanation?.features ?? []
@@ -65,52 +84,98 @@ export function RaceExplanationPanel({ result }: Props) {
   const cacheKey = prediction
     ? narrativeCacheKey(result.race_info.race_id, result.model_id, prediction.horse_number)
     : ''
+  const narrativeInput = prediction ? {
+    race_name: result.race_info.race_name,
+    horse_name: prediction.horse_name,
+    predicted_rank: prediction.predicted_rank,
+    features: features.slice(0, 6).map(feature => ({
+      label: feature.label,
+      direction: feature.direction,
+      impact_pct: feature.impact_pct,
+    })),
+  } : null
+  // Same model ID is not enough: a refreshed prediction can have new SHAP
+  // evidence. Legacy cache entries without this exact identity are ignored.
+  const explanationIdentity = JSON.stringify({
+    race_id: result.race_info.race_id, model_id: result.model_id ?? null,
+    horse_number: prediction?.horse_number ?? null, input: narrativeInput,
+    score: prediction?.p_raw, explanation: prediction?.explanation,
+  })
+  const narrative = narrativeState?.identity === explanationIdentity ? narrativeState.value : null
+  const narrativeLoading = pendingIdentity === explanationIdentity
+  const narrativeError = narrativeFailure?.identity === explanationIdentity ? narrativeFailure.message : ''
 
   useEffect(() => {
-    setNarrativeError('')
+    stopNarrativeRequest()
+    setPendingIdentity(null)
+    setNarrativeFailure(null)
+    setNarrativeState(null)
     if (!cacheKey) {
-      setNarrative(null)
-      return
+      // There is no valid prediction to explain.
+    } else {
+      try {
+        const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null')
+        const value = cached?.version === 2 && cached.inputIdentity === explanationIdentity
+          ? readNarrative(cached.narrative) : null
+        if (value) setNarrativeState({ identity: explanationIdentity, value })
+      } catch { /* A corrupt or obsolete cache is not prediction evidence. */ }
     }
-    try {
-      const cached = localStorage.getItem(cacheKey)
-      setNarrative(cached ? JSON.parse(cached) as NarrativeResponse : null)
-    } catch {
-      setNarrative(null)
-    }
-  }, [cacheKey])
+    return stopNarrativeRequest
+  }, [cacheKey, explanationIdentity, stopNarrativeRequest])
 
   if (!prediction) {
     return <div className="p-5 text-sm text-[#666]">説明できる予測がありません。</div>
   }
 
   const loadNarrative = async () => {
-    setNarrativeLoading(true)
-    setNarrativeError('')
+    if (!narrativeInput || requestControllerRef.current) return
+    const generation = ++generationRef.current
+    const controller = new AbortController()
+    requestControllerRef.current = controller
+    const current = () => generation === generationRef.current
+    setPendingIdentity(explanationIdentity)
+    setNarrativeFailure(null)
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
+    let abortRequest: (() => void) | undefined
+    let timedOut = false
     try {
-      const response = await authFetch('/api/prediction-explanation', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          race_name: result.race_info.race_name,
-          horse_name: prediction.horse_name,
-          predicted_rank: prediction.predicted_rank,
-          features: features.slice(0, 6).map(feature => ({
-            label: feature.label,
-            direction: feature.direction,
-            impact_pct: feature.impact_pct,
-          })),
-        }),
+      const cancellation = new Promise<never>((_resolve, reject) => {
+        abortRequest = () => reject(new Error('narrative-request-aborted'))
+        controller.signal.addEventListener('abort', abortRequest, { once: true })
+        timeoutId = setTimeout(() => { timedOut = true; controller.abort() }, NARRATIVE_REQUEST_TIMEOUT_MS)
       })
-      const data = await response.json()
-      if (!response.ok) throw new Error(data.detail || '解説を生成できませんでした')
-      const next = data as NarrativeResponse
-      setNarrative(next)
-      try { localStorage.setItem(cacheKey, JSON.stringify(next)) } catch { /* session display only */ }
+      const readResponse = (async () => {
+        const response = await authFetch('/api/prediction-explanation', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(narrativeInput), signal: controller.signal,
+        })
+        const data: unknown = await response.json()
+        if (!response.ok) {
+          const detail = data && typeof data === 'object' ? (data as Record<string, unknown>).detail : null
+          throw new Error(typeof detail === 'string' ? detail : '解説を生成できませんでした')
+        }
+        const next = readNarrative(data)
+        if (!next) throw new Error('解説の応答を確認できませんでした')
+        return next
+      })()
+      const next = await Promise.race([readResponse, cancellation])
+      if (!current()) return
+      setNarrativeState({ identity: explanationIdentity, value: next })
+      try {
+        localStorage.setItem(cacheKey, JSON.stringify({ version: 2, inputIdentity: explanationIdentity, narrative: next }))
+      } catch { /* session display only */ }
     } catch (error) {
-      setNarrativeError(error instanceof Error ? error.message : '解説を生成できませんでした')
+      if (current()) setNarrativeFailure({ identity: explanationIdentity,
+        message: timedOut ? '解説の生成が時間切れになりました。もう一度お試しください。'
+          : error instanceof Error ? error.message : '解説を生成できませんでした' })
     } finally {
-      setNarrativeLoading(false)
+      if (timeoutId !== undefined) clearTimeout(timeoutId)
+      if (abortRequest) controller.signal.removeEventListener('abort', abortRequest)
+      if (current()) {
+        setPendingIdentity(null)
+        if (requestControllerRef.current === controller) requestControllerRef.current = null
+      }
     }
   }
 

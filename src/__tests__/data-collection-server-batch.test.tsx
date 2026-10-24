@@ -40,7 +40,11 @@ describe('data collection server batch integration', () => {
   function serveJob(getJob: () => ReturnType<typeof parent> | null, handleMutation?: (url: string, init: RequestInit) => Response) {
     fetchMock.mockImplementation(async (url: string, init: RequestInit = {}) => {
       if (init.method === 'POST' && handleMutation) return handleMutation(url, init)
-      if (url === '/api/scrape/health') return json({ status: 'healthy', metrics: { active_jobs: 0 }, runtime: { status: 'healthy' } })
+      if (url === '/api/scrape/health' || url === '/api/health') return json({ status: 'healthy', metrics: { active_jobs: 0 }, runtime: { status: 'healthy' }, scrape_capabilities: {
+        race_scopes: ['all', 'jra'], jra_month_reuse: true,
+        safety_policy_version: 'normal-acquisition-safe-v1', minimum_provider_interval_seconds: 3,
+        halt_http400: true, preserve_saved_values: true, max_concurrent_http_requests: 1,
+      } })
       if (url.startsWith('/api/data-stats')) return json({ total_races: 50000, total_horses: 500000 })
       if (url.startsWith('/api/scrape/history')) {
         const job = getJob()
@@ -102,10 +106,29 @@ describe('data collection server batch integration', () => {
     const view = render(<DataCollectionPage />)
     await waitFor(() => expect(screen.getByTestId('batch-status-panel')).toHaveTextContent('2016-02'))
     expect(screen.getByTestId('cancel-active-job-button')).toBeEnabled()
+    expect(screen.getByTestId('start-period-input')).toHaveValue('2016-01')
+    expect(screen.getByTestId('end-period-input')).toHaveValue('2026-09')
+    expect(screen.getByTestId('scrape-race-scope')).toHaveValue('all')
     expect(JSON.parse(localStorage.getItem(KEY)!)).toMatchObject({ jobId: JOB, ownerUserId: 'owner-a', origin: 'history' })
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0)
     view.unmount()
     expect(localStorage.getItem(UNCERTAINTY_STORAGE_KEY)).toBeNull()
+  })
+
+  it('shows the recovered central request period and scope without altering or restarting that job', async () => {
+    const job = parent()
+    serveJob(() => ({ ...job, request_payload: { ...job.request_payload, race_scope: 'jra' } }))
+    const view = render(<DataCollectionPage />)
+    await waitFor(() => expect(screen.getByTestId('batch-status-panel')).toHaveTextContent('2016-02'))
+    expect(screen.getByTestId('start-period-input')).toHaveValue('2016-01')
+    expect(screen.getByTestId('end-period-input')).toHaveValue('2026-09')
+    expect(screen.getByTestId('start-period-input')).toBeDisabled()
+    expect(screen.getByTestId('end-period-input')).toBeDisabled()
+    expect(screen.getByTestId('scrape-race-scope')).toHaveValue('jra')
+    expect(screen.getByTestId('active-scrape-race-scope')).toHaveTextContent('中央競馬のみ')
+    expect(JSON.parse(localStorage.getItem(KEY)!)).toMatchObject({ jobId: JOB, raceScope: 'jra', origin: 'history' })
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+    view.unmount()
   })
 
   it('keeps a legacy lock if the rechecked terminal response belongs to another job', async () => {

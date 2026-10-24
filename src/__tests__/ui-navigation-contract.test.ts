@@ -91,7 +91,7 @@ describe('UI navigation contract', () => {
 
     expect(dashboardSource).toContain('href="/prediction-history"')
     expect(dashboardSource).not.toContain('href="/data-collection"')
-    expect(predictSource).toContain('予測結果・スコア詳細')
+    expect(predictSource).toContain('予測結果・買い目')
     expect(predictSource).toContain("include_explanation: isPremium")
     expect(predictSource).toContain('<RaceExplanationPanel')
     expect(predictSource).not.toContain('特徴量・結果照合を詳しく見る')

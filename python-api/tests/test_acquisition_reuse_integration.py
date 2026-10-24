@@ -79,8 +79,9 @@ def test_old_positive_date_checkpoint_does_not_bypass_inventory_gate(worker, mon
         calls.append("inventory")
         return ([RID], "db.netkeiba.com") if reused else None
 
-    async def fetch(day):
+    async def fetch(day, *, force_refresh=False):
         assert not reused
+        assert force_refresh is False
         calls.append("fetch")
         return [RID], "db.netkeiba.com"
 
@@ -111,7 +112,8 @@ def test_worker_binds_reuse_context_and_promotes_only_after_quality(worker, monk
         assert kwargs["force_refresh"] is force
         return None
 
-    async def fetch_list(_day):
+    async def fetch_list(_day, *, force_refresh=False):
+        assert force_refresh is force
         return [RID], "db.netkeiba.com"
 
     @contextmanager
@@ -231,3 +233,49 @@ def test_optional_terminal_timing_write_failure_cannot_fail_acquisition(worker, 
     assert writes == ["completed", "completed"]
     assert jobs._scrape_jobs[JOB]["status"] == "completed"
     assert jobs._load_job_from_db(JOB)["result"]["success"] is True
+
+
+def test_unconfirmed_current_list_persists_failure_reason_not_no_race(worker, monkeypatch):
+    from scraping.race_list import RaceListUnavailable
+
+    async def unavailable(_date, *, force_refresh=False):
+        raise RaceListUnavailable(_date, [
+            {"status": 400, "url": "https://example.invalid/?secret=not-public"},
+            {"status": 200, "diagnostic": "current date missing in month index"},
+        ])
+
+    monkeypatch.setattr(jobs, "fetch_race_ids", unavailable)
+    asyncio.run(jobs._run_scrape_job(JOB, DAY, DAY))
+    persisted = jobs._load_job_from_db(JOB)
+    assert persisted["status"] == "completed"  # lifecycle finished, acquisition failed
+    result = persisted["result"]
+    assert result["success"] is False
+    assert result["races_collected"] == 0
+    assert result["failure_code"] == "race_list_unavailable"
+    assert "HTTP 400" in result["failure_reason"]
+    assert "secret" not in json.dumps(result)
+    assert persisted["progress"]["list_failures"] == [{
+        "date": DAY, "code": "current_race_list_unconfirmed", "http_statuses": [400],
+    }]
+    with sqlite3.connect(worker) as conn:
+        assert conn.execute("SELECT count(*) FROM scraped_dates WHERE date=? AND no_race=1", (DAY,)).fetchone()[0] == 0
+        assert conn.execute("SELECT status FROM scrape_date_completeness WHERE race_date=?", (DAY,)).fetchone()[0] != "complete"
+
+
+def test_partial_entry_data_does_not_claim_complete_acquisition(worker, monkeypatch):
+    async def fetch_list(_date, **_kwargs):
+        return [RID], "race.netkeiba.com"
+
+    async def fetch_race(*_args, **_kwargs):
+        return race(settled=False)
+
+    monkeypatch.setattr(jobs, "fetch_race_ids", fetch_list)
+    monkeypatch.setattr(jobs, "fetch_acquisition_race", fetch_race)
+    asyncio.run(jobs._run_scrape_job(JOB, DAY, DAY))
+    result = jobs._load_job_from_db(JOB)["result"]
+    assert result["success"] is False
+    assert result["races_collected"] == 1
+    assert result["failure_code"] == "acquisition_incomplete"
+    assert "未確定" in result["failure_reason"]
+    with sqlite3.connect(worker) as conn:
+        assert conn.execute("SELECT count(*) FROM race_results_ultimate").fetchone()[0] == 2

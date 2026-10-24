@@ -373,3 +373,124 @@ describe('ネットワークエラー耐性', () => {
     expect(result.current.status).toBe('running')
   })
 })
+
+describe('期限付き監視と古い応答の抑止', () => {
+  function deferred<T>() {
+    let resolve!: (value: T) => void
+    const promise = new Promise<T>(yes => { resolve = yes })
+    return { promise, resolve }
+  }
+  const response = (data: object) => ({ ok: true, json: async () => data }) as Response
+
+  it('ハングした要求を10秒で中断し、ジョブIDを維持して再確認する', async () => {
+    const pending = deferred<Response>()
+    const fetchSpy = vi.spyOn(global, 'fetch')
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValue(response({ status: 'completed', job_id: 'job-001' }))
+    const onError = vi.fn()
+    const onCompleted = vi.fn()
+    const { result } = renderHook(() => useJobPoller({
+      jobId: 'job-001', getStatusUrl: id => `/api/status/${id}`, intervalMs: 1000, onError, onCompleted,
+    }))
+    await tick(1000)
+    const signal = fetchSpy.mock.calls[0][1]?.signal
+    expect(signal?.aborted).toBe(false)
+    await tick(10_000)
+    expect(signal?.aborted).toBe(true)
+    expect(result.current.status).toBe('running')
+    expect(result.current.progress).toContain('接続を再確認中')
+    expect(onError).not.toHaveBeenCalled()
+    await tick(1000)
+    expect(onCompleted).toHaveBeenCalledWith({ status: 'completed', job_id: 'job-001' })
+    expect(fetchSpy.mock.calls.every(([url]) => url === '/api/status/job-001')).toBe(true)
+    // The abandoned transport deliberately ignores AbortSignal.
+    await act(async () => { pending.resolve(response({ status: 'error', error: 'obsolete' })) })
+    expect(result.current.status).toBe('completed')
+    expect(onError).not.toHaveBeenCalled()
+  })
+
+  it('JSON本文がハングしても同じ期限で解除する', async () => {
+    const pending = deferred<object>()
+    const fetchSpy = vi.spyOn(global, 'fetch')
+      .mockResolvedValueOnce({ ok: true, json: () => pending.promise } as Response)
+      .mockResolvedValue(response({ status: 'running', progress: '再接続済み' }))
+    const { result } = renderHook(() => useJobPoller({
+      jobId: 'job-001', getStatusUrl: id => `/api/status/${id}`, intervalMs: 1000,
+    }))
+    await tick(12_000)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+    expect(fetchSpy.mock.calls[0][1]?.signal?.aborted).toBe(true)
+    expect(result.current.progress).toBe('再接続済み')
+    await act(async () => { pending.resolve({ status: 'completed' }) })
+    expect(result.current.status).toBe('running')
+  })
+
+  it('ジョブ切り替え後の旧completed応答は新しい監視を停止しない', async () => {
+    const old = deferred<Response>()
+    const fetchSpy = vi.spyOn(global, 'fetch')
+      .mockReturnValueOnce(old.promise)
+      .mockResolvedValue(response({ status: 'running', progress: '新ジョブ' }))
+    const onCompleted = vi.fn()
+    const { result, rerender } = renderHook(({ jobId }) => useJobPoller({
+      jobId, getStatusUrl: id => `/api/status/${id}`, intervalMs: 1000, onCompleted,
+    }), { initialProps: { jobId: 'job-001' } })
+    await tick(1000)
+    rerender({ jobId: 'job-002' })
+    expect(fetchSpy.mock.calls[0][1]?.signal?.aborted).toBe(true)
+    await tick(1000)
+    await act(async () => { old.resolve(response({ status: 'completed', job_id: 'job-001' })) })
+    expect(onCompleted).not.toHaveBeenCalled()
+    expect(result.current.progress).toBe('新ジョブ')
+    await tick(1000)
+    expect(fetchSpy).toHaveBeenCalledTimes(3)
+    expect(fetchSpy.mock.calls[2][0]).toBe('/api/status/job-002')
+  })
+
+  it('reset後に届く旧応答はidle状態と停止済み監視を変更しない', async () => {
+    const pending = deferred<Response>()
+    const fetchSpy = vi.spyOn(global, 'fetch').mockReturnValue(pending.promise)
+    const onCompleted = vi.fn()
+    const { result } = renderHook(() => useJobPoller({
+      jobId: 'job-001', getStatusUrl: id => `/api/status/${id}`, intervalMs: 1000, onCompleted,
+    }))
+    await tick(1000)
+    act(() => result.current.reset())
+    await act(async () => { pending.resolve(response({ status: 'completed' })) })
+    await tick(3000)
+    expect(result.current.status).toBe('idle')
+    expect(onCompleted).not.toHaveBeenCalled()
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('アンマウント後はサーバージョブを止めずに要求だけ中断する', async () => {
+    const pending = deferred<Response>()
+    const fetchSpy = vi.spyOn(global, 'fetch').mockReturnValue(pending.promise)
+    const onCompleted = vi.fn()
+    const { unmount } = renderHook(() => useJobPoller({
+      jobId: 'job-001', getStatusUrl: id => `/api/status/${id}`, intervalMs: 1000, onCompleted,
+    }))
+    await tick(1000)
+    unmount()
+    expect(fetchSpy.mock.calls[0][1]?.signal?.aborted).toBe(true)
+    await act(async () => { pending.resolve(response({ status: 'completed' })) })
+    await tick(3000)
+    expect(onCompleted).not.toHaveBeenCalled()
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('一時HTTP失敗を通知し、応答復旧後は再確認メッセージを消す', async () => {
+    vi.spyOn(global, 'fetch')
+      .mockResolvedValueOnce({ ok: false, status: 503 } as Response)
+      .mockResolvedValue(response({ status: 'running' }))
+    const onError = vi.fn()
+    const { result } = renderHook(() => useJobPoller({
+      jobId: 'job-001', getStatusUrl: id => `/api/status/${id}`, intervalMs: 1000, onError,
+    }))
+    await tick(1000)
+    expect(result.current.progress).toContain('接続を再確認中')
+    expect(onError).not.toHaveBeenCalled()
+    await tick(1000)
+    expect(result.current.progress).toBe('')
+    expect(result.current.status).toBe('running')
+  })
+})

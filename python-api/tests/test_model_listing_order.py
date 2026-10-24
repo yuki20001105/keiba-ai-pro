@@ -46,6 +46,9 @@ def test_saved_models_are_sorted_by_creation_time_not_training_period(
 
     monkeypatch.setattr(models_mgmt, "MODELS_DIR", tmp_path)
     monkeypatch.setattr(models_mgmt, "get_active_model_id", lambda: "active-model")
+    # This fixture tests legacy-file ordering. Do not pass its path-only
+    # global joblib mock to the separately signed research-candidate loader.
+    monkeypatch.setattr(models_mgmt, "_local_candidate_models", lambda: [])
     monkeypatch.setattr(models_mgmt.joblib, "load", lambda path: bundles[path.name])
 
     response = asyncio.run(models_mgmt.list_models())

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import Link from 'next/link'
 import { Logo } from '@/components/Logo'
 import { Toast } from '@/components/Toast'
@@ -9,28 +9,59 @@ import { JRA_VENUES, todayStr, toInputDate, fromInputDate } from '@/lib/types'
 import type { RaceItem } from '@/lib/types'
 import { useScrape } from '@/hooks/useScrape'
 import { useJobPoller } from '@/hooks/useJobPoller'
-import { CACHE_TTL_MS } from '@/hooks/useRaceCache'
 import { useAuth } from '@/contexts/AuthContext'
 import { formatModelOptionLabel, type ModelSummary } from '@/lib/model-display'
 import { RaceExplanationPanel } from '@/components/RaceExplanationPanel'
-import type { RacePredictResult } from '@/lib/race-analysis-types'
+import { PredictionInputNotice } from '@/components/PredictionInputNotice'
+import type { RacePredictResult, Recommendation } from '@/lib/race-analysis-types'
+import { BettingRecommendationPanel, bettingDecisionLabel } from '@/components/BettingRecommendationPanel'
+import { allocateDayBudget, isCurrentBettingCache, perRaceCeiling, RISK_MODES, roundBetBudget, safeRecommendationForInput, selectedTickets } from '@/lib/betting-policy'
+import { predictionInputVerified } from '@/lib/prediction-input-contract'
+import { predictionExpectationDisplay, REFERENCE_EXPECTATION_CAVEAT, REFERENCE_EXPECTATION_NOTE } from '@/lib/prediction-expectation-display'
+import { scrapeCompletionOutcome, type ScrapeCompletionOutcome } from '@/lib/scrape-completion-outcome'
+import { buildScrapeProgressDisplay } from '@/lib/scrape-progress-display'
+import { useBettingClock } from '@/hooks/useBettingClock'
+import { savePerformanceRecord } from '@/lib/performance-records'
+import { hasBoundedPredictionRuntime, predictionErrorMessage, predictionTimingLabel, resolvePredictionConcurrency, runPredictionQueue } from '@/lib/prediction-queue'
+import { parsePredictionFreshness, predictionCacheStatus, readPredictionCache, savedPredictionForDisplay, supportsSavedDbRecompute, writePredictionCache, type PredictionFreshness } from '@/lib/prediction-freshness'
+import { PredictionFreshnessNotice } from '@/components/PredictionFreshnessNotice'
 
 export default function PredictBatchPage() {
-  const { isPremium } = useAuth()
+  const { isPremium, userId, loading: authLoading } = useAuth()
   const [date, setDate] = useState(todayStr())
   const [venueFilter, setVenueFilter] = useState<Set<string>>(new Set())
   const [races, setRaces] = useState<RaceItem[]>([])
   const [racesLoading, setRacesLoading] = useState(false)
   const [racesError, setRacesError] = useState('')
   const [racesMissing, setRacesMissing] = useState(false)
+  const [scrapeOutcome, setScrapeOutcome] = useState<ScrapeCompletionOutcome | null>(null)
+  const [scrapeStatusData, setScrapeStatusData] = useState<unknown>(null)
+  const activeScrapeDate = useRef<string | null>(null)
+  const viewGeneration = useRef(0)
+  const raceReadGeneration = useRef(0)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [models, setModels] = useState<ModelSummary[]>([])
   const [modelId, setModelId] = useState<string>('')
   const [predicting, setPredicting] = useState(false)
-  const [predictProgress, setPredictProgress] = useState({ done: 0, total: 0, current: '' })
+  const [predictProgress, setPredictProgress] = useState({ done: 0, total: 0, active: 0, current: '' })
+  const [predictElapsedMs, setPredictElapsedMs] = useState(0)
+  const [predictConcurrency, setPredictConcurrency] = useState(1)
+  const [predictionRuntimeNotice, setPredictionRuntimeNotice] = useState('')
+  const predictionGeneration = useRef(0)
+  const predictionController = useRef<AbortController | null>(null)
+  const predictionRunning = useRef(false)
+  const predictionStartedAt = useRef(0)
+  const mounted = useRef(true)
+  const previousOwner = useRef(userId)
   const [results, setResults] = useState<Record<string, any>>({})
+  const [frozenRecommendations, setFrozenRecommendations] = useState<Record<string, Recommendation | null | undefined> | null>(null)
+  const bettingNow = useBettingClock(Object.keys(results).length > 0)
   const [bankroll, setBankroll] = useState(10000)
   const [riskMode, setRiskMode] = useState<'conservative' | 'balanced' | 'aggressive'>('balanced')
+  const [dayBudget, setDayBudget] = useState(1000)
+  const [bettingNeedsRefresh, setBettingNeedsRefresh] = useState(false)
+  const [performanceNotice, setPerformanceNotice] = useState('')
+  const [performanceError, setPerformanceError] = useState(false)
   const [expandedRace, setExpandedRace] = useState<string | null>(null)
   const [explanationRaceId, setExplanationRaceId] = useState<string | null>(null)
   const [toast, setToast] = useState({ visible: false, message: '', type: 'success' as 'success' | 'error' })
@@ -38,21 +69,75 @@ export default function PredictBatchPage() {
   const showToast = (message: string, type: 'success' | 'error' = 'success') =>
     setToast({ visible: true, message, type })
 
+  const stopPredictionRun = useCallback(() => {
+    ++predictionGeneration.current
+    predictionController.current?.abort()
+    predictionController.current = null
+    predictionRunning.current = false
+  }, [])
+
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+      stopPredictionRun()
+    }
+  }, [stopPredictionRun])
+
+  useEffect(() => {
+    if (previousOwner.current === userId) return
+    previousOwner.current = userId
+    ++raceReadGeneration.current
+    stopPredictionRun()
+    setPredicting(false)
+    setRacesLoading(false)
+    setRaces([])
+    setSelectedIds(new Set())
+    setResults({})
+    setFrozenRecommendations(null)
+    setPerformanceNotice('')
+  }, [userId, stopPredictionRun])
+
+  useEffect(() => {
+    if (!predicting) return
+    const timer = setInterval(() => setPredictElapsedMs(Date.now() - predictionStartedAt.current), 1000)
+    return () => clearInterval(timer)
+  }, [predicting])
+
+  const cancelPrediction = useCallback(() => {
+    stopPredictionRun()
+    setPredicting(false)
+    setPredictProgress({ done: 0, total: 0, active: 0, current: '' })
+    setPredictElapsedMs(0)
+    setPredictionRuntimeNotice('')
+  }, [stopPredictionRun])
+
   // スクレイプ（useScrape + useJobPoller）
   const scrape = useScrape()
   useJobPoller({
     jobId: scrape.jobId,
     getStatusUrl: id => `/api/scrape/status/${id}`,
-    onCompleted: async () => {
+    onCompleted: async data => {
+      if (activeScrapeDate.current !== date || (data.job_id && data.job_id !== scrape.jobId)) return
+      const generation = viewGeneration.current
       scrape.setStatus('done')
-      scrape.setMessage('スクレイプ完了')
-      await loadRaces()
+      setScrapeStatusData(data)
+      const outcome = scrapeCompletionOutcome(data)
+      // Confirm usable rows before claiming success; retain failures during the read.
+      setScrapeOutcome(outcome.kind === 'warning' ? outcome : null)
+      const count = await loadRaces()
+      if (generation === viewGeneration.current && count !== null) {
+        setScrapeOutcome(scrapeCompletionOutcome(data, count))
+      }
     },
-    onProgress: message => {
+    onProgress: (message, data) => {
+      if (activeScrapeDate.current !== date || (data.job_id && data.job_id !== scrape.jobId)) return
       scrape.setStatus('scraping')
       scrape.setMessage(message)
+      setScrapeStatusData(data)
     },
     onError: msg => {
+      if (activeScrapeDate.current !== date) return
       scrape.setStatus('error')
       scrape.setMessage(msg)
     },
@@ -60,26 +145,6 @@ export default function PredictBatchPage() {
 
   useEffect(() => {
     loadModels()
-    // 起動時にキャッシュを精査:
-    //   当日レース → TTL 30分を超えたものを削除
-    //   過去レース → 永続（削除しない）
-    const todayStr = (() => {
-      const t = new Date()
-      return `${t.getFullYear()}${String(t.getMonth() + 1).padStart(2, '0')}${String(t.getDate()).padStart(2, '0')}`
-    })()
-    Object.keys(localStorage)
-      .filter(k => k.startsWith('ra-cache:'))
-      .forEach(k => {
-        try {
-          const parsed = JSON.parse(localStorage.getItem(k) ?? '{}')
-          const raceDate: string = parsed?.data?.race_info?.date ?? ''
-          const isTodayOrFuture = !raceDate || raceDate >= todayStr
-          // 過去レースは削除しない。当日レースのみ TTL チェック。
-          if (isTodayOrFuture && (!parsed.cachedAt || Date.now() - parsed.cachedAt > CACHE_TTL_MS)) {
-            localStorage.removeItem(k)
-          }
-        } catch { localStorage.removeItem(k) }
-      })
   }, [])
 
   const loadModels = async () => {
@@ -94,63 +159,184 @@ export default function PredictBatchPage() {
   }
 
   // キャッシュから予測結果を復元する
-  const restoreResultsFromCache = useCallback((raceIds: string[]) => {
-    const restored: Record<string, { success: boolean; data?: any; error?: string }> = {}
-    raceIds.forEach(raceId => {
+  const restoreResultsFromCache = useCallback(async (raceIds: string[], generation: number) => {
+    const entries = raceIds.map(raceId => ({ raceId, parsed: readPredictionCache(modelId ? `${raceId}__${modelId}` : raceId, userId) }))
+    if (!entries.some(entry => entry.parsed)) return
+    let freshness: PredictionFreshness | null = null
+    try {
+      const res = await authFetch(`/api/prediction-freshness${modelId ? `?model_id=${encodeURIComponent(modelId)}` : ''}`, {
+        cache: 'no-store', signal: AbortSignal.timeout(5000),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        freshness = parsePredictionFreshness(data.freshness ?? data)
+      }
+    } catch { /* Old/offline servers cannot verify saved predictions. */ }
+    if (generation !== raceReadGeneration.current) return
+    const restored: Record<string, { success: boolean; data?: any; error?: string; cacheStatus?: string; cachedAt?: number }> = {}
+    let staleRecommendation = false
+    entries.forEach(({ raceId, parsed }) => {
       try {
-        const raw = localStorage.getItem(`ra-cache:${raceId}`)
-        if (!raw) return
-        const parsed = JSON.parse(raw)
-        if (parsed?.data) {
-          restored[raceId] = { success: true, data: parsed.data }
+        if (!parsed) return
+        if (parsed?.data && (!modelId || parsed.data.model_id === modelId)) {
+          const allocation = parsed.data.performance_allocation
+          const settingsMatch = (!allocation || allocation.day_budget === Math.min(dayBudget, bankroll))
+            && isCurrentBettingCache(parsed.data.recommendation, bankroll, riskMode, parsed.data.input_diagnostics)
+          const cacheStatus = settingsMatch ? predictionCacheStatus(parsed.data, freshness, parsed.cachedAt, parsed.ownerMatches) : 'stale'
+          restored[raceId] = { success: true, data: savedPredictionForDisplay(parsed.data, cacheStatus), cacheStatus, cachedAt: parsed.cachedAt }
+          if (cacheStatus !== 'current') staleRecommendation = true
+          if (!allocation) staleRecommendation = true
+        } else if (parsed?.data) {
+          staleRecommendation = true
         }
       } catch {}
     })
     if (Object.keys(restored).length > 0) {
+      // Old raw caches may show rankings but must not become an actual recording source.
+      const fixed = allocateDayBudget(Object.fromEntries(Object.entries(restored).map(([id, result]) => [id, result.data.recommendation])), Math.min(dayBudget, bankroll))
+      for (const [id, result] of Object.entries(restored)) {
+        const previous = result.data.recommendation
+        if (JSON.stringify(previous?.tickets) !== JSON.stringify(fixed[id]?.tickets)) {
+          result.data.performance_snapshot_id = null
+          staleRecommendation = true
+        }
+        result.data.recommendation = fixed[id]
+      }
+      setFrozenRecommendations(fixed)
       setResults(restored)
     }
-  }, [])
+    if (staleRecommendation) setBettingNeedsRefresh(true)
+  }, [bankroll, riskMode, modelId, dayBudget, userId])
+
+  // Returning from acquisition/training checks metadata only; never auto-run.
+  useEffect(() => {
+    if (!Object.keys(results).length) return
+    let disposed = false
+    let checking = false
+    const check = async () => {
+      if (disposed || checking || predictionRunning.current || document.visibilityState === 'hidden') return
+      checking = true
+      const generation = raceReadGeneration.current
+      const predictionVersion = predictionGeneration.current
+      let current: PredictionFreshness | null = null
+      try {
+        const response = await authFetch(`/api/prediction-freshness${modelId ? `?model_id=${encodeURIComponent(modelId)}` : ''}`, {
+          cache: 'no-store', signal: AbortSignal.timeout(5000),
+        })
+        if (response.ok) { const data = await response.json(); current = parsePredictionFreshness(data.freshness ?? data) }
+      } catch { /* Fail closed for cache authority, preserve rankings. */ }
+      checking = false
+      if (disposed || generation !== raceReadGeneration.current || predictionVersion !== predictionGeneration.current) return
+      let stale = false
+      const next = Object.fromEntries(Object.entries(results).map(([id, result]) => {
+        if (!result.success || !result.data) return [id, result]
+        const age = result.cachedAt ?? Date.parse(result.data.freshness?.generated_at ?? '')
+        const status = predictionCacheStatus(result.data, current, age, !!userId)
+        if (status === 'current') return [id, result]
+        stale = true
+        return [id, { ...result, data: savedPredictionForDisplay(result.data, status), cacheStatus: status, cachedAt: age }]
+      }))
+      if (stale) { setResults(next); setFrozenRecommendations(null); setBettingNeedsRefresh(true) }
+    }
+    const onReturn = () => { void check() }
+    window.addEventListener('focus', onReturn)
+    document.addEventListener('visibilitychange', onReturn)
+    return () => {
+      disposed = true
+      window.removeEventListener('focus', onReturn)
+      document.removeEventListener('visibilitychange', onReturn)
+    }
+  }, [results, modelId, userId])
+
+  const invalidateBettingResults = () => {
+    ++raceReadGeneration.current
+    if (predictionRunning.current) cancelPrediction()
+    setFrozenRecommendations(null)
+    setResults({})
+    setExplanationRaceId(null)
+    setBettingNeedsRefresh(true)
+    // Changing a view setting never deletes other races/users or recorded selections.
+  }
 
   const loadRaces = useCallback(async () => {
+    if (predictionRunning.current) cancelPrediction()
+    const generation = ++raceReadGeneration.current
     setRacesLoading(true)
     setRacesError('')
     setRacesMissing(false)
-    setRaces([])
     setSelectedIds(new Set())
     setResults({})
+    setExpandedRace(null)
+    setFrozenRecommendations(null)
     setExplanationRaceId(null)
-    scrape.reset()
     try {
-      const res = await authFetch(`/api/races/by-date?date=${date}`)
+      const res = await authFetch(`/api/races/by-date?date=${date}`, { cache: 'no-store' })
       const data = await res.json()
+      if (generation !== raceReadGeneration.current) return null
       if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`)
-      const fetched = data.races || []
+      if (data.error || !Array.isArray(data.races)) {
+        throw new Error('保存データを読み込めませんでした。再読み込みしてください。')
+      }
+      const fetched = data.races
       setRaces(fetched)
       if (fetched.length === 0) {
         setRacesMissing(true)
       } else {
-        restoreResultsFromCache(fetched.map((r: any) => r.race_id))
+        await restoreResultsFromCache(fetched.map((r: any) => r.race_id), generation)
       }
+      return fetched.length as number
     } catch (e: any) {
-      setRacesError(e.message)
+      if (generation === raceReadGeneration.current) setRacesError(e.message)
+      return null
     } finally {
-      setRacesLoading(false)
+      if (generation === raceReadGeneration.current) setRacesLoading(false)
     }
-  }, [date, restoreResultsFromCache])  
+  }, [cancelPrediction, date, restoreResultsFromCache])
 
   const triggerScrape = (force = false) => {
+    ++viewGeneration.current
+    activeScrapeDate.current = date
+    setScrapeOutcome(null)
+    setRacesError('')
+    setScrapeStatusData(null)
     scrape.startScrape({ startDate: date, endDate: date, force })
+  }
+
+  const changeDate = (nextDate: string) => {
+    cancelPrediction()
+    ++viewGeneration.current
+    ++raceReadGeneration.current
+    activeScrapeDate.current = null
+    setDate(nextDate)
+    scrape.reset()
+    setScrapeOutcome(null)
+    setScrapeStatusData(null)
+    setRaces([])
+    setRacesMissing(false)
+    setRacesError('')
+    setRacesLoading(false)
+    setSelectedIds(new Set())
+    setResults({})
+    setFrozenRecommendations(null)
+    setExplanationRaceId(null)
   }
 
   // 場所フィルター適用後のレース一覧
   const filteredRaces = venueFilter.size === 0
     ? races
     : races.filter(r => venueFilter.has(r.venue_code))
+  const scrapeDisplay = buildScrapeProgressDisplay(scrapeStatusData)
+  const provisionalRecommendations = useMemo(() => allocateDayBudget(Object.fromEntries(
+    Object.entries(results).filter(([, result]) => result.success).map(([id, result]) => [id, safeRecommendationForInput(result.data?.recommendation as Recommendation | undefined, result.data?.input_diagnostics)]),
+  ), Math.min(dayBudget, bankroll)), [results, dayBudget, bankroll])
+  const dayRecommendations = frozenRecommendations ?? provisionalRecommendations
+  const dayTotal = Object.values(dayRecommendations).reduce((sum, rec) => sum + selectedTickets(rec, bettingNow).reduce((cost, ticket) => cost + ticket.stake, 0), 0)
 
   const toggleVenue = (code: string) => {
     setVenueFilter(prev => {
       const n = new Set(prev)
-      n.has(code) ? n.delete(code) : n.add(code)
+      if (n.has(code)) n.delete(code)
+      else n.add(code)
       return n
     })
   }
@@ -158,7 +344,8 @@ export default function PredictBatchPage() {
   const toggleRace = (id: string) => {
     setSelectedIds(prev => {
       const n = new Set(prev)
-      n.has(id) ? n.delete(id) : n.add(id)
+      if (n.has(id)) n.delete(id)
+      else n.add(id)
       return n
     })
   }
@@ -167,71 +354,176 @@ export default function PredictBatchPage() {
   const deselectAll = () => setSelectedIds(new Set())
 
   const handleBatchPredict = async () => {
+    // React state updates are asynchronous: the ref also rejects two clicks in the same frame.
+    if (predictionRunning.current) return
     if (selectedIds.size === 0) { showToast('予測するレースを選択してください', 'error'); return }
     const ids = Array.from(selectedIds)
+    const savedBeforeRefresh = results
+    predictionRunning.current = true
+    const generation = ++predictionGeneration.current
+    const controller = new AbortController()
+    predictionController.current = controller
+    predictionStartedAt.current = Date.now()
+    const current = () => mounted.current && generation === predictionGeneration.current && !controller.signal.aborted
     setPredicting(true)
+    setPredictElapsedMs(0)
+    setPredictConcurrency(1)
+    setPredictionRuntimeNotice('')
+    setPerformanceNotice('')
+    setPerformanceError(false)
     setResults({})
+    setFrozenRecommendations(null)
+    setBettingNeedsRefresh(false)
     setExplanationRaceId(null)
-    setPredictProgress({ done: 0, total: ids.length, current: '' })
+    setPredictProgress({ done: 0, total: ids.length, active: 0, current: '実行環境を確認中' })
 
-    let done = 0
     let firstOk: string | undefined
+    const completedResults: Record<string, { success: boolean; data?: RacePredictResult; error?: string }> = {}
 
-    const CONCURRENCY = 1  // FastAPI は単一プロセス: 並列するとGIL競合でタイムアウト。逐次処理で2本目以降はHistキャッシュが効き高速化
-    for (let i = 0; i < ids.length; i += CONCURRENCY) {
-      const chunk = ids.slice(i, i + CONCURRENCY)
-      await Promise.allSettled(
-        chunk.map(async (raceId) => {
-          const raceLabel = races.find(r => r.race_id === raceId)
-          const label = raceLabel ? `${raceLabel.venue} ${raceLabel.race_no}R` : raceId
-          setPredictProgress(prev => ({ ...prev, current: label }))
-          try {
-            const res = await authFetch('/api/analyze-race', {
+    try {
+      const capabilityResponse = await authFetch(`/api/prediction-freshness${modelId ? `?model_id=${encodeURIComponent(modelId)}` : ''}`, {
+        cache: 'no-store', signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]),
+      })
+      const capability = capabilityResponse.ok ? await capabilityResponse.json() : null
+      if (!supportsSavedDbRecompute(capability)) throw new Error('最新データで再予測できるか確認できません。APIの更新・接続状態を確認してください。')
+      if (!current()) return
+      let runtime: unknown = null
+      try {
+        const health = await authFetch('/api/health', {
+          cache: 'no-store', signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]),
+        })
+        if (health.ok) runtime = await health.json()
+      } catch { /* Offline/old servers stay sequential; never infer CPU isolation from the UI build. */ }
+      if (!current()) return
+      const concurrency = resolvePredictionConcurrency(runtime)
+      setPredictConcurrency(concurrency)
+      setPredictionRuntimeNotice(hasBoundedPredictionRuntime(runtime) ? '' : 'サーバー更新待ち · 1件ずつ')
+      setPredictProgress(prev => ({ ...prev, current: '' }))
+      await runPredictionQueue<string, { success: boolean; data?: RacePredictResult; error?: string }>(ids, async raceId => {
+        const res = await authFetch('/api/analyze-race', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              signal: AbortSignal.timeout(180000),  // 180s: 再スクレイプ込みで余裕を持たせる
+              signal: AbortSignal.any([controller.signal, AbortSignal.timeout(180000)]),
               body: JSON.stringify({
                 race_id: raceId,
                 model_id: modelId || null,
                 bankroll,
                 risk_mode: riskMode,
                 include_explanation: isPremium,
+                force_recompute: true,
+                data_refresh: 'saved_db',
               }),
             })
-            const data = await res.json()
-            const result: { success: boolean; data?: any; error?: string } = res.ok
-              ? { success: true, data }
-              : { success: false, error: data.detail || `HTTP ${res.status}` }
-            if (result.success && !firstOk) firstOk = raceId
-            if (result.success && result.data) {
-              try {
-                const cachedAt = Date.now()
-                // モデルIDなしキー（決打）
-                localStorage.setItem(`ra-cache:${raceId}`, JSON.stringify({ data: result.data, cachedAt }))
-                // API が実際に使用したモデルでも保存し、詳細画面で再予測しない。
-                const resolvedModelId = result.data.model_id || modelId
-                if (resolvedModelId) {
-                  localStorage.setItem(`ra-cache:${raceId}__${resolvedModelId}`, JSON.stringify({ data: result.data, cachedAt }))
-                }
-              } catch {}
-            }
-            setResults(prev => ({ ...prev, [raceId]: result }))
-          } catch (e: any) {
-            setResults(prev => ({ ...prev, [raceId]: { success: false, error: e.message } }))
-          } finally {
-            done++
-            setPredictProgress(prev => ({ ...prev, done }))
+        const data = await res.json()
+        return res.ok && data.success !== false
+          ? { success: true, data: data as RacePredictResult }
+          : { success: false, error: predictionErrorMessage(data, res.status) }
+      }, {
+        concurrency,
+        signal: controller.signal,
+        onProgress: progress => {
+          if (!current()) return
+          setPredictProgress(prev => ({ ...prev, done: progress.completed, total: progress.total, active: progress.active }))
+          setPredictElapsedMs(Date.now() - predictionStartedAt.current)
+        },
+        onSettled: (outcome, raceId) => {
+          if (!current()) return
+          const result: { success: boolean; data?: RacePredictResult; error?: string } = outcome.status === 'fulfilled' ? outcome.value
+            : { success: false, error: outcome.reason instanceof Error ? outcome.reason.message : '予測に失敗しました。' }
+          completedResults[raceId] = result
+          if (result.success && !firstOk) firstOk = raceId
+          if (result.success && result.data) {
+            try {
+              const cachedAt = Date.now()
+              // Do not expose unallocated stakes to a detail view during the batch.
+              const provisional: RacePredictResult = { ...result.data, performance_snapshot_id: null,
+                performance_recording_error: 'この日の配分を確認中です。',
+                recommendation: result.data.recommendation ? { ...result.data.recommendation, decision: 'skip', action: '見送り', reason: 'この日の配分を確認中', tickets: [], total_cost: 0, purchase_count: 0, unit_price: 0, expected_return: 0 } : null }
+              writePredictionCache(raceId, provisional, cachedAt, userId)
+              const resolvedModelId = result.data.model_id || modelId
+              if (resolvedModelId) {
+                writePredictionCache(`${raceId}__${resolvedModelId}`, provisional, cachedAt, userId)
+              }
+            } catch {}
           }
-        })
-      )
-    }
+          setResults(prev => ({ ...prev, [raceId]: result }))
+        },
+      })
+      if (!current()) return
 
-    setPredictProgress(prev => ({ ...prev, done: ids.length, current: '' }))
-    if (firstOk) setExpandedRace(firstOk)
-    setPredicting(false)
+      // Freeze the final day's allocation once. Cache restoration and clock ticks never write records.
+      const allocationTime = Date.now()
+      const finalRecommendations = allocateDayBudget(Object.fromEntries(
+        Object.entries(completedResults).filter(([, result]) => result.success)
+          .map(([id, result]) => [id, safeRecommendationForInput(result.data?.recommendation, result.data?.input_diagnostics)]),
+      ), Math.min(dayBudget, bankroll), allocationTime)
+      const successes = Object.entries(completedResults).filter(([, result]) => result.success && result.data)
+      setFrozenRecommendations(finalRecommendations)
+      for (const [id, result] of successes) {
+        result.data = { ...result.data!, recommendation: finalRecommendations[id] ?? null,
+          performance_allocation: { day_budget: Math.min(dayBudget, bankroll), allocated_at: new Date(allocationTime).toISOString() } }
+        try {
+          const cachedAt = Date.now()
+          writePredictionCache(id, result.data!, cachedAt, userId)
+          const resolvedModelId = result.data.model_id || modelId
+          if (resolvedModelId) writePredictionCache(`${id}__${resolvedModelId}`, result.data!, cachedAt, userId)
+        } catch { /* The frozen in-memory selection remains available. */ }
+      }
+      setResults({ ...completedResults })
+      if (successes.length > 0) {
+        setPredictProgress(prev => ({ ...prev, current: '成績を記録中' }))
+        // SQLite writes and auth checks also stay bounded rather than bursting all 24 requests.
+        const { outcomes } = await runPredictionQueue(successes, ([id, result]) =>
+          savePerformanceRecord(result.data?.performance_snapshot_id, finalRecommendations[id], 'paper', allocationTime),
+        { concurrency, signal: controller.signal })
+        if (!current()) return
+        const failed = outcomes.filter(result => result?.status === 'rejected').length
+        const alreadyRecorded = outcomes.filter(result => result?.status === 'fulfilled' && result.value.existing).length
+        outcomes.forEach((saved, index) => {
+          if (saved?.status !== 'fulfilled' || saved.value.selection_matches) return
+          const [id, result] = successes[index]
+          result.data = { ...result.data!, performance_snapshot_id: null }
+          try {
+            const cachedAt = Date.now()
+            writePredictionCache(id, result.data!, cachedAt, userId)
+            const resolvedModelId = result.data.model_id || modelId
+            if (resolvedModelId) writePredictionCache(`${id}__${resolvedModelId}`, result.data!, cachedAt, userId)
+          } catch { /* Never re-enable actual recording from an unmatched cached selection. */ }
+        })
+        setResults({ ...completedResults })
+        setPerformanceError(failed > 0)
+        setPerformanceNotice(failed > 0 ? `成績の記録に失敗: ${failed}レース。予測を再実行してください。`
+          : `AI参考として記録しました${alreadyRecorded ? `（記録済み ${alreadyRecorded}レースは最初の買い目を保持）` : ''}。`)
+      }
+      setPredictProgress(prev => ({ ...prev, done: ids.length, active: 0, current: '' }))
+      if (firstOk) setExpandedRace(firstOk)
+    } catch (error) {
+      if (current()) {
+        const message = error instanceof Error ? error.message : '一括予測に失敗しました。'
+        setPredictionRuntimeNotice(message)
+        setPredictProgress(prev => ({ ...prev, active: 0, current: '予測を開始・完了できませんでした' }))
+        showToast(message, 'error')
+        if (Object.keys(completedResults).length === 0) {
+          setResults(Object.fromEntries(Object.entries(savedBeforeRefresh).map(([id, result]) => [id,
+            result.success && result.data ? { ...result, data: savedPredictionForDisplay(result.data, 'unverified'), cacheStatus: 'unverified' } : result])))
+        }
+      }
+    } finally {
+      if (current()) {
+        setPredictElapsedMs(Date.now() - predictionStartedAt.current)
+        setPredicting(false)
+        predictionRunning.current = false
+        predictionController.current = null
+      }
+    }
   }
 
   const presentVenueCodes = new Set(races.map(r => r.venue_code))
+  const activeReferenceModel = models.find(model => model.is_active
+    && model.feature_pipeline === 'local-win-nll-reference-v1')
+  const selectedReferenceModel = modelId
+    ? models.find(model => model.model_id === modelId && model.feature_pipeline === 'local-win-nll-reference-v1')
+    : activeReferenceModel
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-white">
@@ -258,11 +550,13 @@ export default function PredictBatchPage() {
 
           <div className="flex flex-col sm:flex-row gap-4">
             <div className="flex-1">
-              <label className="text-xs text-[#666] block mb-2">日付</label>
+              <label htmlFor="prediction-date" className="text-xs text-[#666] block mb-2">日付</label>
               <input
+                id="prediction-date"
                 type="date"
                 value={toInputDate(date)}
-                onChange={e => setDate(fromInputDate(e.target.value))}
+                onChange={e => changeDate(fromInputDate(e.target.value))}
+                disabled={scrape.status === 'scraping' || predicting}
                 className="w-full px-4 py-3 bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg text-white focus:outline-none focus:border-[#333] transition-colors"
               />
             </div>
@@ -271,16 +565,23 @@ export default function PredictBatchPage() {
               <select
                 id="prediction-model"
                 value={modelId}
-                onChange={e => setModelId(e.target.value)}
+                onChange={e => { setModelId(e.target.value); invalidateBettingResults() }}
+                disabled={predicting}
                 className="w-full px-4 py-3 bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg text-white focus:outline-none focus:border-[#333] transition-colors"
               >
-                <option value="">既定モデル（使用中）</option>
+                <option value="">{activeReferenceModel ? `既定：${formatModelOptionLabel(activeReferenceModel)}` : '既定モデル（使用中）'}</option>
                 {models.map(m => (
                   <option key={m.model_id} value={m.model_id}>{formatModelOptionLabel(m)}</option>
                 ))}
               </select>
             </div>
           </div>
+
+          {selectedReferenceModel && (
+            <p className="rounded border border-[#665120] bg-[#211b0d] px-3 py-2 text-xs leading-5 text-[#fde68a]" data-testid="selected-model-reference-notice">
+              参考予測として使用します。発走前オッズ・未知期間は未検証のため、購入判断には使用しません。
+            </p>
+          )}
 
           {/* 賭け設定（折りたたみ） */}
           <div className="border border-[#1e1e1e] rounded-lg overflow-hidden">
@@ -289,8 +590,7 @@ export default function PredictBatchPage() {
               className="w-full flex items-center justify-between px-4 py-3 bg-[#0d0d0d] hover:bg-[#161616] transition-colors"
             >
               <span className="text-xs text-[#555]">
-                賭け設定 — バンクロール ¥{bankroll.toLocaleString()} ·
-                {riskMode === 'conservative' ? ' Steady (2%)' : riskMode === 'aggressive' ? ' Bold (5%)' : ' Smart (3.5%)'}
+                賭け設定 — 総資金 ¥{bankroll.toLocaleString()} · {RISK_MODES[riskMode].label}
               </span>
               <svg className={`w-3 h-3 text-[#444] transition-transform ${showBettingSettings ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
@@ -300,15 +600,22 @@ export default function PredictBatchPage() {
               <div className="px-4 pb-4 pt-3 border-t border-[#1e1e1e] space-y-4">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
-                    <label className="text-xs text-[#666] block mb-2">バンクロール（総資金）</label>
+                    <label htmlFor="betting-bankroll" className="text-xs text-[#666] block mb-2">総資金</label>
                     <div className="relative">
                       <span className="absolute left-4 top-1/2 -translate-y-1/2 text-[#555] text-sm">¥</span>
                       <input
+                        id="betting-bankroll"
                         type="number"
                         min={1000}
                         step={1000}
                         value={bankroll}
-                        onChange={e => setBankroll(Math.max(1000, Number(e.target.value)))}
+                        onChange={e => {
+                          const value = Math.max(1000, Number(e.target.value))
+                          setBankroll(value)
+                          setDayBudget(roundBetBudget(value * 0.1))
+                          invalidateBettingResults()
+                        }}
+                        disabled={predicting}
                         className="w-full pl-8 pr-4 py-3 bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg text-white focus:outline-none focus:border-[#333] transition-colors"
                       />
                     </div>
@@ -317,13 +624,14 @@ export default function PredictBatchPage() {
                     <label className="text-xs text-[#666] block mb-2">リスクモード</label>
                     <div className="grid grid-cols-3 gap-2 h-[50px]">
                       {([
-                        ['conservative', 'Steady', '2%'],
-                        ['balanced',     'Smart',  '3.5%'],
-                        ['aggressive',   'Bold',   '5%'],
+                        ['conservative', '控えめ', '2%'],
+                        ['balanced',     '標準',  '3.5%'],
+                        ['aggressive',   '積極',   '5%'],
                       ] as const).map(([mode, name, pct]) => (
                         <button
                           key={mode}
-                          onClick={() => setRiskMode(mode)}
+                          onClick={() => { setRiskMode(mode); invalidateBettingResults() }}
+                          disabled={predicting}
                           className={`flex flex-col items-center justify-center rounded-lg border transition-colors ${
                             riskMode === mode
                               ? mode === 'aggressive' ? 'bg-[#ef4444] text-white border-[#ef4444]'
@@ -340,11 +648,20 @@ export default function PredictBatchPage() {
                   </div>
                 </div>
                 <p className="text-xs text-[#444]">
-                  1レース上限: ¥{(bankroll * ({ conservative: 0.02, balanced: 0.035, aggressive: 0.05 } as const)[riskMode]).toLocaleString()}
+                  1レース上限: ¥{perRaceCeiling(bankroll, riskMode).toLocaleString()}
                 </p>
+                <div>
+                  <label htmlFor="betting-day-budget" className="text-xs text-[#666] block mb-2">この日の予算</label>
+                  <input id="betting-day-budget" type="number" min={0} max={bankroll} step={100} value={dayBudget}
+                    onChange={e => { setDayBudget(Math.min(bankroll, roundBetBudget(Number(e.target.value)))); invalidateBettingResults() }}
+                    disabled={predicting}
+                    className="w-full px-4 py-3 bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg text-white" />
+                </div>
               </div>
             )}
           </div>
+
+          {bettingNeedsRefresh && <p role="status" className="text-xs text-[#aaa]">買い目は再判定が必要です。予測を再実行してください。</p>}
 
           {/* 場所フィルター */}
           {presentVenueCodes.size > 0 && (
@@ -369,8 +686,8 @@ export default function PredictBatchPage() {
           )}
 
           <button
-            onClick={loadRaces}
-            disabled={racesLoading || scrape.status === 'scraping'}
+            onClick={() => { void loadRaces() }}
+            disabled={authLoading === true || racesLoading || scrape.status === 'scraping' || predicting}
             className="px-6 py-2.5 bg-[#1e1e1e] text-white text-sm rounded-lg hover:bg-[#2a2a2a] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             {racesLoading ? 'レース一覧取得中...' : 'レース一覧を取得'}
@@ -380,9 +697,24 @@ export default function PredictBatchPage() {
         {/* ── Layer 2: レース一覧 ── */}
         {/* スクレイプ進捗 */}
         {scrape.status === 'scraping' && (
-          <div className="bg-[#0a1a2a] border border-[#1a3a5a] rounded-lg p-4 flex items-center gap-3">
-            <div className="w-4 h-4 border-2 border-[#60a5fa] border-t-transparent rounded-full animate-spin shrink-0" />
-            <span className="text-sm text-[#60a5fa]">{scrape.message || 'スクレイプ中...'}</span>
+          <div role="status" data-testid="scrape-live-progress" className="bg-[#0a1a2a] border border-[#1a3a5a] rounded-lg p-4 space-y-3">
+            <div className="flex items-center gap-3">
+              <div className="w-4 h-4 border-2 border-[#60a5fa] border-t-transparent rounded-full animate-spin shrink-0" />
+              <div>
+                <p className="text-sm font-medium text-[#93c5fd]">{scrapeDisplay?.title || '取得開始中'}</p>
+                <p className="text-xs text-[#6f94b8]">{scrape.message || 'サーバーへ接続中'}</p>
+              </div>
+            </div>
+            {scrapeDisplay && (
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 text-xs">
+                <div className="bg-[#081522] rounded-md px-3 py-2"><span className="text-[#58748f] block">間隔</span><span className="text-white">{scrapeDisplay.interval}</span></div>
+                <div className="bg-[#081522] rounded-md px-3 py-2"><span className="text-[#58748f] block">速度</span><span className="text-white">{scrapeDisplay.requestSpeed}</span></div>
+                <div className="bg-[#081522] rounded-md px-3 py-2"><span className="text-[#58748f] block">HTTP</span><span className="text-white">{scrapeDisplay.httpStatus}</span></div>
+                <div className="bg-[#081522] rounded-md px-3 py-2"><span className="text-[#58748f] block">保存</span><span className="text-white">{scrapeDisplay.saved}</span></div>
+                {scrapeDisplay.raceProgress && <div className="bg-[#081522] rounded-md px-3 py-2"><span className="text-[#58748f] block">進捗</span><span className="text-white">{scrapeDisplay.raceProgress}</span></div>}
+                {scrapeDisplay.eta && <div className="bg-[#081522] rounded-md px-3 py-2"><span className="text-[#58748f] block">目安</span><span className="text-white">{scrapeDisplay.eta}</span></div>}
+              </div>
+            )}
           </div>
         )}
         {scrape.status === 'error' && (
@@ -390,14 +722,22 @@ export default function PredictBatchPage() {
             スクレイプエラー: {scrape.message}
           </div>
         )}
-        {scrape.status === 'done' && (
-          <div className="bg-[#052e10] border border-[#0a5a20] rounded-lg p-4 text-sm text-[#4ade80]">
-            ✓ {scrape.message}
+        {scrapeOutcome && (
+          <div role="status" data-testid="scrape-completion-outcome" className={`border rounded-lg p-4 text-sm space-y-3 ${scrapeOutcome.kind === 'warning' ? 'bg-[#231c09] border-[#5a4515] text-[#fcd77d]' : 'bg-[#052e10] border-[#0a5a20] text-[#4ade80]'}`}>
+            <p>{scrapeOutcome.message}</p>
+            {scrapeOutcome.kind === 'warning' && (
+              <>
+                {races.length > 0 && <p className="text-xs">取得済みのレースは下の一覧から利用できます。</p>}
+                <button onClick={() => triggerScrape(false)} disabled={racesLoading} className="px-4 py-2 bg-[#35290e] rounded-lg disabled:opacity-40">
+                  再試行
+                </button>
+              </>
+            )}
           </div>
         )}
 
         {/* データ未取得 + スクレイプ誘導 */}
-        {racesMissing && scrape.status === 'idle' && (
+        {racesMissing && scrape.status === 'idle' && !scrapeOutcome && (
           <div className="bg-[#0d141c] border border-[#1e3448] rounded-lg p-5 space-y-3">
             <p className="text-sm text-[#93c5fd]">この日のデータはまだ取得されていません。</p>
             <button
@@ -409,7 +749,7 @@ export default function PredictBatchPage() {
           </div>
         )}
 
-        {racesError && scrape.status === 'idle' && (
+        {racesError && (
           <div className="bg-[#1a0a0a] border border-[#3a1a1a] rounded-lg p-4 text-sm text-[#f87171]">
             レース一覧を取得できませんでした: {racesError}
           </div>
@@ -451,7 +791,7 @@ export default function PredictBatchPage() {
                   <div className="flex items-center gap-2">
                     {results[r.race_id] && (
                       <span className={`text-xs px-2 py-0.5 rounded ${results[r.race_id].success ? 'bg-[#052e10] text-[#4ade80]' : 'bg-[#1a0505] text-[#f87171]'}`}>
-                        {results[r.race_id].success ? '予測済' : 'エラー'}
+                        {results[r.race_id].success ? results[r.race_id].cacheStatus ? '保存予測' : '予測済' : 'エラー'}
                       </span>
                     )}
                   </div>
@@ -462,12 +802,14 @@ export default function PredictBatchPage() {
 
             <div className="px-5 py-4 border-t border-[#1e1e1e]">
               {/* 進捗バー */}
-              {predicting && (
-                <div className="mb-3 space-y-1.5">
+              {(predicting || predictProgress.total > 0) && (
+                <div role="status" aria-live="polite" data-testid="prediction-live-progress" className="mb-3 space-y-1.5">
                   <div className="flex justify-between items-center text-xs text-[#888]">
-                    <span>{predictProgress.current ? `予測中: ${predictProgress.current}` : '予測中...'}</span>
-                    <span className="tabular-nums">{predictProgress.done}/{predictProgress.total}</span>
+                    <span>{predictProgress.current || (predicting ? `予測中 · 並列リクエスト ${predictProgress.active}件（最大${predictConcurrency}件）` : '予測完了')}</span>
+                    <span className="tabular-nums">処理 {predictProgress.done}/{predictProgress.total}</span>
                   </div>
+                  <p className="text-xs text-[#666] tabular-nums">{predictionTimingLabel({ completed: predictProgress.done, total: predictProgress.total, active: predictProgress.active }, predictElapsedMs)}</p>
+                  {predictionRuntimeNotice && <p className="text-xs text-[#888]">{predictionRuntimeNotice}</p>}
                   <div className="w-full h-2 bg-[#1e1e1e] rounded-full overflow-hidden">
                     <div
                       className="h-full bg-white rounded-full transition-all duration-300"
@@ -483,8 +825,9 @@ export default function PredictBatchPage() {
               >
                 {predicting
                   ? `予測中... (${predictProgress.done}/${predictProgress.total})`
-                  : `選択 ${selectedIds.size} レースを一括予測`}
+                  : Object.keys(results).length > 0 ? `選択 ${selectedIds.size} レースを最新データで再予測` : `選択 ${selectedIds.size} レースを一括予測`}
               </button>
+              <p className="mt-2 text-xs text-[#888]">保存済みデータを読み直して計算します。オッズ等の再取得・モデルの再学習は別操作です。</p>
             </div>
           </div>
         )}
@@ -492,17 +835,20 @@ export default function PredictBatchPage() {
         {/* ── Layer 3: 一括予測結果 ── */}
         {Object.keys(results).length > 0 && (
           <div className="space-y-3">
-            <h2 className="text-sm font-semibold text-white">③ 予測結果・スコア詳細</h2>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-sm font-semibold text-white">③ 予測結果・買い目</h2>
+              <span className="text-xs text-[#888]">合計 ¥{dayTotal.toLocaleString()} / 予算 ¥{Math.min(dayBudget, bankroll).toLocaleString()}</span>
+            </div>
+            {performanceNotice && <p role={performanceError ? 'alert' : 'status'} className={`text-xs ${performanceError ? 'text-[#f87171]' : 'text-[#888]'}`}>{performanceNotice} <Link href="/dashboard" className="text-[#7dd3fc] hover:underline">成績確認へ</Link></p>}
             {filteredRaces
               .filter(r => results[r.race_id])
               .map(r => {
                 const res = results[r.race_id]
                 const isOpen = expandedRace === r.race_id
                 const preds = res.data?.predictions || []
-                const rec = res.data?.recommendation
-                const raceLevel = res.data?.race_level ?? 'normal'
-                const confidenceValue = res.data?.pro_evaluation?.confidence
-                const confidence = confidenceValue == null ? null : Number(confidenceValue)
+                const rec = dayRecommendations[r.race_id]
+                const calibrated = rec?.probability_basis === 'calibrated' && rec.input_verified === true && predictionInputVerified(res.data?.input_diagnostics)
+                const expectation = predictionExpectationDisplay(res.data, rec, bettingNow, r.race_id)
 
                 return (
                   <div key={r.race_id} className="bg-[#111] border border-[#1e1e1e] rounded-lg overflow-hidden">
@@ -515,17 +861,13 @@ export default function PredictBatchPage() {
                         <span className="text-xs text-[#555]">{r.venue}</span>
                         <span className="font-medium">{r.race_no}R</span>
                         {r.race_name && <span className="text-xs text-[#888]">{r.race_name}</span>}
-                        {raceLevel === 'decisive' && <span className="text-xs text-yellow-400">🔥 勝負</span>}
-                        {raceLevel === 'skip' && <span className="text-xs text-[#555]">見送り</span>}
-                        {confidence !== null && Number.isFinite(confidence) && (
-                          <span className="text-[10px] text-[#666]">信頼度 {Math.round(confidence * 100)}%</span>
-                        )}
+                        {res.success && <span className="text-xs text-[#aaa]">{bettingDecisionLabel(rec, bettingNow, res.data?.input_diagnostics)}</span>}
                       </div>
                       <div className="flex items-center gap-3">
                         {!res.success && <span className="text-xs text-[#f87171]">エラー</span>}
                         {res.success && preds.length > 0 && (
                           <span className="text-xs text-[#4ade80]">
-                            ◎{preds[0]?.horse_number}番 EV:{(preds[0]?.expected_value ?? 0).toFixed(2)}
+                            ◎{preds[0]?.horse_number}番
                           </span>
                         )}
                         <svg className={`w-4 h-4 text-[#555] transition-transform ${isOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -540,12 +882,16 @@ export default function PredictBatchPage() {
                           <div className="px-5 py-4 text-sm text-[#f87171]">{res.error}</div>
                         ) : (
                           <>
+                            <div className="px-5 pt-3"><PredictionFreshnessNotice result={res.data} status={res.cacheStatus ?? 'computed'} cachedAt={res.cachedAt} /></div>
+                            <div className="px-5 pt-3"><PredictionInputNotice diagnostics={res.data?.input_diagnostics} /></div>
+                            <div className="border-b border-[#1a1a1a]"><BettingRecommendationPanel recommendation={rec} diagnostics={res.data?.input_diagnostics} snapshotId={!predicting ? res.data?.performance_snapshot_id : null} nowMs={bettingNow} referenceBets={res.data?.reference_bets} /></div>
+                            {expectation.mode === 'reference' && <p className="px-5 py-3 text-xs text-[#888]" title={REFERENCE_EXPECTATION_CAVEAT}>{REFERENCE_EXPECTATION_NOTE}</p>}
                             {/* 予測テーブル */}
                             <div className="overflow-x-auto">
                               <table className="w-full text-sm">
                                 <thead>
                                   <tr className="border-b border-[#1e1e1e]">
-                                    {['順位', '馬番', '馬名', '騎手', 'スコア', '勝率', '複勝圏', 'アンサンブル', '期待値', 'オッズ', '人気'].map(h => (
+                                    {['順位', '馬番', '馬名', '騎手', 'スコア', calibrated ? '勝率' : '参考比率', '複勝参考', '合成参考', expectation.label, 'オッズ', '人気'].map(h => (
                                       <th key={h} className="px-4 py-2.5 text-left text-xs text-[#555] font-normal first:pl-5">{h}</th>
                                     ))}
                                   </tr>
@@ -558,8 +904,8 @@ export default function PredictBatchPage() {
                                       const pRaw = p.p_raw ?? pNorm
                                       const pPlace3: number | null = p.p_place3 ?? null
                                       const pEns: number = p.p_ensemble ?? pNorm
-                                      const ev: number | null = p.expected_value ?? (p.odds != null ? pNorm * p.odds : null)
-                                      const evColor = ev == null ? 'text-[#555]' : ev >= 1.2 ? 'text-[#4ade80]' : ev >= 1.0 ? 'text-[#facc15]' : 'text-[#888]'
+                                      const ev = expectation.values.get(p.horse_number) ?? null
+                                      const evColor = ev == null ? 'text-[#555]' : expectation.mode === 'reference' ? 'text-[#888]' : ev >= 1.2 ? 'text-[#4ade80]' : ev >= 1.0 ? 'text-[#facc15]' : 'text-[#888]'
                                       const pct = maxProb > 0 ? Math.round((pNorm / maxProb) * 100) : 0
                                       return (
                                         <tr key={i} className="border-b border-[#1a1a1a] hover:bg-[#161616] transition-colors">
@@ -615,61 +961,6 @@ export default function PredictBatchPage() {
                               </div>
                             )}
 
-                            {/* AIが決定した買い目の読み取り専用表示 */}
-                            {res.success && (() => {
-                              const betType = String(res.data?.best_bet_type || '単勝')
-                              const candidates: any[] = res.data?.bet_types?.[betType] ?? []
-                              const requestedCount = Math.max(0, Number(rec?.purchase_count ?? 0))
-                              const selectedCombos = candidates.slice(0, Math.min(requestedCount, candidates.length))
-                              const unitPrice = Math.max(0, Number(rec?.unit_price ?? 0))
-                              const totalCost = unitPrice * selectedCombos.length
-                              const isSkip = raceLevel === 'skip' || selectedCombos.length === 0
-                              return (
-                                <div className="border-t border-[#1a1a1a]">
-
-                                  <div className="px-5 pt-4 pb-3 border-b border-[#141414] flex items-center gap-3">
-                                    <span className="text-[10px] font-semibold tracking-wider text-[#facc15] uppercase">AI 買い目</span>
-                                    <span className="text-sm font-semibold text-white">{isSkip ? '見送り' : betType}</span>
-                                  </div>
-
-                                  <div className="divide-y divide-[#141414]">
-
-                                    {/* ── AIが選んだ組み合わせ ── */}
-                                    <div className="px-5 py-3 space-y-2">
-                                      {!isSkip ? (
-                                        <div className="flex flex-wrap gap-1.5">
-                                          {selectedCombos.map((combo: any, index: number) => {
-                                            const expectedValue = combo.expected_value ?? combo.ev
-                                            return (
-                                              <span
-                                                key={`${String(combo.combination ?? combo)}-${index}`}
-                                                className="text-xs px-2.5 py-1 rounded font-mono border bg-[#1a2a10] text-[#facc15] border-[#3a4a10]"
-                                              >
-                                                {String(combo.combination ?? combo)}
-                                                {expectedValue != null && (
-                                                  <span className="ml-1 opacity-50 text-[10px]">EV {Number(expectedValue).toFixed(2)}</span>
-                                                )}
-                                              </span>
-                                            )
-                                          })}
-                                        </div>
-                                      ) : (
-                                        <p className="text-xs text-[#666]">購入条件に達していません</p>
-                                      )}
-                                    </div>
-
-                                  </div>
-
-                                  {!isSkip && (
-                                    <div className="px-5 py-3 border-t border-[#141414] flex flex-wrap items-center gap-2 text-xs">
-                                      <span className="text-[#888]">¥{unitPrice.toLocaleString()} × {selectedCombos.length}点</span>
-                                      <span className="text-[#444]">=</span>
-                                      <span className="text-white font-bold">合計 ¥{totalCost.toLocaleString()}</span>
-                                    </div>
-                                  )}
-                                </div>
-                              )
-                            })()}
                           </>
                         )}
                       </div>

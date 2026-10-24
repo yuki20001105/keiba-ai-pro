@@ -174,6 +174,54 @@ describe('local Admin model training route guard', () => {
     )
   })
 
+  it('forwards only validated acceleration fields without runtime paths or probe output', async () => {
+    process.env.APP_ENV = 'development'
+    process.env.MODEL_TRAINING_LOCAL_ENABLED = 'true'
+    vi.mocked(global.fetch).mockResolvedValueOnce(Response.json({ enabled: true,
+      acceleration: { default_device: 'auto', gpu_available: true, feature_cache_supported: true,
+        gpu_reason: 'C:\\private\\runtime', runtime: { python: 'C:\\private\\python.exe' },
+        private_probe_output: 'must not be forwarded' } }))
+    const response = await GET_CAPABILITY(capabilityRequest())
+    expect(response.headers.get('Cache-Control')).toBe('no-store')
+    expect(await response.json()).toEqual({ enabled: true, reason: null,
+      acceleration: { default_device: 'auto', gpu_available: true, feature_cache_supported: true, gpu_reason: null } })
+  })
+
+  it('retains the bounded GPU-unavailable reason and feature reuse capability', async () => {
+    process.env.APP_ENV = 'development'
+    process.env.MODEL_TRAINING_LOCAL_ENABLED = 'true'
+    vi.mocked(global.fetch).mockResolvedValueOnce(Response.json({ enabled: true,
+      acceleration: { default_device: 'auto', gpu_available: false, feature_cache_supported: true,
+        gpu_reason: 'GPU環境を確認できません' } }))
+    const response = await GET_CAPABILITY(capabilityRequest())
+    expect(await response.json()).toEqual({ enabled: true, reason: null,
+      acceleration: { default_device: 'auto', gpu_available: false, feature_cache_supported: true,
+        gpu_reason: 'GPU環境を確認できません' } })
+  })
+
+  it.each([
+    { default_device: 'auto', gpu_available: 'true', feature_cache_supported: true },
+    { default_device: 'auto', gpu_available: true, feature_cache_supported: 1 },
+    { default_device: 'invalid', gpu_available: true, feature_cache_supported: true },
+    ['gpu'],
+  ])('does not advertise malformed acceleration capability: %j', async acceleration => {
+    process.env.APP_ENV = 'development'
+    process.env.MODEL_TRAINING_LOCAL_ENABLED = 'true'
+    vi.mocked(global.fetch).mockResolvedValueOnce(Response.json({ enabled: true, acceleration }))
+    const response = await GET_CAPABILITY(capabilityRequest())
+    expect(await response.json()).toEqual({ enabled: true, reason: null })
+  })
+
+  it('does not advertise acceleration for a rejected backend capability response', async () => {
+    process.env.APP_ENV = 'development'
+    process.env.MODEL_TRAINING_LOCAL_ENABLED = 'true'
+    vi.mocked(global.fetch).mockResolvedValueOnce(Response.json({ enabled: true, reason: 'disabled',
+      acceleration: { default_device: 'auto', gpu_available: true, feature_cache_supported: true } }, { status: 409 }))
+    const response = await GET_CAPABILITY(capabilityRequest())
+    expect(response.status).toBe(409)
+    expect(await response.json()).toEqual({ enabled: false, reason: 'disabled' })
+  })
+
   it('starts local training with only the verified Admin token', async () => {
     process.env.APP_ENV = 'test'
     process.env.MODEL_TRAINING_LOCAL_ENABLED = 'TRUE'
@@ -216,6 +264,9 @@ describe('local Admin model training route guard', () => {
       target: 'win',
       model_type: 'lightgbm',
       test_size: 0.2,
+      feature_pipeline: 'local-db-shared-v1',
+      compute_device: 'auto',
+      reuse_features: true,
       force_sync: true,
       writer_path: 'direct',
     }))
@@ -228,6 +279,9 @@ describe('local Admin model training route guard', () => {
       target: 'win',
       model_type: 'lightgbm',
       test_size: 0.2,
+      feature_pipeline: 'local-db-shared-v1',
+      compute_device: 'auto',
+      reuse_features: true,
     })
   })
 
@@ -432,11 +486,13 @@ describe('local Admin model training route guard', () => {
     const appEnvironment = source.indexOf("$env:APP_ENV = 'development'")
     const trainingFlag = source.indexOf("$env:MODEL_TRAINING_LOCAL_ENABLED = 'true'")
     const activationFlag = source.indexOf("$env:MODEL_ACTIVATION_LOCAL_ENABLED = 'true'")
+    const deletionFlag = source.indexOf("$env:MODEL_DELETION_LOCAL_ENABLED = 'true'")
 
     expect(finalDotEnvImport).toBeGreaterThanOrEqual(0)
     expect(appEnvironment).toBeGreaterThan(finalDotEnvImport)
     expect(trainingFlag).toBeGreaterThan(appEnvironment)
     expect(activationFlag).toBeGreaterThan(trainingFlag)
+    expect(deletionFlag).toBeGreaterThan(activationFlag)
     expect(source).toContain("$env:API_HOST = '127.0.0.1'")
     expect(source).toContain("$env:HOSTNAME = '127.0.0.1'")
     expect(source).toContain('npm run dev -- --hostname 127.0.0.1')

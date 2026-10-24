@@ -1,5 +1,16 @@
 [
   {
+    "route": "/api/prediction-freshness",
+    "method": "GET",
+    "policy": "Authenticated",
+    "auth_header_forward": true,
+    "status_propagation": true,
+    "detail_error_passthrough": true,
+    "auth_header_forward_reason": "Verified authenticated bearer only; read-only source/model revisions never run inference or acquisition",
+    "status_propagation_reason": "Preserves upstream freshness availability and missing-model status without treating errors as current data",
+    "detail_error_passthrough_reason": "Propagates bounded freshness contract errors; transport and malformed bodies map to a bounded 502"
+  },
+  {
     "route": "/api/admin/profiles",
     "method": "GET",
     "policy": "Admin",
@@ -506,6 +517,41 @@
     "detail_error_passthrough_reason": "/api/ocr maps upstream detail into route-specific error payload"
   },
   {
+    "route": "/api/performance",
+    "method": "GET",
+    "policy": "Authenticated",
+    "auth_header_forward": true,
+    "status_propagation": true,
+    "detail_error_passthrough": true,
+    "auth_header_forward_reason": "",
+    "status_propagation_reason": "",
+    "detail_error_passthrough_reason": "",
+    "authorization_scope": "Verified bearer is forwarded; FastAPI permits only development/local/test and derives ledger owner from current user_id, never browser parameters; paper and actual remain separate with settled-only ROI."
+  },
+  {
+    "route": "/api/performance/records",
+    "method": "POST",
+    "policy": "Authenticated",
+    "auth_header_forward": true,
+    "status_propagation": true,
+    "detail_error_passthrough": true,
+    "auth_header_forward_reason": "",
+    "status_propagation_reason": "",
+    "detail_error_passthrough_reason": "",
+    "authorization_scope": "Verified bearer is forwarded; local-only FastAPI binds server snapshot to current user_id, rejects client-owned model/probability/payout fields, and requires explicit confirmation for actual records; no purchase is transmitted."
+  },
+  {
+    "route": "/api/prediction-explanation",
+    "method": "POST",
+    "policy": "PremiumOrAdmin",
+    "auth_header_forward": false,
+    "status_propagation": false,
+    "detail_error_passthrough": false,
+    "auth_header_forward_reason": "/api/prediction-explanation verifies current Premium/Admin authorization locally and sends only bounded sanitized explanation inputs to an LLM, never the end-user bearer token",
+    "status_propagation_reason": "/api/prediction-explanation returns its own explanation/source contract and fixed validation or generation statuses, not the LLM provider's HTTP status",
+    "detail_error_passthrough_reason": "/api/prediction-explanation does not expose provider error bodies and uses route-specific errors or a deterministic fallback"
+  },
+  {
     "route": "/api/prediction-history",
     "method": "GET",
     "policy": "PremiumOrAdmin",
@@ -815,6 +861,17 @@
   },
   {
     "route": "/api/scrape/rescrape-incomplete",
+    "method": "POST",
+    "policy": "Admin",
+    "auth_header_forward": true,
+    "status_propagation": true,
+    "detail_error_passthrough": true,
+    "auth_header_forward_reason": "",
+    "status_propagation_reason": "",
+    "detail_error_passthrough_reason": ""
+  },
+  {
+    "route": "/api/scrape/retire/[jobId]",
     "method": "POST",
     "policy": "Admin",
     "auth_header_forward": true,

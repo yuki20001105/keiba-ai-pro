@@ -10,17 +10,19 @@ from __future__ import annotations
 import asyncio
 import functools
 import ipaddress
+import json
 import os
 import shutil
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 import traceback
 import uuid
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List
 
@@ -39,6 +41,7 @@ from app_config import (  # type: ignore
 )
 from deps.auth import require_admin  # type: ignore
 from models import TrainRequest, TrainResponse  # type: ignore
+from training.db_context_registry import CONTEXT_PIPELINE, SHARED_PIPELINES  # type: ignore
 from keiba_ai.constants import FUTURE_FIELDS  # type: ignore
 from training.approved_execution import (  # type: ignore
     ApprovedExecutionError,
@@ -113,6 +116,11 @@ _LOCAL_RETRAIN_SOURCE_ROOT = Path(__file__).resolve().parents[2]
 _LOCAL_RETRAIN_LEDGER = Path(__file__).resolve().parents[1] / "data" / "local_retrain_jobs.db"
 _LOCAL_RETRAIN_SNAPSHOT_CATALOG = ULTIMATE_DB.parent / "model_retrain_snapshots"
 _LOCAL_RETRAIN_ARTIFACT_ROOT = MODELS_DIR / ".local-retrain" / "artifacts"
+_LOCAL_RETRAIN_WORKER_ENTRYPOINT = (
+    Path(__file__).resolve().parents[1] / "local_retrain_worker_main.py"
+)
+_LOCAL_RETRAIN_WORKER_LOG = Path(__file__).resolve().parents[1] / "logs" / "local_retrain_worker.log"
+_SHARED_FEATURE_CACHE_ROOT = Path(__file__).resolve().parents[1] / "data" / "shared_feature_cache"
 _LOCAL_RETRAIN_RUNTIME_LOCK = threading.RLock()
 _LOCAL_RETRAIN_RUNTIME: tuple[LocalRetrainStore, LocalRetrainGateway] | None = None
 _LOCAL_RETRAIN_STARTUP_ERROR: str | None = None
@@ -245,6 +253,13 @@ def _local_training_parameters(request: TrainRequest) -> dict[str, object]:
     payload = request.model_dump()
     payload.pop("target", None)
     payload.pop("model_type", None)
+    # The source-pinned schema-v1 contract stays unchanged; the exact ordered
+    # feature contract binds the new pipeline (see db_shared_contract).
+    payload.pop("feature_pipeline", None)
+    # Execution/cache choices are durable job scheduling controls, not model
+    # hyperparameters. Keep the existing schema-v1 feature/lease contract exact.
+    payload.pop("compute_device", None)
+    payload.pop("reuse_features", None)
     return payload
 
 
@@ -419,7 +434,19 @@ def _training_capability_state() -> dict[str, object]:
             "reason": "local-training-storage-unavailable",
         }
 
-    return {"enabled": True, "mode": "local-admin", "reason": None}
+    from training.db_shared_acceleration import get_compute_capability
+    compute = get_compute_capability()
+    gpu_available = compute["devices"]["gpu"]["installed_and_pinned"]
+    return {"enabled": True, "mode": "local-admin", "reason": None,
+            "feature_profiles": [
+                {"pipeline": "local-db-shared-v1", "feature_count": 47},
+                {"pipeline": "local-db-shared-optimized-v1", "feature_count": 46},
+                {"pipeline": CONTEXT_PIPELINE, "feature_count": 80, "reference_only": True},
+            ],
+            "acceleration": {"default_device": "auto", "gpu_available": gpu_available,
+                "feature_cache_supported": True,
+                "gpu_reason": None if gpu_available else "GPU環境を確認できません",
+                "runtime": compute}}
 
 
 def _atomic_joblib_dump(bundle: dict, model_path: Path) -> None:
@@ -497,6 +524,135 @@ def _get_date8_to(df: "pd.DataFrame") -> str:  # noqa: F821
 # レース後確定フィールド（keiba_ai.constants.FUTURE_FIELDS を参照）
 
 
+async def _do_shared_db_train(request, execution, progress_cb) -> TrainResponse:
+    """Local-only shared inputs, inside the existing snapshot/lease publisher.
+
+    This path does not synchronize remote data, change the active pointer, or
+    reuse the final evaluation outcomes for tuning/calibration.
+    """
+    from training.db_shared_cache import prepare_shared_inputs
+    from training.db_shared_fit import source_hashes as fit_source_hashes
+    from training.db_shared_acceleration import current_execution_receipt
+    from training.db_context_registry import selected_feature_columns, fit_module
+    profile = fit_module(request.feature_pipeline)
+    FEATURE_COLUMNS = list(selected_feature_columns(request.feature_pipeline))
+    FEATURE_VERSION = request.feature_pipeline
+    if FEATURE_VERSION == "local-db-shared-v1":
+        from training.db_shared_features import source_hashes
+        from training.db_shared_acceleration import accelerated_fit_shared_model
+    else:
+        source_hashes = profile.feature_source_hashes
+        accelerated_fit_shared_model = profile.accelerated_fit_shared_model
+    if request.target != "speed_deviation" or request.use_optuna or not request.use_optimizer:
+        raise HTTPException(409, "共通DB学習の実行条件が一致しません")
+    execution.select_feature_columns(FEATURE_COLUMNS, future_fields=FUTURE_FIELDS)
+    runtime_receipt = current_execution_receipt()
+    if runtime_receipt is None or runtime_receipt["requested_device"] != request.compute_device:
+        raise LocalRetrainError("local-shared-execution-policy-unbound")
+    started = time.perf_counter()
+    progress_cb("共通特徴量の再利用条件を確認中", 8)
+    def preparation_progress(message, _pct):
+        progress_cb(message, 16)
+    if FEATURE_VERSION == CONTEXT_PIPELINE:
+        frame, features, coverage, cache_receipt = await asyncio.to_thread(
+            profile.prepare_inputs, execution.snapshot_path,
+            request.training_date_from, request.training_date_to,
+            _SHARED_FEATURE_CACHE_ROOT, progress=preparation_progress,
+            expected_source_hashes=profile.source_hashes(),
+            reuse_features=request.reuse_features,
+        )
+    else:
+        frame, features, coverage, cache_receipt = await asyncio.to_thread(
+            prepare_shared_inputs, execution.snapshot_path,
+            request.training_date_from, request.training_date_to,
+            _SHARED_FEATURE_CACHE_ROOT, progress=preparation_progress,
+            expected_source_hashes=fit_source_hashes(), reuse_features=request.reuse_features,
+        )
+    if cache_receipt["snapshot_sha256"] != execution.data_snapshot_sha256:
+        raise LocalRetrainError("local-shared-cache-snapshot-mismatch")
+    prepared = time.perf_counter()
+    # Two candidates share the compact matrix; native parallelism is capped
+    # rather than duplicating the 3GB source DB per model/process.
+    device = runtime_receipt["resolved_device"]
+    progress_cb(f"固定候補を比較中（{device.upper()}）", 28)
+    bundle, result = await asyncio.to_thread(
+        accelerated_fit_shared_model, frame, features, test_size=request.test_size,
+        compute_device=request.compute_device, execution_receipt=runtime_receipt,
+        n_threads=4, progress=progress_cb,
+    )
+    fitted = time.perf_counter()
+    acceleration = {"device": device, "requested_device": request.compute_device,
+        "cache_hit": cache_receipt["cache_hit"], "cache_status": cache_receipt["cache_status"],
+        "preparation_seconds": prepared - started, "fit_seconds": fitted - prepared,
+        "total_seconds": fitted - started, "fallback_reason": runtime_receipt["fallback_reason"],
+        "timing_scope": "feature-preparation-through-fit-calibration-evaluation",
+        "cache_receipt": cache_receipt, "execution_receipt": runtime_receipt,
+        "data_snapshot_sha256": execution.data_snapshot_sha256,
+        "approved_payload_hash": execution.approved_payload_hash}
+    evaluation = result["evaluation"]
+    probability_validation = result["probability_validation"]
+    dates = frame["race_date"].astype(str).str.replace("-", "", regex=False)
+    created = datetime.now(timezone(timedelta(hours=9)))
+    model_id = f"dbshared_{dates.min()}_{dates.max()}_{created:%Y%m%d_%H%M}_{created:%S%f}"
+    model_path = execution.prepare_artifact_directory() / f"model_speed_deviation_lightgbm_{model_id}.joblib"
+    training_seconds = time.perf_counter() - started
+    metrics = {
+        "auc": float(evaluation["primary"]["rank_correlation"]),
+        "logloss": float(evaluation["primary"]["rmse"]),
+        "cv_auc_mean": float(result.get("cv_rank_correlation", 0.0)),
+        "cv_auc_std": 0.0,
+    }
+    bundle.update({
+        "feature_pipeline": FEATURE_VERSION,
+        "feature_columns": list(FEATURE_COLUMNS), "feature_source_hashes": source_hashes(),
+        "fit_source_sha256": sha256_file(Path(profile.__file__))[0],
+        "target": "speed_deviation", "model_type": "lightgbm", "ultimate_mode": True,
+        "use_optimizer": False, "optimizer": None, "evaluation": evaluation,
+        "probability_validation": probability_validation, "metrics": metrics,
+        "shared_training_audit": result,
+        "acceleration": acceleration,
+        "training_stage_seconds": {
+            **cache_receipt["stage_seconds"],
+            "feature_preparation": prepared - started,
+            "candidate_fit_calibration_evaluation": fitted - prepared,
+        },
+        "training_eligibility": coverage, "data_count": result["data_count"],
+        "race_count": result["race_count"], "created_at": created.isoformat(),
+        "dataset_period_start": str(dates.min()), "dataset_period_end": str(dates.max()),
+        "training_time_seconds": training_seconds,
+        "training_parallel_workers": result.get("training_parallel_workers", 2),
+        "native_threads": result.get("training_native_threads", 4),
+        "pipeline_config": {"requires_full_history": True, "shared_db_features": FEATURE_VERSION},
+        "local_execution": {
+            "execution_policy": execution.execution_policy, "job_id": execution.job_id,
+            "approved_payload_hash": execution.approved_payload_hash,
+            "data_snapshot_sha256": execution.data_snapshot_sha256,
+            "feature_contract_sha256": execution.feature_contract_sha256,
+            "candidate_commit_sha": execution.candidate_commit_sha,
+            "source_tree_sha256": execution.source_tree_sha256,
+            "active_model_id": execution.active_model_id,
+            "active_model_sha256": execution.active_model_sha256,
+        },
+    })
+    progress_cb("検証結果とモデルを保存中", 93)
+    await asyncio.to_thread(_atomic_joblib_dump, bundle, model_path)
+    del features, frame, bundle
+    import gc
+    gc.collect()
+    return TrainResponse(
+        success=True, model_id=model_id, model_path=str(model_path), metrics=metrics,
+        evaluation=evaluation, probability_validation=probability_validation,
+        data_count=int(result["data_count"]),
+        race_count=int(result["race_count"]), feature_count=len(FEATURE_COLUMNS),
+        training_time=time.perf_counter() - started,
+        message="共通DB特徴量で学習・時系列検証が完了しました",
+        feature_columns=list(FEATURE_COLUMNS), feature_pipeline=FEATURE_VERSION,
+        training_eligibility=coverage, training_parallel_workers=result.get("training_parallel_workers", 2),
+        native_threads=result.get("training_native_threads", 4),
+        acceleration=acceleration,
+    )
+
+
 async def _do_train(
     request: TrainRequest,
     current_user: dict,
@@ -519,6 +675,10 @@ async def _do_train(
                 training_date_to=request.training_date_to,
             )
             approved_execution.verify_snapshot()
+            if isinstance(approved_execution, LocalTrainingExecution):
+                from training.db_context_registry import verify_pipeline
+                approved_execution.validate_request(**_local_training_parameters(request))
+                verify_pipeline(approved_execution.contract, request.feature_pipeline)
         except ApprovedExecutionError as exc:
             raise HTTPException(
                 status_code=409,
@@ -535,6 +695,10 @@ async def _do_train(
     allows_calibration = False
     if progress_cb is None:
         def progress_cb(msg: str, pct: int = None): pass  # noqa: F811
+    if request.feature_pipeline in SHARED_PIPELINES:
+        if not isinstance(approved_execution, LocalTrainingExecution):
+            raise HTTPException(409, "共通DB学習はローカル管理者ジョブ専用です")
+        return await _do_shared_db_train(request, approved_execution, progress_cb)
     try:
         import pandas as pd
         from keiba_ai.db_ultimate_loader import load_ultimate_training_frame  # type: ignore
@@ -1457,6 +1621,7 @@ def _safe_local_failure_code(error: BaseException, fallback: str) -> str:
 async def _execute_queued_local_retrain(job_id: str) -> None:
     """Run one already-bound queued job through the shared fenced coordinator."""
 
+    from training.db_context_registry import request_payload
     store: LocalRetrainStore | None = None
     try:
         store, gateway = _get_local_retrain_runtime()
@@ -1464,6 +1629,23 @@ async def _execute_queued_local_retrain(job_id: str) -> None:
         if queued.state != "queued" or queued.contract is None or queued.snapshot_path is None:
             return
         contract = queued.contract
+        initial_request = TrainRequest(**queued.request_payload)
+        # Options are taken only from the durable, owner-scoped start request;
+        # neither a resumed worker nor client can rewrite a queued policy.
+        def make_request(bundle):
+            value = TrainRequest(**request_payload(bundle))
+            if (_local_training_parameters(initial_request) != _local_training_parameters(value)
+                    or initial_request.target != value.target
+                    or initial_request.model_type != value.model_type
+                    or initial_request.feature_pipeline != value.feature_pipeline):
+                raise LocalRetrainError("local-shared-durable-request-mismatch")
+            if value.feature_pipeline in SHARED_PIPELINES:
+                from training.db_shared_acceleration import current_execution_receipt
+                receipt = current_execution_receipt()
+                if receipt is None or receipt["requested_device"] != initial_request.compute_device:
+                    raise LocalRetrainError("local-shared-durable-execution-mismatch")
+            return value.model_copy(update={"compute_device": initial_request.compute_device,
+                                            "reuse_features": initial_request.reuse_features})
         parser = functools.partial(
             LocalExecutionBundle.from_gateway,
             expected_source_tree_sha256=contract.source_tree_sha256,
@@ -1478,7 +1660,7 @@ async def _execute_queued_local_retrain(job_id: str) -> None:
             lease_ttl_seconds=120,
             trainer=_do_train,
             bundle_parser=parser,
-            request_factory=lambda bundle: TrainRequest(**bundle.training_request_payload()),
+            request_factory=make_request,
             progress_observer=gateway.progress_observer(job_id),
             snapshot_copier=copy_local_snapshot,
             result_observer=gateway.stage_result,
@@ -1538,6 +1720,8 @@ async def _prepare_and_execute_local_retrain(
         preparing = store.get_job(job_id)
         if preparing.state != "preparing":
             return
+        if TrainRequest(**preparing.request_payload).model_dump() != request.model_dump():
+            raise LocalRetrainError("local-preparing-durable-request-mismatch")
         heartbeat_lock = threading.Lock()
         last_heartbeat = 0.0
 
@@ -1601,15 +1785,20 @@ async def _prepare_and_execute_local_retrain(
             renew_preparation(force=True)
             store.update_progress(job_id, message, pct)
 
-        selected_features = await asyncio.to_thread(
-            derive_local_feature_schema,
-            snapshot.path,
-            target=request.target,
-            training_date_from=request.training_date_from,
-            training_date_to=request.training_date_to,
-            test_size=request.test_size,
-            observe_phase=feature_contract_progress,
-        )
+        if request.feature_pipeline in SHARED_PIPELINES:
+            from training.db_context_registry import selected_feature_columns
+            selected_features = selected_feature_columns(request.feature_pipeline)
+            feature_contract_progress(f"共通DB特徴量の契約を確認済み（{len(selected_features)}項目）", 5)
+        else:
+            selected_features = await asyncio.to_thread(
+                derive_local_feature_schema,
+                snapshot.path,
+                target=request.target,
+                training_date_from=request.training_date_from,
+                training_date_to=request.training_date_to,
+                test_size=request.test_size,
+                observe_phase=feature_contract_progress,
+            )
         renew_preparation(force=True)
         # Close the read/hash race before the immutable contract is queued.
         if (
@@ -1682,28 +1871,77 @@ def _start_local_retrain_thread(
     prepare_request: TrainRequest | None,
     preparation_token: str | None = None,
 ) -> None:
-    """Start the bounded local runner without blocking the API event loop."""
+    """Start one isolated worker process without exposing its token in argv.
 
-    async def run() -> None:
-        if prepare_request is None:
-            await _execute_queued_local_retrain(job_id)
-        else:
-            if preparation_token is None:
-                raise LocalRetrainError("local-preparation-token-missing")
-            await _prepare_and_execute_local_retrain(
-                job_id,
-                prepare_request,
-                preparation_token,
-            )
+    Training loads large pandas/NumPy/LightGBM objects.  Running the whole
+    preparation and training pipeline outside FastAPI lets the operating
+    system reclaim that memory deterministically when the worker exits.
+    """
 
-    def background() -> None:
-        asyncio.run(run())
+    mode = "queued" if prepare_request is None else "prepare"
+    if mode == "prepare" and preparation_token is None:
+        raise LocalRetrainError("local-preparation-token-missing")
+    if not _LOCAL_RETRAIN_WORKER_ENTRYPOINT.is_file():
+        raise LocalRetrainError("local-runner-entrypoint-unavailable")
 
-    threading.Thread(
-        target=background,
-        daemon=True,
-        name=f"local-train-{job_id[:8]}",
-    ).start()
+    from training.db_shared_acceleration import resolve_runtime
+    durable_request = prepare_request
+    if durable_request is None:
+        store, _gateway = _get_local_retrain_runtime()
+        durable_request = TrainRequest(**store.get_job(job_id).request_payload)
+    runtime = resolve_runtime(durable_request.compute_device,
+                              durable_request.feature_pipeline in SHARED_PIPELINES)
+    payload = {
+        "schema_version": 2,
+        "mode": mode,
+        "job_id": job_id,
+        "preparation_token": preparation_token,
+        "request": prepare_request.model_dump() if prepare_request is not None else None,
+        "execution_receipt": runtime["execution_receipt"],
+    }
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    api_root = Path(__file__).resolve().parents[1]
+    interpreter = Path(runtime["interpreter"])
+    _LOCAL_RETRAIN_WORKER_LOG.parent.mkdir(parents=True, exist_ok=True)
+    creationflags = (
+        int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) if os.name == "nt" else 0
+    )
+    with _LOCAL_RETRAIN_WORKER_LOG.open("a", encoding="utf-8") as worker_log:
+        process = subprocess.Popen(
+            [
+                str(interpreter),
+                "-X",
+                "utf8",
+                str(_LOCAL_RETRAIN_WORKER_ENTRYPOINT),
+            ],
+            cwd=str(api_root),
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            stdin=subprocess.PIPE,
+            stdout=worker_log,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            close_fds=True,
+            creationflags=creationflags,
+            start_new_session=os.name != "nt",
+        )
+        if process.stdin is None:
+            process.kill()
+            raise LocalRetrainError("local-runner-stdin-unavailable")
+        try:
+            process.stdin.write(serialized + "\n")
+            process.stdin.flush()
+        except (BrokenPipeError, OSError) as exc:
+            process.kill()
+            raise LocalRetrainError("local-runner-start-failed") from exc
+        finally:
+            process.stdin.close()
 
 
 @router.post("/api/train/start")
@@ -1723,7 +1961,10 @@ async def train_start(
                 "message": "非同期ジョブとして実行してください",
             },
         )
-    if not (request.use_sqlite and request.ultimate_mode and request.use_optimizer):
+    shared = request.feature_pipeline in SHARED_PIPELINES
+    if shared and (request.target != "speed_deviation" or request.use_optuna):
+        raise HTTPException(409, "共通DB学習は速度偏差・固定候補比較を使用してください")
+    if not (request.use_sqlite and request.ultimate_mode and request.use_optimizer is True):
         raise HTTPException(
             status_code=409,
             detail={

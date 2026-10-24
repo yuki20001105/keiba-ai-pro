@@ -272,6 +272,9 @@ def test_worker_converts_completion_persistence_failure_to_durable_error(
 
     monkeypatch.setattr(jobs, "_persist_job", persist)
     monkeypatch.setattr(jobs, "_init_sqlite_db", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(jobs, "init_acquisition_quality_db", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(jobs, "estimate_fetch_plan", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(jobs, "_estimate_db_existing_coverage", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(jobs, "write_fetch_summary", lambda *_args, **_kwargs: tmp_path / "summary.json")
 
     asyncio.run(

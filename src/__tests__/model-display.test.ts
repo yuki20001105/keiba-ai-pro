@@ -24,4 +24,10 @@ describe('model display names', () => {
       '速度偏差｜2026/09/12 21:59｜学習 2018/01–2026/07｜相関 0.760',
     )
   })
+
+  it('labels the context profile as a comparison candidate, not an approved strategy', () => {
+    expect(formatModelOptionLabel({ ...NEW_MODEL, feature_pipeline: 'local-db-context-v1' })).toBe(
+      '条件・展開80（比較候補）｜2026/09/12 21:59｜学習 2018/01–2026/07',
+    )
+  })
 })

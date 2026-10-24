@@ -1,6 +1,6 @@
 {
   "fastapi": {
-    "count": 65,
+    "count": 69,
     "routes": [
       {
         "endpoint": "/",
@@ -310,11 +310,40 @@
         "source": "python-api/routers/scrape.py"
       },
       {
+        "endpoint": "/api/performance",
+        "method": "GET",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "get_current_user",
+          "get_performance"
+        ],
+        "source": "python-api/routers/performance.py"
+      },
+      {
+        "endpoint": "/api/performance/records",
+        "method": "POST",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "get_current_user",
+          "save_record"
+        ],
+        "source": "python-api/routers/performance.py"
+      },
+      {
         "endpoint": "/api/predict",
         "method": "POST",
         "policy": "Authenticated",
         "dependency_names": [
           "predict"
+        ],
+        "source": "python-api/routers/predict.py"
+      },
+      {
+        "endpoint": "/api/prediction-freshness",
+        "method": "GET",
+        "policy": "Authenticated",
+        "dependency_names": [
+          "prediction_freshness"
         ],
         "source": "python-api/routers/predict.py"
       },
@@ -543,6 +572,17 @@
         "source": "python-api/routers/scrape.py"
       },
       {
+        "endpoint": "/api/scrape/retire/{job_id}",
+        "method": "POST",
+        "policy": "Admin",
+        "dependency_names": [
+          "get_current_user",
+          "require_admin",
+          "scrape_retire_unaccepted"
+        ],
+        "source": "python-api/routers/scrape.py"
+      },
+      {
         "endpoint": "/api/scrape/start",
         "method": "POST",
         "policy": "Admin",
@@ -607,6 +647,7 @@
         "dependency_names": [
           "get_current_user",
           "require_admin",
+          "require_local_training_admin",
           "require_loopback_training_request",
           "train_model"
         ],
@@ -619,6 +660,7 @@
         "dependency_names": [
           "get_current_user",
           "require_admin",
+          "require_local_training_admin",
           "require_loopback_training_request",
           "train_capability"
         ],
@@ -631,6 +673,7 @@
         "dependency_names": [
           "get_current_user",
           "require_admin",
+          "require_local_training_admin",
           "require_loopback_training_request",
           "train_start"
         ],
@@ -643,6 +686,7 @@
         "dependency_names": [
           "get_current_user",
           "require_admin",
+          "require_local_training_admin",
           "require_loopback_training_request",
           "train_job_status"
         ],
@@ -662,7 +706,7 @@
     "duplicates": []
   },
   "next": {
-    "count": 85,
+    "count": 90,
     "routes": [
       {
         "route": "/api/admin/profiles",
@@ -1217,6 +1261,54 @@
         "source": "src/app/api/ocr/route.ts"
       },
       {
+        "route": "/api/performance",
+        "method": "GET",
+        "policy": "Authenticated",
+        "backend_endpoint": "/api/performance",
+        "backend_method": "GET",
+        "backend_policy": "Authenticated",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/performance/route.ts"
+      },
+      {
+        "route": "/api/performance/records",
+        "method": "POST",
+        "policy": "Authenticated",
+        "backend_endpoint": "/api/performance/records",
+        "backend_method": "POST",
+        "backend_policy": "Authenticated",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/performance/records/route.ts"
+      },
+      {
+        "route": "/api/prediction-explanation",
+        "method": "POST",
+        "policy": "PremiumOrAdmin",
+        "backend_endpoint": "",
+        "backend_method": "",
+        "backend_policy": "Unclassified",
+        "auth_header_forward": false,
+        "status_propagation": false,
+        "detail_error_passthrough": false,
+        "source": "src/app/api/prediction-explanation/route.ts"
+      },
+      {
+        "route": "/api/prediction-freshness",
+        "method": "GET",
+        "policy": "Authenticated",
+        "backend_endpoint": "/api/prediction-freshness",
+        "backend_method": "GET",
+        "backend_policy": "Authenticated",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/prediction-freshness/route.ts"
+      },
+      {
         "route": "/api/prediction-history",
         "method": "GET",
         "policy": "PremiumOrAdmin",
@@ -1565,6 +1657,18 @@
         "source": "src/app/api/scrape/rescrape-incomplete/route.ts"
       },
       {
+        "route": "/api/scrape/retire/[jobId]",
+        "method": "POST",
+        "policy": "Admin",
+        "backend_endpoint": "/api/scrape/retire/{param}",
+        "backend_method": "POST",
+        "backend_policy": "Admin",
+        "auth_header_forward": true,
+        "status_propagation": true,
+        "detail_error_passthrough": true,
+        "source": "src/app/api/scrape/retire/[jobId]/route.ts"
+      },
+      {
         "route": "/api/scrape/status/[jobId]",
         "method": "GET",
         "policy": "Admin",
@@ -1686,7 +1790,7 @@
       }
     ],
     "unclassified": [],
-    "canonical_entries": 85,
+    "canonical_entries": 90,
     "gate_failures": []
   },
   "gate": {

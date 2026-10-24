@@ -1,8 +1,12 @@
 /** @type {import('next').NextConfig} */
 const standaloneBuild =
   process.env.NEXT_STANDALONE_BUILD === '1' && process.env.VERCEL !== '1'
+// Keep release verification away from the build used by an active local app.
+// A fixed, project-local destination avoids accepting arbitrary filesystem paths.
+const isolatedVerification = process.env.NEXT_RELEASE_CHECK === '1'
 
 const nextConfig = {
+  ...(isolatedVerification ? { distDir: 'build/release-check' } : {}),
   // Docker opts into standalone output explicitly. Local and CI builds avoid
   // copying local dotenv files and repository-wide process traces into it;
   // Vercel packages server functions itself.

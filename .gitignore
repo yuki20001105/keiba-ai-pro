@@ -109,10 +109,13 @@ python-api/models/*.evaluation.json
 
 # Logs
 *.log
+*.log.[0-9]*
 logs/
 
 # Generated reports & script outputs
 /output/
+/outputs/
+/market-segments-v1.zip
 *.html
 *_out.txt
 *_output*.txt
@@ -131,6 +134,7 @@ docs/reports/feature_llm_report.md
 # Generated scraper/model data
 python-api/data/html/
 python-api/data/models/
+python-api/data/shared_feature_cache/
 
 # Generated model artifacts
 python-api/models/*.joblib
@@ -161,6 +165,7 @@ tools/pipeline_output/
 # OS
 .DS_Store
 Thumbs.db
+*.lnk
 
 # ChromeDriver
 chromedriver*

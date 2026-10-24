@@ -17,8 +17,9 @@ from lxml import etree
 
 from scraping.constants import HTML_STRAINER, COAT_COLORS, COAT_RE
 from scraping.fetch_pipeline import FetchAccessBlocked, record_fetch_metric
+from scraping.acquisition_http_policy import fetch_source_text as fetch_text
 from scraping.parsed_cache import (
-    cached_sqlite_connection, collect_sources, fetch_source_text as fetch_text, get_parsed, parser_version,
+    cached_sqlite_connection, collect_sources, get_parsed, parser_version,
     prefer_mobile_endpoint, put_parsed, remember_mobile_endpoint,
 )
 from scraping.saved_horse_reuse import (

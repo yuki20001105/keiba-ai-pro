@@ -1,0 +1,61 @@
+{
+  "frozen_source_hashes": {
+    "config/research/db-shared-win-four-20261012.json": "5e3463f80332e038c5977aea1eb985e3fce9da9796a523cb721a6bcac3ed51e9",
+    "python-api/experiments/features.py": "6ae59cc7643e353d3229430acc30e99bedd6c03c12af47d90e4854a6fdd67423",
+    "python-api/experiments/search_features.py": "d04a1e8878a85031c5fedb6afe520659fe7c230e1e12d96ae161ec7274c09680",
+    "python-api/forward_adapters/feature_state.py": "6af16e65c9289b746a4105f864b51685c88ff5777391904d88e8e074746fbf0b",
+    "python-api/research_capture/prestart.py": "769170761468f98fdff552f4e637ea2ada513690f4e2208877ee0f12978e2373",
+    "python-api/scraping/constants.py": "0653392aaca30a219e9d889f9628434afc26d87f9d11d7661640aba9a9c52310",
+    "python-api/scraping/odds.py": "4b2b3d5020a40f881b14c78e9b9d03a559de18fd183d98e850ccd4f8eb7134c4",
+    "python-api/training/db_shared_features.py": "7fc7d357bd94f8feb1f7c8c25c6de93a74bc4868689fc08e7f50d9ef87f92742",
+    "python-api/training/db_shared_fit.py": "a20820b6430945ae718b1807765bdf7805a3fd503af4adc102ac671ae1af07db",
+    "python-api/training/eligibility.py": "52dbd6522443f509331201b9b990cda253b8c88d34c5d211be088bc5ff4ad4d6",
+    "scripts/aggregate_db_shared_win_four_v3.py": "fe1ff4ba0b59191c58c28d8be6f1341b5fc502b05d34ff0f0e27fe4021f63069",
+    "scripts/benchmark_db_shared_full_worker.py": "befd56c653a149f7970c30aa9a143eb5b730b83f3d997e042485eb50ac50220c",
+    "scripts/db_shared_blend46_betting.py": "3066f73973e057554537d15abf15e2dc62b4bccfcdc073a2173205cbb1320df0",
+    "scripts/db_shared_win_direct_diagnostics.py": "7fd54bea05c0ed9fb3b95a761d4e7c8be2c80ec71b7ee658fb0c3822eb8c3ca4",
+    "scripts/db_shared_win_direct_features.py": "e218a4421e54cc99a058ed59da2af9d2a85f9347c2368e3ef98b5b742197c592",
+    "scripts/db_shared_win_direct_worker.py": "491587907c7368963885e4777a60d7affa34465e486a2600e0b913bfae49b892",
+    "scripts/db_shared_win_four_diagnostics_v3.py": "6824719f81ebd768b197c5b1bdcb12359b01c1e89ed4de69dfb4a9affeec6743",
+    "scripts/db_shared_win_four_worker.py": "9b2d3c9aba41766661d281fc922932392b911f588e4e80ae89ee2412b4989cb4",
+    "scripts/evaluate_db_shared_venues.py": "591f38d0b3212af26f27d55b9cc2988b2d25184d5eb394505cfd63d8804cbe32",
+    "scripts/evaluate_db_shared_win_four.py": "d77552e3f0c9d9d6d1e00c48b6b617ba4a4f72ef7717ea361bbc46d9ee06b09c",
+    "scripts/evaluate_db_shared_win_four_v2.py": "846551874ecdb392b976d0385bbc58426f1b409911fe191f2b25572824867bb8",
+    "scripts/run_db_shared_win_pipeline.py": "f6a756dbdd3948aa7b38228618b86d67263e8daae50b726ab84237b47bd3d2a3",
+    "scripts/run_win_shadow_v1.py": "8fda723efbf12f34b2bfbe676dd76bc6f760028dd0de298b80c2cb2055c652fa",
+    "scripts/verify_db_shared_win_prestart_inference.py": "c5ed66da000da88458032536c3ec87ace930767b41023250e958fdc4d2fa2da8",
+    "scripts/win_shadow_adapter_v1.py": "73981db45b357ea4791f938c8fd7591870549f0320b01cb1f1108e16a513cbf8"
+  },
+  "model_id": "model_win_reference_nll46_2026_20261012",
+  "new_fits": 0,
+  "original_artifacts": {
+    "model": {
+      "path": "reports/generated/db-shared-win-four-v2/20261012T075916874189Z-92f0f837/2026-expanding_race_nll-model.research.joblib",
+      "sha256": "a595c3fab0502a3856f3bac805a133edc7035237f07f0a93792d368054de631f"
+    },
+    "shadow_plan": {
+      "path": "reports/generated/win-shadow-v1/registered-plan.json",
+      "sha256": "bdb583fb1789078bfb131841b5042b0f1effbc3bf2d0f63aab1a06d69d8d82ba"
+    },
+    "v3_results": {
+      "path": "reports/generated/db-shared-win-four-v3/20261012T082507686096Z-18180fc7/results.json",
+      "sha256": "6cd99716945bef6cca22f0a2d81e4ce5aab261359f1c58f17d2c55d3dea8073d"
+    },
+    "worker_request": {
+      "path": "reports/generated/db-shared-win-four-v2/20261012T075916874189Z-92f0f837/2026-expanding_race_nll-request.json",
+      "sha256": "75e7f2fe3ef4a419caf695e911670d144b710ee0c13fe0af3db20c3ef2a9a194"
+    },
+    "worker_result": {
+      "path": "reports/generated/db-shared-win-four-v2/20261012T075916874189Z-92f0f837/2026-expanding_race_nll.json",
+      "sha256": "4c6e599d500dbb0bc34922d6572c044e9fd94d77619d878a65d0364ce460a4a7"
+    }
+  },
+  "purchase_authorized": false,
+  "reference_only": true,
+  "runtime_source_hashes": {
+    "python-api/services/win_nll_reference_input.py": "0fcf733055f9a2c4f2af04c1364d418d8cd58121685e347029082488238413c5",
+    "scripts/publish_win_nll_reference.py": "be8542091af4aa766bb436ac102d2ff71754d4196ff227e7a34e6d03d5f7d54d"
+  },
+  "schema": "local-win-nll-reference-package-v1",
+  "wrapper_sha256": "a6aedfd64a3b8e8622854fc46441d28a84397066ae63d54212d3a3172ad348a2"
+}

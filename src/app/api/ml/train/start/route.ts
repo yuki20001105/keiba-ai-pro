@@ -16,6 +16,9 @@ const ALLOWED_TRAIN_FIELDS = [
   'optuna_timeout',
   'training_date_from',
   'training_date_to',
+  'feature_pipeline',
+  'compute_device',
+  'reuse_features',
 ] as const
 
 function noStoreJson(body: unknown, status: number) {

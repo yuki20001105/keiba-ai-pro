@@ -233,9 +233,11 @@ Import-DotEnv -Path (Join-Path $ConfigRoot 'python-api\.env')
 # Local mode is deliberately fail-closed for automatic jobs and real betting.
 $env:PYTHONPATH = $RepoRoot
 $env:APP_ENV = 'development'
+$env:PREDICTION_SOURCE_TRACKING_LOCAL_ENABLED = 'true'
 $env:LOCAL_ADMIN_SESSION_ENABLED = 'true'
 $env:MODEL_TRAINING_LOCAL_ENABLED = 'true'
 $env:MODEL_ACTIVATION_LOCAL_ENABLED = 'true'
+$env:MODEL_DELETION_LOCAL_ENABLED = 'true'
 $env:API_HOST = '127.0.0.1'
 $env:HOSTNAME = '127.0.0.1'
 $env:NEXT_STANDALONE_BUILD = '1'

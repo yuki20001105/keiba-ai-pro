@@ -411,6 +411,18 @@ def _prior_rolling_std(
     )
     return pd.Series(lookup.reindex(row_index).to_numpy(), index=ordered.index, dtype=float)
 
+def _history_group_key(history_df: pd.DataFrame, id_col: str, group_col: str) -> pd.Series:
+    """Vectorized two-column join, preserving legacy missing-key behavior."""
+    left = history_df[id_col].astype(str)
+    right = history_df[group_col].astype(str)
+    if left.isna().any() or right.isna().any():
+        # pandas 3 may preserve nulls in astype(str), unlike pandas 2.  The
+        # previous row join rejects them; do not silently change that feature
+        # failure/missing-data contract as part of a performance-only update.
+        return history_df[[id_col, group_col]].astype(str).apply('|'.join, axis=1)
+    return left + '|' + right
+
+
 def _expanding_win_rate_by_group(
     history_df: pd.DataFrame,
     id_col: str,
@@ -429,7 +441,9 @@ def _expanding_win_rate_by_group(
     s = _sort_history_chronologically(history_df)
     fin_num  = pd.to_numeric(s['finish'], errors='coerce').fillna(0)
     win_flag = (fin_num == 1).astype(float)
-    s['_history_group'] = s[[id_col, group_col]].astype(str).apply('|'.join, axis=1)
+    # The two-key string is identical to the row-wise join, without building
+    # a Python Series for every historical runner (millions per daily batch).
+    s['_history_group'] = _history_group_key(s, id_col, group_col)
     s['_w']  = win_flag
     race_cnt, prior = _prior_cumulative_values(s, ['_history_group'], ['_w'])
     s[out_rate] = (prior['_w'] / race_cnt.clip(1)).fillna(0.0)
@@ -459,7 +473,7 @@ def _expanding_grouped_stats(
     s = _sort_history_chronologically(history_df)
     fin_num  = pd.to_numeric(s['finish'], errors='coerce').fillna(0)
     win_flag = (fin_num == 1).astype(float)
-    s['_history_group'] = s[[id_col, group_col]].astype(str).apply('|'.join, axis=1)
+    s['_history_group'] = _history_group_key(s, id_col, group_col)
     s['_w'] = win_flag
     s['_f'] = fin_num
     race_cnt, prior = _prior_cumulative_values(s, ['_history_group'], ['_w', '_f'])
@@ -1012,10 +1026,26 @@ def _feh_jockey_course(
     return df, h
 
 
+def _target_horse_history(df: pd.DataFrame, h: pd.DataFrame) -> pd.DataFrame:
+    """Private horse-only working copy; never shrink other feature populations."""
+    if 'horse_id' not in h.columns or 'horse_id' not in df.columns:
+        return h.copy()
+    selected = h['horse_id'].isin(df['horse_id'])
+    if df['horse_id'].isna().any():
+        # pandas.merge matches null keys; retain all null variants too.
+        selected = selected | h['horse_id'].isna()
+    return h.loc[selected].copy()
+
+
 def _feh_horse_aptitude(
     df: pd.DataFrame, h: pd.DataFrame
 ) -> tuple:
     """馬の距離別 / 馬場別 / 距離帯別 / 競馬場別 / 複合条件別 適性を付与する。"""
+    # Horse aptitude groups are independent. Other runners are required by
+    # jockey, bloodline and gate features, not by a target horse's aptitude.
+    # Keep the full population unchanged for every later non-horse stage.
+    full_history = h
+    h = _target_horse_history(df, h)
     if 'horse_id' in h.columns and 'distance' in h.columns:
         h = _expanding_grouped_stats(h, 'horse_id', 'distance', 'horse_distance')
         df = df.merge(
@@ -1024,7 +1054,7 @@ def _feh_horse_aptitude(
             on=['horse_id', 'race_id'], how='left')
 
     if 'finish' not in h.columns or 'race_id' not in h.columns:
-        return df, h
+        return df, full_history
 
     # 馬場別
     if 'horse_id' in h.columns and 'surface' in h.columns:
@@ -1076,7 +1106,7 @@ def _feh_horse_aptitude(
             on=['horse_id', 'race_id'], how='left')
         h = h.drop(columns=['_dist_surface'], errors='ignore')
 
-    return df, h
+    return df, full_history
 
 
 def _feh_gate_bias(
@@ -1267,6 +1297,8 @@ def _feh_last_3f(
     df: pd.DataFrame, h: pd.DataFrame
 ) -> tuple:
     """馬の上がり3F タイム・順位の rolling 統計を付与する。"""
+    full_history = h
+    h = _target_horse_history(df, h)
     for _src_col, _out_cols in [
         ('last_3f_time', ['past3_avg_last3f_time', 'past5_avg_last3f_time']),
         ('last_3f_rank', ['past3_avg_last3f_rank']),
@@ -1294,7 +1326,7 @@ def _feh_last_3f(
             .drop_duplicates(subset=['horse_id', 'race_id']),
             on=['horse_id', 'race_id'], how='left')
 
-    return df, h
+    return df, full_history
 
 
 def _feh_payout_history(
@@ -1304,6 +1336,8 @@ def _feh_payout_history(
     if 'tansho_payout' not in h.columns or 'horse_id' not in h.columns:
         return df, h
 
+    full_history = h
+    h = _target_horse_history(df, h)
     _oi  = h.index.copy()
     _s   = _sort_history_chronologically(h)
     _s['_tpv'] = np.log1p(pd.to_numeric(_s['tansho_payout'], errors='coerce').fillna(0))
@@ -1321,7 +1355,7 @@ def _feh_payout_history(
         .drop_duplicates(subset=['horse_id', 'race_id']),
         on=['horse_id', 'race_id'], how='left')
 
-    return df, h
+    return df, full_history
 
 
 def _feh_running_style(
@@ -1331,6 +1365,8 @@ def _feh_running_style(
     if 'running_style_num' not in h.columns or 'horse_id' not in h.columns:
         return df, h
 
+    full_history = h
+    h = _target_horse_history(df, h)
     _oi  = h.index.copy()
     _s   = _sort_history_chronologically(h)
     _val = pd.to_numeric(_s['running_style_num'], errors='coerce')
@@ -1358,7 +1394,7 @@ def _feh_running_style(
         .drop_duplicates(subset=['horse_id', 'race_id']),
         on=['horse_id', 'race_id'], how='left')
 
-    return df, h
+    return df, full_history
 
     return df
 

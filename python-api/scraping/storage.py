@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Iterable
 
 from app_config import logger  # type: ignore
+from scraping.storage_preservation import merge_acquisition_payload, merge_payouts
 
 # Supabase 連携は削除済み。データは SQLite (keiba_ultimate.db) のみに保存する。
 
@@ -66,17 +67,39 @@ def _init_sqlite_db(db_path: Path) -> None:
 
 
 def _save_race_sqlite_only(race_data: dict, db_path: Path, overwrite: bool = True) -> bool:
-    """スクレイピング結果を SQLite のみに保存（Supabase 非対応）"""
-    race_info = race_data["race_info"]
-    horses = race_data["horses"]
-    race_id = race_info["race_id"]
-    return_tables = race_data.get("return_tables", [])
+    """Atomically refresh identical runners without erasing known fields.
+
+    Validate and merge under the write reservation BEFORE any row/DDL changes.
+    Ambiguous identity, omitted runners or invalid returns preserve the old DB.
+    """
+    race_id = ""
     conn: sqlite3.Connection | None = None
     try:
+        # Validate the incoming shape/identities before creating a database.
+        validated, _ = merge_acquisition_payload({}, [], race_data, overwrite=overwrite)
+        race_id = str(validated["race_info"]["race_id"])
         db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(db_path))
         conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("BEGIN IMMEDIATE")
         cur = conn.cursor()
+        tables = {row[0] for row in cur.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        previous = cur.execute("SELECT data FROM races_ultimate WHERE race_id=?", (race_id,)).fetchone() if "races_ultimate" in tables else None
+        existing_info = json.loads(previous[0]) if previous else {}
+        existing_rows = cur.execute(
+            "SELECT id,data FROM race_results_ultimate WHERE race_id=? ORDER BY id", (race_id,),
+        ).fetchall() if "race_results_ultimate" in tables else []
+        existing_horses = [json.loads(row[1]) for row in existing_rows]
+        merged, matched_positions = merge_acquisition_payload(existing_info, existing_horses, race_data, overwrite=overwrite)
+        race_info, horses = merged["race_info"], merged["horses"]
+        existing_returns = [dict(zip(("bet_type", "combinations", "payout", "popularity"), row)) for row in cur.execute(
+            "SELECT bet_type,combinations,payout,popularity FROM return_tables_ultimate WHERE race_id=? ORDER BY id", (race_id,),
+        )] if "return_tables_ultimate" in tables else []
+        return_tables = merge_payouts(existing_returns, race_data.get("return_tables", []), race_id)
+        merged["return_tables"] = return_tables
+        # Reject non-JSON nested values before modifying any table. Evidence is
+        # deliberately validated separately and never becomes a model feature.
+        json.dumps(merged, ensure_ascii=False, allow_nan=False)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS races_ultimate (
                 race_id TEXT PRIMARY KEY,
@@ -85,8 +108,9 @@ def _save_race_sqlite_only(race_data: dict, db_path: Path, overwrite: bool = Tru
             )
         """)
         cur.execute(
-            "INSERT OR REPLACE INTO races_ultimate (race_id, data) VALUES (?, ?)",
-            (race_id, json.dumps(race_info, ensure_ascii=False)),
+            "INSERT INTO races_ultimate (race_id, data) VALUES (?, ?) "
+            "ON CONFLICT(race_id) DO UPDATE SET data=excluded.data",
+            (race_id, json.dumps(race_info, ensure_ascii=False, allow_nan=False)),
         )
         cur.execute("""
             CREATE TABLE IF NOT EXISTS race_results_ultimate (
@@ -96,8 +120,6 @@ def _save_race_sqlite_only(race_data: dict, db_path: Path, overwrite: bool = Tru
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        if overwrite:
-            cur.execute("DELETE FROM race_results_ultimate WHERE race_id = ?", (race_id,))
         # Acquisition evidence is operational metadata, not a categorical or
         # numeric training input. Keep it separate, in the SAME transaction as
         # the provider fields, and never mutate the caller's parsed payload.
@@ -113,12 +135,14 @@ def _save_race_sqlite_only(race_data: dict, db_path: Path, overwrite: bool = Tru
         """)
         if overwrite:
             cur.execute("DELETE FROM scrape_horse_reuse_audit WHERE race_id = ?", (race_id,))
-        for h in horses:
+        for h, matched_position in zip(horses, matched_positions):
             provider_fields = {key: value for key, value in h.items() if key != "_acquisition_reuse"}
-            cur.execute(
-                "INSERT INTO race_results_ultimate (race_id, data) VALUES (?, ?)",
-                (race_id, json.dumps(provider_fields, ensure_ascii=False)),
-            )
+            encoded = json.dumps(provider_fields, ensure_ascii=False, allow_nan=False)
+            if matched_position is None:
+                cur.execute("INSERT INTO race_results_ultimate (race_id, data) VALUES (?, ?)", (race_id, encoded))
+            else:
+                cur.execute("UPDATE race_results_ultimate SET data=? WHERE race_id=? AND id=?",
+                            (encoded, race_id, existing_rows[matched_position][0]))
             audit = h.get("_acquisition_reuse")
             if isinstance(audit, dict) and h.get("horse_id"):
                 cur.execute(
@@ -139,9 +163,12 @@ def _save_race_sqlite_only(race_data: dict, db_path: Path, overwrite: bool = Tru
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        if overwrite and return_tables:
-            cur.execute("DELETE FROM return_tables_ultimate WHERE race_id = ?", (race_id,))
+        previous_return_keys = {(row["bet_type"], row["combinations"]) for row in existing_returns}
         for rt in return_tables:
+            if (rt["bet_type"], rt["combinations"]) in previous_return_keys:
+                cur.execute("UPDATE return_tables_ultimate SET payout=?,popularity=? WHERE race_id=? AND bet_type=? AND combinations=?",
+                            (rt["payout"], rt["popularity"], race_id, rt["bet_type"], rt["combinations"]))
+                continue
             cur.execute(
                 """INSERT INTO return_tables_ultimate (race_id, bet_type, combinations, payout, popularity)
                    VALUES (?, ?, ?, ?, ?)""",
@@ -166,47 +193,8 @@ def _save_race_sqlite_only(race_data: dict, db_path: Path, overwrite: bool = Tru
 
 
 def _save_race_to_ultimate_db(race_data: dict, db_path: Path, overwrite: bool = True) -> bool:
-    """スクレイピング結果を keiba_ultimate.db (SQLite) に保存"""
-    race_info = race_data["race_info"]
-    horses = race_data["horses"]
-    race_id = race_info["race_id"]
-
-    try:
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(db_path))
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS races_ultimate (
-                race_id TEXT PRIMARY KEY,
-                data TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        cur.execute(
-            "INSERT OR REPLACE INTO races_ultimate (race_id, data) VALUES (?, ?)",
-            (race_id, json.dumps(race_info, ensure_ascii=False)),
-        )
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS race_results_ultimate (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                race_id TEXT,
-                data TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        if overwrite:
-            cur.execute("DELETE FROM race_results_ultimate WHERE race_id = ?", (race_id,))
-        for h in horses:
-            cur.execute(
-                "INSERT INTO race_results_ultimate (race_id, data) VALUES (?, ?)",
-                (race_id, json.dumps(h, ensure_ascii=False)),
-            )
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        logger.warning(f"SQLite 保存失敗 {race_id}: {e}")
-        return False
+    """Compatibility entry point; current-day and batch saves share protection."""
+    return _save_race_sqlite_only(race_data, db_path, overwrite=overwrite)
 
 
 # ============================================================

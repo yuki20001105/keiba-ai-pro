@@ -123,7 +123,20 @@ def add_point_in_time_horse_history_features(
     ].copy()
     result["horse_history_target_date_missing"] = target["_target_date"].isna().astype(int).to_numpy()
 
-    history = full_history.copy()
+    # Horse rolling windows are independent groups.  The inference history
+    # also contains the complete jockey/sire/course populations, which must
+    # remain available to their own features but cannot affect these windows.
+    # Prune only this local copy before sorting/rolling, never the caller's
+    # shared history or the point-in-time date boundary.
+    target_horse_ids = target_valid["horse_id"].unique()
+    if "race_id" in full_history.columns:
+        normalized_horse_ids = full_history["horse_id"].astype("string").fillna("").str.strip()
+        history = full_history.loc[normalized_horse_ids.isin(target_horse_ids)].copy()
+    else:
+        # Preserve the legacy synthetic race-ID ordering: IDs are allocated
+        # after validity filtering, so allocating them after an early horse
+        # prune could change the tie order of equal-date history rows.
+        history = full_history.copy()
     history["horse_id"] = history["horse_id"].astype("string").fillna("").str.strip()
     history["_history_date"] = _race_dates(history["race_date"])
     history["_finish_numeric"] = _numeric_column(history, "finish", "finish_position")
@@ -135,6 +148,7 @@ def add_point_in_time_horse_history_features(
     if "race_id" not in history.columns:
         history["race_id"] = np.arange(len(history)).astype(str)
     history["race_id"] = history["race_id"].astype("string")
+    history = history[history["horse_id"].isin(target_horse_ids)].copy()
     history = history.drop_duplicates(subset=["horse_id", "race_id"], keep="last")
 
     if target_valid.empty or history.empty:

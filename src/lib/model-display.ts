@@ -13,6 +13,9 @@ export type ModelSummary = {
   n_rows?: number | null
   feature_count?: number | null
   is_active?: boolean
+  display_name?: string | null
+  is_local_candidate?: boolean
+  feature_pipeline?: string | null
 }
 
 const TARGET_LABELS: Record<string, string> = {
@@ -70,6 +73,15 @@ export function formatModelPeriod(model: Pick<ModelSummary, 'training_date_from'
 }
 
 export function formatModelOptionLabel(model: ModelSummary): string {
+  if (model.feature_pipeline === 'local-db-context-v1') {
+    const created = formatModelCreatedAt(model)
+    const period = formatModelPeriod(model)
+    return ['条件・展開80（比較候補）', created, period ? `学習 ${period}` : ''].filter(Boolean).join('｜')
+  }
+  if (model.feature_pipeline === 'local-win-nll-reference-v1') {
+    return model.display_name || '全履歴・勝率NLL（参考運用）'
+  }
+  if (model.is_local_candidate && model.display_name) return `${model.display_name}｜研究候補`
   const target = TARGET_LABELS[model.target || ''] || model.target || 'モデル'
   const created = formatModelCreatedAt(model)
   const period = formatModelPeriod(model)

@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from urllib.parse import urlsplit
 
-from scraping.fetch_pipeline import FetchAccessBlocked, fetch_bytes
+from scraping.fetch_pipeline import FetchAccessBlocked
+from scraping.acquisition_http_policy import fetch_bytes
 
 
 def _allowed_url(url: str) -> bool:

@@ -16,13 +16,14 @@ export async function POST(request: NextRequest) {
         ...(authHeader ? { Authorization: authHeader } : {}),
       },
       body: JSON.stringify(body),
+      cache: 'no-store',
       signal: AbortSignal.timeout(300_000),  // 300s: 過去レースの再スクレイプ(~60s)含む場合に対応
     })
 
     const data = await response.json()
-    return NextResponse.json(data, { status: response.status })
+    return NextResponse.json(data, { status: response.status, headers: { 'Cache-Control': 'no-store' } })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error'
-    return NextResponse.json({ detail: message }, { status: 500 })
+    return NextResponse.json({ detail: message }, { status: 500, headers: { 'Cache-Control': 'no-store' } })
   }
 }

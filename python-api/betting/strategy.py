@@ -477,9 +477,8 @@ class BettingRecommender:
         dynamic_unit: bool = True,
         min_ev: float = 1.2
     ):
-        self.strategy = ProBettingStrategy(bankroll, risk_mode)
-        self.generator = BettingCombinationGenerator()
-        self.analyzer = RaceAnalyzer()
+        self.bankroll = bankroll
+        self.risk_mode = risk_mode
         self.use_kelly = use_kelly
         self.dynamic_unit = dynamic_unit
         self.min_ev = min_ev
@@ -487,7 +486,8 @@ class BettingRecommender:
     def analyze_and_recommend(
         self, 
         predictions: List[Dict], 
-        race_info: Dict
+        race_info: Dict,
+        context: Optional[Dict] = None,
     ) -> Dict:
         """
         レース分析と購入推奨（メイン関数）
@@ -501,71 +501,15 @@ class BettingRecommender:
         Returns:
             推奨情報辞書
         """
-        # [A1] 期待値計算: p_norm（確率として正規化済み）があれば優先使用、なければ win_probability でフォールバック
-        for pred in predictions:
-            _p = pred.get('p_norm') or pred.get('p_raw') or pred.get('win_probability', 0)
-            _odds = pred.get('odds')
-            pred['expected_value'] = float(_p) * float(_odds) if _odds is not None else 0.0
-        
-        # プロ戦略評価
-        pro_eval = self.analyzer.evaluate_pro_strategy(predictions, race_info)
-        
-        # 馬券種別候補生成
-        bet_types = {
-            '単勝': self.generator.generate_tansho(predictions),
-            '馬連': self.generator.generate_umaren(predictions),
-            'ワイド': self.generator.generate_wide(predictions),
-            '三連複': self.generator.generate_sanrenpuku(predictions),
-            '馬単': self.generator.generate_umatan(predictions),
-            '三連単': self.generator.generate_sanrentan(predictions)
-        }
-        
-        # ベスト馬券種選定
-        best_bet_type, best_bet_info = self._select_best_bet_type(bet_types)
-        
-        # レースレベル判定
-        race_level = self.strategy.evaluate_race_level(pro_eval, best_bet_info, self.min_ev)
-        
-        # 最適単価・点数計算
-        unit_price = self.strategy.calculate_optimal_unit_price(race_level, self.dynamic_unit)
-        purchase_count = self.strategy.calculate_purchase_count(race_level, unit_price, best_bet_type)
-        
-        # ケリー基準計算（オプション）
-        kelly_amount = None
-        if self.use_kelly:
-            top_horse = max(predictions, key=lambda x: (x['expected_value'] or 0.0))
-            # [A1] Kelly基準の確率には p_norm（レース内正規化済み）を使用
-            _kelly_prob = top_horse.get('p_norm') or top_horse.get('p_raw') or top_horse.get('win_probability', 0)
-            kelly_amount = self.strategy.calculate_kelly_bet(
-                _kelly_prob,
-                top_horse['odds'] or 1.0
-            )
-        
-        # 予算計算
-        allocation_rate = self.strategy.get_budget_allocation(race_level)
-        budget = int(self.strategy.per_race_limit * allocation_rate)
-        total_cost = purchase_count * unit_price
-        
-        return {
-            'race_info': race_info,
-            'pro_evaluation': pro_eval,
-            'predictions': sorted(predictions, key=lambda x: x.get('p_raw', x.get('expected_value', 0)), reverse=True),
-            'bet_types': bet_types,
-            'best_bet_type': best_bet_type,
-            'best_bet_info': best_bet_info,
-            'race_level': race_level,
-            'recommendation': {
-                'unit_price': unit_price,
-                'purchase_count': purchase_count,
-                'total_cost': total_cost,
-                'budget': budget,
-                'budget_usage_rate': round(total_cost / budget * 100, 1) if budget > 0 else 0,
-                'kelly_recommended_amount': kelly_amount,
-                'strategy_explanation': self._generate_strategy_explanation(
-                    race_level, best_bet_type, purchase_count, unit_price, pro_eval
-                )
-            }
-        }
+        # Historical helper classes remain import-compatible, but the live API
+        # must not use their score dispersion / jockey bonus / pseudo joint EV.
+        from betting.value_policy import recommend
+
+        return recommend(
+            predictions, race_info, bankroll=self.bankroll, risk_mode=self.risk_mode,
+            min_ev=self.min_ev, use_kelly=self.use_kelly, dynamic_unit=self.dynamic_unit,
+            context=context,
+        )
     
     def _select_best_bet_type(self, bet_types: Dict[str, List[Dict]]) -> Tuple[str, Dict]:
         """ベスト馬券種選定"""

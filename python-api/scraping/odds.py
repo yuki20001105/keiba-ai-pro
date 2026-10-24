@@ -5,7 +5,8 @@ import json
 from typing import Any
 from urllib.parse import urlencode
 
-from scraping.fetch_pipeline import FetchAccessBlocked, fetch_text
+from scraping.fetch_pipeline import FetchAccessBlocked
+from scraping.acquisition_http_policy import fetch_text
 
 try:
     from app_config import logger  # type: ignore

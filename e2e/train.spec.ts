@@ -154,12 +154,35 @@ test.describe('モデル学習ページ', () => {
     })).toBeNull()
   })
 
-  test('モデル削除は承認フローができるまで無効', async ({ page }) => {
+  test('未使用モデルは確認後に削除でき、使用中モデルは保護される', async ({ page }) => {
+    let models = [...MODELS_MOCK]
+    let deletedModelId: string | null = null
+    await page.unroute('/api/models**')
+    await page.route('/api/models**', async route => {
+      if (route.request().method() === 'DELETE') {
+        deletedModelId = route.request().url().split('/').pop() ?? null
+        models = models.filter(model => model.model_id !== deletedModelId)
+        return route.fulfill({ json: { success: true, deleted: [`${deletedModelId}.joblib`] } })
+      }
+      return route.fulfill({ json: { models } })
+    })
+
     await page.goto('/train')
-    await expect(page.getByText('abc123-def456')).toBeVisible({ timeout: 5000 })
-    const deleteButton = page.getByRole('button', { name: '削除' }).first()
-    await expect(deleteButton).toBeDisabled()
-    await expect(deleteButton).toHaveAttribute('title', 'モデル削除には別の永続的な廃止承認が必要です')
+    const activeCard = page.getByTestId('model-card-abc123-def456')
+    await expect(activeCard.getByRole('button', { name: '削除' })).toBeDisabled()
+    await expect(activeCard.getByRole('button', { name: '削除' })).toHaveAttribute('title', '使用中モデルは削除できません')
+
+    const candidateCard = page.getByTestId('model-card-candidate-model-001')
+    const deleteButton = candidateCard.getByRole('button', { name: '削除' })
+    await expect(deleteButton).toBeEnabled()
+    await expect(deleteButton).toHaveAttribute('title', 'このモデルを削除')
+    await deleteButton.click()
+    await expect(page.getByRole('heading', { name: 'モデルを削除' })).toBeVisible()
+    await page.getByRole('button', { name: '削除', exact: true }).last().click()
+
+    await expect(page.getByText('モデルを削除しました')).toBeVisible()
+    await expect(page.getByText('candidate-model-001')).toHaveCount(0)
+    expect(deletedModelId).toBe('candidate-model-001')
   })
 
   test('モデルタイプは実装済みのLightGBMに固定される', async ({ page }) => {

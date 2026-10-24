@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
+import re
 import sqlite3
 import threading
 from dataclasses import dataclass
@@ -65,25 +67,69 @@ def _present(value: Any) -> bool:
 
 
 def _positive_number(value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
     try:
-        return float(value) > 0
+        number = float(value)
+        return math.isfinite(number) and number > 0
     except (TypeError, ValueError):
         return False
 
 
+def _positive_integer(value: Any) -> int | None:
+    if not _positive_number(value):
+        return None
+    number = float(value)
+    return int(number) if number.is_integer() else None
+
+
+def _finish_value(horse: dict[str, Any]) -> Any:
+    value = horse.get("finish_position")
+    return value if _present(value) else horse.get("finish")
+
+
+def _finish_rank(value: Any) -> int | None:
+    # Demotion is an official result annotation, not an unfinished race.
+    text = str(value or "").strip()
+    match = re.fullmatch(r"([1-9]\d*)\(降\)", text)
+    return int(match[1]) if match else _positive_integer(value)
+
+
+def _date_value(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not re.fullmatch(r"\d{8}|\d{4}-\d{2}-\d{2}|\d{4}/\d{2}/\d{2}", text):
+        return None
+    compact = re.sub(r"\D", "", text)
+    try:
+        return datetime.strptime(compact, "%Y%m%d").strftime("%Y%m%d")
+    except ValueError:
+        return None
+
+
+def _finish_time_available(horse: dict[str, Any]) -> bool:
+    for name in ("time_seconds", "finish_time", "time"):
+        value = horse.get(name)
+        if not _present(value):
+            continue
+        text = str(value).strip()
+        match = re.fullmatch(r"(\d+):([0-5]?\d(?:\.\d+)?)", text)
+        return _positive_number(int(match[1]) * 60 + float(match[2]) if match else value)
+    return False
+
+
 def _finish_is_settled(value: Any) -> bool:
-    if _positive_number(value):
+    if _finish_rank(value) is not None:
         return True
     text = str(value or "").strip()
-    return any(token in text for token in NON_FINISH_TOKENS)
+    return text in NON_FINISH_TOKENS
 
 
 def _finish_is_domain_nonfinish(value: Any) -> bool:
     """Return true for a legitimate non-finisher (withdrawn/DNF/etc.)."""
-    if _positive_number(value):
+    if _finish_rank(value) is not None:
         return False
     text = str(value or "").strip()
-    return bool(text) and any(token in text for token in NON_FINISH_TOKENS)
+    return bool(text) and text in NON_FINISH_TOKENS
 
 
 @dataclass(frozen=True)
@@ -95,6 +141,7 @@ class RaceQualityReport:
     horse_count: int
     valid_for_storage: bool
     valid_for_date_completion: bool
+    declared_horse_count: int | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -105,6 +152,8 @@ class RaceQualityReport:
             "horse_count": self.horse_count,
             "valid_for_storage": self.valid_for_storage,
             "valid_for_date_completion": self.valid_for_date_completion,
+            "declared_horse_count": self.declared_horse_count,
+            "completion_policy": "acquisition-complete-v2",
         }
 
 
@@ -117,49 +166,95 @@ def classify_race_quality(race_data: dict[str, Any] | None) -> RaceQualityReport
     """
     payload = race_data if isinstance(race_data, dict) else {}
     race_info = payload.get("race_info") if isinstance(payload.get("race_info"), dict) else {}
-    horses = payload.get("horses") if isinstance(payload.get("horses"), list) else []
+    raw_horses = payload.get("horses") if isinstance(payload.get("horses"), list) else []
+    horses = [horse if isinstance(horse, dict) else {} for horse in raw_horses]
     race_id = str(race_info.get("race_id") or "").strip()
     errors: list[str] = []
 
     if not race_id or len(race_id) != 12 or not race_id.isdigit():
         errors.append("invalid_race_id")
-    if not _present(race_info.get("date")):
+    race_date = _date_value(race_info.get("date") or race_info.get("race_date"))
+    if not _present(race_info.get("date")) and not _present(race_info.get("race_date")):
         errors.append("race_date_missing")
+    elif race_date is None:
+        errors.append("race_date_invalid")
+    elif race_id[:4] != race_date[:4]:
+        errors.append("race_date_identity_conflict")
+    if any(_present(race_info.get(name)) and _date_value(race_info[name]) != race_date
+           for name in ("date", "race_date")):
+        errors.append("race_date_alias_conflict")
     if not _present(race_info.get("venue")):
         errors.append("venue_missing")
     if not _positive_number(race_info.get("distance")) or race_info.get("_invalid_distance"):
         errors.append("distance_invalid")
     if not horses:
         errors.append("horses_missing")
+    declared_count = _positive_integer(race_info.get("num_horses"))
+    if declared_count is None:
+        errors.append("horse_count_missing" if not _present(race_info.get("num_horses")) else "horse_count_invalid")
+    elif declared_count != len(horses):
+        # Do not infer missing runners from odds, finish order or cancellations.
+        # num_horses is the source's full listed-runner count in this contract.
+        errors.append("horse_count_mismatch")
 
     horse_ids: list[str] = []
-    horse_numbers: list[str] = []
+    horse_numbers: list[int] = []
     for index, horse in enumerate(horses):
-        item = horse if isinstance(horse, dict) else {}
+        item = horse
+        if not isinstance(raw_horses[index], dict):
+            errors.append(f"horse_record_invalid:{index}")
         hid = str(item.get("horse_id") or "").strip()
         number = str(item.get("horse_number") or "").strip()
-        if not hid:
+        if isinstance(item.get("horse_id"), bool):
+            errors.append(f"horse_id_invalid:{index}")
+        elif not hid or hid.lower() in {"none", "null", "nan", "unknown", "unknown_local", "-", "--"}:
             errors.append(f"horse_id_missing:{index}")
+        elif re.fullmatch(r"[A-Za-z0-9_-]+", hid) is None:
+            errors.append(f"horse_id_invalid:{index}")
         else:
             horse_ids.append(hid)
         if not _present(item.get("horse_name")):
             errors.append(f"horse_name_missing:{index}")
+        numeric_number = _positive_integer(item.get("horse_number"))
         if not number:
             errors.append(f"horse_number_missing:{index}")
+        elif numeric_number is None or ("01" <= race_id[4:6] <= "10" and numeric_number > 18):
+            errors.append(f"horse_number_invalid:{index}")
         else:
-            horse_numbers.append(number)
+            horse_numbers.append(numeric_number)
+        if _present(item.get("race_id")) and str(item["race_id"]).strip() != race_id:
+            errors.append(f"runner_race_identity_conflict:{index}")
+        if any(_present(item.get(name)) and _date_value(item[name]) != race_date for name in ("date", "race_date")):
+            errors.append(f"runner_date_conflict:{index}")
+        finish = _finish_value(item)
+        if _present(finish) and not _finish_is_settled(finish) and finish not in (0, "0"):
+            errors.append(f"finish_position_invalid:{index}")
+        rank = _finish_rank(finish)
+        if rank is not None and declared_count is not None and rank > declared_count:
+            errors.append(f"finish_position_out_of_range:{index}")
+        if _present(item.get("finish_position")) and _present(item.get("finish")):
+            left, right = item["finish_position"], item["finish"]
+            if (_finish_rank(left) != _finish_rank(right)
+                    or (_finish_rank(left) is None and str(left).strip() != str(right).strip())):
+                errors.append(f"finish_position_alias_conflict:{index}")
 
     if len(horse_ids) != len(set(horse_ids)):
         errors.append("horse_id_duplicate")
     if len(horse_numbers) != len(set(horse_numbers)):
         errors.append("horse_number_duplicate")
 
-    settled_flags = [_finish_is_settled((h or {}).get("finish_position")) for h in horses]
+    settled_flags = [_finish_is_settled(_finish_value(h)) for h in horses]
     any_result = any(settled_flags)
     all_settled = bool(horses) and all(settled_flags)
     any_odds = any(_positive_number((h or {}).get("odds")) for h in horses)
+    provisional = bool(payload.get("_provisional_result") or race_info.get("_provisional_result")
+                       or race_info.get("result_status") in {"provisional", "unsettled", "pending"}
+                       or payload.get("_shutuba") or race_info.get("_shutuba")
+                       or any(h.get("_shutuba") for h in horses))
+    if provisional and any_result:
+        errors.append("result_not_confirmed")
 
-    if all_settled:
+    if all_settled and not provisional:
         lifecycle = "settled"
     elif any_result:
         lifecycle = "result"
@@ -172,11 +267,11 @@ def classify_race_quality(race_data: dict[str, Any] | None) -> RaceQualityReport
     # Withdrawn/DNF horses legitimately have no odds, popularity, body weight,
     # or finish time.  Count those as domain exceptions, not scrape failures.
     active_horses = [
-        h for h in horses if not _finish_is_domain_nonfinish((h or {}).get("finish_position"))
+        h for h in horses if not _finish_is_domain_nonfinish(_finish_value(h))
     ]
     odds_available = sum(1 for h in active_horses if _positive_number((h or {}).get("odds")))
     popularity_available = sum(
-        1 for h in active_horses if _positive_number((h or {}).get("popularity"))
+        1 for h in active_horses if _positive_integer((h or {}).get("popularity")) is not None
     )
     weight_available = sum(
         1
@@ -184,7 +279,7 @@ def classify_race_quality(race_data: dict[str, Any] | None) -> RaceQualityReport
         if _positive_number((h or {}).get("weight_kg") or (h or {}).get("horse_weight"))
     )
     finish_time_available = sum(
-        1 for h in active_horses if _present((h or {}).get("finish_time"))
+        1 for h in active_horses if _finish_time_available(h)
     )
     pedigree_available = sum(
         1
@@ -207,10 +302,11 @@ def classify_race_quality(race_data: dict[str, Any] | None) -> RaceQualityReport
         return "source_missing"
 
     field_states = {
+        "horse_count": "available" if declared_count == len(horses) and bool(horses) else "source_missing",
         "odds": timed_state(odds_available, publish_stage="middle"),
         "popularity": timed_state(popularity_available, publish_stage="middle"),
         "horse_weight": timed_state(weight_available, publish_stage="middle"),
-        "finish_position": "available" if all_settled else ("partial" if any_result else "not_published"),
+        "finish_position": "available" if all_settled and not provisional else ("partial" if any_result else "not_published"),
         "finish_time": timed_state(finish_time_available, publish_stage="result"),
         "pedigree": "available" if horses and pedigree_available == len(horses) else "repair_required",
     }
@@ -233,6 +329,7 @@ def classify_race_quality(race_data: dict[str, Any] | None) -> RaceQualityReport
         horse_count=len(horses),
         valid_for_storage=valid_for_storage,
         valid_for_date_completion=valid_for_date_completion,
+        declared_horse_count=declared_count,
     )
 
 
@@ -581,7 +678,7 @@ def record_race_quality(
             ),
         )
 
-        if report.valid_for_storage:
+        if report.valid_for_date_completion:
             conn.execute(
                 "UPDATE scrape_repair_queue SET status='completed', last_error=NULL, "
                 "updated_at=? WHERE entity_type='race' AND entity_id=? "
@@ -884,8 +981,9 @@ def hydrate_quality_from_existing_data(
                 value = json.loads(data_text or "{}")
             except json.JSONDecodeError:
                 value = {}
-            if isinstance(value, dict):
-                horses.setdefault(str(race_id), []).append(value)
+            # A malformed stored row must participate in count/identity checks;
+            # dropping it could make a stale understated header appear complete.
+            horses.setdefault(str(race_id), []).append(value if isinstance(value, dict) else {})
         for race_id, bet_type, combinations, payout, popularity in conn.execute(
             f"SELECT race_id, bet_type, combinations, payout, popularity "
             f"FROM return_tables_ultimate WHERE race_id IN ({placeholders})",
@@ -945,7 +1043,7 @@ def evaluate_date_completeness(
                 expected,
             ).fetchall()
         saved = sorted(str(row[0]) for row in rows if row[1] in {"stored_partial", "complete"})
-        complete = sorted(str(row[0]) for row in rows if row[1] == "complete")
+        complete = sorted(str(row[0]) for row in rows if row[1] == "complete" and not int(row[2] or 0))
         quarantined = sorted(str(row[0]) for row in rows if int(row[2] or 0) == 1)
         missing = sorted(set(expected) - set(complete))
         status = "complete" if expected and not missing else (
