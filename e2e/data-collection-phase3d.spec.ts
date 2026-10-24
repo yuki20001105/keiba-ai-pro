@@ -13,7 +13,7 @@ async function authorizeAdmin(page: Page, baseURL: string) {
   await mockSupabaseIdentity(page, { authenticated: true, role: 'admin', tier: 'premium' })
   await page.route('**/api/scrape/health**', route => route.fulfill({ status: 200, json: { status: 'healthy' } }))
   await page.route('**/api/data-stats**', route => route.fulfill({ status: 200, json: { total_races: 1, total_horses: 1, latest_date: '2026-07-01' } }))
-  await page.route('**/api/scrape/history**', route => route.fulfill({ status: 200, json: { jobs: [] } }))
+  await page.route('**/api/scrape/history**', route => route.fulfill({ status: 200, json: { count: 0, jobs: [] } }))
 }
 
 function livePayload(maxUrls = 1, mode: 'pass' | 'zero' | 'partial' = 'pass') {

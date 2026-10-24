@@ -312,17 +312,15 @@ def test_unvalidated_calibrator_cannot_predict(fitted, frame):
     assert betting.predict_offset_uncalibrated(artifact, frame).shape == (len(frame),)
 
 
+@pytest.mark.parametrize("fitted", [("logistic", False), ("logistic", True)], indirect=True)
 def test_zero_logistic_residual_explicit_market_offset(fitted, frame):
-    if fitted["kind"] != "logistic":
-        pytest.skip("zero coefficient control is the logistic artifact")
     artifact = copy.deepcopy(fitted)
     artifact["coefficients"] = [0.] * (len(artifact["features"]) + 1)
     np.testing.assert_allclose(betting.predict_offset_uncalibrated(artifact, frame), betting.market_probabilities(frame), atol=1e-14)
 
 
+@pytest.mark.parametrize("fitted", [("lightgbm", False), ("lightgbm", True)], indirect=True)
 def test_tiny_lgbm_no_splits_keeps_market_offset(fitted, frame):
-    if fitted["kind"] != "lightgbm":
-        pytest.skip("no split control is the lightgbm artifact")
     # min_leaf=200 on 9 training rows: residual has no split or initial-score baseline.
     np.testing.assert_allclose(betting.predict_offset_uncalibrated(fitted, frame), betting.market_probabilities(frame), atol=1e-14)
 

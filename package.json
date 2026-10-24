@@ -10,7 +10,7 @@
     "nanoid": "3.3.18",
     "postcss": "$postcss",
     "sharp": "$sharp",
-    "undici": "7.29.0"
+    "undici": "7.30.1"
   },
   "scripts": {
     "dev": "next dev",
@@ -47,14 +47,14 @@
     "@supabase/supabase-js": "^2.103.3",
     "cheerio": "^1.0.0-rc.12",
     "date-fns": "^3.2.0",
-    "next": "16.3.4",
-    "openai": "^4.24.1",
+    "next": "16.4.3",
+    "openai": "^6.49.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "recharts": "^2.10.3",
-    "sharp": "0.35.4",
+    "sharp": "0.35.5",
     "stripe": "^14.11.0",
-    "zod": "^3.22.4"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.5",
@@ -71,7 +71,7 @@
     "concurrently": "^9.2.4",
     "dotenv": "^17.4.2",
     "eslint": "^9.39.4",
-    "eslint-config-next": "16.3.4",
+    "eslint-config-next": "16.4.3",
     "jsdom": "^29.0.2",
     "picomatch": "^4.0.5",
     "postcss": "8.5.25",

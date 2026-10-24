@@ -121,6 +121,19 @@ export async function mockHealth(page: Page, online = true) {
   )
 }
 
+export async function mockScrapeHealth(page: Page) {
+  const scrape_capabilities = {
+    race_scopes: ['all', 'jra'], jra_month_reuse: true,
+    safety_policy_version: 'normal-acquisition-safe-v1',
+    minimum_provider_interval_seconds: 3, halt_http400: true,
+    preserve_saved_values: true, max_concurrent_http_requests: 1,
+  }
+  await page.route('/api/health**', route =>
+    route.fulfill({ json: { status: 'ok', scrape_capabilities } }))
+  await page.route('/api/scrape/health**', route =>
+    route.fulfill({ json: { status: 'healthy', scrape_capabilities } }))
+}
+
 /** FastAPI /api/data_stats */
 export async function mockDataStats(page: Page) {
   await page.route('/api/data-stats**', route =>
@@ -173,8 +186,7 @@ export async function mockModels(page: Page) {
   )
 }
 
-/** 予測結果（/api/analyze-race用） */
-export async function mockAnalyzeRace(page: Page) {
+export async function mockPredictionFreshness(page: Page) {
   await page.route('/api/prediction-freshness**', route => route.fulfill({ json: {
     schema_version: 'prediction-freshness-v1', data_revision: 'e2e-saved-source',
     model_runtime_revision: 'e2e-model-runtime',
@@ -182,6 +194,11 @@ export async function mockAnalyzeRace(page: Page) {
     source_tracking: true, revision_kind: 'sqlite-source-generation', source_snapshot_verified: false,
     capabilities: { saved_db_recompute: true },
   } }))
+}
+
+/** 予測結果（/api/analyze-race用） */
+export async function mockAnalyzeRace(page: Page) {
+  await mockPredictionFreshness(page)
   await page.route('/api/analyze-race**', route =>
     route.fulfill({
       json: {

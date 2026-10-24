@@ -142,7 +142,7 @@ test.describe('Phase 3G review-only Admin evidence console', () => {
     await mockSupabaseIdentity(page, { authenticated: true, role: 'user', tier: 'premium' })
     await page.goto('/data-collection/uncertainty-reviews')
 
-    await expect(page.getByTestId('phase3g-admin-required')).toBeVisible()
+    await expect(page).toHaveURL(/\/home$/)
     await expect(page.getByTestId('phase3g-load-reviewable')).toHaveCount(0)
   })
 

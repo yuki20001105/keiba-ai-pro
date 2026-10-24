@@ -24,7 +24,7 @@ async function setupAuthorizedPage(page: Page, baseURL: string) {
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ total_races: 1, total_horses: 1, latest_date: '2026-07-01' }) })
   )
   await page.route('**/api/scrape/history**', route =>
-    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ jobs: [] }) })
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ count: 0, jobs: [] }) })
   )
 }
 
@@ -215,6 +215,7 @@ test.describe('Phase3C Targeted Refetch Planning (read-only)', () => {
     await button.click()
     await expect(button).toBeDisabled()
     await button.click({ force: true })
+    await expect.poll(() => targetedPostCount).toBe(1)
 
     resolver()
     await expect(page.getByTestId('phase3c-status')).toContainText('success')

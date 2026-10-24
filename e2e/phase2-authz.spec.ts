@@ -1,6 +1,7 @@
 import { test, expect, Page } from '@playwright/test'
 import {
   clearSupabaseTestSession,
+  mockPredictionFreshness,
   mockSupabaseIdentity,
   setSupabaseTestSession,
 } from './helpers/mock-api'
@@ -129,6 +130,7 @@ test.describe('Phase2 AuthZ E2E', () => {
       })
       await mockSupabaseIdentity(page, { authenticated: true, role: 'admin', tier: 'premium' })
       await mockRacesByDate(page)
+      await mockPredictionFreshness(page)
 
       const detail = `E2E-ERROR-${status}`
       await page.route('/api/analyze-race**', route =>

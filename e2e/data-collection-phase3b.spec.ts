@@ -1,5 +1,5 @@
 import { expect, Page, Route, test } from '@playwright/test'
-import { mockSupabaseIdentity, setSupabaseTestSession } from './helpers/mock-api'
+import { mockScrapeHealth, mockSupabaseIdentity, setSupabaseTestSession } from './helpers/mock-api'
 
 type BatchScenario = {
   jobId: string
@@ -54,9 +54,7 @@ async function setupAuthorizedPage(page: Page, baseURL: string) {
   })
   await mockSupabaseIdentity(page, { authenticated: true, role: 'admin', tier: 'premium' })
 
-  await page.route('**/api/scrape/health**', route =>
-    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'healthy' }) })
-  )
+  await mockScrapeHealth(page)
 
   await page.route('**/api/data-stats**', route =>
     route.fulfill({
@@ -67,7 +65,7 @@ async function setupAuthorizedPage(page: Page, baseURL: string) {
   )
 
   await page.route('**/api/scrape/history**', route =>
-    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ jobs: [] }) })
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ count: 0, jobs: [] }) })
   )
 }
 
@@ -732,7 +730,7 @@ test.describe('Phase3B Data Collection workflow', () => {
     expect(scrapePostCount).toBe(1)
 
     await page.getByTestId('execute-button').click()
-    await expect(page.getByTestId('batch-status-panel')).toContainText('完了 ·')
-    expect(scrapePostCount).toBe(2)
+    await expect.poll(() => scrapePostCount).toBe(2)
+    await expect(page.getByTestId('batch-status-panel')).toContainText('完了 · 1レース')
   })
 })
