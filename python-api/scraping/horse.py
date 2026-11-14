@@ -8,6 +8,9 @@ import json
 import re
 import sqlite3
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
+from datetime import datetime
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
@@ -17,16 +20,26 @@ from lxml import etree
 
 from scraping.constants import HTML_STRAINER, COAT_COLORS, COAT_RE
 from scraping.fetch_pipeline import FetchAccessBlocked, record_fetch_metric
-from scraping.acquisition_http_policy import fetch_source_text as fetch_text
+from scraping.acquisition_http_policy import acquisition_policy_active, fetch_source_text as fetch_text
+from scraping.acquisition_horse_history import (
+    ProfileIdentityConflict, has_history_table, prepare_history,
+    validate_profile_child, without_history_tables,
+)
+from scraping.horse_history_ajax import history_url
+from scraping.pedigree_identity import parse_parent_identities
 from scraping.parsed_cache import (
     cached_sqlite_connection, collect_sources, get_parsed, parser_version,
     prefer_mobile_endpoint, put_parsed, remember_mobile_endpoint,
 )
 from scraping.saved_horse_reuse import (
-    compatible_saved_pedigree, load_saved_horse_evidence, saved_horse_reuse_enabled,
+    _present, acquisition_target_date, acquisition_target_race_id, compatible_saved_pedigree,
+    load_saved_horse_evidence, saved_horse_reuse_enabled,
 )
 
 _PARSER_VERSION = parser_version(__file__)
+_ACQUISITION_PARSER_VERSION = _PARSER_VERSION + parser_version(
+    str(Path(__file__).with_name("acquisition_horse_history.py"))
+)
 _HTML_PARSERS = ThreadPoolExecutor(max_workers=2, thread_name_prefix="horse-html")
 _HORSE_TABLES = SoupStrainer("table")
 _HORSE_TEXT = etree.XPath(
@@ -37,6 +50,22 @@ _HORSE_CELL_TEXT = etree.XPath(
     ".//text()[not(ancestor::script) and not(ancestor::style) and not(ancestor::template)]",
     smart_strings=False,
 )
+_DETAIL_MODE: ContextVar[str] = ContextVar("horse_detail_mode", default="full")
+
+
+@contextmanager
+def horse_detail_scope(mode: str, *, target_date: str = ""):
+    if mode not in {"full", "cached_only", "cached_or_fetch"}:
+        raise ValueError("horse-detail-mode-invalid")
+    if target_date:
+        datetime.strptime(target_date, "%Y%m%d")
+        if target_date < datetime.now().strftime("%Y%m%d"):
+            mode = "full"
+    token = _DETAIL_MODE.set(mode)
+    try:
+        yield
+    finally:
+        _DETAIL_MODE.reset(token)
 
 if TYPE_CHECKING:
     pass
@@ -124,28 +153,37 @@ def _get_pedigree_sqlite(horse_id: str) -> dict | None:
             row = conn.execute(
                 "SELECT sire, dam, damsire FROM pedigree_cache WHERE horse_id = ?", (horse_id,)
             ).fetchone()
-        if row and row[0]:
+        if row and any(_present(value) for value in row):
             return {"sire": row[0], "dam": row[1], "damsire": row[2]}
-    except Exception:
-        pass
+    except sqlite3.Error:
+        logger.exception("Pedigree cache read failed: %s", horse_id)
     return None
 
 
 def _save_pedigree_sqlite(horse_id: str, sire: str, dam: str, damsire: str) -> None:
     """SQLite 血統キャッシュに保存する。"""
-    if not sire:
+    incoming = dict(zip(("sire", "dam", "damsire"), (sire, dam, damsire)))
+    if not any(_present(value) for value in incoming.values()):
         return
     try:
         with cached_sqlite_connection(_PEDIGREE_DB_PATH, writable=True) as conn:
             _ensure_pedigree_schema(conn)
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT sire, dam, damsire FROM pedigree_cache WHERE horse_id = ?", (horse_id,)
+            ).fetchone()
+            current = dict(zip(incoming, row)) if row else {}
+            if not _merge_pedigree(current, incoming, horse_id):
+                conn.rollback()
+                return
             conn.execute(
                 """INSERT OR REPLACE INTO pedigree_cache (horse_id, sire, dam, damsire)
                    VALUES (?, ?, ?, ?)""",
-                (horse_id, sire, dam, damsire),
+                (horse_id, *(current.get(field, "") for field in incoming)),
             )
             conn.commit()
-    except Exception:
-        pass
+    except sqlite3.Error:
+        logger.exception("Pedigree cache write failed: %s", horse_id)
 
 
 # Reading/importing this module does not create cache storage. The first
@@ -159,6 +197,21 @@ try:
 except ImportError:
     import logging
     logger = logging.getLogger(__name__)
+
+
+def _complete_pedigree(value: dict | None) -> bool:
+    return bool(value) and all(_present(value.get(field)) for field in ("sire", "dam", "damsire"))
+
+
+def _merge_pedigree(current: dict, incoming: dict, horse_id: str) -> bool:
+    for field in ("sire", "dam", "damsire"):
+        if (_present(current.get(field)) and _present(incoming.get(field))
+                and current[field].strip() != incoming[field].strip()):
+            logger.warning("Conflicting pedigree evidence held: horse=%s field=%s", horse_id, field)
+            return False
+    current.update({field: incoming[field] for field in ("sire", "dam", "damsire")
+                    if not _present(current.get(field)) and _present(incoming.get(field))})
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -434,6 +487,31 @@ async def scrape_horse_detail(
     """Reuse a complete parse only while every source snapshot is still valid."""
     if not horse_id and not horse_url:
         return {}
+    mode = _DETAIL_MODE.get()
+    if mode != "full":
+        cached_pedigree = (pedigree_cache or {}).get(horse_id)
+        if cached_pedigree is None:
+            cached_pedigree = _get_pedigree_sqlite(horse_id)
+        if _complete_pedigree(cached_pedigree):
+            record_fetch_metric("horse_details_cached_pedigree_hits")
+            return {**{field: cached_pedigree[field] for field in ("sire", "dam", "damsire")},
+                    "_horse_details_deferred": True}
+        if mode == "cached_only":
+            record_fetch_metric("horse_details_deferred")
+            return {**{field: cached_pedigree[field] for field in ("sire", "dam", "damsire")
+                       if cached_pedigree and _present(cached_pedigree.get(field))},
+                    "_horse_details_deferred": True}
+    from scraping.required_public_inputs import required_public_target, scrape_required_horse_inputs
+    target_date = acquisition_target_date()
+    if required_public_target(horse_id, target_date, acquisition_target_race_id()):
+        current_pedigree = (pedigree_cache or {}).get(horse_id)
+        if current_pedigree is None:
+            current_pedigree = _get_pedigree_sqlite(horse_id)
+        result = await scrape_required_horse_inputs(
+            session, horse_id, target_date, _parse_horse_source_html, current_pedigree,
+        )
+        return {**result, "_horse_details_deferred":
+                result.get("_career_history_source", {}).get("status") != "validated"}
     # Scope is supplied only by the historical acquisition worker. This
     # read-only evidence never changes the live prediction path and does not
     # replace the provider's current profile or its original history fields.
@@ -460,24 +538,35 @@ async def scrape_horse_detail(
     # current dedicated pedigree cache already validate this original key.
     # A local-pedigree injected payload must remain isolated, including after
     # source edits make that pedigree ineligible on a subsequent attempt.
-    key = json.dumps(base_key + ([saved.cache_token] if saved_pedigree is not None else []))
-    cached = get_parsed("horse-detail", key, _PARSER_VERSION)
+    cutoff = acquisition_target_date() if acquisition_policy_active() else None
+    key = json.dumps(base_key + ([saved.cache_token] if saved_pedigree is not None else [])
+                     + ([cutoff, "public-career"] if cutoff else []))
+    version = _ACQUISITION_PARSER_VERSION if cutoff else _PARSER_VERSION
+    cached = get_parsed("horse-detail", key, version)
     if cached is not None and all(
         cached.get(field, "") == (current_pedigree or {}).get(field, "")
         for field in ("sire", "dam", "damsire")
         if current_pedigree is not None
     ):
-        return _attach_saved_evidence(cached, saved, saved_pedigree)
+        return {**_attach_saved_evidence(cached, saved, saved_pedigree), "_horse_details_deferred": False}
     with collect_sources() as sources:
         result = await _scrape_horse_detail_uncached(
             session, horse_id, horse_url, pedigree_cache, quick_mode,
         )
     # Partial/profile-only responses, debutants without a history table and
     # failed enrichment remain retryable. Preserve every returned field.
-    if _complete_detail(result):
-        put_parsed("horse-detail", key, _PARSER_VERSION, result, sources,
+    if _complete_detail(result) and (
+        not cutoff or result.get("_career_history_source", {}).get("status") == "validated"
+    ):
+        put_parsed("horse-detail", key, version, result, sources,
                    max_age_sec=6 * 60 * 60)
-    return _attach_saved_evidence(result, saved, saved_pedigree)
+    history_status = result.get("_career_history_source", {}).get("status")
+    has_profile_fields = any(
+        field.startswith(("horse_", "prev_", "prev2_")) and _present(value)
+        for field, value in result.items()
+    )
+    deferred = history_status != "validated" if history_status is not None else not has_profile_fields
+    return {**_attach_saved_evidence(result, saved, saved_pedigree), "_horse_details_deferred": deferred}
 
 
 def _attach_saved_evidence(result: dict, saved, saved_pedigree: dict | None) -> dict:
@@ -525,13 +614,17 @@ async def _scrape_horse_detail_uncached(
         cached_b = (pedigree_cache or {}).get(horse_id) if pedigree_cache is not None else None
         if cached_b is None:
             cached_b = _get_pedigree_sqlite(horse_id)
-        if cached_b and cached_b.get("sire") and cached_b["sire"] not in ("", "unknown_local"):
+        if _complete_pedigree(cached_b):
             logger.debug(f"NAR馬 血統キャッシュヒット: {horse_id} sire={cached_b['sire']}")
             _nar_result = {k: cached_b.get(k, "") for k in ("sire", "dam", "damsire")}
         else:
             # 2) /horse/ped/<horse_id>/ を直接取得
             ped_url_b = f"https://db.netkeiba.com/horse/ped/{horse_id}/"
-            pedigree_result_b: dict = {}
+            pedigree_result_b: dict = {
+                key: value for key, value in (cached_b or {}).items()
+                if key in ("sire", "dam", "damsire") and _present(value)
+            }
+            _nar_result = pedigree_result_b
             for attempt in range(3):
                 try:
                     if attempt > 0:
@@ -553,8 +646,10 @@ async def _scrape_horse_detail_uncached(
                         ped_soup_b = BeautifulSoup(ped_html_b, "lxml", parse_only=HTML_STRAINER)
                         blood_table_b = ped_soup_b.find("table", class_="blood_table")
                         if blood_table_b:
-                            _parse_blood_table(blood_table_b, pedigree_result_b)
-                        if pedigree_result_b.get("sire"):
+                            fetched_b: dict = {}
+                            _parse_blood_table(blood_table_b, fetched_b)
+                            _merge_pedigree(pedigree_result_b, fetched_b, horse_id)
+                        if _complete_pedigree(pedigree_result_b):
                             logger.info(f"NAR馬 /ped/ 血統取得成功: {horse_id} sire={pedigree_result_b['sire']}")
                             _save_pedigree_sqlite(
                                 horse_id,
@@ -578,7 +673,7 @@ async def _scrape_horse_detail_uncached(
                     logger.debug(f"NAR馬 /ped/ 取得失敗 試行{attempt + 1} {horse_id}: {e_b}")
                     if attempt < 2:
                         await asyncio.sleep(2.0 ** attempt)
-            if not _nar_result.get("sire"):
+            if not any(_present(value) for value in _nar_result.values()):
                 logger.debug(f"NAR馬 血統取得不可: {horse_id} → unknown_local")
                 _nar_result = {"sire": "unknown_local", "dam": "unknown_local", "damsire": "unknown_local"}
 
@@ -635,6 +730,9 @@ async def _scrape_horse_detail_uncached(
         # consistently expose the historical-results table. Use the canonical
         # result endpoint even when an absolute main-profile URL was supplied.
         url = f"https://db.netkeiba.com/horse/result/{horse_id}/"
+    cutoff = acquisition_target_date() if acquisition_policy_active() else None
+    if cutoff:
+        url = f"https://db.netkeiba.com/horse/{horse_id}/"
     result = {}
     source_unavailable = False
     source_url = url
@@ -727,14 +825,41 @@ async def _scrape_horse_detail_uncached(
     expected_sources = {source_snapshot["url"]: source_snapshot} if source_snapshot else {}
     parsed_component = get_parsed(
         "horse-html", source_url, _PARSER_VERSION, expected_sources=expected_sources,
-    ) if source_snapshot else None
+    ) if source_snapshot and not cutoff else None
+    if cutoff:
+        career_source = {
+            "status": "unresolved", "target_date": cutoff, "profile_url": source_url,
+            "profile_source_snapshot": source_snapshot,
+        }
+        try:
+            validate_profile_child(html, horse_id)
+            response = None
+            if not has_history_table(html):
+                ajax_url = history_url(horse_id)
+                career_source["history_url"] = ajax_url
+                ajax_fetch, response = await fetch_text(
+                    session, ajax_url, cache_ttl_sec=6 * 60 * 60,
+                    resume_key=f"horse:{horse_id}:career-ajax", min_interval_sec=1.0,
+                    max_retries=1, allow_redirects=False,
+                )
+                if ajax_fetch.status != 200:
+                    raise ValueError(f"career-ajax-http-{ajax_fetch.status}")
+                career_source["history_source_snapshot"] = getattr(ajax_fetch, "cache_snapshot", None)
+            html, validated = prepare_history(html, response, horse_id, cutoff)
+            career_source.update(validated)
+        except ValueError as exc:
+            career_source.update(status="unresolved", error=str(exc))
+            logger.warning("Career history unresolved: horse=%s target=%s reason=%s", horse_id, cutoff, exc)
+            # Do not parse a failed/uncut current table as historical evidence.
+            html = "" if isinstance(exc, ProfileIdentityConflict) else without_history_tables(html)
+        result["_career_history_source"] = career_source
     if parsed_component is None:
         # Keep at most two HTML parsers active while the shared HTTP worker can
         # continue. Parsing is pure and does not share mutable race dictionaries.
         parsed_component = await asyncio.get_running_loop().run_in_executor(
             _HTML_PARSERS, _parse_horse_source_html, html, horse_id,
         )
-        if source_snapshot is not None:
+        if source_snapshot is not None and not cutoff:
             put_parsed("horse-html", source_url, _PARSER_VERSION, parsed_component,
                        expected_sources, max_age_sec=7 * 24 * 60 * 60)
     result.update(parsed_component["fields"])
@@ -749,24 +874,26 @@ async def _scrape_horse_detail_uncached(
             result["sire"] = cached.get("sire") or ""
             result["dam"] = cached.get("dam") or ""
             result["damsire"] = cached.get("damsire") or ""
-            pedigree_cached = True
+            pedigree_cached = _complete_pedigree(cached)
             logger.debug(f"血統キャッシュヒット: {horse_id} sire={result['sire']}")
 
     if not pedigree_cached:
         if parsed_component["blood"]:
-            result.update(parsed_component["blood"])
+            _merge_pedigree(result, parsed_component["blood"], horse_id)
             logger.debug(f"メインページ血統: {horse_id} sire={result.get('sire')}")
 
-        if not result.get("sire"):
+        if not _complete_pedigree(result):
             if _pre_ped_html:
                 ped_soup = BeautifulSoup(_pre_ped_html, "lxml", parse_only=HTML_STRAINER)
                 del _pre_ped_html
                 blood_table = _find_pedigree_table(ped_soup)
                 if blood_table:
-                    _parse_blood_table(blood_table, result)
+                    fetched_pedigree: dict = {}
+                    _parse_blood_table(blood_table, fetched_pedigree)
+                    _merge_pedigree(result, fetched_pedigree, horse_id)
                     if result.get("sire"):
                         logger.debug(f"ped 血統取得成功(並列): {horse_id} sire={result['sire']}")
-            if not result.get("sire"):
+            if not _complete_pedigree(result):
                 ped_url = f"https://db.netkeiba.com/horse/ped/{horse_id}/"
                 try:
                     _ped_fetch2, ped_html_retry = await fetch_text(
@@ -783,15 +910,31 @@ async def _scrape_horse_detail_uncached(
                         circuit_cooldown_sec=120.0,
                     )
                     if _ped_fetch2.status == 200:
-                        ped_soup = BeautifulSoup(ped_html_retry, "lxml", parse_only=HTML_STRAINER)
-                        blood_table = _find_pedigree_table(ped_soup)
-                        if blood_table:
-                            _parse_blood_table(blood_table, result)
-                            logger.debug(f"ped リトライ成功: {horse_id} sire={result.get('sire')}")
+                        if cutoff:
+                            parents = parse_parent_identities(ped_html_retry, horse_id, ped_url)
+                            fetched_pedigree = {field: parent["name"] for field, parent in parents.items()}
+                            if _merge_pedigree(result, fetched_pedigree, horse_id):
+                                result.update({field + "_id": parent["horse_id"]
+                                               for field, parent in parents.items()})
+                                result["_pedigree_source"] = {
+                                    "url": ped_url, "child_id": horse_id,
+                                    "source_snapshot": getattr(_ped_fetch2, "cache_snapshot", None),
+                                    "historical_prestart_capture_proven": False,
+                                }
+                        else:
+                            ped_soup = BeautifulSoup(ped_html_retry, "lxml", parse_only=HTML_STRAINER)
+                            blood_table = _find_pedigree_table(ped_soup)
+                            fetched_pedigree = {}
+                            if blood_table:
+                                _parse_blood_table(blood_table, fetched_pedigree)
+                                _merge_pedigree(result, fetched_pedigree, horse_id)
+                        logger.debug(f"ped リトライ成功: {horse_id} sire={result.get('sire')}")
                     elif _ped_fetch2.status == 429:
                         await asyncio.sleep(8.0)
                 except FetchAccessBlocked:
                     raise
+                except ValueError as exc:
+                    logger.warning("Pedigree source rejected: horse=%s reason=%s", horse_id, exc)
                 except Exception as _e:
                     logger.debug(f"ped リトライ失敗 {horse_id}: {_e}")
         else:

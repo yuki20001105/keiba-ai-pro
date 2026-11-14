@@ -399,6 +399,27 @@ def candidate_speed_mps(bundle: dict, raw: np.ndarray, current: pd.DataFrame) ->
     return training_source._inverse_speed(raw, current, bundle["baseline"])
 
 
+def _display_feature_value(bundle: dict, name: str, value: object) -> object:
+    """Decode frozen categorical indexes for explanations; never show them as class names."""
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(numeric):
+        return None
+    categories = getattr(bundle.get("encoder"), "categories", {})
+    values = categories.get(name)
+    if values is not None:
+        index = int(numeric)
+        if numeric != index or index < 0 or index >= len(values):
+            return None
+        decoded = str(values[index])
+        if name == "safe_surface":
+            return {"turf": "芝", "dirt": "ダート"}.get(decoded.lower(), decoded)
+        return decoded
+    return numeric
+
+
 def explain_candidate_scores(bundle: dict, encoded: pd.DataFrame, top_n: int = 6, *, num_threads: int = 2) -> list[dict]:
     """TreeSHAP on the same encoded matrix and speed-score scale as prediction."""
     if list(encoded) != bundle["feature_columns"]:
@@ -414,9 +435,12 @@ def explain_candidate_scores(bundle: dict, encoded: pd.DataFrame, top_n: int = 6
         for index in np.argsort(np.abs(impacts))[::-1][:max(1, int(top_n))]:
             raw_value = encoded.iloc[position, int(index)]
             name = str(encoded.columns[index])
+            value = _display_feature_value(bundle, name, raw_value)
             details.append({"feature": name, "label": _FEATURE_LABELS.get(name, name),
-                            "description": "発走前の出馬表または対象日より前の確定走から生成。過去走数は保存済み対象走の数。",
-                            "value": float(raw_value) if np.isfinite(raw_value) else None,
+                            "description": ("レースの競走条件の段階です。例：新馬・未勝利・1勝クラス・オープン・重賞。"
+                                            if name == "safe_race_class" else
+                                            "発走前の出馬表または対象日より前の確定走から生成。過去走数は保存済み対象走の数。"),
+                            "value": value,
                             "contribution": float(impacts[index]),
                             "impact_pct": float(abs(impacts[index]) / total * 100),
                             "direction": "positive" if impacts[index] >= 0 else "negative"})

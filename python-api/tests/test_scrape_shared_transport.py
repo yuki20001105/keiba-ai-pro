@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 from types import SimpleNamespace
 
@@ -6,6 +7,7 @@ import pytest
 
 from scraping import browser_transport, jobs, odds
 from scraping.fetch_pipeline import FetchAccessBlocked, FetchResult
+from test_scrape_calendar_filter import calendar_html
 
 
 def test_odds_api_uses_shared_transport_without_stale_cache(monkeypatch):
@@ -22,6 +24,26 @@ def test_odds_api_uses_shared_transport_without_stale_cache(monkeypatch):
     assert "race_id=202609010101" in url
     assert kwargs["use_cache"] is False
     assert kwargs["request_headers"]["X-Requested-With"] == "XMLHttpRequest"
+
+
+def test_odds_capture_binds_exact_response_body_race_and_market_status(monkeypatch):
+    body = json.dumps({"status": "middle", "data": {"odds": {"1": {"1": ["2.5", None, "1"]}}}})
+
+    async def fetch_text(session, url, **kwargs):
+        del session, url, kwargs
+        return SimpleNamespace(status=200), body
+
+    monkeypatch.setattr(odds, "fetch_text", fetch_text)
+    captured = asyncio.run(odds.fetch_tansho_odds_capture(object(), "202609010101"))
+
+    evidence = captured["evidence"]
+    assert captured["odds"] == {1: 2.5}
+    assert evidence["schema"] == "netkeiba-win-odds-capture-v1"
+    assert evidence["race_id"] == "202609010101"
+    assert evidence["odds_status"] == "middle"
+    assert evidence["response_sha256"] == hashlib.sha256(body.encode("utf-8")).hexdigest()
+    assert evidence["odds_by_horse_number"] == {"1": 2.5}
+    assert evidence["observed_at"].endswith("Z")
 
 
 def test_odds_api_propagates_access_block(monkeypatch):
@@ -153,7 +175,8 @@ def test_calendar_uses_shared_transport_and_keeps_date_parsing(monkeypatch):
 
     async def fetch(*args, **kwargs):
         calls.append(kwargs)
-        return SimpleNamespace(status=200), '<a href="?kaisai_date=20250104">4</a>'
+        html = calendar_html(venues={4: ["京都"]})
+        return FetchResult(args[1], args[1], 200, html.encode("utf-8"), "network", 1), html
 
     monkeypatch.setattr(jobs, "fetch_text", fetch)
     assert asyncio.run(jobs._fetch_race_days_for_month(2025, 1)) == ["20250104"]

@@ -48,6 +48,7 @@ export type ProbabilityValidation = {
 }
 
 export type ModelEvaluation = {
+  target_normalization?: { arm?: string } | null
   rmse_unit?: string
   evaluation_label?: string
   primary?: EvaluationPrimary
@@ -125,12 +126,13 @@ export function ModelEvaluationSummary({
   const winNllReference = featurePipeline === 'local-win-nll-reference-v1'
   const optimizedPipeline = featurePipeline === 'local-db-shared-optimized-v1'
   const contextPipeline = featurePipeline === 'local-db-context-v1'
+  const groupedTarget = evaluation?.target_normalization?.arm === 'course_going_weather'
   const sharedPipeline = featurePipeline === 'local-db-shared-v1' || optimizedPipeline || contextPipeline
   const accuracyOnly = sharedPipeline || winNllReference
   const rmseUnit = winNllReference ? '勝敗0/1' : evaluation?.rmse_unit ?? (sharedPipeline ? 'm/s' : undefined)
   const validation = probabilityValidation ?? evaluation?.probability_validation
   const calibrated = validation?.calibrated === true
-  const probabilityVerified = !winNllReference && !contextPipeline && calibrated && validation?.validated === true && validation?.status === 'validated'
+  const probabilityVerified = !winNllReference && !contextPipeline && !groupedTarget && calibrated && validation?.validated === true && validation?.status === 'validated'
   const calibrationLabel = probabilityVerified ? '検証済み' : calibrated ? '校正済み・未検証' : '未校正'
   const evCalibrationEligible = probabilityVerified && validation?.eligible_for_ev === true
   const elapsed = finite(trainingTimeSeconds)
@@ -149,7 +151,7 @@ export function ModelEvaluationSummary({
     { label: '回収率', value: returnRate(primary.win_roi) },
   ]
   const displayedMetrics = accuracyOnly ? mainMetrics.slice(0, 2) : mainMetrics
-  const verificationEvidence = winNllReference || contextPipeline ? {
+  const verificationEvidence = winNllReference || contextPipeline || groupedTarget ? {
     ...validation, status: 'unverified', validated: false,
     market_edge_verified: false, profitability_verified: false,
   } : validation
@@ -169,6 +171,11 @@ export function ModelEvaluationSummary({
       {contextPipeline && (
         <p className="rounded border border-[#665120] bg-[#211b0d] px-3 py-2 text-xs leading-5 text-[#fde68a]" data-testid="context-model-reference-state">
           条件・展開の比較候補 · 校正と予測精度を比較します · 購入判断未承認
+        </p>
+      )}
+      {groupedTarget && (
+        <p className="rounded border border-[#665120] bg-[#211b0d] px-3 py-2 text-xs leading-5 text-[#fde68a]" data-testid="grouped-model-reference-state">
+          基準④の試験採用 · 芝ダ・距離・競馬場・馬場・天候の条件別速度偏差 · 将来の改善は未確定 · 購入判断未承認
         </p>
       )}
       <div className={`grid grid-cols-2 gap-2 ${accuracyOnly ? '' : 'md:grid-cols-5'}`} data-testid="model-primary-metrics">

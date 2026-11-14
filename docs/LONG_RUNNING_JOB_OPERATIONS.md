@@ -4,13 +4,15 @@
 
 新しく開始するデータ取得ジョブは、FastAPIの再起動後も同じjob IDで自動再開されます。進捗、入力期間、完了日、heartbeat、再開回数は `keiba/data/scrape_jobs.db` に保存されます。
 
-ローカルランチャーはNext.jsを既定でstandalone production modeで起動します。開発用ファイル監視を長時間動かさないため、メモリとファイルハンドルの増加を抑えます。
+ローカルランチャーはNext.jsを既定でproduction mode（`next start`）で起動します。開発用ファイル監視を長時間動かさず、standalone成果物への大量ファイルコピーも省くため、メモリとファイルハンドルの増加を抑えます。
 
 ## 利用方法
 
 1. `start-keiba-ai-pro.bat` を実行します。
 2. 画面からデータ取得を開始します。
 3. 稼働確認は `check-keiba-ai-pro.bat` を実行します。
+
+起動済みの場合は既存サーバーを再利用します。通常の起動操作では強制再起動せず、起動確認後にランチャーは終了します。コード変更を反映する場合だけ `.\start-keiba-ai-pro.bat -Restart` を実行してください。通常モードの初回起動・ソース変更後の再起動では、production build中に一時的にCPU負荷が上がります。ローカルランチャーはTurbopackのメモリ確保失敗を避けるためWebpackでビルドします。
 
 正常時の表示例:
 
@@ -77,6 +79,8 @@ powershell -ExecutionPolicy Bypass -File scripts/start-local-app.ps1 -Developmen
 ```
 
 `next dev` はファイル監視と開発キャッシュにより長時間稼働の資源消費が大きいため、通常利用や長期取得には使用しません。
+
+`scripts\start-dev.bat` / `scripts\start-dev.ps1` も共通ランチャーの重複起動防止を使用します。起動済みサーバーのモードを切り替える場合は、開発モードへは `.\scripts\start-dev.bat -Restart`、通常モードへは `.\start-keiba-ai-pro.bat -Restart` を実行してください。
 
 ## 異常判定
 

@@ -72,3 +72,17 @@ def test_local_opt_in_does_not_create_or_activate_a_missing_model(
 
     assert captured.value.status_code == 404
     assert activated == []
+
+
+@pytest.mark.parametrize("requested", ["model_monthly_reference_random_20261105", "monthly_reference_random_20261105"])
+def test_reference_model_cannot_activate_through_full_or_partial_id(tmp_path, monkeypatch, requested):
+    (tmp_path / "model_monthly_reference_random_20261105.joblib").write_bytes(b"reference-placeholder")
+    activated = []
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("MODEL_ACTIVATION_LOCAL_ENABLED", "true")
+    monkeypatch.setattr(models_mgmt, "MODELS_DIR", tmp_path)
+    monkeypatch.setattr(models_mgmt, "set_active_model_id", activated.append)
+    with pytest.raises(HTTPException) as captured:
+        asyncio.run(models_mgmt.activate_model(requested, {}))
+    assert captured.value.status_code == 409
+    assert activated == []

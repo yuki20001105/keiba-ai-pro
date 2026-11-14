@@ -15,6 +15,7 @@ export type PerformanceRecord = {
   race_info: { date?: string; race_date?: string; race_name?: string; venue?: string; post_time?: string; race_no?: number }
   model_id?: string
   policy_version?: string
+  betting_strategy?: Recommendation['betting_strategy']
   decision: string
   reason: string
   mode: PerformanceMode
@@ -181,9 +182,10 @@ export async function savePerformanceRecord(
   if (!data.record?.id) throw new Error('成績の保存を確認できませんでした。')
   const existing = Boolean(data.existing)
   const ticketKey = (items: PerformanceTicket[]) => JSON.stringify(items.map(ticket => ({
-    bet_type: ticket.bet_type, combination: ticket.combination, horse_numbers: ticket.horse_numbers, stake: ticket.stake,
+    bet_type: ticket.bet_type, combination: ticket.horse_numbers.join('-'), horse_numbers: ticket.horse_numbers, stake: ticket.stake,
   })).sort((a, b) => `${a.bet_type}:${a.combination}`.localeCompare(`${b.bet_type}:${b.combination}`)))
-  const selectionMatches = !existing || (Array.isArray(data.record.tickets) && ticketKey(data.record.tickets) === ticketKey(tickets))
+  const selectionMatches = !existing || (Array.isArray(data.record.tickets) && ticketKey(data.record.tickets) === ticketKey(tickets)
+    && (data.record.betting_strategy ?? 'value') === (recommendation?.betting_strategy ?? 'value'))
   if (mode === 'actual' && !selectionMatches) throw new Error('このレースには別の買い目が記録されています。成績確認で既存の記録を確認してください。')
   return { record: data.record, existing, selection_matches: selectionMatches }
 }

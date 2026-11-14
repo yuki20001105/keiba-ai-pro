@@ -830,6 +830,26 @@ def test_http_retry_with_same_binding_is_idempotent_and_changed_payload_conflict
         set_operational_saga_runtime_for_tests(None)
 
 
+def test_cached_card_mode_is_durable_and_cannot_reuse_a_full_request_binding(tmp_path):
+    runtime = OperationalSagaRuntime(_config(tmp_path / "cards.db"))
+    runtime.initialize()
+    set_operational_saga_runtime_for_tests(runtime)
+    try:
+        request = ScrapeRequest(
+            start_date="20261107", end_date="20261107", dry_run=True,
+            job_id=JOB, operation_id=OPERATION, horse_details="cached_only",
+        )
+        asyncio.run(scrape_router.scrape_start(request, {"user_id": OWNER, "role": "admin"}))
+        stored = runtime.get_job(JOB, OWNER)
+        assert stored["request_payload"]["horse_details"] == "cached_only"
+        changed = request.model_copy(update={"horse_details": "full"})
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(scrape_router.scrape_start(changed, {"user_id": OWNER, "role": "admin"}))
+        assert error.value.status_code == 409
+    finally:
+        set_operational_saga_runtime_for_tests(None)
+
+
 class _NoopSharedStore:
     enqueue_calls = 0
 
@@ -995,6 +1015,34 @@ def test_default_effect_executor_refuses_unfenced_write_before_legacy_runner() -
     )
     with pytest.raises(OperationalSagaUnavailable, match="fenced-operational-execute-not-enabled"):
         asyncio.run(ScrapeJobEffectExecutor().execute(claim))
+
+
+def test_cached_card_effect_rehydrates_its_bound_mode_and_keeps_owner_cancellation(monkeypatch):
+    from scraping import jobs
+
+    monkeypatch.setattr(jobs, "_scrape_jobs", {})
+    captured = []
+
+    async def runner(job_id, *args, **kwargs):
+        stored = jobs._scrape_jobs[job_id]
+        assert stored["owner_user_id"] == OWNER
+        assert stored["request"]["horse_details"] == "cached_only"
+        assert kwargs["cancel_requested"]() is False
+        captured.append(kwargs["horse_details"])
+        stored.update(status="completed", result={"saved_races": 0})
+
+    monkeypatch.setattr(jobs, "_run_scrape_job", runner)
+    claim = OperationalClaim(
+        job_id=JOB, operation_id=OPERATION, owner_user_id=OWNER, request_hash=REQUEST_HASH,
+        request_payload={**PAYLOAD, "horse_details": "cached_only"},
+        idempotency_key=_request().idempotency_key, worker_owner="worker-a",
+        fencing_token=1, lease_expires_at_epoch=9999999999, attempt_count=1,
+    )
+    with pytest.raises(OperationalSagaUnavailable, match="cached-cards-local-runtime-required"):
+        asyncio.run(ScrapeJobEffectExecutor().execute(claim))
+    result = asyncio.run(ScrapeJobEffectExecutor(allow_unfenced_local_writes=True).execute(claim))
+    assert result.result == {"saved_races": 0}
+    assert captured == ["cached_only"]
 
 
 @pytest.mark.parametrize("route_name", ["scrape_data", "rescrape_incomplete", "repair_race"])

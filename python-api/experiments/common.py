@@ -35,7 +35,9 @@ def read_json(path: Path) -> dict:
 def source_manifest() -> dict[str, str]:
     roots = [REPO_ROOT / 'python-api/experiments', REPO_ROOT / 'python-api/training/eligibility.py',
              REPO_ROOT / 'keiba/keiba_ai/speed_deviation.py', REPO_ROOT / 'keiba/keiba_ai/constants.py',
-             REPO_ROOT / 'scripts/run_model_experiment.py', REPO_ROOT / 'scripts/run_model_search.py']
+             REPO_ROOT / 'scripts/run_model_experiment.py', REPO_ROOT / 'scripts/run_model_search.py',
+             REPO_ROOT / 'scripts/run_model_goal_loop.py',
+             REPO_ROOT / 'python-api/scraping/race_class.py']
     paths = []
     for root in roots:
         paths.extend(root.rglob('*.py') if root.is_dir() else [root])

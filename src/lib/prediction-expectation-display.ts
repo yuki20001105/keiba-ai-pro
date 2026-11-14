@@ -2,7 +2,7 @@ import type { RacePredictResult, Recommendation } from '@/lib/race-analysis-type
 import { BETTING_POLICY_VERSION, bettingRecommendationExpired } from '@/lib/betting-policy'
 import { predictionInputVerified, sharedFeatureProfileCount, sharedInputFormulaMatchedCaptureUnverified } from '@/lib/prediction-input-contract'
 
-export const REFERENCE_EXPECTATION_NOTE = '参考期待値＝校正済み確率×表示オッズ（1.00が損益分岐の目安）。取得時点未確認の試算で、購入判断や実績評価には使えません。'
+export const REFERENCE_EXPECTATION_NOTE = '参考期待値＝校正済み確率×表示オッズ（1.00が損益分岐の目安）。オッズ鮮度・発走時刻の条件を満たすとは限らない仮計算で、購入判断や実績評価には使えません。'
 export const REFERENCE_EXPECTATION_CAVEAT = '現在購入できるオッズ・発走前予測を保証しません。'
 
 type ExpectationDisplay = {
@@ -24,6 +24,32 @@ function utcTime(value: unknown): number {
     ? Date.parse(value) : Number.NaN
 }
 
+function provisionalValues(result: RacePredictResult | null | undefined, expectedRaceId?: string): ReadonlyMap<number, number> | null {
+  const diagnostics = result?.input_diagnostics
+  if (!result?.success || typeof result.model_id !== 'string' || !result.model_id.trim()
+    || typeof result.race_info?.race_id !== 'string' || !result.race_info.race_id
+    || (expectedRaceId !== undefined && result.race_info.race_id !== expectedRaceId)
+    || diagnostics?.current_outcomes_consumed !== false
+    || !numeric(diagnostics.missing_value_rate) || diagnostics.missing_value_rate < 0 || diagnostics.missing_value_rate > 0.2
+    || !Array.isArray(result.predictions) || result.predictions.length < 2 || result.predictions.length > 18
+    || !Number.isInteger(result.race_info.num_horses) || result.race_info.num_horses !== result.predictions.length) return null
+
+  const seen = new Set<number>()
+  const values = new Map<number, number>()
+  let probabilitySum = 0
+  for (const prediction of result.predictions) {
+    if (!prediction || !Number.isInteger(prediction.horse_number) || prediction.horse_number <= 0 || prediction.horse_number > 18
+      || seen.has(prediction.horse_number) || !numeric(prediction.p_norm) || prediction.p_norm < 0 || prediction.p_norm > 1) return null
+    seen.add(prediction.horse_number)
+    probabilitySum += prediction.p_norm
+    if (numeric(prediction.odds) && prediction.odds >= 1) {
+      const value = prediction.p_norm * prediction.odds
+      if (numeric(value)) values.set(prediction.horse_number, value)
+    }
+  }
+  return values.size > 0 && Math.abs(probabilitySum - 1) <= 1e-5 ? values : null
+}
+
 /** Validate display-only evidence independently. Never modifies a recommendation. */
 export function predictionExpectationDisplay(
   result: RacePredictResult | null | undefined,
@@ -39,14 +65,17 @@ export function predictionExpectationDisplay(
   const official = recommendation?.probability_basis === 'calibrated'
     && recommendation.input_verified === true && predictionInputVerified(diagnostics)
 
-  // An expired official EV cannot fall through to a reference calculation.
+  // A hypothetical quote never extends the original purchase admission.
   if (official) {
-    if (bettingRecommendationExpired({ ...recommendation, decision: 'buy' }, nowMs)) return unavailable
-    const values = new Map<number, number>()
-    for (const prediction of result?.predictions ?? []) {
-      if (numeric(prediction.expected_value) && prediction.expected_value >= 0) values.set(prediction.horse_number, prediction.expected_value)
+    if (!bettingRecommendationExpired({ ...recommendation, decision: 'buy' }, nowMs)) {
+      const values = new Map<number, number>()
+      for (const prediction of result?.predictions ?? []) {
+        if (numeric(prediction.expected_value) && prediction.expected_value >= 0) values.set(prediction.horse_number, prediction.expected_value)
+      }
+      if (values.size > 0) return { mode: 'official', label: '期待値', values }
     }
-    return { mode: 'official', label: '期待値', values }
+    const values = numeric(nowMs) ? provisionalValues(result, expectedRaceId) : null
+    return values ? { mode: 'reference', label: '参考期待値', values } : unavailable
   }
 
   const reference = result?.reference_expectation
@@ -69,12 +98,12 @@ export function predictionExpectationDisplay(
     || !Number.isInteger(result.race_info.num_horses) || result.race_info.num_horses < 2 || result.race_info.num_horses > 18
     || result.race_info.num_horses !== result.predictions.length) return unavailable
 
-  // This TTL only bounds how long the trial is displayed, not the age of its odds.
+  // Validate the original trial's timestamps, but retain its hypothetical
+  // calculation after expiry; these timestamps never establish fresh odds.
   const computedAt = utcTime(reference.computed_at)
   const validUntil = utcTime(reference.valid_until)
   if (!numeric(nowMs) || !numeric(computedAt) || !numeric(validUntil)
-    || computedAt > nowMs || validUntil <= computedAt || validUntil > computedAt + 5 * 60 * 1000
-    || nowMs >= validUntil) return unavailable
+    || computedAt > nowMs || validUntil <= computedAt || validUntil > computedAt + 5 * 60 * 1000) return unavailable
 
   const predictions = new Map<number, RacePredictResult['predictions'][number]>()
   let probabilitySum = 0

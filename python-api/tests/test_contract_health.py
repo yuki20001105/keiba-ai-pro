@@ -46,7 +46,26 @@ def test_health_contract(monkeypatch) -> None:
         "safety_policy_version": "normal-acquisition-safe-v1",
         "minimum_provider_interval_seconds": 3,
         "halt_http400": True, "preserve_saved_values": True,
+        "required_public_inputs_version": "historical-jra-required-public-v1",
+        "required_public_inputs_scope": "historical_jra_older_than_30_days",
+        "profile_totals_are_model_inputs": False,
+        "prior_results_auto_imported": False,
     }
+
+
+def test_health_reports_operational_scrape_runtime_without_authorizing_it(monkeypatch) -> None:
+    from types import SimpleNamespace
+    from scraping.operational_saga_runtime import OperationalSagaMode
+
+    monkeypatch.setattr(main, "get_operational_saga_runtime", lambda: SimpleNamespace(
+        config=SimpleNamespace(
+            mode=OperationalSagaMode.LOCAL_SQLITE,
+            worker_enabled=True,
+        ),
+        enabled=True,
+    ))
+    runtime = asyncio.run(main.health())["operational_scrape_runtime"]
+    assert runtime == {"mode": "local-sqlite", "enabled": True, "worker_enabled": True}
 
 
 def test_health_routes_share_the_implemented_safety_contract(monkeypatch) -> None:

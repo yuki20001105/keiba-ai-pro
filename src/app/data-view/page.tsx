@@ -11,7 +11,18 @@ type RawData = { race_id: string; race_info_columns: string[]; horse_columns: st
 type FeatureData = { race_id: string; feature_count: number; horse_count: number; feature_columns: string[]; records: Record<string, unknown>[] }
 
 // 馬テーブルで先頭に固定する優先列
-const PRIORITY_HORSE_COLS = ['horse_number', 'horse_no', 'bracket_number', 'horse_name', 'jockey_name', 'trainer_name', 'age', 'sex', 'weight_kg', 'horse_weight', 'weight_diff', 'odds', 'popularity', 'finish_order', 'last_3f_time']
+const PRIORITY_HORSE_COLS = ['horse_number', 'horse_no', 'bracket_number', 'horse_name', 'jockey_name', 'trainer_name', 'age', 'sex', 'sex_age', 'weight_kg', 'jockey_weight', 'burden_weight', 'horse_weight', 'weight_diff', 'weight_change', 'odds', 'popularity', 'finish_order', 'finish_position', 'last_3f_time', 'last_3f', 'finish_time']
+const CORE_HORSE_COLS = new Set(PRIORITY_HORSE_COLS)
+const HORSE_COLUMN_LABELS: Record<string, string> = {
+  horse_number: '馬番', horse_no: '馬番', bracket_number: '枠番', horse_name: '馬名',
+  jockey_name: '騎手', trainer_name: '調教師', age: '年齢', sex: '性別', sex_age: '性齢',
+  weight_kg: '斤量', jockey_weight: '斤量', burden_weight: '斤量', horse_weight: '馬体重',
+  weight_diff: '馬体重増減', weight_change: '馬体重増減', horse_weight_change: '馬体重増減', odds: 'オッズ',
+  popularity: '人気', finish_order: '着順', finish_position: '着順', finish: '着順', last_3f_time: '上がり3F', last_3f: '上がり3F',
+  finish_time: '走破タイム', time_seconds: '走破タイム', distance: '距離', surface: 'コース', track_type: 'コース', venue: '競馬場',
+  field_condition: '馬場状態', weather: '天候', race_class: 'クラス', race_id: 'レースID',
+  horse_id: '馬ID', jockey_id: '騎手ID', trainer_id: '調教師ID', race_date: '開催日',
+}
 
 function todayStr() {
   const d = new Date()
@@ -52,6 +63,8 @@ export default function DataViewPage() {
   const [dataLoading, setDataLoading] = useState(false)
   const [error, setError] = useState('')
   const [colFilter, setColFilter] = useState('')
+  const [rawColFilter, setRawColFilter] = useState('')
+  const [showAllRawCols, setShowAllRawCols] = useState(true)
   const [hiddenGroups, setHiddenGroups] = useState<Set<string>>(new Set())
 
   // 日付変更時にレース一覧を自動取得
@@ -108,6 +121,13 @@ export default function DataViewPage() {
 
   const raceInfo = rawData?.race_info
   const trackIcon = (t: string) => t?.includes('ダ') || t?.toLowerCase() === 'dirt' ? '🟤' : '🟢'
+  const visibleRawCols = rawData
+    ? sortedCols(rawData.horse_columns).filter(col => {
+        if (!showAllRawCols && !CORE_HORSE_COLS.has(col)) return false
+        const query = rawColFilter.trim().toLowerCase()
+        return !query || col.toLowerCase().includes(query) || (HORSE_COLUMN_LABELS[col] ?? '').includes(query)
+      })
+    : []
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-white flex flex-col">
@@ -118,6 +138,9 @@ export default function DataViewPage() {
           <span className="text-[10px] px-2 py-0.5 rounded border border-yellow-600/40 bg-yellow-500/20 text-yellow-400">
             Premium 専用
           </span>
+          <Link href="/data-view/all" className="rounded border border-[#303030] px-3 py-1.5 text-xs text-[#aaa] hover:text-white">
+            保存済み全データ・CSV
+          </Link>
         </div>
         <Link href="/home" className="flex items-center gap-1 text-xs text-[#555] hover:text-white transition-colors">
           <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -258,18 +281,71 @@ export default function DataViewPage() {
                     />
                   </div>
                 )}
+                {tab === 'raw' && (
+                  <div className="ml-auto flex items-center gap-2 py-1.5">
+                    <div className="flex rounded border border-[#292929] p-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setShowAllRawCols(false)}
+                        className={`rounded px-2 py-1 text-[11px] ${!showAllRawCols ? 'bg-[#292929] text-white' : 'text-[#777] hover:text-white'}`}
+                      >主な項目</button>
+                      <button
+                        type="button"
+                        onClick={() => setShowAllRawCols(true)}
+                        className={`rounded px-2 py-1 text-[11px] ${showAllRawCols ? 'bg-[#292929] text-white' : 'text-[#777] hover:text-white'}`}
+                      >全項目</button>
+                    </div>
+                    <input
+                      type="text"
+                      placeholder="項目名で検索..."
+                      aria-label="生データの項目名で検索"
+                      value={rawColFilter}
+                      onChange={e => setRawColFilter(e.target.value)}
+                      className="w-36 rounded border border-[#292929] bg-[#111] px-2.5 py-1.5 text-xs text-white placeholder-[#555] focus:outline-none focus:border-[#555]"
+                    />
+                  </div>
+                )}
               </div>
 
               {/* ── 生データタブ ── */}
               {tab === 'raw' && (
                 <div className="flex-1 overflow-auto p-4">
+                  <div className="mb-2 flex items-center justify-between text-[11px] text-[#777]">
+                    <span>レース情報（{rawData.race_info_columns.length}項目）</span>
+                    <span>取得した項目と値をすべて表示</span>
+                  </div>
+                  <div className="mb-6 overflow-x-auto">
+                    <table className="w-full text-xs border-collapse">
+                      <thead className="sticky top-0 z-10">
+                        <tr>
+                          <th className="w-40 px-3 py-2 bg-[#0f0f0f] border border-[#222] text-left text-[#aaa]">項目</th>
+                          <th className="w-56 px-3 py-2 bg-[#0f0f0f] border border-[#222] text-left text-[#666] font-mono">元のカラム名</th>
+                          <th className="px-3 py-2 bg-[#0f0f0f] border border-[#222] text-left text-[#aaa]">取得値</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rawData.race_info_columns.map((col, i) => (
+                          <tr key={col} className={i % 2 === 0 ? 'bg-[#0a0a0a]' : 'bg-[#0c0c0c]'}>
+                            <td className="px-3 py-1.5 border border-[#1a1a1a] text-[#ddd] whitespace-nowrap">{HORSE_COLUMN_LABELS[col] ?? col.replaceAll('_', ' ')}</td>
+                            <td className="px-3 py-1.5 border border-[#1a1a1a] text-[#777] font-mono whitespace-nowrap">{col}</td>
+                            <td className={`px-3 py-1.5 border border-[#1a1a1a] font-mono ${cellColor(rawData.race_info[col])}`}>{formatValue(rawData.race_info[col])}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="mb-2 flex items-center justify-between text-[11px] text-[#777]">
+                    <span>各馬の取得データ（{rawData.horses.length}頭）</span>
+                    <span>{visibleRawCols.length} / {rawData.horse_columns.length} 項目を表示</span>
+                  </div>
                   <div className="overflow-x-auto">
                     <table className="text-xs border-collapse">
                       <thead className="sticky top-0 z-10">
                         <tr>
-                          {sortedCols(rawData.horse_columns).map(col => (
-                            <th key={col} className="px-3 py-2 bg-[#0f0f0f] border border-[#222] text-[#666] font-mono whitespace-nowrap text-left">
-                              {col}
+                          {visibleRawCols.map(col => (
+                            <th key={col} className="px-3 py-2 bg-[#0f0f0f] border border-[#222] whitespace-nowrap text-left">
+                              <span className="block text-[#ddd]">{HORSE_COLUMN_LABELS[col] ?? col.replaceAll('_', ' ')}</span>
+                              <span className="mt-0.5 block font-mono text-[10px] font-normal text-[#666]">{col}</span>
                             </th>
                           ))}
                         </tr>
@@ -277,7 +353,7 @@ export default function DataViewPage() {
                       <tbody>
                         {rawData.horses.map((horse, i) => (
                           <tr key={i} className={`${i % 2 === 0 ? 'bg-[#0a0a0a]' : 'bg-[#0c0c0c]'} hover:bg-[#141414] transition-colors`}>
-                            {sortedCols(rawData.horse_columns).map(col => (
+                            {visibleRawCols.map(col => (
                               <td key={col} className={`px-3 py-1.5 border border-[#1a1a1a] font-mono whitespace-nowrap ${cellColor(horse[col])}`}>
                                 {formatValue(horse[col])}
                               </td>
@@ -286,6 +362,7 @@ export default function DataViewPage() {
                         ))}
                       </tbody>
                     </table>
+                    {visibleRawCols.length === 0 && <div className="p-6 text-center text-xs text-[#666]">一致する項目がありません</div>}
                   </div>
                 </div>
               )}

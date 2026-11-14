@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import json
+import math
+from datetime import datetime, timezone
+import hashlib
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from scraping.fetch_pipeline import FetchAccessBlocked
 from scraping.acquisition_http_policy import fetch_text
@@ -53,7 +56,7 @@ def parse_tansho_odds_payload(
             price = float(values[0])
         except (IndexError, TypeError, ValueError):
             continue
-        if price <= 0:
+        if not math.isfinite(price) or price < 1:
             continue
         odds[horse_number] = price
         try:
@@ -71,10 +74,28 @@ async def fetch_tansho_odds_api(
     *,
     allow_predicted: bool = False,
 ) -> tuple[dict[int, float], dict[int, int], str]:
-    """Fetch the JSON endpoint used by netkeiba's own shutuba JavaScript."""
+    """Fetch actual odds while retaining the historic three-value API."""
+    capture = await fetch_tansho_odds_capture(session, race_id, allow_predicted=allow_predicted)
+    return capture["odds"], capture["popularity"], capture["status"]
+
+
+async def fetch_tansho_odds_capture(
+    session: Any,
+    race_id: str,
+    *,
+    allow_predicted: bool = False,
+) -> dict[str, Any]:
+    """Fetch odds and bind the exact response body to its capture time.
+
+    ``captured_at`` is local response-receipt time, not a provider-signed
+    publication time. The betting policy treats the record as evidence only
+    when the response is the actual ``middle`` market and binds the exact race,
+    runner and odds value.
+    """
 
     url = "https://race.netkeiba.com/api/api_get_jra_odds.html"
     params = {"race_id": race_id, "type": "1", "action": "update"}
+    request_url = f"{url}?{urlencode(params)}"
     headers = {
         "Accept": "application/json, text/javascript, */*; q=0.01",
         "Referer": f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}",
@@ -82,19 +103,19 @@ async def fetch_tansho_odds_api(
     }
     try:
         response, body = await fetch_text(
-            session, f"{url}?{urlencode(params)}", request_headers=headers,
+            session, request_url, request_headers=headers,
             use_cache=False, force_refresh=True, max_retries=1,
             max_body_bytes=2 * 1024 * 1024,
         )
         if response.status != 200:
             logger.warning(f"[odds_api] HTTP {response.status}: {race_id}")
-            return {}, {}, f"http-{response.status}"
+            return {"odds": {}, "popularity": {}, "status": f"http-{response.status}", "evidence": None}
         payload = json.loads(body)
     except FetchAccessBlocked:
         raise
     except Exception as exc:
         logger.warning(f"[odds_api] 取得失敗 {race_id}: {exc}")
-        return {}, {}, "error"
+        return {"odds": {}, "popularity": {}, "status": "error", "evidence": None}
 
     odds, popularity, status = parse_tansho_odds_payload(
         payload,
@@ -104,4 +125,14 @@ async def fetch_tansho_odds_api(
         logger.info(f"[odds_api] {race_id}: 予想オッズのため証跡入力には不採用")
     elif odds:
         logger.info(f"[odds_api] {race_id}: status={status} {len(odds)}頭取得")
-    return odds, popularity, status
+    evidence = {
+        "schema": "netkeiba-win-odds-capture-v1",
+        "race_id": str(race_id),
+        "source_url": request_url,
+        "http_status": int(response.status),
+        "odds_status": status,
+        "observed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "response_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+        "odds_by_horse_number": {str(number): price for number, price in sorted(odds.items())},
+    }
+    return {"odds": odds, "popularity": popularity, "status": status, "evidence": evidence}

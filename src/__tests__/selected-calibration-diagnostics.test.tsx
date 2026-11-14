@@ -92,8 +92,9 @@ describe('performance diagnostics loading and selection scope', () => {
   })
 
   it('shows old-backend diagnostics as unreflected, never a zero-sample success', async () => {
-    fetchMock.mockResolvedValue(Response.json({ records: [], summary: { ...summary, roi: null } }))
+    fetchMock.mockImplementation(async () => Response.json({ records: [], summary: { ...summary, roi: null } }))
     render(<DashboardPage />)
+    fireEvent.click(screen.getByRole('tab', { name: '購入済み' }))
     await screen.findByText('集計機能未反映／データ未取得')
     expect(screen.getByText('未算出')).toBeInTheDocument()
     expect(screen.queryByText('対象 0買い目 · 0レース · 0日')).not.toBeInTheDocument()
@@ -101,8 +102,9 @@ describe('performance diagnostics loading and selection scope', () => {
   })
 
   it('separates pending, missing payout, review, skip and zero return from eligible diagnostics', async () => {
-    fetchMock.mockResolvedValue(response())
+    fetchMock.mockImplementation(async () => response(selectedCalibrationFixture('actual')))
     render(<DashboardPage />)
+    fireEvent.click(screen.getByRole('tab', { name: '購入済み' }))
     await screen.findByText('対象 4買い目 · 3レース · 3日')
     const cards = within(screen.getByRole('region', { name: '確定分の成績' }))
     expect(cards.getByText('0.0%')).toBeInTheDocument()
@@ -126,8 +128,9 @@ describe('performance diagnostics loading and selection scope', () => {
   })
 
   it('does not show an out-of-filter cohort returned by the backend', async () => {
-    fetchMock.mockResolvedValue(response())
+    fetchMock.mockImplementation(async () => response(selectedCalibrationFixture('actual')))
     render(<DashboardPage />)
+    fireEvent.click(screen.getByRole('tab', { name: '購入済み' }))
     await screen.findByText('対象 4買い目 · 3レース · 3日')
     fireEvent.change(screen.getByLabelText('開始日'), { target: { value: '2026-10-10' } })
     await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url.includes('date_from=20261010'))).toBe(true))

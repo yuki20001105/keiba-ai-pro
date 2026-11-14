@@ -53,6 +53,7 @@ from routers import (  # type: ignore
     backfill,
     bet_export,
     debug_data,
+    dataframe,
     export,
     feature_analysis,
     internal,
@@ -71,6 +72,7 @@ from routers import (  # type: ignore
 )
 from scheduler import start_scheduler, stop_scheduler  # type: ignore
 from scraping.operational_saga_runtime import (  # type: ignore
+    get_operational_saga_runtime,
     start_operational_saga_worker,
     stop_operational_saga_worker,
 )
@@ -150,6 +152,7 @@ app.include_router(races.router)
 app.include_router(internal.router)
 app.include_router(live_validation.router)
 app.include_router(debug_data.router)
+app.include_router(dataframe.router)
 app.include_router(realtime_odds.router)
 app.include_router(bet_export.router)
 app.include_router(feature_analysis.router)
@@ -167,12 +170,26 @@ async def live_validation_no_store(request, call_next):
 
 @app.get("/health")
 async def health():
+    from inspect import signature
+    from betting.strategy import BettingRecommender
+    from betting.value_policy import recommend
+    from models import AnalyzeRaceRequest
     from services.prediction_compute import runtime_status
     from scraping.bounded_work import race_task_concurrency
     from scraping.acquisition_http_policy import acquisition_safety_capabilities
+    scrape_runtime = get_operational_saga_runtime()
+    recommendation_ready = (
+        "betting_strategy" in AnalyzeRaceRequest.model_fields
+        and "betting_strategy" in signature(BettingRecommender.analyze_and_recommend).parameters
+        and "betting_strategy" in signature(recommend).parameters
+    )
     return {
         "status": "ok",
         "prediction_runtime": runtime_status(),
+        "recommendation_runtime": {
+            "ready": recommendation_ready,
+            "supported_strategies": ["value", "fixed-two-v1"] if recommendation_ready else [],
+        },
         # This is code capability, not execution authority. Admin/owner and
         # local-mode guards remain enforced by the acquisition routes.
         "scrape_capabilities": {
@@ -181,6 +198,11 @@ async def health():
             "race_task_concurrency": race_task_concurrency(),
             "max_concurrent_http_requests": 1,
             **acquisition_safety_capabilities(),
+        },
+        "operational_scrape_runtime": {
+            "mode": scrape_runtime.config.mode.value,
+            "enabled": scrape_runtime.enabled,
+            "worker_enabled": scrape_runtime.config.worker_enabled,
         },
         "app_env": os.environ.get("APP_ENV", "development").strip().lower(),
         "model_runtime_status": os.environ.get("MODEL_RUNTIME_STATUS", "disabled").strip().lower(),

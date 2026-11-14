@@ -3,6 +3,7 @@ from copy import deepcopy
 from pathlib import Path
 import sqlite3
 import json
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -138,9 +139,24 @@ def test_fixed_prediction_and_shap_same_matrix(bundle):
     assert all({"feature", "label", "description", "value", "contribution", "impact_pct", "direction"}.issubset(feature) for item in explanations for feature in item["features"])
     assert all(0 <= feature["impact_pct"] <= 100 for item in explanations for feature in item["features"])
     assert all(item["contribution_scale"] == "速度スコアへの寄与" for item in explanations)
+    class_feature = next((feature for feature in explanations[0]["features"] if feature["feature"] == "safe_race_class"), None)
+    if class_feature is not None:
+        assert class_feature["value"] == "未勝利"
+        assert "競走条件" in class_feature["description"]
+        assert not isinstance(class_feature["value"], (int, float))
     physical = candidate.candidate_speed_mps(bundle, raw, current)
     assert np.isfinite(physical).all()
     pd.testing.assert_frame_equal(encoded, before, check_exact=True)
+
+
+def test_explanation_decodes_saved_categorical_indexes():
+    bundle = {"encoder": SimpleNamespace(categories={
+        "safe_race_class": ["1勝クラス", "未勝利"],
+        "safe_surface": ["dirt", "turf"],
+    })}
+    assert candidate._display_feature_value(bundle, "safe_race_class", 1.0) == "未勝利"
+    assert candidate._display_feature_value(bundle, "safe_race_class", 10.0) is None
+    assert candidate._display_feature_value(bundle, "safe_surface", 1.0) == "芝"
 
 
 def test_unknown_categories_remain_nan_no_encoder_fit(bundle):

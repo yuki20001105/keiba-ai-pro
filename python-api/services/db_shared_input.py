@@ -53,7 +53,11 @@ def validate_published_artifact(path: Path, *, ledger_path: Path | None = None) 
     return digest
 
 
-def verify_bundle_sources(bundle: dict) -> None:
+def verify_current_bundle_sources(bundle: dict) -> None:
+    if bundle.get("schema") == "local-db-shared-grouped-model-v1":
+        from training.db_shared_grouped import _validate_prediction_bundle
+        _validate_prediction_bundle(bundle)
+        return
     if bundle.get("feature_pipeline") == CONTEXT_PIPELINE:
         from training import db_context_fit as context
         if (bundle.get("feature_columns") != list(context.FEATURE_COLUMNS)
@@ -76,6 +80,25 @@ def verify_bundle_sources(bundle: dict) -> None:
             or bundle.get("feature_source_hashes") != source_hashes()
             or bundle.get("fit_source_sha256") != file_hash(ROOT / "python-api/training/db_shared_fit.py")):
         raise ValueError("shared-db-feature-contract-source-mismatch")
+
+
+def needs_trained_runtime(bundle: dict) -> bool:
+    try:
+        verify_current_bundle_sources(bundle)
+        return False
+    except ValueError as error:
+        if str(error) != "shared-db-feature-contract-source-mismatch":
+            raise
+        from services.trained_model_runtime import recover_training_sources
+        try:
+            recover_training_sources(bundle)
+        except ValueError as source_error:
+            raise error from source_error
+        return True
+
+
+def verify_bundle_sources(bundle: dict) -> None:
+    needs_trained_runtime(bundle)
 
 
 def _instant(value):
@@ -127,8 +150,8 @@ def shared_pre_race_input_needs_refresh(
         return False  # Existing incomplete-snapshot repair handles these rows.
     if not horses or any(not isinstance(row, dict) for row in horses):
         return False
-    # Inspect aliases independently: finish_position=None must not hide finish=1.
-    # Result pages can also carry a time without a parsed finishing position.
+    # A result/post-settlement snapshot is never an operational pre-race refresh
+    # target, even when result parsing left some current-input fields blank.
     for row in [info, *horses]:
         if (row.get("odds_status") in {"result", "settled"}
                 or any(row.get(key) not in (None, "", 0, "0")
@@ -136,6 +159,48 @@ def shared_pre_race_input_needs_refresh(
             return False
         if row.get("race_id") not in (None, "", race_id):
             return False
+    # A recent timestamp and odds receipt do not prove that current feature
+    # inputs were captured. Refresh the whole pre-race snapshot when fields in
+    # the model's raw schema are blank, invalid, or represented by conflicting
+    # aliases. Never fill these from a different race or an imputed zero.
+    def present(value):
+        if value is None:
+            return False
+        text = str(value).strip().lower()
+        return text not in {"", "none", "nan", "null", "unknown", "unknown_local", "n/a", "-", "--", "不明"}
+
+    if any(not present(info.get(key)) for key in ("weather", "field_condition")):
+        return True
+
+    def finite_aliases(row, keys):
+        values = []
+        for key in keys:
+            if not present(row.get(key)):
+                continue
+            try:
+                value = float(row[key])
+            except (TypeError, ValueError, OverflowError):
+                return None
+            if not np.isfinite(value):
+                return None
+            values.append(value)
+        return values[0] if values and len(set(values)) == 1 else None
+
+    for horse in horses:
+        weight = finite_aliases(horse, ("horse_weight", "weight_kg", "weight"))
+        weight_change = finite_aliases(horse, ("horse_weight_change", "weight_change", "weight_diff"))
+        if weight is None or weight <= 0 or weight_change is None:
+            return True
+    from betting.value_policy import _verified_odds_capture
+    for horse in horses:
+        try:
+            number = int(horse.get("horse_number", horse.get("horse_no")))
+        except (TypeError, ValueError):
+            return True
+        if (horse.get("odds_status") != "middle"
+                or not _verified_odds_capture(horse.get("odds_observation"), race_id=race_id,
+                                              horse_number=number, odds=horse.get("odds"))):
+            return True
     observed = [_instant(row.get("data_observed_at")) for row in [info, *horses]]
     return any(value is None or value > now or now - value > timedelta(minutes=5)
                or value >= post for value in observed)
@@ -232,6 +297,7 @@ def client_race_metadata(horses) -> dict:
 def build_shared_input(bundle, horses, *, db_path, race_info, model_path, trusted_context=None):
     from training.db_shared_features import build_serving_features
     verify_bundle_sources(bundle)
+    verify_current_bundle_sources(bundle)
     if race_info is None:
         race_info = client_race_metadata(horses)
     pipeline = bundle["feature_pipeline"]
@@ -253,6 +319,32 @@ def build_shared_input(bundle, horses, *, db_path, race_info, model_path, truste
     from experiments.dataset import _date
     race_info = {**race_info, "date": _date(race_info.get("date") or race_info.get("race_date"))}
     encoded = bundle["encoder"].transform(raw)
+    return _finish_shared_input(
+        bundle, horses, raw, encoded, audit, race_info=race_info,
+        model_path=model_path, trusted_context=trusted_context,
+    )
+
+
+def build_trained_shared_input(
+    bundle, horses, *, db_path, race_info, model_path, trusted_context=None, n_threads=2,
+):
+    from services.trained_model_runtime import run_trained_prediction
+    if race_info is None:
+        race_info = client_race_metadata(horses)
+    result = run_trained_prediction(
+        bundle, horses, db_path=db_path, race_info=race_info,
+        model_path=model_path, n_threads=n_threads,
+    )
+    features, diagnostics = _finish_shared_input(
+        bundle, horses, result["raw_features"], result["features"], result["audit"],
+        race_info=result["race_info"], model_path=model_path, trusted_context=trusted_context,
+    )
+    diagnostics["input_contract_runtime"] = "verified_training_sources"
+    return features, diagnostics, result
+
+
+def _finish_shared_input(bundle, horses, raw, encoded, audit, *, race_info, model_path, trusted_context):
+    pipeline = bundle["feature_pipeline"]
     expected = list(bundle["feature_columns"])
     if list(encoded) != expected:
         raise ValueError("shared-db-encoder-column-mismatch")
@@ -273,11 +365,12 @@ def build_shared_input(bundle, horses, *, db_path, race_info, model_path, truste
         "missing_value_rate": float(encoded.isna().to_numpy().mean()),
         "live_capture_hash_bound": False,
     }
-    if pipeline == CONTEXT_PIPELINE:
+    if pipeline == CONTEXT_PIPELINE or bundle.get("reference_only") is True:
         # A correctly timed input receipt proves inputs, not an independently
         # validated new model or betting strategy. The candidate stays opt-in.
         diagnostics["reference_only"] = True
         diagnostics["probability_validation_status"] = "candidate_live_validation_pending"
+        diagnostics["target_normalization"] = bundle.get("target_normalization")
     try:
         proof = record_pre_race_input(
             info=race_info, horses=horses, features=raw, diagnostics=diagnostics,
@@ -296,6 +389,9 @@ def build_shared_input(bundle, horses, *, db_path, race_info, model_path, truste
 def embedded_probability_report(bundle: dict, path: Path) -> dict:
     """A validated speed-score probability layer, not a borrowed win model."""
     unavailable = {"validated": False, "eligible_bet_types": []}
+    if bundle.get("schema") == "local-db-shared-grouped-model-v1":
+        return {**unavailable, "reference_only": True, "eligible_for_ev": False,
+                "reason": "conditioned_baseline_trial_live_validation_pending"}
     if bundle.get("feature_pipeline") == CONTEXT_PIPELINE:
         return {**unavailable, "reference_only": True,
                 "eligible_for_ev": False, "reason": "context_candidate_live_validation_pending"}

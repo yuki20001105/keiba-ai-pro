@@ -19,6 +19,8 @@ const recommendation: Recommendation = {
   policy_version: BETTING_POLICY_VERSION, action: '見送り', decision: 'skip',
   reason: 'モデルの入力互換性が未確認 / 発走済みのレース',
   reason_codes: ['input_contract_unverified', 'race_closed'],
+  reasons: ['モデルの入力互換性が未確認', '発走済みのレース'],
+  input_quality: { feature_missing_rate: 0.31, max_runner_missing_rate: 0.72, all_missing_features: ['safe_past10_avg_finish'] },
   input_verified: false, probability_basis: 'calibrated', tickets: [],
   purchase_count: 0, unit_price: 0, total_cost: 0, expected_return: 0,
   evaluated_at: new Date(NOW).toISOString(), valid_until: new Date(NOW + 300000).toISOString(),
@@ -28,7 +30,12 @@ describe('shared capture reason display only', () => {
   it('replaces only the input phrase, preserving other skip reasons and the original receipt', () => {
     const before = JSON.stringify(recommendation)
     render(<BettingRecommendationPanel recommendation={recommendation} diagnostics={input} nowMs={NOW} snapshotId="read-only-display" />)
-    expect(screen.getByText('発走前の取得証拠が未確認 / 発走済みのレース')).toBeInTheDocument()
+    const reasons = screen.getByRole('list', { name: '見送り理由' })
+    expect(reasons).toHaveTextContent('発走済み')
+    expect(reasons).not.toHaveTextContent('入力証跡なし')
+    expect(screen.queryByText('判定詳細')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('input-quality-summary')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('odds-capture-evidence')).not.toBeInTheDocument()
     expect(screen.getByText('見送り')).toBeInTheDocument()
     expect(screen.getByText('合計 ¥0')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '購入済みとして記録' })).not.toBeInTheDocument()
@@ -52,13 +59,14 @@ describe('shared capture reason display only', () => {
   ] as [PredictionInputDiagnostics, Recommendation][])(
     'preserves M02 or other reasons when either required condition is absent', (diagnostics, rec) => {
       render(<BettingRecommendationPanel recommendation={rec} diagnostics={diagnostics} nowMs={NOW} />)
-      expect(screen.getByText(rec.reason)).toBeInTheDocument()
+      if (rec.reason_codes?.includes('race_closed')) expect(screen.getByText('発走済み')).toBeInTheDocument()
+      else expect(screen.getByText('見送り')).toBeInTheDocument()
       expect(screen.queryByText(/発走前の取得証拠が未確認/)).not.toBeInTheDocument()
     },
   )
   it('preserves the expiry notice instead of hiding it behind capture wording', () => {
     render(<BettingRecommendationPanel recommendation={{ ...recommendation, decision: 'buy' }} diagnostics={input} nowMs={NOW + 300000} />)
-    expect(screen.getByText('オッズまたは発走時刻の有効期限を過ぎました。予測を再実行してください。')).toBeInTheDocument()
+    expect(screen.getByText('期限切れ · 再予測してください')).toBeInTheDocument()
     expect(screen.queryByText(/発走前の取得証拠が未確認/)).not.toBeInTheDocument()
   })
 })

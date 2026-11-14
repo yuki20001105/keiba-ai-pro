@@ -35,6 +35,12 @@ export function supportsSavedDbRecompute(value: unknown): boolean {
   return capabilities?.saved_db_recompute === true && parsePredictionFreshness(data.freshness ?? data) !== null
 }
 
+export function supportsLiveOddsRefresh(value: unknown): boolean {
+  if (!supportsSavedDbRecompute(value)) return false
+  const capabilities = (value as Record<string, unknown>).capabilities as Record<string, unknown>
+  return capabilities.live_odds_refresh === true
+}
+
 /** A saved result is not current merely because its race happened in the past. */
 export function predictionCacheStatus(result: RacePredictResult, current: PredictionFreshness | null,
   cachedAt: number, ownerMatches: boolean, now = Date.now()): PredictionCacheStatus {
@@ -53,7 +59,7 @@ export function predictionCacheStatus(result: RacePredictResult, current: Predic
 export function savedPredictionForDisplay(result: RacePredictResult, status: PredictionCacheStatus): RacePredictResult {
   if (status === 'current') return { ...result, performance_snapshot_id: null }
   return {
-    ...result, performance_snapshot_id: null, reference_expectation: null,
+    ...result, performance_snapshot_id: null, reference_expectation: null, model_comparison: null,
     recommendation: result.recommendation ? {
       ...result.recommendation, decision: 'skip', action: '見送り', input_verified: false,
       reason: '保存予測です。最新データで再予測してください。', reason_codes: ['prediction_data_unverified'],

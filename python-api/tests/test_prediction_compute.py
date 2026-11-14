@@ -171,6 +171,48 @@ def test_worker_rejects_changed_model_identity(tmp_path):
     assert result["error"]["status_code"] == 503
 
 
+@pytest.mark.parametrize("reason,status", [
+    ("shared-current-metadata-jump_evidence_quarantined", 422),
+    ("shared-current-metadata-venue_identity_unconfirmed", 500),
+])
+def test_worker_distinguishes_unsupported_jump_races_from_input_errors(tmp_path, monkeypatch, reason, status):
+    from routers import predict
+    from keiba_ai import db_ultimate_loader
+    model = tmp_path / "model.joblib"
+    model.write_bytes(b"fixture")
+
+    class Predictor:
+        def __init__(self, *args, **kwargs): pass
+        def build_features(self, frame, history):
+            raise ValueError(reason)
+
+    monkeypatch.setattr(predict, "ModelPredictor", Predictor)
+    monkeypatch.setattr(compute, "_load_bundle", lambda path: {})
+    monkeypatch.setattr(db_ultimate_loader, "load_prediction_history_frame", lambda *a, **k: pd.DataFrame())
+    result = compute.compute_prediction({
+        "frame": pd.DataFrame({"horse_number": [1]}), "model_path": str(model),
+        "db_path": "unused", "excluded_race_ids": [], "native_threads": 1,
+    })
+    assert result["error"]["status_code"] == status
+    if status == 422:
+        assert result["error"]["detail"]["code"] == "prediction_outside_model_scope"
+        assert result["error"]["detail"]["reason"] == "jump_evidence_quarantined"
+    else:
+        assert result["error"]["detail"] == reason
+
+
+@pytest.mark.parametrize("stale_policy", [False, True])
+def test_health_checks_the_loaded_recommendation_interface(monkeypatch, stale_policy):
+    import main
+    from betting import value_policy
+    if stale_policy:
+        monkeypatch.setattr(value_policy, "recommend", lambda predictions, race_info: {})
+    health = asyncio.run(main.health())
+    runtime = health["recommendation_runtime"]
+    assert runtime["ready"] is (not stale_policy)
+    assert runtime["supported_strategies"] == ([] if stale_policy else ["value", "fixed-two-v1"])
+
+
 def test_worker_rejects_model_replacement_during_inference(tmp_path, monkeypatch):
     from routers import predict
     from keiba_ai import db_ultimate_loader

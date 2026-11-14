@@ -303,7 +303,8 @@ def get_latest_model() -> Optional[Path]:
     if win_models:
         return max(win_models, key=_model_sort_key)
     # フォールバック: 全モデルから最新
-    models = list(MODELS_DIR.glob("model_*.joblib"))
+    models = [path for path in MODELS_DIR.glob("model_*.joblib")
+              if not path.name.startswith("model_monthly_reference_")]
     if not models:
         return None
     return max(models, key=_model_sort_key)

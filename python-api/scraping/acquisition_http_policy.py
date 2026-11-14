@@ -53,6 +53,7 @@ def acquisition_http_policy():
 def acquisition_safety_capabilities() -> dict[str, Any]:
     # Advertise preservation only with the matching implemented storage guard.
     from .storage_preservation import PRESERVATION_POLICY_VERSION
+    from .required_public_inputs import public_input_capabilities
 
     return {
         "safety_policy_version": SAFETY_POLICY_VERSION,
@@ -60,6 +61,8 @@ def acquisition_safety_capabilities() -> dict[str, Any]:
         "halt_http400": True,
         "preserve_saved_values": PRESERVATION_POLICY_VERSION == SAFETY_POLICY_VERSION,
         "max_concurrent_http_requests": 1,
+        "prediction_card_policy_version": "prediction-card-cached-v1",
+        **public_input_capabilities(),
     }
 
 

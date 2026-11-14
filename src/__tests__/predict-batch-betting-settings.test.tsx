@@ -33,8 +33,61 @@ afterEach(() => { cleanup(); vi.useRealTimers() })
 function cache(recommendation: unknown) {
   localStorage.setItem(`ra-cache:${race.race_id}`, JSON.stringify({ owner_user_id: 'test-owner', data: { model_id: 'current', freshness: freshPrediction, race_info: { date: '20200101' }, input_diagnostics: verifiedPredictionInput, predictions: [], recommendation }, cachedAt: Date.now() }))
 }
+function renderValuePolicy() {
+  render(<PredictBatchPage />)
+  fireEvent.click(screen.getByRole('button', { name: /賭け設定/ }))
+  fireEvent.change(screen.getByLabelText('買い目方式'), { target: { value: 'value' } })
+  fireEvent.click(screen.getByRole('button', { name: /賭け設定/ }))
+}
 
 describe('batch betting settings', () => {
+  it('defaults to fixed-two and never reuses a value-policy cache', async () => {
+    cache(rec)
+    render(<PredictBatchPage />)
+    fireEvent.click(screen.getByRole('button', { name: /賭け設定/ }))
+    expect(screen.getByLabelText('買い目方式')).toHaveValue('fixed-two-v1')
+    fireEvent.click(screen.getByRole('button', { name: 'レース一覧を取得' }))
+    await screen.findByText('買い目は再判定が必要です。予測を再実行してください。')
+    expect(screen.queryByText('合計 ¥300 / 予算 ¥1,000')).not.toBeInTheDocument()
+    expect(fetchMock.mock.calls.some(([url]) => url === '/api/performance/records')).toBe(false)
+  })
+
+  it('sends fixed-two and records all three equally reduced legs after day allocation', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.startsWith('/api/prediction-freshness')) return Response.json(freshPrediction)
+      if (url === '/api/health') return Response.json({ status: 'ok' })
+      if (url === '/api/models?ultimate=true') return Response.json({ models: [] })
+      if (url.startsWith('/api/races/by-date')) return Response.json({ races: [race] })
+      if (url === '/api/analyze-race') return Response.json({
+        performance_snapshot_id: 'fixed-two-snapshot', input_diagnostics: verifiedPredictionInput,
+        race_info: { date: '20261010' }, predictions: [],
+        recommendation: { ...rec, betting_strategy: 'fixed-two-v1', bankroll: 50000, budget: 1500, per_race_limit: 1500,
+          tickets: [
+            { ...rec.tickets[0], bet_type: 'ワイド', combination: '1-5', horse_numbers: [1, 5], stake: 500 },
+            { ...rec.tickets[0], bet_type: '三連単', combination: '6→1→5', horse_numbers: [6, 1, 5], stake: 500 },
+            { ...rec.tickets[0], bet_type: '三連単', combination: '5→1→6', horse_numbers: [5, 1, 6], stake: 500 },
+          ] },
+      })
+      if (url === '/api/performance/records') return Response.json({ record: { id: 'record' }, existing: false })
+      throw new Error(`Unexpected request: ${url}`)
+    })
+    render(<PredictBatchPage />)
+    fireEvent.click(screen.getByRole('button', { name: /賭け設定/ }))
+    fireEvent.change(screen.getByLabelText('総資金'), { target: { value: '50000' } })
+    fireEvent.change(screen.getByLabelText('この日の予算'), { target: { value: '800' } })
+    fireEvent.click(screen.getByRole('button', { name: 'レース一覧を取得' }))
+    await screen.findByText('テストレース')
+    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(screen.getByRole('button', { name: /選択した1レースを予測・更新/ }))
+    await screen.findByText(/AI参考として記録しました/)
+    const prediction = fetchMock.mock.calls.find(([url]) => url === '/api/analyze-race')!
+    expect(JSON.parse(prediction[1].body)).toMatchObject({ betting_strategy: 'fixed-two-v1', bankroll: 50000 })
+    const write = fetchMock.mock.calls.find(([url]) => url === '/api/performance/records')!
+    expect(JSON.parse(write[1].body)).toMatchObject({ snapshot_id: 'fixed-two-snapshot', mode: 'paper' })
+    expect(JSON.parse(write[1].body).tickets.map((t: { stake: number }) => t.stake)).toEqual([200, 200, 200])
+    expect(screen.getByText('合計 ¥600 / 予算 ¥800')).toBeInTheDocument()
+  })
+
   it('names the active reference default and explains the restriction before any prediction', async () => {
     fetchMock.mockImplementation(async (url: string) => {
       if (url === '/api/models?ultimate=true') return Response.json({ models: [
@@ -56,7 +109,7 @@ describe('batch betting settings', () => {
 
   it('invalidates stake recommendations on bankroll changes without automatically predicting again', async () => {
     cache(rec)
-    render(<PredictBatchPage />)
+    renderValuePolicy()
     fireEvent.click(screen.getByRole('button', { name: 'レース一覧を取得' }))
     await screen.findByText('合計 ¥300 / 予算 ¥1,000')
     fireEvent.click(screen.getByRole('button', { name: /賭け設定/ }))
@@ -130,13 +183,13 @@ describe('batch betting settings', () => {
       if (url === '/api/performance/records') return Response.json({ record: { id: JSON.parse(String(init?.body)).snapshot_id }, existing: false })
       throw new Error(`Unexpected request: ${url}`)
     })
-    render(<PredictBatchPage />)
+    renderValuePolicy()
     fireEvent.click(screen.getByRole('button', { name: 'レース一覧を取得' }))
     await screen.findByText('高期待レース')
     fireEvent.click(screen.getByRole('button', { name: /賭け設定/ }))
     fireEvent.change(screen.getByLabelText('この日の予算'), { target: { value: '100' } })
     screen.getAllByRole('checkbox').forEach(checkbox => fireEvent.click(checkbox))
-    fireEvent.click(screen.getByRole('button', { name: '選択 2 レースを一括予測' }))
+    fireEvent.click(screen.getByRole('button', { name: /選択した2レースを予測・更新/ }))
     await screen.findByText(/AI参考として記録しました/)
     const writes = fetchMock.mock.calls.filter(([url]) => url === '/api/performance/records').map(([, init]) => JSON.parse(init.body))
     expect(writes).toHaveLength(2)
@@ -167,25 +220,25 @@ describe('batch betting settings', () => {
       if (url === '/api/performance/records') return Response.json({ record: { id: JSON.parse(String(init?.body)).snapshot_id }, existing: false })
       throw new Error(`Unexpected request: ${url}`)
     })
-    render(<PredictBatchPage />)
+    renderValuePolicy()
     fireEvent.click(screen.getByRole('button', { name: 'レース一覧を取得' }))
     await screen.findByText('高期待レース')
     fireEvent.click(screen.getByRole('button', { name: /賭け設定/ }))
     fireEvent.change(screen.getByLabelText('この日の予算'), { target: { value: '100' } })
     screen.getAllByRole('checkbox').forEach(checkbox => fireEvent.click(checkbox))
-    fireEvent.click(screen.getByRole('button', { name: '選択 2 レースを一括予測' }))
+    fireEvent.click(screen.getByRole('button', { name: /選択した2レースを予測・更新/ }))
     await screen.findByText(/AI参考として記録しました/)
     expect(screen.getByText('合計 ¥100 / 予算 ¥100')).toBeInTheDocument()
     vi.setSystemTime(new Date('2026-10-10T01:00:02Z'))
     fireEvent(window, new Event('focus'))
     expect(screen.getByText('合計 ¥0 / 予算 ¥100')).toBeInTheDocument()
-    expect(screen.getByText('この日の予算上限')).toBeInTheDocument()
+    expect(screen.getByLabelText('この日の予算')).toHaveValue(100)
     expect(fetchMock.mock.calls.filter(([url]) => url === '/api/performance/records')).toHaveLength(2)
     expect(screen.queryByRole('button', { name: '購入済みとして記録' })).not.toBeInTheDocument()
   })
   it('does not write performance records while restoring cached predictions', async () => {
     cache({ ...rec, performance_snapshot_id: 'old-snapshot' })
-    render(<PredictBatchPage />)
+    renderValuePolicy()
     fireEvent.click(screen.getByRole('button', { name: 'レース一覧を取得' }))
     await screen.findByText('合計 ¥300 / 予算 ¥1,000')
     expect(fetchMock.mock.calls.some(([url]) => url === '/api/performance/records')).toBe(false)
@@ -202,15 +255,17 @@ describe('batch betting settings', () => {
       if (url === '/api/performance/records') return Response.json({ record: { id: JSON.parse(String(init?.body)).snapshot_id }, existing: false })
       throw new Error(`Unexpected request: ${url}`)
     })
-    render(<PredictBatchPage />)
+    renderValuePolicy()
     fireEvent.click(screen.getByRole('button', { name: 'レース一覧を取得' }))
     await screen.findByText('テストレース')
     fireEvent.click(screen.getByRole('checkbox'))
-    fireEvent.click(screen.getByRole('button', { name: '選択 1 レースを一括予測' }))
+    fireEvent.click(screen.getByRole('button', { name: /選択した1レースを予測・更新/ }))
     await screen.findByText(/AI参考として記録しました/)
     expect(screen.getByText('合計 ¥0 / 予算 ¥1,000')).toBeInTheDocument()
-    if (!screen.queryByText('入力互換性未確認 · 参考予測')) fireEvent.click(screen.getByRole('button', { name: /テストレース/ }))
-    await screen.findByText('入力互換性未確認 · 参考予測')
+    fireEvent.click(screen.getByRole('button', { name: /テストレース/ }))
+    expect(screen.getByText('見送り')).toBeInTheDocument()
+    expect(screen.queryByText('入力互換性未確認 · 参考予測')).not.toBeInTheDocument()
+    expect(screen.queryByText('入力・検証の詳細')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '購入済みとして記録' })).not.toBeInTheDocument()
     const write = fetchMock.mock.calls.find(([url]) => url === '/api/performance/records')!
     expect(JSON.parse(write[1].body)).toMatchObject({ mode: 'paper', tickets: [] })

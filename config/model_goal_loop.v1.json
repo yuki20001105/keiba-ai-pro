@@ -1,0 +1,21 @@
+{
+  "schema": "keiba-model-goal-loop-config-v1",
+  "target": "speed_deviation",
+  "allowed_targets": ["speed_deviation", "rank", "win"],
+  "development_years": [2023, 2024, 2025],
+  "train_start_year": 2016,
+  "max_proposals": 3,
+  "max_trials_per_proposal": 30,
+  "max_total_trials": 90,
+  "max_seconds": 21600,
+  "max_no_progress": 2,
+  "bootstrap_samples": 300,
+  "minimum_improvement": 0.001,
+  "maximum_annual_degradation": 0.01,
+  "maximum_top1_degradation": 0.005,
+  "minimum_paired_dates": 20,
+  "num_boost_round": 200,
+  "estimated_worker_memory_mb": 4096,
+  "reserve_ram_mb": 3072,
+  "seed": 42
+}

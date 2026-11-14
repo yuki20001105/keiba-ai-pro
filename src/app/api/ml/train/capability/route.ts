@@ -37,7 +37,7 @@ function safeFeatureProfiles(value: unknown) {
     ['local-db-context-v1', 80],
   ])
   const seen = new Set<string>()
-  const profiles: { pipeline: string; feature_count: number; reference_only?: true }[] = []
+  const profiles: { pipeline: string; feature_count: number; reference_only?: true; target_normalization?: string }[] = []
   for (const candidate of value) {
     if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) continue
     const record = candidate as Record<string, unknown>
@@ -48,7 +48,11 @@ function safeFeatureProfiles(value: unknown) {
     // or purchase eligibility. Missing/contradictory reference status is closed.
     if (pipeline === 'local-db-context-v1' && record.reference_only !== true) continue
     seen.add(pipeline)
-    profiles.push(pipeline === 'local-db-context-v1'
+    const grouped = pipeline === 'local-db-shared-optimized-v1'
+      && record.target_normalization === 'course_going_weather' && record.reference_only === true
+    profiles.push(grouped
+      ? { pipeline, feature_count: 46, target_normalization: 'course_going_weather', reference_only: true }
+      : pipeline === 'local-db-context-v1'
       ? { pipeline, feature_count: 80, reference_only: true }
       : { pipeline, feature_count: record.feature_count })
   }

@@ -17,6 +17,13 @@ const shared: PredictionInputDiagnostics = {
   issue_codes: ['pre_race_db_capture_unverified'],
 }
 describe('served input notice', () => {
+  it('explains monthly reference evaluation without implying purchase approval', () => {
+    render(<PredictionInputNotice diagnostics={{ ...shared,
+      feature_pipeline: 'monthly-validation-research-model-v1', expected_count: 46, actual_count: 46,
+      reference_only: true }} />)
+    expect(screen.getByRole('status')).toHaveTextContent('月別検証モデルの参考運用 · 購入判断未承認')
+    expect(screen.getByRole('status')).toHaveTextContent('TRAIN・CALを除外したTEST')
+  })
   it.each(['aligned', 'unverified'] as const)('keeps the complete context candidate separate from approved inputs: %s', status => {
     const diagnostic = { ...shared, feature_pipeline: 'local-db-context-v1', expected_count: 80,
       actual_count: 80, reference_only: true, status, live_capture_hash_bound: status === 'aligned',
@@ -38,7 +45,7 @@ describe('served input notice', () => {
     render(<PredictionInputNotice diagnostics={diagnostics} />)
     expect(screen.getByRole('status')).toHaveTextContent('入力式は一致 · 取得時点未確認 · 参考予測')
     expect(screen.getByText(`特徴量 ${count}/${count} · 未計算 0件`)).toBeInTheDocument()
-    expect(screen.getByText(/買い目の根拠には使用しません/)).toBeInTheDocument()
+    expect(screen.getByText(/実購入の判断には使用せず/)).toBeInTheDocument()
   })
 
   it.each([

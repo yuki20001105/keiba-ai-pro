@@ -427,8 +427,8 @@ test.describe('【Step 5】予測スコア詳細フロー', () => {
 
     await page.getByRole('button', { name: 'AIの判断' }).click()
     expect(explanationRequests).toBe(0)
-    await page.getByRole('button', { name: '文章で解説' }).click()
-    await expect(page.getByText('LLM解説')).toBeVisible()
+    await page.getByRole('button', { name: '今回のレースを解説' }).click()
+    await expect(page.getByText('今回のレース解説')).toBeVisible()
     expect(explanationRequests).toBe(1)
   })
 

@@ -14,6 +14,7 @@ import math
 import re
 import sqlite3
 import threading
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -339,7 +340,7 @@ def init_acquisition_quality_db(db_path: Path) -> None:
         if key in _INITIALIZED_DB_PATHS:
             return
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(str(db_path)) as conn:
+        with closing(sqlite3.connect(str(db_path))) as conn, conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(
             """
@@ -587,7 +588,7 @@ def queue_repair(
 ) -> dict[str, Any]:
     init_acquisition_quality_db(db_path)
     now = _utc_now()
-    with sqlite3.connect(str(db_path)) as conn:
+    with closing(sqlite3.connect(str(db_path))) as conn, conn:
         conn.execute(
             """INSERT INTO scrape_repair_queue (
                    entity_type, entity_id, repair_kind, status, attempt_count,
@@ -642,7 +643,7 @@ def record_race_quality(
     quality_status = "complete" if report.valid_for_date_completion else (
         "stored_partial" if report.valid_for_storage else "invalid"
     )
-    with sqlite3.connect(str(db_path)) as conn:
+    with closing(sqlite3.connect(str(db_path))) as conn, conn:
         conn.execute(
             """INSERT INTO scrape_race_acquisition_state (
                    race_id, race_date, lifecycle, quality_status, field_states_json,

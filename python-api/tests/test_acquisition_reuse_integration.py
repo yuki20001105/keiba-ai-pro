@@ -117,8 +117,9 @@ def test_worker_binds_reuse_context_and_promotes_only_after_quality(worker, monk
         return [RID], "db.netkeiba.com"
 
     @contextmanager
-    def context(path, day, *, force_refresh):
+    def context(path, day, *, force_refresh, race_id):
         assert path == worker and day == DAY
+        assert race_id == RID
         active.append(True)
         flags.append(force_refresh)
         try:

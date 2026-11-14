@@ -314,6 +314,10 @@ def test_capability_is_bound_to_matching_preservation_version(monkeypatch):
     value = policy.acquisition_safety_capabilities()
     assert value == {"safety_policy_version": "normal-acquisition-safe-v1",
                      "minimum_provider_interval_seconds": 3.0, "halt_http400": True,
-                     "preserve_saved_values": True, "max_concurrent_http_requests": 1}
+                     "preserve_saved_values": True, "max_concurrent_http_requests": 1,
+                     "prediction_card_policy_version": "prediction-card-cached-v1",
+                     "required_public_inputs_version": "historical-jra-required-public-v1",
+                     "required_public_inputs_scope": "historical_jra_older_than_30_days",
+                     "profile_totals_are_model_inputs": False, "prior_results_auto_imported": False}
     monkeypatch.setattr(storage_preservation, "PRESERVATION_POLICY_VERSION", "not-the-same-contract")
     assert policy.acquisition_safety_capabilities()["preserve_saved_values"] is False

@@ -305,11 +305,11 @@ def test_local_startup_commands_use_the_worktree_venv_and_canonical_ports() -> N
     assert scripts["setup:api"].endswith("./scripts/setup-python.ps1")
     assert "scraping_service_ultimate_fast.py" not in scripts["dev:api"]
 
-    start_dev = (ROOT / "scripts" / "start-dev.ps1").read_text(encoding="utf-8")
-    assert "Split-Path -Parent $PSScriptRoot" in start_dev
-    assert "localhost:8000" in start_dev
-    assert "localhost:8001" not in start_dev
-    assert '$env:PYTHONUTF8 = "1"' in start_dev
+    launcher = (ROOT / "scripts" / "start-local-app.ps1").read_text(encoding="utf-8")
+    assert r"python-api\.venv\Scripts\python.exe" in launcher
+    assert "$env:ML_API_URL = 'http://127.0.0.1:8000'" in launcher
+    assert "$env:PORT = '3000'" in launcher
+    assert "$env:PYTHONUTF8 = '1'" in launcher
 
 
 def _workflow_triggers(workflow: dict[object, object]) -> dict[str, object]:

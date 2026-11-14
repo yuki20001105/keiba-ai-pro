@@ -20,11 +20,12 @@ import uuid
 import numpy as np
 import pandas as pd
 
+from scraping.race_class import explicit_race_class
 from training.eligibility import select_training_eligible_rows
 from .features import ALLOWED_FEATURES, engineer_features
 
 
-DATASET_SCHEMA_VERSION = "experiment-jra-flat-dataset-v2"
+DATASET_SCHEMA_VERSION = "experiment-jra-flat-dataset-v3"
 JRA_VENUES = {"01": "札幌", "02": "函館", "03": "福島", "04": "新潟",
               "05": "東京", "06": "中山", "07": "中京", "08": "京都",
               "09": "阪神", "10": "小倉"}
@@ -146,7 +147,8 @@ def _race_metadata(race_id: str, row: dict) -> tuple[dict | None, str | None]:
         return None, "outside_conservative_flat_distance_contract"
     return {"race_id": race_id, "race_date": day, "surface": surface,
             "venue": venue, "distance": distance, "num_horses": count,
-            **{key: _text(row.get(key)) for key in ("field_condition", "weather", "race_class")}}, None
+            **{key: _text(row.get(key)) for key in ("field_condition", "weather")},
+            "race_class": _text(row.get("race_class")) or explicit_race_class(row.get("race_name"))}, None
 
 
 def _runner(race_id: str, row: dict, meta: dict) -> tuple[dict | None, str | None]:
@@ -382,6 +384,8 @@ def build_dataset(snapshot_path: Path, output_dir: Path) -> dict:
                                 "outcomes_and_market": "evaluation only; no original prev or current profile totals",
                                 "snapshot_sha256": source_digest,
                                 "dataset_module_sha256": _digest(Path(__file__)),
+                                "race_class_module_sha256": _digest(
+                                    Path(__file__).parents[1] / "scraping" / "race_class.py"),
                                 "features_module_sha256": _digest(Path(__file__).with_name("features.py"))},
             "exclusion_reason_counts_are_nonexclusive": True,
             "missingness": {name: {"missing": int(selected[name].isna().sum()),

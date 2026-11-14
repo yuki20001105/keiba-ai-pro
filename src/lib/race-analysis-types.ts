@@ -67,9 +67,22 @@ export type Recommendation = {
   expected_return: number
   decision?: 'skip' | 'buy' | 'priority'
   reason_codes?: string[]
+  reasons?: string[]
+  input_quality?: {
+    feature_missing_rate: number | null
+    max_runner_missing_rate: number | null
+    all_missing_features: string[]
+  }
   policy_version?: string
   probability_basis?: 'calibrated' | 'uncalibrated_score'
   input_verified?: boolean
+  odds_evidence?: {
+    verified: boolean
+    covered_horses: number
+    runner_count: number
+    observed_at: string | null
+    source: string
+  }
   tickets?: RecommendedTicket[]
   budget?: number
   per_race_limit?: number
@@ -78,13 +91,18 @@ export type Recommendation = {
   bankroll?: number
   evaluated_at?: string
   valid_until?: string | null
+  betting_strategy?: 'value' | 'fixed-two-v1'
+  fixed_selection?: { axis: number; h2: number; h3: number; axis_probability: number | null; numeric_priority: boolean } | null
 }
 
 export type RacePredictResult = {
   success: boolean
   freshness?: import('@/lib/prediction-freshness').PredictionFreshness | null
+  odds_refresh?: { status: string; observed_at: string | null } | null
   reference_expectation?: ReferenceExpectation | null
+  reference_simulation?: ReferenceSimulation | null
   reference_bets?: ReferenceBets | null
+  model_comparison?: ModelComparison | null
   performance_snapshot_id?: string | null
   performance_recording_error?: string | null
   performance_allocation?: { day_budget: number; allocated_at: string }
@@ -104,6 +122,41 @@ export type RacePredictResult = {
     confidence?: number
   } | null
   bet_types?: Record<string, { combination: string }[]>
+}
+
+export type ModelComparison = {
+  schema: 'pace74-shadow-comparison-v1'
+  status: 'compared' | 'unavailable' | 'skipped' | 'error'
+  candidate_model_id: string
+  primary_model_id: string
+  reference_only: true
+  purchase_eligible: false
+  captured_at: string | null
+  input_revision: string | null
+  input_aligned: boolean
+  candidate_feature_count: number
+  odds_observed_at: string | null
+  odds_verified: boolean
+  observation_kind: 'pre_race' | 'historical' | 'unverified'
+  comparison_id: string | null
+  recorded: boolean
+  issue_codes: string[]
+  promotion: {
+    status: 'blocked'
+    eligible: false
+    reasons: string[]
+    acceptance_contract_id: string
+  }
+  predictions: {
+    horse_number: number
+    horse_name: string
+    primary_probability: number
+    primary_rank: number
+    candidate_probability: number
+    candidate_rank: number
+    odds: number | null
+    expected_value: number | null
+  }[]
 }
 
 /** Display-only calculation; never grants a purchase or performance authority. */
@@ -126,6 +179,19 @@ export type ReferenceBets = {
   purchase_eligible: false
   monetary_amounts_assigned: false
   tickets: { bet_type: string; combination: string; horse_numbers: number[] }[]
+}
+
+export type ReferenceSimulation = {
+  schema: 'calibrated-win-simulation-v1'
+  basis: 'calibrated_win_probabilities'
+  purchase_eligible: false
+  capture_verified: false
+  odds_freshness_verified: false
+  computed_at: string
+  valid_until: string
+  model_id: string
+  race_id: string
+  items: { horse_number: number; probability: number }[]
 }
 
 export type PredictionInputDiagnostics = {

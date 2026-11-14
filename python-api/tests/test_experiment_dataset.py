@@ -9,6 +9,37 @@ import pytest
 
 from experiments.dataset import build_dataset
 from experiments.features import ALLOWED_FEATURES
+from scraping.race_class import explicit_race_class
+
+
+@pytest.mark.parametrize("name,label", [
+    ("初日の出賞(2勝)", "2勝クラス"), ("鳥栖特別 1勝", "1勝クラス"),
+    ("3歳以上500万下", "1勝クラス"), ("北國新聞杯 1000下", "2勝クラス"),
+    ("平城京ステークス 1600下", "3勝クラス"), ("寿ステークス（３勝）", "3勝クラス"),
+    ("競走(GⅡ) オープン 重賞", "G2"), ("競走 (L) オープン", "Listed"),
+    ("○○特別", None), ("○○ステークス", None), ("競走G10", None),
+    ("競走 13勝", None), ("競走 2勝 3勝", None), ("新馬 未勝利", None),
+])
+def test_race_class_uses_only_unambiguous_explicit_conditions(name, label):
+    assert explicit_race_class(name) == label
+
+
+@pytest.mark.parametrize("stored,name,expected", [
+    ("不明", "寒竹賞(1勝)", "1勝クラス"),
+    (None, "3歳以上500万下", "1勝クラス"),
+    ("未勝利", "レース名(2勝)", "未勝利"),
+    ("不明", "○○特別", None),
+])
+def test_dataset_recovers_class_without_overwriting_saved_facts(tmp_path, stored, name, expected):
+    source = database(tmp_path / "snapshot.db")
+    with sqlite3.connect(source) as db:
+        item = race()
+        item.update(race_class=stored, race_name=name)
+        db.execute("UPDATE races_ultimate SET data=? WHERE race_id=?",
+                   (json.dumps(item), item["race_id"]))
+    build_dataset(source, tmp_path / "dataset")
+    values = pd.read_parquet(tmp_path / "dataset" / "dataset.parquet").safe_race_class
+    assert values.isna().all() if expected is None else values.eq(expected).all()
 
 
 def race(rid="201605010101", day="2016-01-10", **changes):

@@ -53,6 +53,7 @@ def _stub_shared_pipeline(monkeypatch, tmp_path, *, requested="auto", resolved="
     sources = {"fixed-source": "b" * 64}
     bundle = {"model": "stub-model"}
     result = {"evaluation": {"primary": {"rank_correlation": .4, "rmse": .25}},
+              "partitions": {"TEST": {"date_from": "20260913", "date_to": "20260913"}},
               "probability_validation": {"status": "validated", "eligible_for_ev": True},
               "cv_rank_correlation": .39, "data_count": 2, "race_count": 2,
               "training_parallel_workers": 1 if resolved == "gpu" else 2,
@@ -79,6 +80,10 @@ def _stub_shared_pipeline(monkeypatch, tmp_path, *, requested="auto", resolved="
     monkeypatch.setattr(train, "_atomic_joblib_dump", dump)
     monkeypatch.setattr(train, "sha256_file", lambda _path: ("c" * 64, 1))
     monkeypatch.setattr(train, "_SHARED_FEATURE_CACHE_ROOT", tmp_path / "cache")
+    from training import reference_evaluation
+    monkeypatch.setattr(reference_evaluation, "build_training_reference",
+        lambda bundle, frame, features, receipt, model_id:
+            {"schema": reference_evaluation.SCHEMA, "partition": receipt, "records": {"test": {}}})
     execution = SimpleNamespace(
         snapshot_path=tmp_path / "snapshot.db", data_snapshot_sha256=snapshot_sha,
         approved_payload_hash="d" * 64, execution_policy="local-admin-v1", job_id="isolated-job",
@@ -124,6 +129,8 @@ def test_shared_route_propagates_verified_cache_and_device_receipts_without_mode
     assert saved["acceleration"] == response.acceleration
     assert saved["local_execution"]["active_model_id"] == "active-preserved"
     assert saved["probability_validation"]["status"] == "validated"
+    assert saved["training_reference_evaluation"]["partition"]["date_from"] == "20260913"
+    assert response.evaluation["reference_accounting"]["race_count"] == 1
     assert any(resolved.upper() in message for message, _pct in seen["progress"])
     assert not list(tmp_path.glob("*.joblib"))  # Artifact writer is a stub, never production.
 

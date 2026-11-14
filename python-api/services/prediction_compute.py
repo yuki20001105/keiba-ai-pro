@@ -105,6 +105,9 @@ def _load_bundle(path: str) -> dict:
     from app_config import load_model_bundle
     from routers.predict import _local_candidate_spec
     resolved = Path(path).resolve()
+    if resolved.name.startswith("model_monthly_reference_"):
+        from services.monthly_reference_input import load_published_bundle
+        return load_published_bundle(resolved)
     if resolved.name.startswith("model_win_reference_"):
         # This special package is hash-checked before unpickling on every
         # worker admission, including cached predictions. It cannot fall
@@ -165,6 +168,26 @@ def compute_prediction(payload: dict) -> dict:
     frame = payload["frame"]
     try:
         with threadpool_limits(limits=payload["native_threads"]):
+            shadow_input = None
+            shadow_result = None
+            if payload.get("include_model_comparison", False):
+                try:
+                    from datetime import datetime, timezone
+                    from services.prediction_freshness import data_revision
+                    from services.pace74_shadow import file_hash
+                    shadow_input = {
+                        "horses": frame.copy(deep=True),
+                        "race_info": copy.deepcopy(payload.get("race_info")),
+                        "db_path": payload["db_path"],
+                        "primary_model_id": Path(payload["model_path"]).stem,
+                        "captured_at": datetime.now(timezone.utc).isoformat(),
+                        "input_revision": data_revision(payload["db_path"]),
+                        "primary_artifact_sha256": file_hash(Path(payload["model_path"])),
+                    }
+                except Exception:
+                    # Optional reference instrumentation must not mask a real
+                    # primary load/feature/inference failure below.
+                    shadow_input = None
             stage = time.perf_counter()
             ensure_model_identity(payload["model_path"], payload.get("expected_model_identity"))
             predictor = ModelPredictor(
@@ -177,7 +200,8 @@ def compute_prediction(payload: dict) -> dict:
             stage = time.perf_counter()
             history_available = True
             candidate = bool(getattr(predictor, "bundle", {}).get("_local_candidate"))
-            reference = getattr(predictor, "bundle", {}).get("_win_nll_reference") is True
+            reference = (getattr(predictor, "bundle", {}).get("_win_nll_reference") is True
+                         or bool(getattr(predictor, "bundle", {}).get("_monthly_reference")))
             shared = getattr(predictor, "bundle", {}).get("feature_pipeline") in SHARED_PIPELINES
             if candidate or shared or reference:
                 # Candidate input owns a strict canonical RO history loader.
@@ -240,6 +264,23 @@ def compute_prediction(payload: dict) -> dict:
                 "input_diagnostics": input_diagnostics,
                 "history_rows": history_rows,
             }
+            if payload.get("include_model_comparison", False):
+                from services.pace74_shadow import run_shadow, unavailable
+                stage = time.perf_counter()
+                try:
+                    if shadow_input is None:
+                        shadow_result = unavailable(Path(payload["model_path"]).stem, "shadow_input_unavailable")
+                    else:
+                        # Same admitted task/thread/native limit, strictly
+                        # after successful primary inference, never an ensemble.
+                        shadow_result = run_shadow(**shadow_input)
+                        if data_revision(payload["db_path"]) != shadow_input["input_revision"]:
+                            shadow_result = unavailable(Path(payload["model_path"]).stem,
+                                                        "input_revision_changed", status="skipped")
+                except Exception:
+                    shadow_result = unavailable(Path(payload["model_path"]).stem)
+                result["model_comparison"] = shadow_result
+                timings["shadow_seconds"] = time.perf_counter() - stage
         del history, full_history
         gc.collect()
         ensure_model_identity(payload["model_path"], payload.get("expected_model_identity"))
@@ -250,6 +291,12 @@ def compute_prediction(payload: dict) -> dict:
         # HTTPException itself is not reliably pickleable on Windows spawn.
         return {"error": {"status_code": exc.status_code, "detail": exc.detail}}
     except Exception as exc:
+        if isinstance(exc, ValueError) and str(exc) == "shared-current-metadata-jump_evidence_quarantined":
+            return {"error": {"status_code": 422, "detail": {
+                "code": "prediction_outside_model_scope",
+                "reason": "jump_evidence_quarantined",
+                "message": "このモデルは平地競走専用のため、障害競走は予測対象外です。",
+            }}}
         logger.exception("prediction CPU task failed")
         return {"error": {"status_code": 500, "detail": str(exc)}}
 
@@ -278,7 +325,7 @@ def _runtime() -> tuple[ProcessPoolExecutor | ThreadPoolExecutor, asyncio.Semaph
     return _POOL, _SLOTS
 
 
-async def run_prediction_compute(**payload) -> dict:
+async def run_prediction_compute(*, include_model_comparison: bool = False, **payload) -> dict:
     """Admit at most N jobs, holding slots until CPU work actually completes."""
     global _ACTIVE
     pool, slots = _runtime()
@@ -287,6 +334,7 @@ async def run_prediction_compute(**payload) -> dict:
     queue_seconds = time.perf_counter() - queued
     _ACTIVE += 1
     payload["native_threads"] = native_threads(_POOL_WORKERS)
+    payload["include_model_comparison"] = include_model_comparison
 
     def release(_future=None):
         global _ACTIVE

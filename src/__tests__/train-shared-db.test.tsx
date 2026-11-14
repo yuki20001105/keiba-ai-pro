@@ -32,6 +32,58 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('normal model creation using the shared DB feature pipeline', () => {
+  it('exposes monthly reference evaluation without offering default activation or deletion', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === '/api/ml/train/capability') return Response.json({ enabled: true })
+      if (url === '/api/models') return Response.json({ models: [{
+        model_id: 'monthly-reference', display_name: '月別seed42（参考運用）',
+        target: 'speed_deviation', feature_pipeline: 'monthly-validation-research-model-v1',
+        reference_only: true, can_activate: false, can_delete: false, feature_count: 46,
+      }] })
+      throw new Error(`Unexpected request: ${url}`)
+    })
+    render(<TrainPage />)
+    const card = within(await screen.findByTestId('model-card-monthly-reference'))
+    expect(card.queryByRole('button', { name: '既定にする' })).not.toBeInTheDocument()
+    expect(card.getByRole('button', { name: '削除' })).toBeDisabled()
+  })
+  it('shows the adopted target only when the running backend advertises it', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === '/api/ml/train/capability') return Response.json({ enabled: true,
+        feature_profiles: [{ pipeline: 'local-db-shared-optimized-v1', feature_count: 46,
+          target_normalization: 'course_going_weather', reference_only: true }] })
+      if (url === '/api/models') return Response.json({ models: [] })
+      throw new Error(`Unexpected request: ${url}`)
+    })
+    render(<TrainPage />)
+    const note = await screen.findByTestId('training-grouped-target-note')
+    expect(note).toHaveTextContent('基準④')
+    expect(note).toHaveTextContent('競馬場')
+    expect(note).toHaveTextContent('30頭')
+    expect(note).toHaveTextContent('TRAIN')
+    expect(note).toHaveTextContent('試験採用')
+    expect(fetchMock.mock.calls.some(([url]) => /activate|train\/start/.test(url))).toBe(false)
+  })
+
+  it('distinguishes saved conditioned models from old speed models and closes purchase validation', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === '/api/ml/train/capability') return Response.json({ enabled: true })
+      if (url === '/api/models') return Response.json({ models: [{
+        model_id: 'grouped-model', target: 'speed_deviation', feature_pipeline: 'local-db-shared-optimized-v1',
+        feature_count: 46, evaluation: { primary: { rank_correlation: .4526, rmse: .2477 },
+          target_normalization: { arm: 'course_going_weather' } },
+        probability_validation: { calibrated: true, validated: true, status: 'validated', eligible_for_ev: true },
+      }] })
+      throw new Error(`Unexpected request: ${url}`)
+    })
+    render(<TrainPage />)
+    const card = within(await screen.findByTestId('model-card-grouped-model'))
+    expect(card.getByTestId('grouped-model-reference-state')).toHaveTextContent('基準④')
+    expect(card.getByTestId('model-calibration-state')).toHaveTextContent('未検証')
+    expect(card.queryByText('購入判断に利用可')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('training-grouped-target-note')).not.toBeInTheDocument()
+  })
+
   it('offers the context profile only when supported and requires explicit opt-in', async () => {
     fetchMock.mockImplementation(async (url: string) => {
       if (url === '/api/ml/train/capability') return Response.json({ enabled: true,

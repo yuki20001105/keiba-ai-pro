@@ -30,4 +30,31 @@ describe('model display names', () => {
       '条件・展開80（比較候補）｜2026/09/12 21:59｜学習 2018/01–2026/07',
     )
   })
+
+  it('warns when the model feature source and probability validation are not ready', () => {
+    expect(formatModelOptionLabel({
+      ...NEW_MODEL,
+      prediction_readiness: {
+        feature_compatibility: 'mismatch',
+        win_probability_validated: false,
+        eligible_bet_types: [],
+        model_betting_ready: false,
+      },
+    })).toContain('特徴量互換性未確認・参考予測')
+  })
+
+  it('shows validated bet types without implying that live odds are ready', () => {
+    const label = formatModelOptionLabel({
+      ...NEW_MODEL,
+      prediction_readiness: {
+        feature_compatibility: 'verified',
+        win_probability_validated: true,
+        eligible_bet_types: ['単勝'],
+        model_betting_ready: true,
+      },
+    })
+    expect(label).toContain('勝率検証済・単勝')
+    expect(label).toContain('収益性未検証')
+    expect(label).toContain('発走前オッズ確認が別途必要')
+  })
 })

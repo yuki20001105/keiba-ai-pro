@@ -1160,7 +1160,12 @@ class ScrapeJobEffectExecutor:
                 if claim.job_id in self._pending_cancellations:
                     cancel_event.set()
             return await execute_server_batch(claim, self._batch_store, cancel_event)
-        if set(payload) != required | scoped:
+        details = {"horse_details"} if "horse_details" in payload else set()
+        if details and payload["horse_details"] != "cached_only":
+            raise OperationalSagaError("scrape-payload-horse-details-invalid")
+        if details and not self._allow_unfenced_local_writes:
+            raise OperationalSagaUnavailable("cached-cards-local-runtime-required")
+        if set(payload) != required | scoped | details:
             raise OperationalSagaError("scrape-payload-contract-invalid")
         if payload.get("dry_run") is not True and not self._allow_unfenced_local_writes:
             raise OperationalSagaUnavailable("fenced-operational-execute-not-enabled")
@@ -1174,7 +1179,7 @@ class ScrapeJobEffectExecutor:
             "idempotency_key": claim.idempotency_key,
             "fencing_token": claim.fencing_token,
         }
-        if race_scope == "jra":
+        if race_scope == "jra" or details:
             # Scope must survive a legacy runner checkpoint as well as the
             # authoritative operational claim; recovery may not widen it.
             job["request"] = dict(payload)
@@ -1196,6 +1201,7 @@ class ScrapeJobEffectExecutor:
             bool(payload["dry_run"]),
             cancel_requested=cancel_event.is_set,
             **({"race_scope": "jra"} if race_scope == "jra" else {}),
+            **({"horse_details": "cached_only"} if details else {}),
         ))
         try:
             await asyncio.shield(runner_task)

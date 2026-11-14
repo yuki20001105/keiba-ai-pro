@@ -45,6 +45,15 @@ async function capability(featureProfiles: unknown, changes: Record<string, unkn
 }
 
 describe('local training feature capability whitelist', () => {
+  it('forwards the exact conditioned target only as a trial, without purchase authority', async () => {
+    const profile = { ...profiles[1], target_normalization: 'course_going_weather',
+      reference_only: true, eligible_for_ev: true }
+    const response = await capability([profile])
+    expect((await response.json()).feature_profiles).toEqual([{
+      ...profiles[1], target_normalization: 'course_going_weather', reference_only: true,
+    }])
+  })
+
   it('forwards three exact profiles to the normal UI, preserving candidate-only status', async () => {
     const response = await capability(profiles, {
       acceleration: { default_device: 'auto', gpu_available: true, feature_cache_supported: true },

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections import Counter
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, timedelta
 import calendar
 import hashlib
 import json
@@ -297,6 +297,40 @@ def load_db_frames(db_path, date_from=None, date_to=None):
                 "history_policy": "2013 start; observed eligible history; source date strictly before each target",
                 "complete_career_coverage_verified": False, "source_hashes": source_hashes()}
     return targets, history, coverage
+
+
+def load_speed_baseline_frame(db_path, target_date_from, *, lookback_days=365):
+    """Load eligible result rows strictly before a preview period for its label baseline.
+
+    This is deliberately separate from model train/calibration/test partitioning:
+    a short preview period can still have a target label, and no outcomes from
+    the displayed period (or any future date) are used to normalize it.
+    """
+    if isinstance(lookback_days, bool) or not isinstance(lookback_days, int) or lookback_days < 1:
+        raise ValueError("speed-baseline-lookback-days-invalid")
+    cutoff = _period_date(target_date_from, end=False)
+    cutoff_date = date(int(cutoff[:4]), int(cutoff[4:6]), int(cutoff[6:8]))
+    end_date = cutoff_date - timedelta(days=1)
+    start_date = max(date(2013, 1, 1), cutoff_date - timedelta(days=lookback_days))
+    lower, upper = start_date.strftime("%Y%m%d"), end_date.strftime("%Y%m%d")
+    if upper < lower:
+        return pd.DataFrame(columns=canonical.SOURCE_COLUMNS), {"date_from": None, "date_to": None}
+
+    audit = _audit()
+    with _database(db_path) as (connection, tables):
+        metadata = _target_metadata(connection, lower, upper, audit)
+        frame, coverage = _load_complete(connection, tables, metadata, audit)
+    if not frame.empty and frame.race_date.ge(cutoff).any():
+        raise ValueError("speed-baseline-period-includes-target-or-future-date")
+    return frame, {
+        "date_from": str(frame.race_date.min()) if not frame.empty else None,
+        "date_to": str(frame.race_date.max()) if not frame.empty else None,
+        "eligible_rows": len(frame),
+        "eligible_races": int(frame.race_id.nunique()) if not frame.empty else 0,
+        "eligible_dates": int(frame.race_date.nunique()) if not frame.empty else 0,
+        "requested_lookback_days": lookback_days,
+        "coverage": coverage,
+    }
 
 
 def build_training_features(target_frame: pd.DataFrame, history_frame: pd.DataFrame) -> pd.DataFrame:

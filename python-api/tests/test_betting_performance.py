@@ -176,6 +176,31 @@ def test_reduced_day_budget_stake_and_zero_pass(tmp_path):
     summary = read(db, tmp_path / "absent.db")["summary"]
     assert summary["pending_cost"] == 100 and summary["skipped_races"] == 1 and summary["roi"] is None
 
+def test_fixed_two_records_complete_equal_stake_book_and_preserves_trifecta_order(tmp_path):
+    db = tmp_path / "ledger.db"
+    payload = snapshot([ticket("ワイド", [1, 3], 500),
+                        ticket("三連単", [4, 1, 3], 500), ticket("三連単", [3, 1, 4], 500)])
+    for offer in payload["recommendation"]["tickets"]:
+        if offer["bet_type"] == "三連単":
+            offer["combination"] = offer["combination"].replace("-", "→")
+    payload["recommendation"].update(betting_strategy="fixed-two-v1", budget=1500, per_race_limit=1500)
+    sid = save_snapshot(db, "alice", payload)
+    choices = [selected(t) for t in payload["recommendation"]["tickets"]]
+    with pytest.raises(ValueError):
+        record_selection(db, "alice", sid, choices[:2], now=NOW)
+    with pytest.raises(ValueError):
+        record_selection(db, "alice", sid, [{**t, "stake": 100 if i == 0 else 200} for i, t in enumerate(choices)], now=NOW)
+    saved = record_selection(db, "alice", sid, [{**t, "stake": 200} for t in choices], now=NOW)
+    assert saved["betting_strategy"] == "fixed-two-v1"
+    assert saved["total_cost"] == 600
+    assert [t["combination"] for t in saved["tickets"]] == ["1-3", "4-1-3", "3-1-4"]
+    result_db(tmp_path / "results.db", finishes=(2, 4, 3, 1),
+              dividends=[("ワイド", "1-3", 800), ("ワイド", "1-4", 200), ("ワイド", "3-4", 300),
+                         ("三連単", "4-1-3", 5000)])
+    settled = read(db, tmp_path / "results.db")["records"][0]
+    assert settled["actual_return"] == 11600
+    assert settled["profit"] == 11000
+
 
 def test_reject_expired_or_uncalibrated_purchase_but_allow_skip(tmp_path):
     db = tmp_path / "ledger.db"
@@ -272,6 +297,7 @@ def test_incomplete_or_exceptional_result_never_fake_loss(tmp_path, finishes, st
     assert response["records"][0]["status"] == status
     assert response["records"][0]["actual_return"] is None
     assert response["summary"]["settled_races"] == 0 and response["summary"]["pending_cost"] == 200
+    assert response["model_performance"]["models"] == []
 
 
 @pytest.mark.parametrize("dividends,status", [([], "payout_pending"),
@@ -281,7 +307,9 @@ def test_missing_or_conflicting_official_payouts_never_fake_zero(tmp_path, divid
     db, results = tmp_path / "ledger.db", tmp_path / "results.db"
     save(db, snapshot([ticket(numbers=[4])]))
     result_db(results, dividends=dividends)
-    assert read(db, results)["records"][0]["status"] == status
+    response = read(db, results)
+    assert response["records"][0]["status"] == status
+    assert response["model_performance"]["models"] == []
 
 
 def test_wide_requires_all_three_winners_and_identical_duplicates_collapse(tmp_path):
@@ -326,6 +354,57 @@ def test_summary_entire_filtered_set_not_page_and_pending_excluded(tmp_path):
     assert older["total_count"] == 1 and older["summary"]["roi"] is None
     with pytest.raises(ValueError):
         read(db, results, date_from="2026-10-11", date_to="2026-10-10")
+
+
+def test_model_roi_uses_full_filtered_set_and_independent_running_money(tmp_path):
+    db, results = tmp_path / "ledger.db", tmp_path / "results.db"
+    for index, (winner, dividend) in enumerate([(False, 340), (True, 300), (False, 340), (True, 200)], 1):
+        rid = f"2026050401{index:02}"
+        payload = snapshot([ticket(numbers=[1 if winner else 4], stake=1000)], rid=rid)
+        payload["model_id"] = "model-A"
+        save(db, payload)
+        result_db(results, rid=rid, dividends=[("単勝", "1", dividend)])
+    second = snapshot([ticket(stake=500)], rid="202605040105", day="20261011")
+    second["model_id"] = "model-B"
+    save(db, second)
+    result_db(results, rid="202605040105", dividends=[("単勝", "1", 200)],
+              info={"date": "20261011", "num_horses": 4})
+    save(db, snapshot(rid="202605040106", skip=True))
+    save(db, snapshot(rid="202605040107"))
+    save(db, owner="bob")
+    save(db, mode="actual")
+    result_db(results)
+    value = read(db, results, limit=1)["model_performance"]
+    assert value["includes_full_filtered_set"] is True
+    a, b = value["models"]
+    assert [a["model_id"], b["model_id"]] == ["model-A", "model-B"]
+    assert [point["roi"] for point in a["points"]] == [0, 150, 100, 125]
+    assert [point["total_cost"] for point in a["points"]] == [1000, 2000, 3000, 4000]
+    assert [point["total_return"] for point in a["points"]] == [0, 3000, 3000, 5000]
+    assert a["race_count"] == 4 and a["profit"] == 1000
+    assert b["race_count"] == 1 and b["roi"] == 200 and b["total_cost"] == 500
+    filtered = read(db, results, date_from="20261011", date_to="20261011")["model_performance"]
+    assert len(filtered["models"]) == 1
+    assert filtered["models"][0]["points"][0]["total_cost"] == 500
+    assert filtered["date_from"] == filtered["date_to"] == "2026-10-11"
+    assert read(db, results, owner="charlie")["model_performance"]["models"] == []
+    assert read(db, results, mode="actual")["model_performance"]["models"][0]["model_id"] == "frozen-test-model"
+
+
+def test_model_roi_orders_single_digit_hours_chronologically(tmp_path):
+    db, results = tmp_path / "ledger.db", tmp_path / "results.db"
+    morning = NOW.replace(hour=0)
+    for index, (post, number) in enumerate([("9:50", 4), ("10:20", 1)], 1):
+        rid = f"2026050401{index:02}"
+        payload = snapshot([ticket(numbers=[number], stake=100)], rid=rid)
+        payload["race_info"]["post_time"] = post
+        payload["recommendation"].update(evaluated_at=morning.isoformat(),
+            valid_until=(morning + timedelta(minutes=5)).isoformat())
+        save(db, payload, now=morning)
+        result_db(results, rid=rid, dividends=[("単勝", "1", 300)])
+    points = read(db, results)["model_performance"]["models"][0]["points"]
+    assert [point["post_time"] for point in points] == ["09:50", "10:20"]
+    assert [point["roi"] for point in points] == [0, 150]
 
 
 def test_missing_result_db_is_read_only_and_settlement_can_resume(tmp_path):

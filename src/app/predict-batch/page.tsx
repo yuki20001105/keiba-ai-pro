@@ -12,19 +12,21 @@ import { useJobPoller } from '@/hooks/useJobPoller'
 import { useAuth } from '@/contexts/AuthContext'
 import { formatModelOptionLabel, type ModelSummary } from '@/lib/model-display'
 import { RaceExplanationPanel } from '@/components/RaceExplanationPanel'
-import { PredictionInputNotice } from '@/components/PredictionInputNotice'
 import type { RacePredictResult, Recommendation } from '@/lib/race-analysis-types'
-import { BettingRecommendationPanel, bettingDecisionLabel } from '@/components/BettingRecommendationPanel'
-import { allocateDayBudget, isCurrentBettingCache, perRaceCeiling, RISK_MODES, roundBetBudget, safeRecommendationForInput, selectedTickets } from '@/lib/betting-policy'
-import { predictionInputVerified } from '@/lib/prediction-input-contract'
-import { predictionExpectationDisplay, REFERENCE_EXPECTATION_CAVEAT, REFERENCE_EXPECTATION_NOTE } from '@/lib/prediction-expectation-display'
+import { BettingRecommendationPanel } from '@/components/BettingRecommendationPanel'
+import { allocateDayBudget, FIXED_TWO_STRATEGY, isCurrentBettingCache, perRaceCeiling, RISK_MODES, roundBetBudget, safeRecommendationForInput, safeRecommendationForStrategy, selectedTickets, type BettingStrategy } from '@/lib/betting-policy'
 import { scrapeCompletionOutcome, type ScrapeCompletionOutcome } from '@/lib/scrape-completion-outcome'
 import { buildScrapeProgressDisplay } from '@/lib/scrape-progress-display'
 import { useBettingClock } from '@/hooks/useBettingClock'
 import { savePerformanceRecord } from '@/lib/performance-records'
-import { hasBoundedPredictionRuntime, predictionErrorMessage, predictionTimingLabel, resolvePredictionConcurrency, runPredictionQueue } from '@/lib/prediction-queue'
-import { parsePredictionFreshness, predictionCacheStatus, readPredictionCache, savedPredictionForDisplay, supportsSavedDbRecompute, writePredictionCache, type PredictionFreshness } from '@/lib/prediction-freshness'
+import { hasBoundedPredictionRuntime, predictionErrorMessage, predictionOutsideModelScope, predictionTimingLabel, resolvePredictionConcurrency, runPredictionQueue } from '@/lib/prediction-queue'
+import { parsePredictionFreshness, predictionCacheStatus, readPredictionCache, savedPredictionForDisplay, supportsLiveOddsRefresh, writePredictionCache, type PredictionFreshness } from '@/lib/prediction-freshness'
 import { PredictionFreshnessNotice } from '@/components/PredictionFreshnessNotice'
+import { HorseCandidatePanel, HorseCandidateProvider } from '@/components/HorseCandidatePanel'
+import { HorsePredictionTable } from '@/components/HorsePredictionTable'
+import { ModelComparisonPanel } from '@/components/ModelComparisonPanel'
+
+type BatchPredictionResult = { success: boolean; data?: RacePredictResult; error?: string; skipped?: boolean }
 
 export default function PredictBatchPage() {
   const { isPremium, userId, loading: authLoading } = useAuth()
@@ -58,6 +60,7 @@ export default function PredictBatchPage() {
   const bettingNow = useBettingClock(Object.keys(results).length > 0)
   const [bankroll, setBankroll] = useState(10000)
   const [riskMode, setRiskMode] = useState<'conservative' | 'balanced' | 'aggressive'>('balanced')
+  const [bettingStrategy, setBettingStrategy] = useState<BettingStrategy>(FIXED_TWO_STRATEGY)
   const [dayBudget, setDayBudget] = useState(1000)
   const [bettingNeedsRefresh, setBettingNeedsRefresh] = useState(false)
   const [performanceNotice, setPerformanceNotice] = useState('')
@@ -181,7 +184,7 @@ export default function PredictBatchPage() {
         if (parsed?.data && (!modelId || parsed.data.model_id === modelId)) {
           const allocation = parsed.data.performance_allocation
           const settingsMatch = (!allocation || allocation.day_budget === Math.min(dayBudget, bankroll))
-            && isCurrentBettingCache(parsed.data.recommendation, bankroll, riskMode, parsed.data.input_diagnostics)
+            && isCurrentBettingCache(parsed.data.recommendation, bankroll, riskMode, parsed.data.input_diagnostics, bettingStrategy)
           const cacheStatus = settingsMatch ? predictionCacheStatus(parsed.data, freshness, parsed.cachedAt, parsed.ownerMatches) : 'stale'
           restored[raceId] = { success: true, data: savedPredictionForDisplay(parsed.data, cacheStatus), cacheStatus, cachedAt: parsed.cachedAt }
           if (cacheStatus !== 'current') staleRecommendation = true
@@ -206,7 +209,7 @@ export default function PredictBatchPage() {
       setResults(restored)
     }
     if (staleRecommendation) setBettingNeedsRefresh(true)
-  }, [bankroll, riskMode, modelId, dayBudget, userId])
+  }, [bankroll, riskMode, bettingStrategy, modelId, dayBudget, userId])
 
   // Returning from acquisition/training checks metadata only; never auto-run.
   useEffect(() => {
@@ -299,7 +302,7 @@ export default function PredictBatchPage() {
     setScrapeOutcome(null)
     setRacesError('')
     setScrapeStatusData(null)
-    scrape.startScrape({ startDate: date, endDate: date, force })
+    scrape.startScrape({ startDate: date, endDate: date, force, horseDetails: 'cached_only' })
   }
 
   const changeDate = (nextDate: string) => {
@@ -327,8 +330,9 @@ export default function PredictBatchPage() {
     : races.filter(r => venueFilter.has(r.venue_code))
   const scrapeDisplay = buildScrapeProgressDisplay(scrapeStatusData)
   const provisionalRecommendations = useMemo(() => allocateDayBudget(Object.fromEntries(
-    Object.entries(results).filter(([, result]) => result.success).map(([id, result]) => [id, safeRecommendationForInput(result.data?.recommendation as Recommendation | undefined, result.data?.input_diagnostics)]),
-  ), Math.min(dayBudget, bankroll)), [results, dayBudget, bankroll])
+    Object.entries(results).filter(([, result]) => result.success).map(([id, result]) => [id,
+      safeRecommendationForStrategy(safeRecommendationForInput(result.data?.recommendation as Recommendation | undefined, result.data?.input_diagnostics), bettingStrategy)]),
+  ), Math.min(dayBudget, bankroll)), [results, dayBudget, bankroll, bettingStrategy])
   const dayRecommendations = frozenRecommendations ?? provisionalRecommendations
   const dayTotal = Object.values(dayRecommendations).reduce((sum, rec) => sum + selectedTickets(rec, bettingNow).reduce((cost, ticket) => cost + ticket.stake, 0), 0)
 
@@ -378,14 +382,14 @@ export default function PredictBatchPage() {
     setPredictProgress({ done: 0, total: ids.length, active: 0, current: '実行環境を確認中' })
 
     let firstOk: string | undefined
-    const completedResults: Record<string, { success: boolean; data?: RacePredictResult; error?: string }> = {}
+    const completedResults: Record<string, BatchPredictionResult> = {}
 
     try {
       const capabilityResponse = await authFetch(`/api/prediction-freshness${modelId ? `?model_id=${encodeURIComponent(modelId)}` : ''}`, {
         cache: 'no-store', signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]),
       })
       const capability = capabilityResponse.ok ? await capabilityResponse.json() : null
-      if (!supportsSavedDbRecompute(capability)) throw new Error('最新データで再予測できるか確認できません。APIの更新・接続状態を確認してください。')
+      if (!supportsLiveOddsRefresh(capability)) throw new Error('予測時の実オッズを取得できるか確認できません。APIの更新・接続状態を確認してください。')
       if (!current()) return
       let runtime: unknown = null
       try {
@@ -399,7 +403,7 @@ export default function PredictBatchPage() {
       setPredictConcurrency(concurrency)
       setPredictionRuntimeNotice(hasBoundedPredictionRuntime(runtime) ? '' : 'サーバー更新待ち · 1件ずつ')
       setPredictProgress(prev => ({ ...prev, current: '' }))
-      await runPredictionQueue<string, { success: boolean; data?: RacePredictResult; error?: string }>(ids, async raceId => {
+      await runPredictionQueue<string, BatchPredictionResult>(ids, async raceId => {
         const res = await authFetch('/api/analyze-race', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -409,15 +413,19 @@ export default function PredictBatchPage() {
                 model_id: modelId || null,
                 bankroll,
                 risk_mode: riskMode,
+                betting_strategy: bettingStrategy,
                 include_explanation: isPremium,
                 force_recompute: true,
                 data_refresh: 'saved_db',
+                refresh_odds: true,
               }),
             })
         const data = await res.json()
+        if (data.recommendation) data.recommendation = safeRecommendationForStrategy(data.recommendation, bettingStrategy)
         return res.ok && data.success !== false
           ? { success: true, data: data as RacePredictResult }
-          : { success: false, error: predictionErrorMessage(data, res.status) }
+          : { success: false, error: predictionErrorMessage(data, res.status),
+              skipped: predictionOutsideModelScope(data, res.status) }
       }, {
         concurrency,
         signal: controller.signal,
@@ -428,7 +436,7 @@ export default function PredictBatchPage() {
         },
         onSettled: (outcome, raceId) => {
           if (!current()) return
-          const result: { success: boolean; data?: RacePredictResult; error?: string } = outcome.status === 'fulfilled' ? outcome.value
+          const result: BatchPredictionResult = outcome.status === 'fulfilled' ? outcome.value
             : { success: false, error: outcome.reason instanceof Error ? outcome.reason.message : '予測に失敗しました。' }
           completedResults[raceId] = result
           if (result.success && !firstOk) firstOk = raceId
@@ -455,7 +463,8 @@ export default function PredictBatchPage() {
       const allocationTime = Date.now()
       const finalRecommendations = allocateDayBudget(Object.fromEntries(
         Object.entries(completedResults).filter(([, result]) => result.success)
-          .map(([id, result]) => [id, safeRecommendationForInput(result.data?.recommendation, result.data?.input_diagnostics)]),
+          .map(([id, result]) => [id, safeRecommendationForStrategy(
+            safeRecommendationForInput(result.data?.recommendation, result.data?.input_diagnostics), bettingStrategy)]),
       ), Math.min(dayBudget, bankroll), allocationTime)
       const successes = Object.entries(completedResults).filter(([, result]) => result.success && result.data)
       setFrozenRecommendations(finalRecommendations)
@@ -493,7 +502,7 @@ export default function PredictBatchPage() {
         setResults({ ...completedResults })
         setPerformanceError(failed > 0)
         setPerformanceNotice(failed > 0 ? `成績の記録に失敗: ${failed}レース。予測を再実行してください。`
-          : `AI参考として記録しました${alreadyRecorded ? `（記録済み ${alreadyRecorded}レースは最初の買い目を保持）` : ''}。`)
+          : `AI参考として記録しました${alreadyRecorded ? '（既存記録は保持）' : ''}。`)
       }
       setPredictProgress(prev => ({ ...prev, done: ids.length, active: 0, current: '' }))
       if (firstOk) setExpandedRace(firstOk)
@@ -519,6 +528,7 @@ export default function PredictBatchPage() {
   }
 
   const presentVenueCodes = new Set(races.map(r => r.venue_code))
+  const activeModel = models.find(model => model.is_active)
   const activeReferenceModel = models.find(model => model.is_active
     && model.feature_pipeline === 'local-win-nll-reference-v1')
   const selectedReferenceModel = modelId
@@ -540,10 +550,10 @@ export default function PredictBatchPage() {
         </div>
       </header>
 
-      <main className="max-w-4xl mx-auto px-6 py-10 space-y-6">
+      <main className="max-w-7xl mx-auto px-6 py-6 space-y-5">
 
         {/* ── Layer 1: 日付・条件 ── */}
-        <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-6 space-y-4">
+        <div className="bg-[#111] border border-[#1e1e1e] rounded-lg p-4 space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold text-white">① 日付・モデル設定</h2>
           </div>
@@ -569,7 +579,7 @@ export default function PredictBatchPage() {
                 disabled={predicting}
                 className="w-full px-4 py-3 bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg text-white focus:outline-none focus:border-[#333] transition-colors"
               >
-                <option value="">{activeReferenceModel ? `既定：${formatModelOptionLabel(activeReferenceModel)}` : '既定モデル（使用中）'}</option>
+                <option value="">{activeModel ? `既定：${formatModelOptionLabel(activeModel)}` : '既定モデル（使用中）'}</option>
                 {models.map(m => (
                   <option key={m.model_id} value={m.model_id}>{formatModelOptionLabel(m)}</option>
                 ))}
@@ -590,7 +600,7 @@ export default function PredictBatchPage() {
               className="w-full flex items-center justify-between px-4 py-3 bg-[#0d0d0d] hover:bg-[#161616] transition-colors"
             >
               <span className="text-xs text-[#555]">
-                賭け設定 — 総資金 ¥{bankroll.toLocaleString()} · {RISK_MODES[riskMode].label}
+                賭け設定 — {bettingStrategy === FIXED_TWO_STRATEGY ? '② 3点固定' : '期待値選定'} · 総資金 ¥{bankroll.toLocaleString()} · {RISK_MODES[riskMode].label}
               </span>
               <svg className={`w-3 h-3 text-[#444] transition-transform ${showBettingSettings ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
@@ -598,6 +608,15 @@ export default function PredictBatchPage() {
             </button>
             {showBettingSettings && (
               <div className="px-4 pb-4 pt-3 border-t border-[#1e1e1e] space-y-4">
+                <div>
+                  <label htmlFor="betting-strategy" className="text-xs text-[#666] block mb-2">買い目方式</label>
+                  <select id="betting-strategy" value={bettingStrategy} disabled={predicting}
+                    onChange={e => { setBettingStrategy(e.target.value as BettingStrategy); invalidateBettingResults() }}
+                    className="w-full rounded-lg border border-[#2a2a2a] bg-[#0a0a0a] px-4 py-3 text-sm text-white">
+                    <option value={FIXED_TWO_STRATEGY}>② ワイド1点＋三連単2点</option>
+                    <option value="value">従来の期待値選定</option>
+                  </select>
+                </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <label htmlFor="betting-bankroll" className="text-xs text-[#666] block mb-2">総資金</label>
@@ -648,7 +667,8 @@ export default function PredictBatchPage() {
                   </div>
                 </div>
                 <p className="text-xs text-[#444]">
-                  1レース上限: ¥{perRaceCeiling(bankroll, riskMode).toLocaleString()}
+                  1レース上限: ¥{(bettingStrategy === FIXED_TWO_STRATEGY ? Math.min(1500, perRaceCeiling(bankroll, riskMode)) : perRaceCeiling(bankroll, riskMode)).toLocaleString()}
+                  {bettingStrategy === FIXED_TWO_STRATEGY && ' · 3点均等（1点最大500円）。3点分を配分できなければ見送り。'}
                 </p>
                 <div>
                   <label htmlFor="betting-day-budget" className="text-xs text-[#666] block mb-2">この日の予算</label>
@@ -740,6 +760,7 @@ export default function PredictBatchPage() {
         {racesMissing && scrape.status === 'idle' && !scrapeOutcome && (
           <div className="bg-[#0d141c] border border-[#1e3448] rounded-lg p-5 space-y-3">
             <p className="text-sm text-[#93c5fd]">この日のデータはまだ取得されていません。</p>
+            <p className="text-xs text-[#6f94b8]">当日・未来の一覧は出馬表とオッズを先に取得します。馬の履歴の完全収集はデータ取得画面で実行できます。</p>
             <button
               onClick={() => triggerScrape(false)}
               className="px-5 py-2.5 bg-[#1a3a5a] text-[#60a5fa] text-sm rounded-lg hover:bg-[#1e4a6a] transition-colors border border-[#2a5a8a]"
@@ -755,221 +776,149 @@ export default function PredictBatchPage() {
           </div>
         )}
 
-        {filteredRaces.length > 0 && (
-          <div className="bg-[#111] border border-[#1e1e1e] rounded-lg overflow-hidden">
-            <div className="px-5 py-3 border-b border-[#1e1e1e] flex items-center justify-between">
-              <span className="text-sm font-semibold text-white">② レース選択</span>
-              <div className="flex items-center gap-3">
-                <span className="text-xs text-[#555]">{selectedIds.size} / {filteredRaces.length} 選択</span>
-                <button onClick={selectAll} className="text-xs text-[#888] hover:text-white transition-colors">全選択</button>
-                <button onClick={deselectAll} className="text-xs text-[#888] hover:text-white transition-colors">全解除</button>
+        {filteredRaces.length > 0 && (() => {
+          const selectedRace = filteredRaces.find(r => r.race_id === expandedRace)
+            ?? filteredRaces.find(r => results[r.race_id])
+            ?? filteredRaces[0]
+          const result = results[selectedRace.race_id]
+          const rec = dayRecommendations[selectedRace.race_id]
+          const predictions = result?.data?.predictions || []
+
+          return (
+            <section className="overflow-hidden rounded-lg border border-[#1e1e1e] bg-[#111]" aria-label="レース予測">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#1e1e1e] px-4 py-3">
+                <h2 className="text-sm font-semibold text-white">② レース予測</h2>
+                <div className="flex items-center gap-3 text-xs">
+                  <span className="text-[#888]">{selectedIds.size}レース選択中</span>
+                  <button onClick={selectAll} className="text-[#888] hover:text-white">全選択</button>
+                  <button onClick={deselectAll} className="text-[#888] hover:text-white">解除</button>
+                </div>
               </div>
-            </div>
 
-            <div className="divide-y divide-[#1a1a1a]">
-              {filteredRaces.map(r => (
-                <div key={r.race_id}>
-                <label
-                  className="flex items-center gap-4 px-5 py-3 hover:bg-[#161616] transition-colors cursor-pointer"
-                >
-                  <input
-                    type="checkbox"
-                    checked={selectedIds.has(r.race_id)}
-                    onChange={() => toggleRace(r.race_id)}
-                    className="w-4 h-4 accent-white"
-                  />
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-xs text-[#555] font-mono">{r.venue}</span>
-                      <span className="font-medium text-sm">{r.race_no}R</span>
-                      {r.race_name && <span className="text-xs text-[#888] truncate">{r.race_name}</span>}
-                    </div>
-                    <div className="text-xs text-[#555] mt-0.5">
-                      {r.track_type}{r.distance ? ` ${r.distance}m` : ''}{r.num_horses ? ` · ${r.num_horses}頭` : ''}
-                    </div>
+              <div className="grid min-w-0 grid-cols-1 items-start lg:grid-cols-[260px_minmax(0,1fr)]">
+                <div className="min-w-0 border-b border-[#1e1e1e] lg:border-b-0 lg:border-r">
+                  <div className="max-h-[360px] divide-y divide-[#1a1a1a] overflow-y-auto lg:max-h-[min(72vh,760px)]">
+                    {filteredRaces.map(r => {
+                      const raceResult = results[r.race_id]
+                      const isActive = selectedRace.race_id === r.race_id
+                      return (
+                        <div key={r.race_id} className={`flex items-center gap-3 px-3 py-2 ${isActive ? 'bg-[#171717]' : 'hover:bg-[#151515]'}`}>
+                          <input
+                            type="checkbox"
+                            aria-label={`再予測対象 ${r.venue} ${r.race_no}R`}
+                            checked={selectedIds.has(r.race_id)}
+                            onChange={() => toggleRace(r.race_id)}
+                            className="h-4 w-4 shrink-0 accent-white"
+                          />
+                          <button
+                            type="button"
+                            aria-current={isActive ? 'true' : undefined}
+                            onClick={() => { setExpandedRace(r.race_id); setExplanationRaceId(null) }}
+                            className="flex min-w-0 flex-1 items-center justify-between gap-2 text-left"
+                          >
+                            <span className="min-w-0">
+                              <span className="flex items-center gap-1.5">
+                                <span className="text-[10px] text-[#777]">{r.venue}</span>
+                                <span className="text-sm font-semibold text-white">{r.race_no}R</span>
+                              </span>
+                              <span className="mt-0.5 block truncate text-[10px] text-[#777]">
+                                {r.race_name || `${r.track_type}${r.distance ? ` ${r.distance}m` : ''}${r.num_horses ? ` · ${r.num_horses}頭` : ''}`}
+                              </span>
+                            </span>
+                            {raceResult && (
+                              <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] ${raceResult.success ? 'bg-[#052e10] text-[#4ade80]' : raceResult.skipped ? 'bg-[#222] text-[#aaa]' : 'bg-[#1a0505] text-[#f87171]'}`}>
+                                {raceResult.success ? raceResult.cacheStatus ? '保存済' : '予測済' : raceResult.skipped ? '対象外' : 'エラー'}
+                              </span>
+                            )}
+                          </button>
+                        </div>
+                      )
+                    })}
                   </div>
-                  <div className="flex items-center gap-2">
-                    {results[r.race_id] && (
-                      <span className={`text-xs px-2 py-0.5 rounded ${results[r.race_id].success ? 'bg-[#052e10] text-[#4ade80]' : 'bg-[#1a0505] text-[#f87171]'}`}>
-                        {results[r.race_id].success ? results[r.race_id].cacheStatus ? '保存予測' : '予測済' : 'エラー'}
-                      </span>
+
+                  <div className="border-t border-[#1e1e1e] p-3">
+                    {(predicting || predictProgress.total > 0) && (
+                      <div role="status" aria-live="polite" data-testid="prediction-live-progress" className="mb-3 space-y-1.5">
+                        <div className="flex items-center justify-between text-xs text-[#888]">
+                          <span>{predictProgress.current || (predicting ? `予測中 · 並列リクエスト ${predictProgress.active}件（最大${predictConcurrency}件）` : '予測完了')}</span>
+                          <span className="tabular-nums">処理 {predictProgress.done}/{predictProgress.total}</span>
+                        </div>
+                        <p className="text-xs text-[#666] tabular-nums">{predictionTimingLabel({ completed: predictProgress.done, total: predictProgress.total, active: predictProgress.active }, predictElapsedMs)}</p>
+                        {predictionRuntimeNotice && <p className="text-xs text-[#888]">{predictionRuntimeNotice}</p>}
+                        <div className="h-1.5 w-full overflow-hidden rounded-full bg-[#1e1e1e]">
+                          <div className="h-full rounded-full bg-white transition-all duration-300" style={{ width: predictProgress.total > 0 ? `${(predictProgress.done / predictProgress.total) * 100}%` : '0%' }} />
+                        </div>
+                      </div>
                     )}
-                  </div>
-                </label>
-                </div>
-              ))}
-            </div>
-
-            <div className="px-5 py-4 border-t border-[#1e1e1e]">
-              {/* 進捗バー */}
-              {(predicting || predictProgress.total > 0) && (
-                <div role="status" aria-live="polite" data-testid="prediction-live-progress" className="mb-3 space-y-1.5">
-                  <div className="flex justify-between items-center text-xs text-[#888]">
-                    <span>{predictProgress.current || (predicting ? `予測中 · 並列リクエスト ${predictProgress.active}件（最大${predictConcurrency}件）` : '予測完了')}</span>
-                    <span className="tabular-nums">処理 {predictProgress.done}/{predictProgress.total}</span>
-                  </div>
-                  <p className="text-xs text-[#666] tabular-nums">{predictionTimingLabel({ completed: predictProgress.done, total: predictProgress.total, active: predictProgress.active }, predictElapsedMs)}</p>
-                  {predictionRuntimeNotice && <p className="text-xs text-[#888]">{predictionRuntimeNotice}</p>}
-                  <div className="w-full h-2 bg-[#1e1e1e] rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-white rounded-full transition-all duration-300"
-                      style={{ width: predictProgress.total > 0 ? `${(predictProgress.done / predictProgress.total) * 100}%` : '0%' }}
-                    />
-                  </div>
-                </div>
-              )}
-              <button
-                onClick={handleBatchPredict}
-                disabled={predicting || selectedIds.size === 0}
-                className="w-full py-3 bg-white text-black font-medium rounded-lg hover:bg-[#eee] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-              >
-                {predicting
-                  ? `予測中... (${predictProgress.done}/${predictProgress.total})`
-                  : Object.keys(results).length > 0 ? `選択 ${selectedIds.size} レースを最新データで再予測` : `選択 ${selectedIds.size} レースを一括予測`}
-              </button>
-              <p className="mt-2 text-xs text-[#888]">保存済みデータを読み直して計算します。オッズ等の再取得・モデルの再学習は別操作です。</p>
-            </div>
-          </div>
-        )}
-
-        {/* ── Layer 3: 一括予測結果 ── */}
-        {Object.keys(results).length > 0 && (
-          <div className="space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h2 className="text-sm font-semibold text-white">③ 予測結果・買い目</h2>
-              <span className="text-xs text-[#888]">合計 ¥{dayTotal.toLocaleString()} / 予算 ¥{Math.min(dayBudget, bankroll).toLocaleString()}</span>
-            </div>
-            {performanceNotice && <p role={performanceError ? 'alert' : 'status'} className={`text-xs ${performanceError ? 'text-[#f87171]' : 'text-[#888]'}`}>{performanceNotice} <Link href="/dashboard" className="text-[#7dd3fc] hover:underline">成績確認へ</Link></p>}
-            {filteredRaces
-              .filter(r => results[r.race_id])
-              .map(r => {
-                const res = results[r.race_id]
-                const isOpen = expandedRace === r.race_id
-                const preds = res.data?.predictions || []
-                const rec = dayRecommendations[r.race_id]
-                const calibrated = rec?.probability_basis === 'calibrated' && rec.input_verified === true && predictionInputVerified(res.data?.input_diagnostics)
-                const expectation = predictionExpectationDisplay(res.data, rec, bettingNow, r.race_id)
-
-                return (
-                  <div key={r.race_id} className="bg-[#111] border border-[#1e1e1e] rounded-lg overflow-hidden">
-                    {/* ヘッダー（クリックで折りたたみ） */}
                     <button
-                      onClick={() => setExpandedRace(isOpen ? null : r.race_id)}
-                      className="w-full text-left px-5 py-3 flex items-center justify-between hover:bg-[#161616] transition-colors"
+                      onClick={handleBatchPredict}
+                      disabled={predicting || selectedIds.size === 0}
+                      className="w-full rounded bg-white py-2.5 text-sm font-medium text-black transition-colors hover:bg-[#eee] disabled:cursor-not-allowed disabled:opacity-40"
                     >
-                      <div className="flex items-center gap-3">
-                        <span className="text-xs text-[#555]">{r.venue}</span>
-                        <span className="font-medium">{r.race_no}R</span>
-                        {r.race_name && <span className="text-xs text-[#888]">{r.race_name}</span>}
-                        {res.success && <span className="text-xs text-[#aaa]">{bettingDecisionLabel(rec, bettingNow, res.data?.input_diagnostics)}</span>}
-                      </div>
-                      <div className="flex items-center gap-3">
-                        {!res.success && <span className="text-xs text-[#f87171]">エラー</span>}
-                        {res.success && preds.length > 0 && (
-                          <span className="text-xs text-[#4ade80]">
-                            ◎{preds[0]?.horse_number}番
-                          </span>
-                        )}
-                        <svg className={`w-4 h-4 text-[#555] transition-transform ${isOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                        </svg>
-                      </div>
+                      {predicting ? `予測中... (${predictProgress.done}/${predictProgress.total})` : selectedIds.size > 0 ? `選択した${selectedIds.size}レースを予測・更新` : '予測するレースにチェック'}
                     </button>
-
-                    {isOpen && (
-                      <div className="border-t border-[#1e1e1e]">
-                        {!res.success ? (
-                          <div className="px-5 py-4 text-sm text-[#f87171]">{res.error}</div>
-                        ) : (
-                          <>
-                            <div className="px-5 pt-3"><PredictionFreshnessNotice result={res.data} status={res.cacheStatus ?? 'computed'} cachedAt={res.cachedAt} /></div>
-                            <div className="px-5 pt-3"><PredictionInputNotice diagnostics={res.data?.input_diagnostics} /></div>
-                            <div className="border-b border-[#1a1a1a]"><BettingRecommendationPanel recommendation={rec} diagnostics={res.data?.input_diagnostics} snapshotId={!predicting ? res.data?.performance_snapshot_id : null} nowMs={bettingNow} referenceBets={res.data?.reference_bets} /></div>
-                            {expectation.mode === 'reference' && <p className="px-5 py-3 text-xs text-[#888]" title={REFERENCE_EXPECTATION_CAVEAT}>{REFERENCE_EXPECTATION_NOTE}</p>}
-                            {/* 予測テーブル */}
-                            <div className="overflow-x-auto">
-                              <table className="w-full text-sm">
-                                <thead>
-                                  <tr className="border-b border-[#1e1e1e]">
-                                    {['順位', '馬番', '馬名', '騎手', 'スコア', calibrated ? '勝率' : '参考比率', '複勝参考', '合成参考', expectation.label, 'オッズ', '人気'].map(h => (
-                                      <th key={h} className="px-4 py-2.5 text-left text-xs text-[#555] font-normal first:pl-5">{h}</th>
-                                    ))}
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {(() => {
-                                    const maxProb = Math.max(...preds.map((p: any) => p.p_norm ?? p.win_probability ?? 0), 0.001)
-                                    return preds.map((p: any, i: number) => {
-                                      const pNorm = p.p_norm ?? p.win_probability ?? 0
-                                      const pRaw = p.p_raw ?? pNorm
-                                      const pPlace3: number | null = p.p_place3 ?? null
-                                      const pEns: number = p.p_ensemble ?? pNorm
-                                      const ev = expectation.values.get(p.horse_number) ?? null
-                                      const evColor = ev == null ? 'text-[#555]' : expectation.mode === 'reference' ? 'text-[#888]' : ev >= 1.2 ? 'text-[#4ade80]' : ev >= 1.0 ? 'text-[#facc15]' : 'text-[#888]'
-                                      const pct = maxProb > 0 ? Math.round((pNorm / maxProb) * 100) : 0
-                                      return (
-                                        <tr key={i} className="border-b border-[#1a1a1a] hover:bg-[#161616] transition-colors">
-                                          <td className="px-4 py-2.5 pl-5 text-[#888]">{p.predicted_rank ?? i + 1}位</td>
-                                          <td className="px-4 py-2.5 font-bold">{p.horse_number ?? p.horse_no}</td>
-                                          <td className="px-4 py-2.5">{p.horse_name}</td>
-                                          <td className="px-4 py-2.5 text-[#888]">{p.jockey_name}</td>
-                                          <td className="px-4 py-2.5 tabular-nums text-[#7dd3fc]">{(pRaw * 100).toFixed(1)}</td>
-                                          <td className="px-4 py-2.5">
-                                            <div className="flex items-center gap-2">
-                                              <div className="w-16 h-1.5 bg-[#1e1e1e] rounded-full overflow-hidden">
-                                                <div className="h-full bg-[#4ade80] rounded-full" style={{ width: `${pct}%` }} />
-                                              </div>
-                                              <span className="text-[#4ade80] tabular-nums">{(pNorm * 100).toFixed(1)}%</span>
-                                            </div>
-                                          </td>
-                                          <td className="px-4 py-2.5 tabular-nums text-[#60a5fa]">
-                                            {pPlace3 != null ? `${(pPlace3 * 100).toFixed(1)}%` : '—'}
-                                          </td>
-                                          <td className="px-4 py-2.5 tabular-nums text-[#f472b6]">
-                                            {(pEns * 100).toFixed(1)}%
-                                          </td>
-                                          <td className={`px-4 py-2.5 font-medium ${evColor}`}>{ev != null ? ev.toFixed(2) : '—'}</td>
-                                          <td className="px-4 py-2.5 text-[#888]">{p.odds != null ? p.odds : '—'}</td>
-                                          <td className="px-4 py-2.5 text-[#888]">{p.popularity ?? '—'}</td>
-                                        </tr>
-                                      )
-                                    })
-                                  })()}
-                                </tbody>
-                              </table>
-                            </div>
-
-                            {isPremium && (
-                              <div className="flex justify-end px-5 py-3 border-t border-[#1a1a1a]">
-                                <button
-                                  type="button"
-                                  aria-expanded={explanationRaceId === r.race_id}
-                                  onClick={() => setExplanationRaceId(current => current === r.race_id ? null : r.race_id)}
-                                  className="inline-flex items-center gap-1.5 text-xs text-[#7dd3fc] hover:text-[#bae6fd] transition-colors"
-                                >
-                                  {explanationRaceId === r.race_id ? 'AIの判断を閉じる' : 'AIの判断を見る'}
-                                  <span className="rounded border border-[#3b2f64] bg-[#211b36] px-1.5 py-0.5 text-[9px] text-[#c4b5fd]">
-                                    Premium
-                                  </span>
-                                </button>
-                              </div>
-                            )}
-
-                            {isPremium && explanationRaceId === r.race_id && res.data && (
-                              <div className="border-t border-[#1a1a1a] bg-[#0d0d0d]">
-                                <RaceExplanationPanel result={res.data as RacePredictResult} />
-                              </div>
-                            )}
-
-                          </>
-                        )}
-                      </div>
-                    )}
+                    <p className="mt-2 text-[10px] leading-4 text-[#666]">チェックしたレースだけを予測します。保存データを使用します。</p>
                   </div>
-                )
-              })}
-          </div>
-        )}
+                </div>
+
+                <div className="min-w-0 p-3 sm:p-4">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-semibold text-white">予測結果</h3>
+                      <span className="text-xs text-[#888]">{selectedRace.venue} {selectedRace.race_no}R</span>
+                    </div>
+                  </div>
+
+                  {performanceNotice && <p role={performanceError ? 'alert' : 'status'} className={`mb-3 text-xs ${performanceError ? 'text-[#f87171]' : 'text-[#888]'}`}>{performanceNotice} <Link href="/dashboard" className="text-[#7dd3fc] hover:underline">成績へ</Link></p>}
+
+                  {!result ? (
+                    <div className="rounded border border-dashed border-[#292929] px-4 py-8 text-center">
+                      <p className="text-sm text-[#bbb]">このレースの予測結果はありません</p>
+                      <p className="mt-1 text-xs text-[#666]">左側にチェックを入れて「予測」を実行してください。</p>
+                    </div>
+                  ) : result.skipped ? (
+                    <div role="status" className="rounded border border-[#292929] bg-[#171717] px-4 py-3 text-sm text-[#aaa]">{result.error}</div>
+                  ) : !result.success ? (
+                    <div role="alert" className="rounded border border-[#3a1a1a] bg-[#1a0a0a] px-4 py-3 text-sm text-[#f87171]">{result.error || '予測に失敗しました。'}</div>
+                  ) : (
+                    <>
+                      <PredictionFreshnessNotice result={result.data} status={result.cacheStatus ?? 'computed'} cachedAt={result.cachedAt} />
+                      <BettingRecommendationPanel recommendation={rec} diagnostics={result.data?.input_diagnostics} snapshotId={!predicting ? result.data?.performance_snapshot_id : null} nowMs={bettingNow} />
+                      <HorseCandidateProvider raceId={selectedRace.race_id} modelId={result.data?.model_id} snapshotId={result.data?.performance_snapshot_id} predictions={predictions} runnerCount={result.data?.race_info?.num_horses}>
+                        <div className="min-w-0 space-y-3 py-3">
+                          <HorseCandidatePanel raceId={selectedRace.race_id} modelId={result.data?.model_id} snapshotId={result.data?.performance_snapshot_id} predictions={predictions} runnerCount={result.data?.race_info?.num_horses} />
+                          <HorsePredictionTable predictions={predictions} recommendation={rec} input_diagnostics={result.data?.input_diagnostics} result={result.data} nowMs={bettingNow} />
+                        </div>
+                      </HorseCandidateProvider>
+                      {result.data && <ModelComparisonPanel result={result.data} />}
+                      {isPremium && (
+                        <div className="flex justify-end border-t border-[#1a1a1a] py-3">
+                          <button
+                            type="button"
+                            aria-expanded={explanationRaceId === selectedRace.race_id}
+                            onClick={() => setExplanationRaceId(current => current === selectedRace.race_id ? null : selectedRace.race_id)}
+                            className="inline-flex items-center gap-1.5 text-xs text-[#7dd3fc] transition-colors hover:text-[#bae6fd]"
+                          >
+                            {explanationRaceId === selectedRace.race_id ? 'AIの判断を閉じる' : 'AIの判断を見る'}
+                            <span className="rounded border border-[#3b2f64] bg-[#211b36] px-1.5 py-0.5 text-[9px] text-[#c4b5fd]">Premium</span>
+                          </button>
+                        </div>
+                      )}
+                      {isPremium && explanationRaceId === selectedRace.race_id && result.data && (
+                        <div className="border-t border-[#1a1a1a] bg-[#0d0d0d]">
+                          <RaceExplanationPanel result={result.data as RacePredictResult} />
+                        </div>
+                      )}
+                    </>
+                  )}
+                  <div className="mt-3 flex justify-end border-t border-[#1e1e1e] pt-3 text-xs text-[#777]">
+                    合計 ¥{dayTotal.toLocaleString()} / 予算 ¥{Math.min(dayBudget, bankroll).toLocaleString()}
+                  </div>
+                </div>
+              </div>
+            </section>
+          )
+        })()}
 
         {/* ── ナビ ── */}
         <div className="p-5 bg-[#111] border border-[#1e1e1e] rounded-lg flex items-center justify-between gap-4">
@@ -999,4 +948,3 @@ export default function PredictBatchPage() {
     </div>
   )
 }
-

@@ -29,6 +29,21 @@ describe('personal performance proxies', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  test('authenticates research reads and strips client paths and purchase metadata', async () => {
+    const { GET } = await import('@/app/api/performance/research/route')
+    verify.mockResolvedValueOnce({ ok: false, status: 401, detail: 'Authentication required' })
+    expect((await GET(request('/api/performance/research'))).status).toBe(401)
+    expect(fetchMock).not.toHaveBeenCalled()
+    const result = await GET(request('/api/performance/research?scope=development&policy=single_ai__all&date_from=20200101&owner=victim&report_path=private&purchase_eligible=true'))
+    expect(result.status).toBe(200)
+    expect(result.headers.get('Cache-Control')).toBe('no-store')
+    const [url, init] = fetchMock.mock.lastCall!
+    expect(new URL(String(url)).searchParams.toString()).toBe('policy=single_ai__all&scope=development&date_from=20200101')
+    expect(init.headers.Authorization).toBe(`Bearer ${'verified-token'}`)
+    expect(init.signal).toBeInstanceOf(AbortSignal)
+    expect(init.cache).toBe('no-store')
+  })
+
   test('forwards verified token and only allowed query fields without caching', async () => {
     const { GET } = await import('@/app/api/performance/route')
     const res = await GET(request('/api/performance?mode=actual&limit=25&date_from=20260101&date_to=20261010&owner=victim'))
@@ -47,6 +62,20 @@ describe('personal performance proxies', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  test('forwards only validated simulation year and origin without enabling actual mode', async () => {
+    const { GET } = await import('@/app/api/performance/route')
+    expect((await GET(request('/api/performance?source=simulation&origin=historical&year=2026&owner=victim'))).status).toBe(200)
+    const query = new URL(String(fetchMock.mock.calls[0][0])).searchParams
+    expect(query.get('source')).toBe('simulation')
+    expect(query.get('origin')).toBe('historical')
+    expect(query.get('year')).toBe('2026')
+    expect(query.has('owner')).toBe(false)
+    for (const invalid of ['source=simulation&mode=actual', 'source=simulation&year=1800', 'source=simulation&year=2026.5', 'year=2026', 'source=simulation&origin=unknown']) {
+      expect((await GET(request('/api/performance?' + invalid))).status).toBe(400)
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
   test('actual records require explicit purchase confirmation', async () => {
     const { POST } = await import('@/app/api/performance/records/route')
     expect((await POST(request('/api/performance/records', { ...selection, mode: 'actual' }))).status).toBe(400)
@@ -55,6 +84,26 @@ describe('personal performance proxies', () => {
     const [, init] = fetchMock.mock.calls[0]
     expect(JSON.parse(init.body).confirmed).toBe(true)
     expect(init.headers.Authorization).toBe('Bearer verified-token')
+  })
+
+  test('keeps combined evaluation and operational records limited to reference simulations', async () => {
+    const { GET } = await import('@/app/api/performance/route')
+    expect((await GET(request('/api/performance?source=simulation&origin=combined&year=2026'))).status).toBe(200)
+    const query = new URL(String(fetchMock.mock.calls[0][0])).searchParams
+    expect(query.get('origin')).toBe('combined')
+    expect(query.get('year')).toBe('2026')
+    expect((await GET(request('/api/performance?origin=combined'))).status).toBe(400)
+    expect((await GET(request('/api/performance?source=simulation&mode=actual&origin=combined'))).status).toBe(400)
+  })
+
+  test('allows explicit non-training retrospective scope only for reference simulations', async () => {
+    const { GET } = await import('@/app/api/performance/route')
+    const allowed = await GET(request('/api/performance?source=simulation&origin=historical_validation&year=2024'))
+    expect(allowed.status).toBe(200)
+    const query = new URL(String(fetchMock.mock.calls[0][0])).searchParams
+    expect(query.get('origin')).toBe('historical_validation')
+    expect((await GET(request('/api/performance?origin=historical_validation'))).status).toBe(400)
+    expect((await GET(request('/api/performance?source=simulation&mode=actual&origin=historical_validation'))).status).toBe(400)
   })
 
   test('rejects metadata, owner, payout injection and coerced stakes', async () => {

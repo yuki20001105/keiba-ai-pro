@@ -119,6 +119,15 @@ def test_worker_keeps_trainer_output_empty_and_root_results_and_manifest(setup, 
     assert store.snapshot(root.name)["trials"][0]["status"] == "completed"
 
 
+def test_agent_pace_wrapper_is_allowlisted_but_arbitrary_scripts_are_not(setup):
+    root, store = setup
+    with pytest.raises(ValueError, match="unsupported-experiment-worker"):
+        cli.batch(root, [], worker_script=cli.REPO_ROOT / "scripts" / "arbitrary.py")
+    assert cli.batch(root, [], worker_script=cli.REPO_ROOT / "scripts" / "run_agent_pace_research.py",
+                     native_threads=2) == {}
+    assert not store.snapshot(root.name)["trials"]
+
+
 def test_worker_cooperatively_stops_when_progress_observes_cancel(setup, monkeypatch):
     root, store = setup
     store.enqueue(root.name, "M01", {"num_threads": 4}, "cpu")
@@ -156,6 +165,51 @@ def test_batch_resource_starvation_has_deadline_and_starts_no_process(setup, mon
         cli.batch(root, [{"id": "M01"}], resource_wait_timeout_seconds=4, cancel_grace_seconds=0)
     assert clock.now == 4
     assert store.snapshot(root.name)["status"] == "cancelled"
+
+
+def test_goal_batch_absolute_deadline_stops_even_a_running_owned_worker(setup, monkeypatch):
+    root, store = setup
+    clock = FakeClock()
+    child = FakeChild()
+    monkeypatch.setattr(cli, "time", clock)
+    monkeypatch.setattr(cli, "resource_snapshot", resources)
+
+    def popen(_command, **kwargs):
+        claim_child(root, store, child)
+        return child
+
+    monkeypatch.setattr(cli.subprocess, "Popen", popen)
+    with pytest.raises(TimeoutError, match="time-budget"):
+        cli.batch(root, [{"id": "bounded"}], deadline_at=1002, cancel_grace_seconds=0)
+    assert child.terminate_calls == 1
+    assert child.wait_calls >= 1
+    assert store.snapshot(root.name)["status"] == "cancelled"
+
+
+def test_batch_honors_explicit_native_thread_budget(setup, monkeypatch):
+    root, store = setup
+    clock = FakeClock()
+    child = FakeChild()
+    monkeypatch.setattr(cli, "time", clock)
+    monkeypatch.setattr(cli, "resource_snapshot", resources)
+    captured = {}
+    def popen(command, **kwargs):
+        captured.update(kwargs["env"])
+        claim_child(root, store, child)
+        return child
+    monkeypatch.setattr(cli.subprocess, "Popen", popen)
+    with pytest.raises(TimeoutError):
+        cli.batch(root, [{"id": "two-threads"}], deadline_at=1002, native_threads=2)
+    assert captured["OMP_NUM_THREADS"] == "2"
+    assert store.snapshot(root.name)["trials"][0]["payload"]["num_threads"] == 2
+
+
+@pytest.mark.parametrize("threads", [0, 9, True, 2.5])
+def test_batch_rejects_invalid_thread_budget_before_enqueue(setup, threads):
+    root, store = setup
+    with pytest.raises(ValueError, match="native.thread"):
+        cli.batch(root, [{"id": "invalid"}], native_threads=threads)
+    assert not store.snapshot(root.name)["trials"]
 
 
 @pytest.mark.parametrize("cooperative", [False, True])

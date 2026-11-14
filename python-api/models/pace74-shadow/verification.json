@@ -1,0 +1,564 @@
+{
+  "verified": true,
+  "model_improved": true,
+  "selected": "c09-minleaf240",
+  "numerical_minimum": "c10-l2-5",
+  "comparisons_vs_win80": {
+    "2022": {
+      "paired_dates": 108,
+      "races": 3059,
+      "nll_improvement": 0.015166910627107566,
+      "nll_improvement_ci95": [
+        0.00850741691190762,
+        0.02167476451271768
+      ],
+      "sufficient_dates": true,
+      "selection_multiplicity_corrected": false,
+      "unseen_future_evidence": false
+    },
+    "2023": {
+      "paired_dates": 107,
+      "races": 3037,
+      "nll_improvement": 0.011717086524636744,
+      "nll_improvement_ci95": [
+        0.005206863616545046,
+        0.017876787602307553
+      ],
+      "sufficient_dates": true,
+      "selection_multiplicity_corrected": false,
+      "unseen_future_evidence": false
+    },
+    "2024": {
+      "paired_dates": 106,
+      "races": 2994,
+      "nll_improvement": 0.02000268089318428,
+      "nll_improvement_ci95": [
+        0.014004903318252663,
+        0.02551349844267586
+      ],
+      "sufficient_dates": true,
+      "selection_multiplicity_corrected": false,
+      "unseen_future_evidence": false
+    },
+    "2026": {
+      "paired_dates": 88,
+      "races": 2444,
+      "nll_improvement": 0.017595510883450984,
+      "nll_improvement_ci95": [
+        0.012232779428729412,
+        0.023620322290198812
+      ],
+      "sufficient_dates": true,
+      "selection_multiplicity_corrected": false,
+      "unseen_future_evidence": false
+    }
+  },
+  "checked_folds": [
+    {
+      "trial": "dev-win80",
+      "year": 2022,
+      "reused": true
+    },
+    {
+      "trial": "dev-win80",
+      "year": 2023,
+      "reused": true
+    },
+    {
+      "trial": "dev-win80",
+      "year": 2024,
+      "reused": true
+    },
+    {
+      "trial": "dev-field-win80",
+      "year": 2022,
+      "reused": true
+    },
+    {
+      "trial": "dev-field-win80",
+      "year": 2023,
+      "reused": true
+    },
+    {
+      "trial": "dev-field-win80",
+      "year": 2024,
+      "reused": true
+    },
+    {
+      "trial": "dev-c01-round300",
+      "year": 2022,
+      "reused": false
+    },
+    {
+      "trial": "dev-c01-round300",
+      "year": 2023,
+      "reused": false
+    },
+    {
+      "trial": "dev-c01-round300",
+      "year": 2024,
+      "reused": false
+    },
+    {
+      "trial": "dev-c01-round450",
+      "year": 2022,
+      "reused": false
+    },
+    {
+      "trial": "dev-c01-round450",
+      "year": 2023,
+      "reused": false
+    },
+    {
+      "trial": "dev-c01-round450",
+      "year": 2024,
+      "reused": false
+    },
+    {
+      "trial": "dev-c01-round600",
+      "year": 2022,
+      "reused": false
+    },
+    {
+      "trial": "dev-c01-round600",
+      "year": 2023,
+      "reused": false
+    },
+    {
+      "trial": "dev-c01-round600",
+      "year": 2024,
+      "reused": false
+    },
+    {
+      "trial": "dev-c02-l2-5",
+      "year": 2022,
+      "reused": false
+    },
+    {
+      "trial": "dev-c02-l2-5",
+      "year": 2023,
+      "reused": false
+    },
+    {
+      "trial": "dev-c02-l2-5",
+      "year": 2024,
+      "reused": false
+    },
+    {
+      "trial": "dev-c02-l2-20",
+      "year": 2022,
+      "reused": false
+    },
+    {
+      "trial": "dev-c02-l2-20",
+      "year": 2023,
+      "reused": false
+    },
+    {
+      "trial": "dev-c02-l2-20",
+      "year": 2024,
+      "reused": false
+    },
+    {
+      "trial": "dev-c02-l2-50",
+      "year": 2022,
+      "reused": false
+    },
+    {
+      "trial": "dev-c02-l2-50",
+      "year": 2023,
+      "reused": false
+    },
+    {
+      "trial": "dev-c02-l2-50",
+      "year": 2024,
+      "reused": false
+    },
+    {
+      "trial": "dev-c03-leaves7",
+      "year": 2022,
+      "reused": false
+    },
+    {
+      "trial": "dev-c03-leaves7",
+      "year": 2023,
+      "reused": false
+    },
+    {
+      "trial": "dev-c03-leaves7",
+      "year": 2024,
+      "reused": false
+    },
+    {
+      "trial": "dev-c03-leaves15",
+      "year": 2022,
+      "reused": false
+    },
+    {
+      "trial": "dev-c03-leaves15",
+      "year": 2023,
+      "reused": false
+    },
+    {
+      "trial": "dev-c03-leaves15",
+      "year": 2024,
+      "reused": false
+    },
+    {
+      "trial": "dev-c03-leaves63",
+      "year": 2022,
+      "reused": false
+    },
+    {
+      "trial": "dev-c03-leaves63",
+      "year": 2023,
+      "reused": false
+    },
+    {
+      "trial": "dev-c03-leaves63",
+      "year": 2024,
+      "reused": false
+    },
+    {
+      "trial": "dev-c04-baseline46",
+      "year": 2022,
+      "reused": false
+    },
+    {
+      "trial": "dev-c04-baseline46",
+      "year": 2023,
+      "reused": false
+    },
+    {
+      "trial": "dev-c04-baseline46",
+      "year": 2024,
+      "reused": false
+    },
+    {
+      "trial": "dev-c04-no-style",
+      "year": 2022,
+      "reused": false
+    },
+    {
+      "trial": "dev-c04-no-style",
+      "year": 2023,
+      "reused": false
+    },
+    {
+      "trial": "dev-c04-no-style",
+      "year": 2024,
+      "reused": false
+    },
+    {
+      "trial": "dev-c04-no-pedigree",
+      "year": 2022,
+      "reused": false
+    },
+    {
+      "trial": "dev-c04-no-pedigree",
+      "year": 2023,
+      "reused": false
+    },
+    {
+      "trial": "dev-c04-no-pedigree",
+      "year": 2024,
+      "reused": false
+    },
+    {
+      "trial": "dev-c05-no-weight",
+      "year": 2022,
+      "reused": false
+    },
+    {
+      "trial": "dev-c05-no-weight",
+      "year": 2023,
+      "reused": false
+    },
+    {
+      "trial": "dev-c05-no-weight",
+      "year": 2024,
+      "reused": false
+    },
+    {
+      "trial": "dev-c05-no-gate",
+      "year": 2022,
+      "reused": false
+    },
+    {
+      "trial": "dev-c05-no-gate",
+      "year": 2023,
+      "reused": false
+    },
+    {
+      "trial": "dev-c05-no-gate",
+      "year": 2024,
+      "reused": false
+    },
+    {
+      "trial": "dev-c05-no-condition",
+      "year": 2022,
+      "reused": false
+    },
+    {
+      "trial": "dev-c05-no-condition",
+      "year": 2023,
+      "reused": false
+    },
+    {
+      "trial": "dev-c05-no-condition",
+      "year": 2024,
+      "reused": false
+    },
+    {
+      "trial": "dev-c06-fields46",
+      "year": 2022,
+      "reused": false
+    },
+    {
+      "trial": "dev-c06-fields46",
+      "year": 2023,
+      "reused": false
+    },
+    {
+      "trial": "dev-c06-fields46",
+      "year": 2024,
+      "reused": false
+    },
+    {
+      "trial": "dev-c06-fields80",
+      "year": 2022,
+      "reused": false
+    },
+    {
+      "trial": "dev-c06-fields80",
+      "year": 2023,
+      "reused": false
+    },
+    {
+      "trial": "dev-c06-fields80",
+      "year": 2024,
+      "reused": false
+    },
+    {
+      "trial": "dev-c06-fields74",
+      "year": 2022,
+      "reused": false
+    },
+    {
+      "trial": "dev-c06-fields74",
+      "year": 2023,
+      "reused": false
+    },
+    {
+      "trial": "dev-c06-fields74",
+      "year": 2024,
+      "reused": false
+    },
+    {
+      "trial": "dev-c07-pace74",
+      "year": 2022,
+      "reused": false
+    },
+    {
+      "trial": "dev-c07-pace74",
+      "year": 2023,
+      "reused": false
+    },
+    {
+      "trial": "dev-c07-pace74",
+      "year": 2024,
+      "reused": false
+    },
+    {
+      "trial": "dev-c07-position74",
+      "year": 2022,
+      "reused": false
+    },
+    {
+      "trial": "dev-c07-position74",
+      "year": 2023,
+      "reused": false
+    },
+    {
+      "trial": "dev-c07-position74",
+      "year": 2024,
+      "reused": false
+    },
+    {
+      "trial": "dev-c07-both74",
+      "year": 2022,
+      "reused": false
+    },
+    {
+      "trial": "dev-c07-both74",
+      "year": 2023,
+      "reused": false
+    },
+    {
+      "trial": "dev-c07-both74",
+      "year": 2024,
+      "reused": false
+    },
+    {
+      "trial": "dev-c08-pace-time",
+      "year": 2022,
+      "reused": false
+    },
+    {
+      "trial": "dev-c08-pace-time",
+      "year": 2023,
+      "reused": false
+    },
+    {
+      "trial": "dev-c08-pace-time",
+      "year": 2024,
+      "reused": false
+    },
+    {
+      "trial": "dev-c08-pace-condition",
+      "year": 2022,
+      "reused": false
+    },
+    {
+      "trial": "dev-c08-pace-condition",
+      "year": 2023,
+      "reused": false
+    },
+    {
+      "trial": "dev-c08-pace-condition",
+      "year": 2024,
+      "reused": false
+    },
+    {
+      "trial": "dev-c08-both-interact",
+      "year": 2022,
+      "reused": false
+    },
+    {
+      "trial": "dev-c08-both-interact",
+      "year": 2023,
+      "reused": false
+    },
+    {
+      "trial": "dev-c08-both-interact",
+      "year": 2024,
+      "reused": false
+    },
+    {
+      "trial": "dev-c09-minleaf60",
+      "year": 2022,
+      "reused": false
+    },
+    {
+      "trial": "dev-c09-minleaf60",
+      "year": 2023,
+      "reused": false
+    },
+    {
+      "trial": "dev-c09-minleaf60",
+      "year": 2024,
+      "reused": false
+    },
+    {
+      "trial": "dev-c09-minleaf120",
+      "year": 2022,
+      "reused": false
+    },
+    {
+      "trial": "dev-c09-minleaf120",
+      "year": 2023,
+      "reused": false
+    },
+    {
+      "trial": "dev-c09-minleaf120",
+      "year": 2024,
+      "reused": false
+    },
+    {
+      "trial": "dev-c09-minleaf240",
+      "year": 2022,
+      "reused": false
+    },
+    {
+      "trial": "dev-c09-minleaf240",
+      "year": 2023,
+      "reused": false
+    },
+    {
+      "trial": "dev-c09-minleaf240",
+      "year": 2024,
+      "reused": false
+    },
+    {
+      "trial": "dev-c10-l2-5",
+      "year": 2022,
+      "reused": false
+    },
+    {
+      "trial": "dev-c10-l2-5",
+      "year": 2023,
+      "reused": false
+    },
+    {
+      "trial": "dev-c10-l2-5",
+      "year": 2024,
+      "reused": false
+    },
+    {
+      "trial": "dev-c10-no-pedigree",
+      "year": 2022,
+      "reused": false
+    },
+    {
+      "trial": "dev-c10-no-pedigree",
+      "year": 2023,
+      "reused": false
+    },
+    {
+      "trial": "dev-c10-no-pedigree",
+      "year": 2024,
+      "reused": false
+    },
+    {
+      "trial": "dev-c10-pace-condition",
+      "year": 2022,
+      "reused": false
+    },
+    {
+      "trial": "dev-c10-pace-condition",
+      "year": 2023,
+      "reused": false
+    },
+    {
+      "trial": "dev-c10-pace-condition",
+      "year": 2024,
+      "reused": false
+    },
+    {
+      "trial": "confirm-win80",
+      "year": 2026,
+      "reused": false
+    },
+    {
+      "trial": "confirm-c09-minleaf240",
+      "year": 2026,
+      "reused": false
+    }
+  ],
+  "cycles": 10,
+  "new_specifications": 30,
+  "new_development_folds": 90,
+  "fit_reservations": 184,
+  "all_predictions_replayed": true,
+  "current_outcome_injection_ignored": true,
+  "source_sha256": "13f004632efd695b76d1a54e301a9d69ffe84285c6660b8266d4ff1021081450",
+  "final_snapshot_sha256": "644cfb9187ec9ee748cef32d535d7d5bc6b79dc37b60d9867d44c404732cb1dd",
+  "selected_research_bundle": "C:\\Users\\yuki2\\Documents\\ws\\keiba-ai-pro\\reports\\generated\\model-experiments\\pace-agent-20261114-v3\\trials\\confirm-c09-minleaf240\\artifacts\\2026\\research.joblib",
+  "selected_research_bundle_sha256": "59c68587305f85f88f0a6cb728f1f792bc1a8f04c2f15d71aff2914b0af22412",
+  "zero_unfinished_workers": true,
+  "production_unchanged": true,
+  "known_retrospective_only": true,
+  "future_generalization_proven": false,
+  "roi_measured": false,
+  "production_eligible": false
+}

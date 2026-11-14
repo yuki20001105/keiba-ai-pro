@@ -143,7 +143,10 @@ def _ticket_key(ticket: dict, *, selected: bool = False) -> tuple[str, tuple[int
     if any(type(n) is not int or not 1 <= n <= 99 for n in members) or len(set(members)) != len(members):
         raise ValueError("買い目の馬番が不正です")
     canonical = members if kind in ORDERED_TYPES else sorted(members)
-    if members != canonical or ticket.get("combination") != "-".join(map(str, canonical)):
+    combinations = {"-".join(map(str, canonical))}
+    if kind in ORDERED_TYPES:
+        combinations.add("→".join(map(str, canonical)))
+    if members != canonical or ticket.get("combination") not in combinations:
         raise ValueError("買い目の組み合わせが一致しません")
     return kind, tuple(canonical)
 
@@ -199,13 +202,22 @@ def _selected_tickets(payload: dict, selected: list[dict], now: datetime) -> lis
         seen.add(key)
         if type(stake) is not int or stake < 100 or stake % 100 or stake > by_key[key]["stake"]:
             raise ValueError("金額は候補の範囲内で100円単位にしてください")
-        frozen.append({**by_key[key], "stake": stake})
+        frozen.append({**by_key[key], "combination": "-".join(map(str, key[1])), "stake": stake})
     ceiling = rec.get("budget")
     per_race = rec.get("per_race_limit", ceiling)
     if (type(ceiling) not in (int, float) or type(per_race) not in (int, float)
         or not math.isfinite(ceiling) or not math.isfinite(per_race)
         or sum(t["stake"] for t in frozen) > min(ceiling, per_race)):
         raise ValueError("レース予算を超えています")
+    if rec.get("betting_strategy") == "fixed-two-v1":
+        wide = [t["horse_numbers"] for t in frozen if t["bet_type"] == "ワイド"]
+        tris = [t["horse_numbers"] for t in frozen if t["bet_type"] == "三連単"]
+        if (len(frozen) != 3 or len({t["stake"] for t in frozen}) != 1
+                or len(frozen) != len(offers) or set(seen) != set(by_key)
+                or sum(t["stake"] for t in frozen) > 1500 or len(wide) != 1 or len(tris) != 2
+                or tris[0][1] != tris[1][1] or tris[0][0] != tris[1][2] or tris[0][2] != tris[1][0]
+                or tris[0][1] not in wide[0] or not set(wide[0]).issubset(tris[0])):
+            raise ValueError("②はワイド1点・三連単2点の3点を均等金額で記録してください")
     return frozen
 
 
@@ -229,6 +241,7 @@ def _record(row: sqlite3.Row | dict, *, existing: bool = False) -> dict:
         "id": row["id"], "snapshot_id": row["snapshot_id"], "race_id": row["race_id"], "race_date": row["race_date"],
         "race_info": info, "model_id": payload.get("model_id") or rec.get("model_id") or "",
         "policy_version": rec["policy_version"], "decision": rec.get("decision") if tickets else "skip",
+        "betting_strategy": rec.get("betting_strategy", "value"),
         "reason": selection.get("reason", rec.get("reason")) if not tickets and rec.get("decision") in {"buy", "priority"} else rec.get("reason"),
         "reason_codes": selection.get("reason_codes", rec.get("reason_codes", [])) if not tickets and rec.get("decision") in {"buy", "priority"} else rec.get("reason_codes", []),
         "tickets": result.get("tickets", tickets), "mode": row["mode"], "status": row["status"],
@@ -279,7 +292,8 @@ def record_selection(
                 paper_payload, paper_tickets = json.loads(paper["payload_json"]), json.loads(paper["tickets_json"])
                 identity = lambda ts: sorted((_ticket_key(t), t["stake"]) for t in ts)
                 if (identity(frozen) != identity(paper_tickets)
-                    or (paper_payload.get("model_id") or "") != (payload.get("model_id") or "")):
+                    or (paper_payload.get("model_id") or "") != (payload.get("model_id") or "")
+                    or paper_payload["recommendation"].get("betting_strategy", "value") != rec.get("betting_strategy", "value")):
                     raise ValueError("AI参考に保存した買い目と一致しません")
                 # Actual confirmation copies the already frozen decision, not a
                 # recalculated probability or a later outcome-aware prediction.
@@ -459,6 +473,40 @@ def _summary(records: list[dict]) -> dict:
     }
 
 
+def _model_performance(records: list[dict], mode: str, start: str | None, end: str | None) -> dict:
+    def normalized_time(record: dict) -> str | None:
+        parsed = _post_time(record["race_info"])
+        return parsed.strftime("%H:%M") if parsed is not None else None
+
+    models = {}
+    eligible = [record for record in records
+                if record["status"] == "settled" and record["total_cost"] > 0
+                and record["actual_return"] is not None]
+    for record in sorted(eligible, key=lambda row: (
+        row["race_date"], normalized_time(row) or "", row["race_id"], row["id"],
+    )):
+        model_id = record["model_id"]
+        model = models.setdefault(model_id, {
+            "model_id": model_id, "total_cost": 0, "total_return": 0,
+            "profit": 0, "roi": 0, "race_count": 0, "points": [],
+        })
+        model["total_cost"] += record["total_cost"]
+        model["total_return"] += record["actual_return"]
+        model["race_count"] += 1
+        model["profit"] = model["total_return"] - model["total_cost"]
+        model["roi"] = round(model["total_return"] / model["total_cost"] * 100, 1)
+        model["points"].append({
+            "date": record["race_date"], "race_id": record["race_id"],
+            "post_time": normalized_time(record),
+            **{key: model[key] for key in ("total_cost", "total_return", "profit", "roi", "race_count")},
+        })
+    return {
+        "schema": "model-cumulative-roi-v1", "mode": mode,
+        "date_from": start, "date_to": end, "includes_full_filtered_set": True,
+        "models": [models[key] for key in sorted(models)],
+    }
+
+
 def list_performance(
     db_path: str | Path, result_db_path: str | Path, owner: str, mode: str, limit: int = 100,
     date_from: str | None = None, date_to: str | None = None,
@@ -502,4 +550,5 @@ def list_performance(
         diagnostic_rows, snapshots, mode=mode, date_from=start, date_to=end,
     )
     return {"records": records[:limit], "summary": summary, "total_count": len(records),
-            "selection_diagnostics": diagnostics}
+            "selection_diagnostics": diagnostics,
+            "model_performance": _model_performance(records, mode, start, end)}

@@ -32,6 +32,13 @@ export function predictionErrorMessage(payload: unknown, status: number): string
   return `HTTP ${status}`
 }
 
+export function predictionOutsideModelScope(payload: unknown, status: number): boolean {
+  if (status !== 422 || !payload || typeof payload !== 'object') return false
+  const detail = (payload as { detail?: unknown }).detail
+  return Boolean(detail && typeof detail === 'object'
+    && (detail as { code?: unknown }).code === 'prediction_outside_model_scope')
+}
+
 export async function runPredictionQueue<T, R>(
   items: readonly T[],
   task: (item: T, index: number) => Promise<R>,

@@ -112,9 +112,11 @@ def test46_route_reuses_raw47_cache_but_binds_saved_model_to46(
     # The established helper asserts that fit receives the exact raw47 matrix.
     from training import db_shared_acceleration as acceleration
     mocked_fit = acceleration.accelerated_fit_shared_model
+    from training.db_normalized_registry import fit_module
+    current_profile = fit_module(OPTIMIZED_PIPELINE)
     profile_sources = {**raw_sources, "training.db_shared_optimized": "8" * 64}
-    monkeypatch.setattr(optimized, "accelerated_fit_shared_model", mocked_fit)
-    monkeypatch.setattr(optimized, "feature_source_hashes", lambda: profile_sources)
+    monkeypatch.setattr(current_profile, "accelerated_fit_shared_model", mocked_fit)
+    monkeypatch.setattr(current_profile, "feature_source_hashes", lambda: profile_sources)
     monkeypatch.setattr(train, "_active_model_binding",
                         lambda: pytest.fail("46 training must not switch or mutate active state"))
     sentinel = tmp_path / "preserved-active-and-forward.json"
@@ -408,4 +410,3 @@ def test46_reference_does_not_reinstate_official_ev_or_purchase_recommendation()
     assert selected["recommendation"]["total_cost"] == 0
     assert selected["recommendation"]["tickets"] == []
     assert all(row["expected_value"] is None for row in selected["predictions"])
-

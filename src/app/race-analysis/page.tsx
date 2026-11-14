@@ -15,8 +15,8 @@ import { PremiumRequiredNotice } from '@/components/PremiumRequiredNotice'
 import { bettingDecisionLabel } from '@/components/BettingRecommendationPanel'
 import { useBettingClock } from '@/hooks/useBettingClock'
 import { savePerformanceRecord } from '@/lib/performance-records'
-import { safeRecommendationForInput } from '@/lib/betting-policy'
-import { parsePredictionFreshness, predictionCacheStatus, savedPredictionForDisplay, supportsSavedDbRecompute, type PredictionCacheStatus } from '@/lib/prediction-freshness'
+import { FIXED_TWO_STRATEGY, safeRecommendationForInput, safeRecommendationForStrategy } from '@/lib/betting-policy'
+import { parsePredictionFreshness, predictionCacheStatus, savedPredictionForDisplay, supportsLiveOddsRefresh, type PredictionCacheStatus } from '@/lib/prediction-freshness'
 import { PredictionFreshnessNotice } from '@/components/PredictionFreshnessNotice'
 
 // ── 結果照合タブの型 ─────────────────────────────────────────────────
@@ -185,7 +185,8 @@ function RaceAnalysisPageContent() {
       } catch { /* Saved output is unverified while offline/using an old server. */ }
       if (generation !== raceViewGeneration.current) return
       const status = predictionCacheStatus(stored, freshness, cached.cachedAt, cached.ownerMatches === true)
-      setPredictResult(savedPredictionForDisplay({ ...stored, recommendation: safeRecommendationForInput(stored.recommendation, stored.input_diagnostics) ?? null }, status))
+      setPredictResult(savedPredictionForDisplay({ ...stored, recommendation: safeRecommendationForStrategy(
+        safeRecommendationForInput(stored.recommendation, stored.input_diagnostics), FIXED_TWO_STRATEGY) }, status))
       setCacheStatus(status)
       setFromCache(true)
       setCachedAt(cached.cachedAt)
@@ -203,9 +204,10 @@ function RaceAnalysisPageContent() {
     try {
       const capabilityResponse = await authFetch('/api/prediction-freshness', { cache: 'no-store', signal: AbortSignal.timeout(5000) })
       const capability = capabilityResponse.ok ? await capabilityResponse.json() : null
-      if (!supportsSavedDbRecompute(capability)) throw new Error('最新データで再予測できるか確認できません。APIの更新・接続状態を確認してください。')
+      if (!supportsLiveOddsRefresh(capability)) throw new Error('予測時の実オッズを取得できるか確認できません。APIの更新・接続状態を確認してください。')
       if (generation !== raceViewGeneration.current) return
-      const body: Record<string, unknown> = { race_id: raceId, bankroll: 10000, risk_mode: 'balanced', force_recompute: true, data_refresh: 'saved_db' }
+      const body: Record<string, unknown> = { race_id: raceId, bankroll: 10000, risk_mode: 'balanced',
+        betting_strategy: FIXED_TWO_STRATEGY, force_recompute: true, data_refresh: 'saved_db', refresh_odds: true }
       body.include_explanation = isPremium
       const predRes = await authFetch('/api/analyze-race', {
         method: 'POST',
@@ -218,7 +220,8 @@ function RaceAnalysisPageContent() {
         throw new Error(e.detail || `HTTP ${predRes.status}`)
       }
       const received = await predRes.json()
-      const pred = { ...received, recommendation: safeRecommendationForInput(received.recommendation, received.input_diagnostics) ?? null }
+      const pred = { ...received, recommendation: safeRecommendationForStrategy(
+        safeRecommendationForInput(received.recommendation, received.input_diagnostics), FIXED_TWO_STRATEGY) }
       if (generation !== raceViewGeneration.current) return
       const now = Date.now()
       raceCache.set(cacheKey, { predictResult: pred, featData: null, cachedAt: now })
@@ -678,4 +681,3 @@ function ResultComparePanel({
     </div>
   )
 }
-

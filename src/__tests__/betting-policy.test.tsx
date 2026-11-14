@@ -20,6 +20,22 @@ function recommendation(tickets: RecommendedTicket[]): Recommendation {
 }
 
 describe('daily betting ceiling', () => {
+  it('allocates fixed-two books atomically at equal amounts instead of cherry-picking one high-value leg', () => {
+    const fixed = { ...recommendation([
+      { ...ticket('1-5', 500, 1.4, 'ワイド'), horse_numbers: [1, 5] },
+      { ...ticket('6-1-5', 500, 1.8, '三連単'), horse_numbers: [6, 1, 5] },
+      { ...ticket('5-1-6', 500, 1.6, '三連単'), horse_numbers: [5, 1, 6] },
+    ]), betting_strategy: 'fixed-two-v1' as const, budget: 1500, per_race_limit: 1500 }
+    const input = { race: fixed }
+    const allocated = allocateDayBudget(input, 800)
+    expect(allocated.race?.tickets?.map(t => t.stake)).toEqual([200, 200, 200])
+    expect(allocated.race?.total_cost).toBe(600)
+    expect(allocateDayBudget(input, 200).race).toMatchObject({ decision: 'skip', tickets: [], total_cost: 0 })
+    expect(selectedTickets({ ...fixed, tickets: fixed.tickets!.slice(0, 2) })).toEqual([])
+    expect(selectedTickets({ ...fixed, tickets: fixed.tickets!.map((t, i) => ({ ...t, stake: i === 0 ? 100 : 200 })) })).toEqual([])
+    expect(fixed.tickets!.map(t => t.stake)).toEqual([500, 500, 500])
+  })
+
   it('prioritizes conservative value and only reduces existing 100-yen stakes', () => {
     const input = { low: recommendation([ticket('1', 300, 1.1)]), high: recommendation([ticket('2', 300, 1.4)]) }
     const result = allocateDayBudget(input, 450)
@@ -77,7 +93,7 @@ describe('shared recommendation panel', () => {
     render(<BettingRecommendationPanel recommendation={{ ...recommendation([ticket('2', 100, 1.3)]),
       action: '見送り', decision: 'skip', probability_basis: 'uncalibrated_score', reason: '勝率の検証待ち' }} />)
     expect(screen.getByText('見送り')).toBeInTheDocument()
-    expect(screen.getByText('勝率の検証待ち')).toBeInTheDocument()
+    expect(screen.getByRole('list', { name: '見送り理由' })).toHaveTextContent('勝率の検証待ち')
     expect(screen.getByText('合計 ¥0')).toBeInTheDocument()
     expect(screen.queryByText('単勝')).not.toBeInTheDocument()
   })

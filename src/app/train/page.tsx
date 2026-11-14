@@ -90,6 +90,7 @@ export default function TrainPage() {
   const [computeDevice, setComputeDevice] = useState<ComputeDevice>('auto')
   const [reuseFeatures, setReuseFeatures] = useState(true)
   const [featurePipeline, setFeaturePipeline] = useState<FeaturePipeline>(OPTIMIZED_FEATURE_PIPELINE)
+  const [groupedBaselineSupported, setGroupedBaselineSupported] = useState(false)
   const [jobAcceleration, setJobAcceleration] = useState<TrainingAcceleration | null>(null)
   const effectiveComputeDevice = computeDevice === 'gpu' && accelerationCapability?.gpuAvailable !== true ? 'auto' : computeDevice
   const contextProfileUnavailable = featurePipeline === CONTEXT_FEATURE_PIPELINE
@@ -109,6 +110,13 @@ export default function TrainPage() {
         && !Array.isArray(payload)
         && (payload as Record<string, unknown>).enabled === true
       setTrainingCapability(enabled ? 'enabled' : 'disabled')
+      setGroupedBaselineSupported(enabled
+        && Array.isArray((payload as Record<string, unknown>).feature_profiles)
+        && ((payload as Record<string, unknown>).feature_profiles as unknown[]).some(profile =>
+          typeof profile === 'object' && profile !== null
+            && (profile as Record<string, unknown>).pipeline === OPTIMIZED_FEATURE_PIPELINE
+            && (profile as Record<string, unknown>).target_normalization === 'course_going_weather'
+            && (profile as Record<string, unknown>).reference_only === true))
       const acceleration = typeof payload === 'object' && payload !== null && !Array.isArray(payload)
         ? (payload as Record<string, unknown>).acceleration
         : null
@@ -126,6 +134,7 @@ export default function TrainPage() {
     } catch {
       setTrainingCapability('disabled')
       setAccelerationCapability(null)
+      setGroupedBaselineSupported(false)
     }
   }, [])
 
@@ -436,6 +445,13 @@ export default function TrainPage() {
             {featurePipeline === OPTIMIZED_FEATURE_PIPELINE && (
               <p className="text-[#777]">直近5走の複勝圏率を除外。安定した優位性は未確認です。</p>
             )}
+            {featurePipeline === OPTIMIZED_FEATURE_PIPELINE && groupedBaselineSupported && (
+              <div className="space-y-1 text-[#888]" data-testid="training-grouped-target-note">
+                <p>目的変数は基準④を試験採用：芝ダ・距離・競馬場・馬場2分類・天候2分類ごとの速度偏差です。</p>
+                <p>TRAINの平均・標準偏差だけを保存し、30頭未満の分類は一段粗い基準へ戻します。CAL・TESTの速度は基準に含めません。</p>
+                <p className="text-[#666]">小幅な改善を優先する試験採用です。旧モデルの基準は変更せず、購入判断は未承認です。</p>
+              </div>
+            )}
             {featurePipeline === CONTEXT_FEATURE_PIPELINE && (
               <div className="space-y-1 text-[#888]" data-testid="training-context-profile-note">
                 <p>既存46項目に、過去の条件適性・馬体重推移・枠・脚質／展開・血統の34項目を追加します。</p>
@@ -638,7 +654,7 @@ export default function TrainPage() {
                               既定
                             </span>
                           )}
-                          {m.feature_pipeline === 'local-win-nll-reference-v1'
+                          {m.reference_only === true || m.feature_pipeline === 'local-win-nll-reference-v1'
                             ? <span className="text-xs text-[#fde68a]">参考運用</span>
                             : m.is_local_candidate && <span className="text-xs text-[#7dd3fc]">研究候補</span>}
                         </div>
@@ -665,7 +681,7 @@ export default function TrainPage() {
                       </div>
                       {/* 3行目: アクション */}
                       <div className="mt-3 flex items-center gap-2">
-                        {!m.is_active && !m.is_local_candidate && (
+                        {!m.is_active && !m.is_local_candidate && m.can_activate !== false && (
                           <button
                             onClick={() => handleActivateModel(m.model_id)}
                             disabled={isActivating}
@@ -678,8 +694,8 @@ export default function TrainPage() {
                         <div className="flex-1" />
                         <button
                           onClick={() => handleDeleteModel(m.model_id)}
-                          disabled={isDeleting || m.is_active || m.is_local_candidate}
-                          title={m.is_active ? '使用中モデルは削除できません' : m.is_local_candidate ? '研究候補の原本は保護されています' : 'このモデルを削除'}
+                          disabled={isDeleting || m.is_active || m.is_local_candidate || m.can_delete === false}
+                          title={m.is_active ? '使用中モデルは削除できません' : m.is_local_candidate || m.can_delete === false ? '研究候補・参考運用モデルの原本は保護されています' : 'このモデルを削除'}
                           className="text-xs text-[#555] hover:text-red-400 transition-colors disabled:opacity-30 px-2 py-1"
                         >
                           {isDeleting ? '...' : '削除'}

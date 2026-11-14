@@ -1,0 +1,3197 @@
+{
+  "schema": "agent-pace-research-v3",
+  "learning_schema": "pace-research-v2",
+  "budget": {
+    "maximum_cycles": 10,
+    "candidates_per_cycle": 3,
+    "maximum_configurations": 30,
+    "maximum_fits": 240,
+    "seconds": 21600,
+    "workers": 1,
+    "native_threads": 2
+  },
+  "criteria": {
+    "primary": "equal-year mean race NLL",
+    "minimum_nll_improvement": 0.001,
+    "maximum_annual_nll_regression": 0.005,
+    "maximum_annual_brier_regression": 0.001,
+    "maximum_annual_top1_regression": 0.005,
+    "parsimony_band": 0.001,
+    "temperature_boundary_allowed": false,
+    "production_eligible": false
+  },
+  "sources": {
+    "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+    "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+    "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+    "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+    "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+    "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+    "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+    "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+    "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+    "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+    "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+    "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+    "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+    "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+    "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+    "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f",
+    "keiba/keiba_ai/constants.py": "2adefbffa671734f2ccb0f470d24ded55308a21c9f0131c33157fea4d5bb8ef6",
+    "keiba/keiba_ai/speed_deviation.py": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+    "python-api/experiments/__init__.py": "c059acf88da3a8c1836e8ce09a731e7224ce846fffbf168ed763666457ba4a81",
+    "python-api/experiments/agent_pace_loop.py": "5ec26c3746a5cf3656d30d661b610ebc830ddb5b23caa23d00e2157cfa31a2d8",
+    "python-api/experiments/betting_search.py": "7564c7872abdbacd7dc0563cf57fe9c730a47cd28eb9e8da6f6d3b39564f078d",
+    "python-api/experiments/cli.py": "c55ed20b22a14a8f751730bb5e2f4654ac42e942d475362df9d2ba3737645d81",
+    "python-api/experiments/common.py": "b8c514177584d2c165f46a9ddf1ffcb34f5011f88517b9426e3e66fcf8b54616",
+    "python-api/experiments/dataset.py": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+    "python-api/experiments/evaluation.py": "9f46d2b006ba68ad75e2faead5dc98062da53267fea9d7c98340b1256ac4fdf2",
+    "python-api/experiments/features.py": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+    "python-api/experiments/goal_diagnostics.py": "2f3490e8a9532025f515b73e1871a1b7fd2b7ec7972a39c911a3d45dd76d7f54",
+    "python-api/experiments/goal_evidence.py": "9a957ae24b16115123592968680ff669f6e76de2138e75b5376a26eca016b90f",
+    "python-api/experiments/goal_loop.py": "fc1dbc9e7f49a44757cd098ac8011a63f1c46bbc498d5889f28a529a7709df53",
+    "python-api/experiments/goal_training.py": "06573263ab6b395d3084d0b452cd4b91c4cfe3dc66849ee33fdcdeedb2678360",
+    "python-api/experiments/orchestrator.py": "3667800944604409a44024e06819761e947f1fad72c2d69debc3ad16d1a9f6ad",
+    "python-api/experiments/pace_research_loop.py": "dc9e16b36bc360dd75dd8d6a4373d6282102eb5c3a3b431108d0dedef45e4870",
+    "python-api/experiments/resources.py": "bb13cf59e22ce279b68bd9740c98497f64890bbcf18e72bd08c2e747bac206ed",
+    "python-api/experiments/runtime.py": "e8997305ec4ba0a5df4aacb1d598b6d484f12db0ba5da21bc4f839aa0defda5a",
+    "python-api/experiments/search.py": "da26ea07a74c5c7dc26541d83f90342ca57ec76b15ef19f9b3e8d24734d033fa",
+    "python-api/experiments/search_design.py": "4c848e29320fa20d9055a4460a8efd2fd2ef7100fad0b2ac01ec90d86f84da28",
+    "python-api/experiments/search_features.py": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+    "python-api/experiments/search_metrics.py": "2816d6b52db0cf862e074049f4dfba9c575e49556842ce1c90ceefa366dcd5df",
+    "python-api/experiments/search_training.py": "abbc758bce7f65a64fa466b1b019802d16dbcb89bea4f9f94aeb1fb1e5801166",
+    "python-api/experiments/training.py": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+    "python-api/scraping/race_class.py": "10d22c6e7c8512aab625a5fd66451a804e4baa7e2fdaf3d79d338807cdf48814",
+    "python-api/training/eligibility.py": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+    "scripts/run_model_experiment.py": "f63979905405519ebd4df0f97db7f8e6b7eeb22f9ffaac2fd15b83edb0d85168",
+    "scripts/run_model_goal_loop.py": "c0be1908d999c4d0c66233ec35719561285ea3d0f7bcf53b076cd019521f043a",
+    "scripts/run_model_search.py": "61d0758518d71cc99f19acb538da9781611d993e44fe7c5e6cf62ff0b45aa34c",
+    "python-api\\training\\approved_execution.py": "bb370a575eccdbf19729eebc51ec691e1fe3938e3efb612b6f87323d13d152eb",
+    "python-api\\training\\baseline_group_comparison.py": "3fde84508ec842bfdf729a47feac2235c7ca49801e607a9dee1a082344799b75",
+    "python-api\\training\\db_context_cache.py": "3def921a7064572ad4865b65a076888fc42d3d0db0e8f8731562752b0c8e8dd1",
+    "python-api\\training\\db_context_features.py": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+    "python-api\\training\\db_context_fit.py": "2422b2536fbea62f0eb8eb307f8fc009515f62c131291e29a3e4ace6396f8d9e",
+    "python-api\\training\\db_context_registry.py": "d941ff0a9aba0fac362ea0b65d86be0ab79912737c5637549daa837d48772654",
+    "python-api\\training\\db_normalized_registry.py": "9cf7bdf162dfef720229e40bb91729d6ff311fa765580a912cea7afc09751624",
+    "python-api\\training\\db_shared_acceleration.py": "17c8a146aea4c5a61029d9efb51ddadf507625d0a8978a7fba465157a21e9982",
+    "python-api\\training\\db_shared_cache.py": "7f10315bab76d26f456c5b6a337e3ad9dd81b2d1f33c11f99cbf9b6f8ac2740d",
+    "python-api\\training\\db_shared_contract.py": "00f8b63cdbaa6660b8ea7ad9a98672567b79bebb0bb5aaaecf9d048639542ad7",
+    "python-api\\training\\db_shared_features.py": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+    "python-api\\training\\db_shared_fit.py": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+    "python-api\\training\\db_shared_grouped.py": "9f9ae17b588ce51f8dbde26acbdbf97538ba057a4135e36d7c94f249258da989",
+    "python-api\\training\\db_shared_optimized.py": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+    "python-api\\training\\db_shared_profiles.py": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+    "python-api\\training\\eligibility.py": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+    "python-api\\training\\execution_bundle.py": "b07077ad52516ddee0d89c255478eafa09e212ea8efd735f788f5f61a7decae7",
+    "python-api\\training\\grouped_speed_baseline.py": "d129f65c5bb7731d85b7ce783e2e2bcf23b2ce6d0f89b9d9fc1e5b663e645636",
+    "python-api\\training\\job_store.py": "c35dba107d734fc899111cd32523bfc57e3a335166d2e0078cc01486d8b56836",
+    "python-api\\training\\local_feature_contract.py": "2dc202686a8ccd10614f626cc4acaf599652af0885c204ae6e8da51082604356",
+    "python-api\\training\\local_retrain.py": "6b8feaf12c606abb4a75e28192067b22ca6815320ac8eb669858a6a2c4a95eac",
+    "python-api\\training\\model_evaluation.py": "6a09eacefb5217d195096db47fdcfb972848ae1901fc5057290e2f66316eddcd",
+    "python-api\\training\\monthly_validation.py": "21b97394e1526b84c2eb8e34be4ad2f546c6f3bccb1a9ae95f195f4a06a04971",
+    "python-api\\training\\monthly_validation_experiment.py": "a960a9629d18d4291fa2bd1b4b02c14f359162259db2315827672b6f61c523e6",
+    "python-api\\training\\optimizer.py": "53fd377ff999cac70134cd0356d67c4ad8e675b5ed6752f3d7376f87fd6c30c8",
+    "python-api\\training\\pace_comparison.py": "555ae80a79cd5bf21de03cb137788f518cfe8eeb1459de4960733dc33f4ca915",
+    "python-api\\training\\pace_features.py": "05ab126f7ce50bac6f0d77d4acd52aed66fa1804ca9bf405c649cb554b2ae9f0",
+    "python-api\\training\\pace_fit.py": "2d6ff93a1deda7b87208345618e5a0243d36bceca1d6bfd9fdd6bd2256b6c7ab",
+    "python-api\\training\\pace_forecast.py": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+    "python-api\\training\\pace_research.py": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+    "python-api\\training\\pace_verification.py": "0367a7e9e5e140bef5717f7f83d7505128b734d6e75f9d2b28dfd1a73db68b96",
+    "python-api\\training\\performance_targets.py": "bf5ae041ca531eb0a8cc0354cc5692071030bdf208d8fc560272fd5353907ae1",
+    "python-api\\training\\period_feature_application.py": "f0f87f4f629dc003e008e0d7a8c094771b7d27e662d3ececbadaa5d5129b83e7",
+    "python-api\\training\\period_quality.py": "ae5607b1bee323bdad9010c82c5bc4795b7fee8840c1e5b45bf172554a75ce72",
+    "python-api\\training\\pipeline.py": "d7e80f8229b1b3bb364e7d53fdaf8be937ce68edccc47a609e22d446dfc87e14",
+    "python-api\\training\\reference_evaluation.py": "98282d0bf81b901195b3ca58c5b1be00375b00f66b7ac2eba74922933b45781d",
+    "python-api\\training\\reference_replay.py": "921d68716501269ae09e524b5a3c6e6aeec3ee4fda8b632540b197907a7e6fe3",
+    "python-api\\training\\retrain_dispatcher.py": "dff88bc3c2241fb19015788ff079f89581130b04d776a57b9639cffb1412a888",
+    "python-api\\training\\retrain_evaluator.py": "fda2f413e6a785307a3f0e8dc32048b31b939069d2aaf64718172f1b009807a7",
+    "python-api\\training\\retrain_reconciler.py": "a94dc63e7e96db622b425a06dc565265e9ba9a68d0ee8479235722612891e33e",
+    "python-api\\training\\retrain_worker.py": "0c37a71380e9dac382fad6a4ef38f3a5207d7e48ed110ff18565c055edd79c72",
+    "python-api\\training\\structural_imputation.py": "4c51842f6399f15332a370474a98b635bed8fc43bb991236f860f9e260a5fddb",
+    "python-api\\training\\target_comparison.py": "5f34748f4577375c4ae5cc5e991b47f71580d4357ca01aadd71e0f1b9a057832",
+    "python-api\\training\\__init__.py": "d3cfebbd7aea2caec8c635209a8421e9502f00922249905ed87d0aaeb1038111",
+    "experiments.agent_pace_loop": "5ec26c3746a5cf3656d30d661b610ebc830ddb5b23caa23d00e2157cfa31a2d8",
+    "scripts.run_agent_pace_research": "c80f9c9a7306230896ab8dde1ddf85b34f6268a7328a6775ad666c537ff826dd"
+  },
+  "guards": {
+    "active_pointer_sha256": "bee8a454f2b6a45372461a2a2bb4c6d53a71f16967d9e91eeef83c42bea7c7fb",
+    "files": {
+      "python-api\\models\\model_speed_deviation_lightgbm_dbshared_20160105_20260927_20261012_2145_44322916.joblib": "9be2396e49f06db80bc4d556a61c7366bd6fe4b9beb7ad6e14a6444ac43a4966",
+      "config\\model_acceptance_contract.v1.json": "e3ae7c638ac1118423bb93a3d9983f9976fc4243d3c2fce7e73812408e1775d6",
+      "config\\phase3n_staking_payout_policy.v1.json": "ee631f5bafecedf6fd264be9e0f3e82c645f92e130134a129e046bfa136ea26a"
+    },
+    "live_database": {
+      "C:\\Users\\yuki2\\Documents\\ws\\keiba-ai-pro\\keiba\\data\\keiba_ultimate.db": "e41c96fcb0b2110553d66e7e3a29bcbeb1d0e98a09dc638999c01b831e0b2afd",
+      "C:\\Users\\yuki2\\Documents\\ws\\keiba-ai-pro\\keiba\\data\\keiba_ultimate.db-wal": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "execution_contract": {
+    "capacity": {
+      "cpu": 1,
+      "gpu": 0
+    },
+    "reserve_ram_mb": 2048,
+    "estimated_worker_memory_mb": 4096,
+    "source_manifest": {
+      "keiba/keiba_ai/constants.py": "2adefbffa671734f2ccb0f470d24ded55308a21c9f0131c33157fea4d5bb8ef6",
+      "keiba/keiba_ai/speed_deviation.py": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+      "python-api/experiments/__init__.py": "c059acf88da3a8c1836e8ce09a731e7224ce846fffbf168ed763666457ba4a81",
+      "python-api/experiments/agent_pace_loop.py": "5ec26c3746a5cf3656d30d661b610ebc830ddb5b23caa23d00e2157cfa31a2d8",
+      "python-api/experiments/betting_search.py": "7564c7872abdbacd7dc0563cf57fe9c730a47cd28eb9e8da6f6d3b39564f078d",
+      "python-api/experiments/cli.py": "c55ed20b22a14a8f751730bb5e2f4654ac42e942d475362df9d2ba3737645d81",
+      "python-api/experiments/common.py": "b8c514177584d2c165f46a9ddf1ffcb34f5011f88517b9426e3e66fcf8b54616",
+      "python-api/experiments/dataset.py": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+      "python-api/experiments/evaluation.py": "9f46d2b006ba68ad75e2faead5dc98062da53267fea9d7c98340b1256ac4fdf2",
+      "python-api/experiments/features.py": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+      "python-api/experiments/goal_diagnostics.py": "2f3490e8a9532025f515b73e1871a1b7fd2b7ec7972a39c911a3d45dd76d7f54",
+      "python-api/experiments/goal_evidence.py": "9a957ae24b16115123592968680ff669f6e76de2138e75b5376a26eca016b90f",
+      "python-api/experiments/goal_loop.py": "fc1dbc9e7f49a44757cd098ac8011a63f1c46bbc498d5889f28a529a7709df53",
+      "python-api/experiments/goal_training.py": "06573263ab6b395d3084d0b452cd4b91c4cfe3dc66849ee33fdcdeedb2678360",
+      "python-api/experiments/orchestrator.py": "3667800944604409a44024e06819761e947f1fad72c2d69debc3ad16d1a9f6ad",
+      "python-api/experiments/pace_research_loop.py": "dc9e16b36bc360dd75dd8d6a4373d6282102eb5c3a3b431108d0dedef45e4870",
+      "python-api/experiments/resources.py": "bb13cf59e22ce279b68bd9740c98497f64890bbcf18e72bd08c2e747bac206ed",
+      "python-api/experiments/runtime.py": "e8997305ec4ba0a5df4aacb1d598b6d484f12db0ba5da21bc4f839aa0defda5a",
+      "python-api/experiments/search.py": "da26ea07a74c5c7dc26541d83f90342ca57ec76b15ef19f9b3e8d24734d033fa",
+      "python-api/experiments/search_design.py": "4c848e29320fa20d9055a4460a8efd2fd2ef7100fad0b2ac01ec90d86f84da28",
+      "python-api/experiments/search_features.py": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+      "python-api/experiments/search_metrics.py": "2816d6b52db0cf862e074049f4dfba9c575e49556842ce1c90ceefa366dcd5df",
+      "python-api/experiments/search_training.py": "abbc758bce7f65a64fa466b1b019802d16dbcb89bea4f9f94aeb1fb1e5801166",
+      "python-api/experiments/training.py": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+      "python-api/scraping/race_class.py": "10d22c6e7c8512aab625a5fd66451a804e4baa7e2fdaf3d79d338807cdf48814",
+      "python-api/training/eligibility.py": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+      "scripts/run_model_experiment.py": "f63979905405519ebd4df0f97db7f8e6b7eeb22f9ffaac2fd15b83edb0d85168",
+      "scripts/run_model_goal_loop.py": "c0be1908d999c4d0c66233ec35719561285ea3d0f7bcf53b076cd019521f043a",
+      "scripts/run_model_search.py": "61d0758518d71cc99f19acb538da9781611d993e44fe7c5e6cf62ff0b45aa34c"
+    },
+    "active_pointer_sha256": "bee8a454f2b6a45372461a2a2bb4c6d53a71f16967d9e91eeef83c42bea7c7fb",
+    "dataset_manifest_sha256": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+    "dataset_sha256": "90bfdd4fe68723178740bb43f4a205d06569c5b445f1d367ae395a2876a454ae"
+  },
+  "reference_receipt_sha256": "2cd9a062467343aa86c0ae1f46f3e2f7870d80057cf3e606afd35ab421ce0948",
+  "reference_development": [
+    {
+      "experiment_contract_sha256": "312e26f3a09176c592f899160b0d7417b63f2b152f77d0126e9949b85c07512a",
+      "folds": [
+        {
+          "boundary": false,
+          "calibration": {
+            "boundary_reached": false,
+            "date_from": "20210105",
+            "date_to": "20211228",
+            "eligible_races": 3052,
+            "fit_uses_test": false,
+            "temperature": 0.9577317436957302
+          },
+          "features": 80,
+          "forecast_availability": null,
+          "head_metrics": null,
+          "metrics": {
+            "brier": 0.847543654460277,
+            "ece": 0.014542622663131576,
+            "nll": 2.171596590933717,
+            "races": 3059,
+            "top1": 0.2559660019614253
+          },
+          "oof_audit": [],
+          "serialized_prediction_parity": true,
+          "year": 2022
+        },
+        {
+          "boundary": false,
+          "calibration": {
+            "boundary_reached": false,
+            "date_from": "20220105",
+            "date_to": "20221228",
+            "eligible_races": 3059,
+            "fit_uses_test": false,
+            "temperature": 0.8997801796605752
+          },
+          "features": 80,
+          "forecast_availability": null,
+          "head_metrics": null,
+          "metrics": {
+            "brier": 0.8491922282116485,
+            "ece": 0.01779807950348561,
+            "nll": 2.178885270949113,
+            "races": 3037,
+            "top1": 0.2538689496213368
+          },
+          "oof_audit": [],
+          "serialized_prediction_parity": true,
+          "year": 2023
+        },
+        {
+          "boundary": false,
+          "calibration": {
+            "boundary_reached": false,
+            "date_from": "20230105",
+            "date_to": "20231228",
+            "eligible_races": 3037,
+            "fit_uses_test": false,
+            "temperature": 0.8931382517302352
+          },
+          "features": 80,
+          "forecast_availability": null,
+          "head_metrics": null,
+          "metrics": {
+            "brier": 0.8421662610962886,
+            "ece": 0.013543681931176808,
+            "nll": 2.1468039978426923,
+            "races": 2994,
+            "top1": 0.2625250501002004
+          },
+          "oof_audit": [],
+          "serialized_prediction_parity": true,
+          "year": 2024
+        }
+      ],
+      "id": "win80",
+      "phase": "development",
+      "physical_fits_reserved_total": 61,
+      "production_eligible": false,
+      "reference_only": true,
+      "resource_usage": {
+        "device": "cpu",
+        "num_threads": 2,
+        "peak_sampled_rss_mb": 1111.328125,
+        "wall_seconds": 46.79534840001725
+      },
+      "specification": {
+        "fields": false,
+        "groups": [
+          "baseline46",
+          "condition_aptitude",
+          "weight",
+          "pedigree",
+          "gate",
+          "style_pace"
+        ],
+        "head": "none",
+        "id": "win80",
+        "interactions": false,
+        "mode": "legacy",
+        "objective": "win",
+        "params": {},
+        "time_feature": false
+      }
+    },
+    {
+      "experiment_contract_sha256": "312e26f3a09176c592f899160b0d7417b63f2b152f77d0126e9949b85c07512a",
+      "folds": [
+        {
+          "boundary": false,
+          "calibration": {
+            "boundary_reached": false,
+            "date_from": "20210105",
+            "date_to": "20211228",
+            "eligible_races": 3052,
+            "fit_uses_test": false,
+            "temperature": 0.9617406783421466
+          },
+          "features": 97,
+          "forecast_availability": {
+            "CAL": {
+              "pace_model_available": 0.8214235177585963,
+              "position_model_available": 1.0
+            },
+            "TRAIN": {
+              "pace_model_available": 0.15184570794851962,
+              "position_model_available": 0.7935239462084005
+            },
+            "VALID": {
+              "pace_model_available": 0.814102258079916,
+              "position_model_available": 1.0
+            }
+          },
+          "head_metrics": {
+            "pace": {
+              "accuracy": 0.49572649572649574,
+              "brier": 0.6457551229159957,
+              "first600_mae_seconds": 0.8102965317908984,
+              "first600_rmse_seconds": 0.9788339143176011,
+              "nll": 1.0821460485458374,
+              "observed_class_counts": {
+                "0": 44,
+                "1": 23,
+                "2": 50
+              },
+              "probability_calibrated": false,
+              "race_count": 117,
+              "runner_count": 117,
+              "status": "trained"
+            },
+            "position": {
+              "accuracy": 0.5316751802167374,
+              "brier": 0.5681275912097278,
+              "nll": 0.9501815438270569,
+              "observed_class_counts": {
+                "0": 15430,
+                "1": 12729,
+                "2": 13735
+              },
+              "probability_calibrated": false,
+              "projected_position_mae": 0.2369609929027421,
+              "race_count": 3063,
+              "runner_count": 41894,
+              "status": "trained"
+            }
+          },
+          "metrics": {
+            "brier": 0.8469580761993022,
+            "ece": 0.009124303193031116,
+            "nll": 2.1713305114984958,
+            "races": 3059,
+            "top1": 0.25269695979078133
+          },
+          "oof_audit": [
+            {
+              "prediction_date_from": "20170105",
+              "training_date_to": "20161225"
+            },
+            {
+              "prediction_date_from": "20180106",
+              "training_date_to": "20171228"
+            },
+            {
+              "prediction_date_from": "20190105",
+              "training_date_to": "20181228"
+            },
+            {
+              "prediction_date_from": "20200105",
+              "training_date_to": "20191228"
+            },
+            {
+              "prediction_date_from": "20210105",
+              "training_date_to": "20201227"
+            }
+          ],
+          "serialized_prediction_parity": true,
+          "year": 2022
+        },
+        {
+          "boundary": false,
+          "calibration": {
+            "boundary_reached": false,
+            "date_from": "20220105",
+            "date_to": "20221228",
+            "eligible_races": 3059,
+            "fit_uses_test": false,
+            "temperature": 0.9064181111996745
+          },
+          "features": 97,
+          "forecast_availability": {
+            "CAL": {
+              "pace_model_available": 0.814102258079916,
+              "position_model_available": 1.0
+            },
+            "TRAIN": {
+              "pace_model_available": 0.26231479175745503,
+              "position_model_available": 0.8275890244661644
+            },
+            "VALID": {
+              "pace_model_available": 0.8172081314714543,
+              "position_model_available": 1.0
+            }
+          },
+          "head_metrics": {
+            "pace": {
+              "accuracy": 0.40816326530612246,
+              "brier": 0.6740893404392725,
+              "first600_mae_seconds": 0.565472051096937,
+              "first600_rmse_seconds": 0.6814303956267552,
+              "nll": 1.1144747734069824,
+              "observed_class_counts": {
+                "0": 22,
+                "1": 29,
+                "2": 47
+              },
+              "probability_calibrated": false,
+              "race_count": 98,
+              "runner_count": 98,
+              "status": "trained"
+            },
+            "position": {
+              "accuracy": 0.5285456445331054,
+              "brier": 0.5709539754167151,
+              "nll": 0.9543101787567139,
+              "observed_class_counts": {
+                "0": 15420,
+                "1": 12903,
+                "2": 13785
+              },
+              "probability_calibrated": false,
+              "projected_position_mae": 0.237486523376642,
+              "race_count": 3039,
+              "runner_count": 42108,
+              "status": "trained"
+            }
+          },
+          "metrics": {
+            "brier": 0.8494517322684575,
+            "ece": 0.02102620018988321,
+            "nll": 2.1777608228738816,
+            "races": 3037,
+            "top1": 0.24827132038195587
+          },
+          "oof_audit": [
+            {
+              "prediction_date_from": "20170105",
+              "training_date_to": "20161225"
+            },
+            {
+              "prediction_date_from": "20180106",
+              "training_date_to": "20171228"
+            },
+            {
+              "prediction_date_from": "20190105",
+              "training_date_to": "20181228"
+            },
+            {
+              "prediction_date_from": "20200105",
+              "training_date_to": "20191228"
+            },
+            {
+              "prediction_date_from": "20210105",
+              "training_date_to": "20201227"
+            },
+            {
+              "prediction_date_from": "20220105",
+              "training_date_to": "20211228"
+            }
+          ],
+          "serialized_prediction_parity": true,
+          "year": 2023
+        },
+        {
+          "boundary": false,
+          "calibration": {
+            "boundary_reached": false,
+            "date_from": "20230105",
+            "date_to": "20231228",
+            "eligible_races": 3037,
+            "fit_uses_test": false,
+            "temperature": 0.8914505370481439
+          },
+          "features": 97,
+          "forecast_availability": {
+            "CAL": {
+              "pace_model_available": 0.8340457870238435,
+              "position_model_available": 1.0
+            },
+            "TRAIN": {
+              "pace_model_available": 0.33965313045747436,
+              "position_model_available": 0.8517540866237094
+            },
+            "VALID": {
+              "pace_model_available": 0.835491315437872,
+              "position_model_available": 1.0
+            }
+          },
+          "head_metrics": {
+            "pace": {
+              "accuracy": 0.4230769230769231,
+              "brier": 0.6677348045639762,
+              "first600_mae_seconds": 0.6070114200575893,
+              "first600_rmse_seconds": 0.7757995131246669,
+              "nll": 1.1153864860534668,
+              "observed_class_counts": {
+                "0": 36,
+                "1": 38,
+                "2": 56
+              },
+              "probability_calibrated": false,
+              "race_count": 130,
+              "runner_count": 130,
+              "status": "trained"
+            },
+            "position": {
+              "accuracy": 0.52624802623588,
+              "brier": 0.5700240660563999,
+              "nll": 0.9529199600219727,
+              "observed_class_counts": {
+                "0": 15153,
+                "1": 12598,
+                "2": 13414
+              },
+              "probability_calibrated": false,
+              "projected_position_mae": 0.23721179988691207,
+              "race_count": 2999,
+              "runner_count": 41165,
+              "status": "trained"
+            }
+          },
+          "metrics": {
+            "brier": 0.8427366059141133,
+            "ece": 0.016879826988154416,
+            "nll": 2.1481121048467964,
+            "races": 2994,
+            "top1": 0.26586506346025385
+          },
+          "oof_audit": [
+            {
+              "prediction_date_from": "20170105",
+              "training_date_to": "20161225"
+            },
+            {
+              "prediction_date_from": "20180106",
+              "training_date_to": "20171228"
+            },
+            {
+              "prediction_date_from": "20190105",
+              "training_date_to": "20181228"
+            },
+            {
+              "prediction_date_from": "20200105",
+              "training_date_to": "20191228"
+            },
+            {
+              "prediction_date_from": "20210105",
+              "training_date_to": "20201227"
+            },
+            {
+              "prediction_date_from": "20220105",
+              "training_date_to": "20211228"
+            },
+            {
+              "prediction_date_from": "20230105",
+              "training_date_to": "20221228"
+            }
+          ],
+          "serialized_prediction_parity": true,
+          "year": 2024
+        }
+      ],
+      "id": "field-win80",
+      "phase": "development",
+      "physical_fits_reserved_total": 220,
+      "production_eligible": false,
+      "reference_only": true,
+      "resource_usage": {
+        "device": "cpu",
+        "num_threads": 2,
+        "peak_sampled_rss_mb": 1430.46875,
+        "wall_seconds": 82.25721049995627
+      },
+      "specification": {
+        "fields": true,
+        "groups": [
+          "baseline46",
+          "condition_aptitude",
+          "weight",
+          "pedigree",
+          "gate",
+          "style_pace"
+        ],
+        "head": "both",
+        "id": "field-win80",
+        "interactions": false,
+        "mode": "hier_field",
+        "objective": "win",
+        "params": {},
+        "time_feature": true
+      }
+    }
+  ],
+  "historical_development": [
+    {
+      "id": "speed46",
+      "specification": {
+        "fields": false,
+        "groups": [
+          "baseline46"
+        ],
+        "head": "none",
+        "id": "speed46",
+        "interactions": false,
+        "mode": "legacy",
+        "objective": "speed",
+        "params": {},
+        "time_feature": false
+      },
+      "folds": [
+        {
+          "year": 2022,
+          "metrics": {
+            "brier": 0.8680201295583272,
+            "ece": 0.04042066882518679,
+            "nll": 2.287871237948259,
+            "races": 3059,
+            "top1": 0.2360248447204969
+          },
+          "features": 46,
+          "boundary": false
+        },
+        {
+          "year": 2023,
+          "metrics": {
+            "brier": 0.8668712896869045,
+            "ece": 0.03024895283182852,
+            "nll": 2.287392349617557,
+            "races": 3037,
+            "top1": 0.23378333882120514
+          },
+          "features": 46,
+          "boundary": false
+        },
+        {
+          "year": 2024,
+          "metrics": {
+            "brier": 0.8628203638096169,
+            "ece": 0.033388055026969905,
+            "nll": 2.263933971056699,
+            "races": 2994,
+            "top1": 0.24148296593186372
+          },
+          "features": 46,
+          "boundary": false
+        }
+      ]
+    },
+    {
+      "id": "speed80",
+      "specification": {
+        "fields": false,
+        "groups": [
+          "baseline46",
+          "condition_aptitude",
+          "weight",
+          "pedigree",
+          "gate",
+          "style_pace"
+        ],
+        "head": "none",
+        "id": "speed80",
+        "interactions": false,
+        "mode": "legacy",
+        "objective": "speed",
+        "params": {},
+        "time_feature": false
+      },
+      "folds": [
+        {
+          "year": 2022,
+          "metrics": {
+            "brier": 0.8697362019417013,
+            "ece": 0.03437409913422424,
+            "nll": 2.29045867277976,
+            "races": 3059,
+            "top1": 0.22719843085975808
+          },
+          "features": 80,
+          "boundary": false
+        },
+        {
+          "year": 2023,
+          "metrics": {
+            "brier": 0.8702696852362856,
+            "ece": 0.028323201086501507,
+            "nll": 2.3058173159134068,
+            "races": 3037,
+            "top1": 0.23016134343101746
+          },
+          "features": 80,
+          "boundary": false
+        },
+        {
+          "year": 2024,
+          "metrics": {
+            "brier": 0.8656145821400939,
+            "ece": 0.04058587777193634,
+            "nll": 2.2749078730403443,
+            "races": 2994,
+            "top1": 0.23680694722778892
+          },
+          "features": 80,
+          "boundary": false
+        }
+      ]
+    },
+    {
+      "id": "legacy90",
+      "specification": {
+        "fields": false,
+        "groups": [
+          "baseline46",
+          "condition_aptitude",
+          "weight",
+          "pedigree",
+          "gate",
+          "style_pace"
+        ],
+        "head": "both",
+        "id": "legacy90",
+        "interactions": false,
+        "mode": "legacy",
+        "objective": "speed",
+        "params": {},
+        "time_feature": false
+      },
+      "folds": [
+        {
+          "year": 2022,
+          "metrics": {
+            "brier": 0.8690265228592882,
+            "ece": 0.040996446725162665,
+            "nll": 2.288488931756385,
+            "races": 3059,
+            "top1": 0.2337365152010461
+          },
+          "features": 90,
+          "boundary": false
+        },
+        {
+          "year": 2023,
+          "metrics": {
+            "brier": 0.8719551626360416,
+            "ece": 0.025830686581139843,
+            "nll": 2.312101227313022,
+            "races": 3037,
+            "top1": 0.22522225880803423
+          },
+          "features": 90,
+          "boundary": false
+        },
+        {
+          "year": 2024,
+          "metrics": {
+            "brier": 0.8656221432090903,
+            "ece": 0.037766122804176204,
+            "nll": 2.2754199220068183,
+            "races": 2994,
+            "top1": 0.23780895123580495
+          },
+          "features": 90,
+          "boundary": false
+        }
+      ]
+    },
+    {
+      "id": "win46",
+      "specification": {
+        "fields": false,
+        "groups": [
+          "baseline46"
+        ],
+        "head": "none",
+        "id": "win46",
+        "interactions": false,
+        "mode": "legacy",
+        "objective": "win",
+        "params": {},
+        "time_feature": false
+      },
+      "folds": [
+        {
+          "year": 2022,
+          "metrics": {
+            "brier": 0.8482721148877119,
+            "ece": 0.013595627046116346,
+            "nll": 2.1787572993436495,
+            "races": 3059,
+            "top1": 0.2572736188296829
+          },
+          "features": 46,
+          "boundary": false
+        },
+        {
+          "year": 2023,
+          "metrics": {
+            "brier": 0.8498395896031283,
+            "ece": 0.013044474260124195,
+            "nll": 2.185341556166711,
+            "races": 3037,
+            "top1": 0.2525518603885413
+          },
+          "features": 46,
+          "boundary": false
+        },
+        {
+          "year": 2024,
+          "metrics": {
+            "brier": 0.8440488111129839,
+            "ece": 0.019098362921713838,
+            "nll": 2.1555063619648207,
+            "races": 2994,
+            "top1": 0.2668670674682699
+          },
+          "features": 46,
+          "boundary": false
+        }
+      ]
+    },
+    {
+      "id": "win80",
+      "specification": {
+        "fields": false,
+        "groups": [
+          "baseline46",
+          "condition_aptitude",
+          "weight",
+          "pedigree",
+          "gate",
+          "style_pace"
+        ],
+        "head": "none",
+        "id": "win80",
+        "interactions": false,
+        "mode": "legacy",
+        "objective": "win",
+        "params": {},
+        "time_feature": false
+      },
+      "folds": [
+        {
+          "year": 2022,
+          "metrics": {
+            "brier": 0.847543654460277,
+            "ece": 0.014542622663131576,
+            "nll": 2.171596590933717,
+            "races": 3059,
+            "top1": 0.2559660019614253
+          },
+          "features": 80,
+          "boundary": false
+        },
+        {
+          "year": 2023,
+          "metrics": {
+            "brier": 0.8491922282116485,
+            "ece": 0.01779807950348561,
+            "nll": 2.178885270949113,
+            "races": 3037,
+            "top1": 0.2538689496213368
+          },
+          "features": 80,
+          "boundary": false
+        },
+        {
+          "year": 2024,
+          "metrics": {
+            "brier": 0.8421662610962886,
+            "ece": 0.013543681931176808,
+            "nll": 2.1468039978426923,
+            "races": 2994,
+            "top1": 0.2625250501002004
+          },
+          "features": 80,
+          "boundary": false
+        }
+      ]
+    },
+    {
+      "id": "win90",
+      "specification": {
+        "fields": false,
+        "groups": [
+          "baseline46",
+          "condition_aptitude",
+          "weight",
+          "pedigree",
+          "gate",
+          "style_pace"
+        ],
+        "head": "both",
+        "id": "win90",
+        "interactions": false,
+        "mode": "legacy",
+        "objective": "win",
+        "params": {},
+        "time_feature": false
+      },
+      "folds": [
+        {
+          "year": 2022,
+          "metrics": {
+            "brier": 0.8473526477151108,
+            "ece": 0.009449897396660424,
+            "nll": 2.1719678962495506,
+            "races": 3059,
+            "top1": 0.2556390977443609
+          },
+          "features": 90,
+          "boundary": false
+        },
+        {
+          "year": 2023,
+          "metrics": {
+            "brier": 0.8492879962826084,
+            "ece": 0.01939860029210396,
+            "nll": 2.1778764920088474,
+            "races": 3037,
+            "top1": 0.2515640434639447
+          },
+          "features": 90,
+          "boundary": false
+        },
+        {
+          "year": 2024,
+          "metrics": {
+            "brier": 0.8424631453718345,
+            "ece": 0.01460795202393273,
+            "nll": 2.1478869213815766,
+            "races": 2994,
+            "top1": 0.2605210420841683
+          },
+          "features": 90,
+          "boundary": false
+        }
+      ]
+    },
+    {
+      "id": "group-condition_aptitude",
+      "specification": {
+        "fields": false,
+        "groups": [
+          "baseline46",
+          "condition_aptitude"
+        ],
+        "head": "none",
+        "id": "group-condition_aptitude",
+        "interactions": false,
+        "mode": "legacy",
+        "objective": "speed",
+        "params": {},
+        "time_feature": false
+      },
+      "folds": [
+        {
+          "year": 2022,
+          "metrics": {
+            "brier": 0.8689497614927258,
+            "ece": 0.0403182324803024,
+            "nll": 2.2883769998524723,
+            "races": 3059,
+            "top1": 0.2317750898986597
+          },
+          "features": 54,
+          "boundary": false
+        },
+        {
+          "year": 2023,
+          "metrics": {
+            "brier": 0.8695018059060314,
+            "ece": 0.029203231083347846,
+            "nll": 2.3037084138315613,
+            "races": 3037,
+            "top1": 0.22983207112281856
+          },
+          "features": 54,
+          "boundary": false
+        },
+        {
+          "year": 2024,
+          "metrics": {
+            "brier": 0.8656822569689263,
+            "ece": 0.03230579889400122,
+            "nll": 2.2747640562788534,
+            "races": 2994,
+            "top1": 0.22945891783567135
+          },
+          "features": 54,
+          "boundary": false
+        }
+      ]
+    },
+    {
+      "id": "group-weight",
+      "specification": {
+        "fields": false,
+        "groups": [
+          "baseline46",
+          "weight"
+        ],
+        "head": "none",
+        "id": "group-weight",
+        "interactions": false,
+        "mode": "legacy",
+        "objective": "speed",
+        "params": {},
+        "time_feature": false
+      },
+      "folds": [
+        {
+          "year": 2022,
+          "metrics": {
+            "brier": 0.8688536610829555,
+            "ece": 0.039845977196296685,
+            "nll": 2.2905034224014003,
+            "races": 3059,
+            "top1": 0.2334096109839817
+          },
+          "features": 52,
+          "boundary": false
+        },
+        {
+          "year": 2023,
+          "metrics": {
+            "brier": 0.868093342559916,
+            "ece": 0.03271385802848845,
+            "nll": 2.2925204026925354,
+            "races": 3037,
+            "top1": 0.23378333882120514
+          },
+          "features": 52,
+          "boundary": false
+        },
+        {
+          "year": 2024,
+          "metrics": {
+            "brier": 0.8636954316437375,
+            "ece": 0.03447005488835632,
+            "nll": 2.2681809224345475,
+            "races": 2994,
+            "top1": 0.24081496325985305
+          },
+          "features": 52,
+          "boundary": false
+        }
+      ]
+    },
+    {
+      "id": "group-pedigree",
+      "specification": {
+        "fields": false,
+        "groups": [
+          "baseline46",
+          "pedigree"
+        ],
+        "head": "none",
+        "id": "group-pedigree",
+        "interactions": false,
+        "mode": "legacy",
+        "objective": "speed",
+        "params": {},
+        "time_feature": false
+      },
+      "folds": [
+        {
+          "year": 2022,
+          "metrics": {
+            "brier": 0.8680985046941725,
+            "ece": 0.03663484455345142,
+            "nll": 2.2854431309591,
+            "races": 3059,
+            "top1": 0.22981366459627328
+          },
+          "features": 53,
+          "boundary": false
+        },
+        {
+          "year": 2023,
+          "metrics": {
+            "brier": 0.8671773774084235,
+            "ece": 0.02824858268004879,
+            "nll": 2.2870425050951244,
+            "races": 3037,
+            "top1": 0.2324662495884096
+          },
+          "features": 53,
+          "boundary": false
+        },
+        {
+          "year": 2024,
+          "metrics": {
+            "brier": 0.863288931466884,
+            "ece": 0.030898978787676917,
+            "nll": 2.2644585282231846,
+            "races": 2994,
+            "top1": 0.24148296593186372
+          },
+          "features": 53,
+          "boundary": false
+        }
+      ]
+    },
+    {
+      "id": "group-gate",
+      "specification": {
+        "fields": false,
+        "groups": [
+          "baseline46",
+          "gate"
+        ],
+        "head": "none",
+        "id": "group-gate",
+        "interactions": false,
+        "mode": "legacy",
+        "objective": "speed",
+        "params": {},
+        "time_feature": false
+      },
+      "folds": [
+        {
+          "year": 2022,
+          "metrics": {
+            "brier": 0.8676938008659019,
+            "ece": 0.0381943906057636,
+            "nll": 2.283878189232866,
+            "races": 3059,
+            "top1": 0.2321019941157241
+          },
+          "features": 50,
+          "boundary": false
+        },
+        {
+          "year": 2023,
+          "metrics": {
+            "brier": 0.866696607103597,
+            "ece": 0.030840016627495123,
+            "nll": 2.285984535052475,
+            "races": 3037,
+            "top1": 0.2344418834376029
+          },
+          "features": 50,
+          "boundary": false
+        },
+        {
+          "year": 2024,
+          "metrics": {
+            "brier": 0.8635803826816792,
+            "ece": 0.03888373519049775,
+            "nll": 2.267108130667152,
+            "races": 2994,
+            "top1": 0.24415497661990648
+          },
+          "features": 50,
+          "boundary": false
+        }
+      ]
+    },
+    {
+      "id": "group-style_pace",
+      "specification": {
+        "fields": false,
+        "groups": [
+          "baseline46",
+          "style_pace"
+        ],
+        "head": "none",
+        "id": "group-style_pace",
+        "interactions": false,
+        "mode": "legacy",
+        "objective": "speed",
+        "params": {},
+        "time_feature": false
+      },
+      "folds": [
+        {
+          "year": 2022,
+          "metrics": {
+            "brier": 0.8680304688528134,
+            "ece": 0.0461869190408661,
+            "nll": 2.28624047093542,
+            "races": 3059,
+            "top1": 0.23896698267407648
+          },
+          "features": 55,
+          "boundary": false
+        },
+        {
+          "year": 2023,
+          "metrics": {
+            "brier": 0.8671625769453489,
+            "ece": 0.028605949634922783,
+            "nll": 2.2884070027858123,
+            "races": 3037,
+            "top1": 0.2308198880474152
+          },
+          "features": 55,
+          "boundary": false
+        },
+        {
+          "year": 2024,
+          "metrics": {
+            "brier": 0.8645885367962051,
+            "ece": 0.037058088982947206,
+            "nll": 2.272618784502997,
+            "races": 2994,
+            "top1": 0.24181696726786908
+          },
+          "features": 55,
+          "boundary": false
+        }
+      ]
+    },
+    {
+      "id": "hier-pace",
+      "specification": {
+        "fields": false,
+        "groups": [
+          "baseline46"
+        ],
+        "head": "pace",
+        "id": "hier-pace",
+        "interactions": false,
+        "mode": "hier",
+        "objective": "speed",
+        "params": {},
+        "time_feature": true
+      },
+      "folds": [
+        {
+          "year": 2022,
+          "metrics": {
+            "brier": 0.8678548229329793,
+            "ece": 0.03722379241381336,
+            "nll": 2.2852833071935974,
+            "races": 3059,
+            "top1": 0.2317750898986597
+          },
+          "features": 51,
+          "boundary": false
+        },
+        {
+          "year": 2023,
+          "metrics": {
+            "brier": 0.8678518957592015,
+            "ece": 0.03256498934562706,
+            "nll": 2.290161693118727,
+            "races": 3037,
+            "top1": 0.23180770497201186
+          },
+          "features": 51,
+          "boundary": false
+        },
+        {
+          "year": 2024,
+          "metrics": {
+            "brier": 0.8643854636640584,
+            "ece": 0.038636754483785236,
+            "nll": 2.27061199438245,
+            "races": 2994,
+            "top1": 0.2374749498997996
+          },
+          "features": 51,
+          "boundary": false
+        }
+      ]
+    },
+    {
+      "id": "hier-both",
+      "specification": {
+        "fields": false,
+        "groups": [
+          "baseline46"
+        ],
+        "head": "both",
+        "id": "hier-both",
+        "interactions": false,
+        "mode": "hier",
+        "objective": "speed",
+        "params": {},
+        "time_feature": true
+      },
+      "folds": [
+        {
+          "year": 2022,
+          "metrics": {
+            "brier": 0.8695249230771964,
+            "ece": 0.03749003528143359,
+            "nll": 2.2931998709356534,
+            "races": 3059,
+            "top1": 0.2317750898986597
+          },
+          "features": 57,
+          "boundary": false
+        },
+        {
+          "year": 2023,
+          "metrics": {
+            "brier": 0.8688368630837191,
+            "ece": 0.027397220559748903,
+            "nll": 2.2954175783185575,
+            "races": 3037,
+            "top1": 0.22785643727362528
+          },
+          "features": 57,
+          "boundary": false
+        },
+        {
+          "year": 2024,
+          "metrics": {
+            "brier": 0.8653663298799709,
+            "ece": 0.033716177268660254,
+            "nll": 2.274114438145567,
+            "races": 2994,
+            "top1": 0.23547094188376755
+          },
+          "features": 57,
+          "boundary": false
+        }
+      ]
+    },
+    {
+      "id": "condition-pace",
+      "specification": {
+        "fields": false,
+        "groups": [
+          "baseline46"
+        ],
+        "head": "pace",
+        "id": "condition-pace",
+        "interactions": false,
+        "mode": "condition",
+        "objective": "speed",
+        "params": {},
+        "time_feature": true
+      },
+      "folds": [
+        {
+          "year": 2022,
+          "metrics": {
+            "brier": 0.8684232891313555,
+            "ece": 0.0508265349868463,
+            "nll": 2.285719914045317,
+            "races": 3059,
+            "top1": 0.2435436417129781
+          },
+          "features": 51,
+          "boundary": false
+        },
+        {
+          "year": 2023,
+          "metrics": {
+            "brier": 0.8682058061762384,
+            "ece": 0.02653157455577778,
+            "nll": 2.2933574800430803,
+            "races": 3037,
+            "top1": 0.22818570958182416
+          },
+          "features": 51,
+          "boundary": false
+        },
+        {
+          "year": 2024,
+          "metrics": {
+            "brier": 0.8650159431268798,
+            "ece": 0.03369293021544991,
+            "nll": 2.27294929135208,
+            "races": 2994,
+            "top1": 0.23380093520374082
+          },
+          "features": 51,
+          "boundary": false
+        }
+      ]
+    },
+    {
+      "id": "field-speed46",
+      "specification": {
+        "fields": true,
+        "groups": [
+          "baseline46"
+        ],
+        "head": "both",
+        "id": "field-speed46",
+        "interactions": false,
+        "mode": "hier_field",
+        "objective": "speed",
+        "params": {},
+        "time_feature": true
+      },
+      "folds": [
+        {
+          "year": 2022,
+          "metrics": {
+            "brier": 0.8692016180635328,
+            "ece": 0.04333001323242712,
+            "nll": 2.291097789084075,
+            "races": 3059,
+            "top1": 0.2366786531546257
+          },
+          "features": 63,
+          "boundary": false
+        },
+        {
+          "year": 2023,
+          "metrics": {
+            "brier": 0.8684430893639599,
+            "ece": 0.024397889549271336,
+            "nll": 2.2931292144105053,
+            "races": 3037,
+            "top1": 0.22456371419163648
+          },
+          "features": 63,
+          "boundary": false
+        },
+        {
+          "year": 2024,
+          "metrics": {
+            "brier": 0.8655417393230443,
+            "ece": 0.03609176268904815,
+            "nll": 2.2750585392276395,
+            "races": 2994,
+            "top1": 0.23881095524382098
+          },
+          "features": 63,
+          "boundary": false
+        }
+      ]
+    },
+    {
+      "id": "field-win80",
+      "specification": {
+        "fields": true,
+        "groups": [
+          "baseline46",
+          "condition_aptitude",
+          "weight",
+          "pedigree",
+          "gate",
+          "style_pace"
+        ],
+        "head": "both",
+        "id": "field-win80",
+        "interactions": false,
+        "mode": "hier_field",
+        "objective": "win",
+        "params": {},
+        "time_feature": true
+      },
+      "folds": [
+        {
+          "year": 2022,
+          "metrics": {
+            "brier": 0.8469580761993022,
+            "ece": 0.009124303193031116,
+            "nll": 2.1713305114984958,
+            "races": 3059,
+            "top1": 0.25269695979078133
+          },
+          "features": 97,
+          "boundary": false
+        },
+        {
+          "year": 2023,
+          "metrics": {
+            "brier": 0.8494517322684575,
+            "ece": 0.02102620018988321,
+            "nll": 2.1777608228738816,
+            "races": 3037,
+            "top1": 0.24827132038195587
+          },
+          "features": 97,
+          "boundary": false
+        },
+        {
+          "year": 2024,
+          "metrics": {
+            "brier": 0.8427366059141133,
+            "ece": 0.016879826988154416,
+            "nll": 2.1481121048467964,
+            "races": 2994,
+            "top1": 0.26586506346025385
+          },
+          "features": 97,
+          "boundary": false
+        }
+      ]
+    },
+    {
+      "id": "interact-win46",
+      "specification": {
+        "fields": true,
+        "groups": [
+          "baseline46"
+        ],
+        "head": "both",
+        "id": "interact-win46",
+        "interactions": true,
+        "mode": "hier_field",
+        "objective": "win",
+        "params": {},
+        "time_feature": true
+      },
+      "folds": [
+        {
+          "year": 2022,
+          "metrics": {
+            "brier": 0.8479831311393163,
+            "ece": 0.012094885075412665,
+            "nll": 2.175961445252772,
+            "races": 3059,
+            "top1": 0.2543314808761033
+          },
+          "features": 67,
+          "boundary": false
+        },
+        {
+          "year": 2023,
+          "metrics": {
+            "brier": 0.849488085351416,
+            "ece": 0.013721181959234443,
+            "nll": 2.1810265953533614,
+            "races": 3037,
+            "top1": 0.24662495884096147
+          },
+          "features": 67,
+          "boundary": false
+        },
+        {
+          "year": 2024,
+          "metrics": {
+            "brier": 0.8437480506165616,
+            "ece": 0.015237731885515575,
+            "nll": 2.152910870630393,
+            "races": 2994,
+            "top1": 0.26452905811623245
+          },
+          "features": 67,
+          "boundary": false
+        }
+      ]
+    },
+    {
+      "id": "interact-win80",
+      "specification": {
+        "fields": true,
+        "groups": [
+          "baseline46",
+          "condition_aptitude",
+          "weight",
+          "pedigree",
+          "gate",
+          "style_pace"
+        ],
+        "head": "both",
+        "id": "interact-win80",
+        "interactions": true,
+        "mode": "hier_field",
+        "objective": "win",
+        "params": {},
+        "time_feature": true
+      },
+      "folds": [
+        {
+          "year": 2022,
+          "metrics": {
+            "brier": 0.8474844070768752,
+            "ece": 0.013506132187993968,
+            "nll": 2.1732355426590315,
+            "races": 3059,
+            "top1": 0.2523700555737169
+          },
+          "features": 101,
+          "boundary": false
+        },
+        {
+          "year": 2023,
+          "metrics": {
+            "brier": 0.8492448977041879,
+            "ece": 0.023982979341364823,
+            "nll": 2.1779432474908433,
+            "races": 3037,
+            "top1": 0.2518933157721436
+          },
+          "features": 101,
+          "boundary": false
+        },
+        {
+          "year": 2024,
+          "metrics": {
+            "brier": 0.8427634087564295,
+            "ece": 0.020203723562541787,
+            "nll": 2.147939001193369,
+            "races": 2994,
+            "top1": 0.26419505678022714
+          },
+          "features": 101,
+          "boundary": false
+        }
+      ]
+    },
+    {
+      "id": "legacy46-pace",
+      "specification": {
+        "fields": false,
+        "groups": [
+          "baseline46"
+        ],
+        "head": "pace",
+        "id": "legacy46-pace",
+        "interactions": false,
+        "mode": "legacy",
+        "objective": "speed",
+        "params": {},
+        "time_feature": false
+      },
+      "folds": [
+        {
+          "year": 2022,
+          "metrics": {
+            "brier": 0.8679212236559776,
+            "ece": 0.044253773898124876,
+            "nll": 2.2874148906971485,
+            "races": 3059,
+            "top1": 0.2399476953252697
+          },
+          "features": 50,
+          "boundary": false
+        },
+        {
+          "year": 2023,
+          "metrics": {
+            "brier": 0.8666564262965277,
+            "ece": 0.032090130020335166,
+            "nll": 2.287293921590501,
+            "races": 3037,
+            "top1": 0.23542970036219954
+          },
+          "features": 50,
+          "boundary": false
+        },
+        {
+          "year": 2024,
+          "metrics": {
+            "brier": 0.8643927922562914,
+            "ece": 0.033067471131778575,
+            "nll": 2.2706331622070772,
+            "races": 2994,
+            "top1": 0.23613894455577822
+          },
+          "features": 50,
+          "boundary": false
+        }
+      ]
+    },
+    {
+      "id": "legacy46-position",
+      "specification": {
+        "fields": false,
+        "groups": [
+          "baseline46"
+        ],
+        "head": "position",
+        "id": "legacy46-position",
+        "interactions": false,
+        "mode": "legacy",
+        "objective": "speed",
+        "params": {},
+        "time_feature": false
+      },
+      "folds": [
+        {
+          "year": 2022,
+          "metrics": {
+            "brier": 0.8694930522942909,
+            "ece": 0.04755260267153078,
+            "nll": 2.291527746589882,
+            "races": 3059,
+            "top1": 0.2392938868911409
+          },
+          "features": 52,
+          "boundary": false
+        },
+        {
+          "year": 2023,
+          "metrics": {
+            "brier": 0.8679853448148628,
+            "ece": 0.026369073786602967,
+            "nll": 2.2916971288979187,
+            "races": 3037,
+            "top1": 0.22719789265722753
+          },
+          "features": 52,
+          "boundary": false
+        },
+        {
+          "year": 2024,
+          "metrics": {
+            "brier": 0.8648023979770812,
+            "ece": 0.029623216633856562,
+            "nll": 2.2735196379078637,
+            "races": 2994,
+            "top1": 0.23513694054776219
+          },
+          "features": 52,
+          "boundary": false
+        }
+      ]
+    },
+    {
+      "id": "legacy46-both",
+      "specification": {
+        "fields": false,
+        "groups": [
+          "baseline46"
+        ],
+        "head": "both",
+        "id": "legacy46-both",
+        "interactions": false,
+        "mode": "legacy",
+        "objective": "speed",
+        "params": {},
+        "time_feature": false
+      },
+      "folds": [
+        {
+          "year": 2022,
+          "metrics": {
+            "brier": 0.8692493874381413,
+            "ece": 0.050475882870947716,
+            "nll": 2.292659937748186,
+            "races": 3059,
+            "top1": 0.2422360248447205
+          },
+          "features": 56,
+          "boundary": false
+        },
+        {
+          "year": 2023,
+          "metrics": {
+            "brier": 0.8692427093137038,
+            "ece": 0.023117282537943918,
+            "nll": 2.2946964385411257,
+            "races": 3037,
+            "top1": 0.22127099110964768
+          },
+          "features": 56,
+          "boundary": false
+        },
+        {
+          "year": 2024,
+          "metrics": {
+            "brier": 0.8652344885497982,
+            "ece": 0.03142367882088166,
+            "nll": 2.274275033622557,
+            "races": 2994,
+            "top1": 0.23547094188376755
+          },
+          "features": 56,
+          "boundary": false
+        }
+      ]
+    },
+    {
+      "id": "blend-10",
+      "specification": {
+        "blend_weight": 0.1,
+        "fields": true,
+        "groups": [
+          "baseline46",
+          "condition_aptitude",
+          "weight",
+          "pedigree",
+          "gate",
+          "style_pace"
+        ],
+        "head": "both",
+        "id": "blend-10",
+        "interactions": false,
+        "mode": "hier_field",
+        "objective": "win",
+        "params": {},
+        "time_feature": true
+      },
+      "folds": [
+        {
+          "year": 2022,
+          "metrics": {
+            "brier": 0.8635110195674864,
+            "ece": 0.04138157784082928,
+            "nll": 2.265678995496174,
+            "races": 3059,
+            "top1": 0.2435436417129781
+          },
+          "features": 97,
+          "boundary": false
+        },
+        {
+          "year": 2023,
+          "metrics": {
+            "brier": 0.8625610006656814,
+            "ece": 0.030836390331034014,
+            "nll": 2.2651475863903583,
+            "races": 3037,
+            "top1": 0.24168587421797827
+          },
+          "features": 97,
+          "boundary": false
+        },
+        {
+          "year": 2024,
+          "metrics": {
+            "brier": 0.8582448309110434,
+            "ece": 0.03317687555723434,
+            "nll": 2.241083637323257,
+            "races": 2994,
+            "top1": 0.2501670006680027
+          },
+          "features": 97,
+          "boundary": false
+        }
+      ]
+    },
+    {
+      "id": "blend-25",
+      "specification": {
+        "blend_weight": 0.25,
+        "fields": true,
+        "groups": [
+          "baseline46",
+          "condition_aptitude",
+          "weight",
+          "pedigree",
+          "gate",
+          "style_pace"
+        ],
+        "head": "both",
+        "id": "blend-25",
+        "interactions": false,
+        "mode": "hier_field",
+        "objective": "win",
+        "params": {},
+        "time_feature": true
+      },
+      "folds": [
+        {
+          "year": 2022,
+          "metrics": {
+            "brier": 0.8575052977152497,
+            "ece": 0.03507427213606624,
+            "nll": 2.2352636904862337,
+            "races": 3059,
+            "top1": 0.2504086302713305
+          },
+          "features": 97,
+          "boundary": false
+        },
+        {
+          "year": 2023,
+          "metrics": {
+            "brier": 0.8570025002302595,
+            "ece": 0.026350880478342255,
+            "nll": 2.2349748369031124,
+            "races": 3037,
+            "top1": 0.24991768192295027
+          },
+          "features": 97,
+          "boundary": false
+        },
+        {
+          "year": 2024,
+          "metrics": {
+            "brier": 0.8522574314068655,
+            "ece": 0.025742261864316066,
+            "nll": 2.210048509315315,
+            "races": 2994,
+            "top1": 0.25517702070808285
+          },
+          "features": 97,
+          "boundary": false
+        }
+      ]
+    }
+  ],
+  "historical_specifications": [
+    {
+      "fields": false,
+      "groups": [
+        "baseline46"
+      ],
+      "head": "none",
+      "id": "speed46",
+      "interactions": false,
+      "mode": "legacy",
+      "objective": "speed",
+      "params": {},
+      "time_feature": false
+    },
+    {
+      "fields": false,
+      "groups": [
+        "baseline46",
+        "condition_aptitude",
+        "weight",
+        "pedigree",
+        "gate",
+        "style_pace"
+      ],
+      "head": "none",
+      "id": "speed80",
+      "interactions": false,
+      "mode": "legacy",
+      "objective": "speed",
+      "params": {},
+      "time_feature": false
+    },
+    {
+      "fields": false,
+      "groups": [
+        "baseline46",
+        "condition_aptitude",
+        "weight",
+        "pedigree",
+        "gate",
+        "style_pace"
+      ],
+      "head": "both",
+      "id": "legacy90",
+      "interactions": false,
+      "mode": "legacy",
+      "objective": "speed",
+      "params": {},
+      "time_feature": false
+    },
+    {
+      "fields": false,
+      "groups": [
+        "baseline46"
+      ],
+      "head": "none",
+      "id": "win46",
+      "interactions": false,
+      "mode": "legacy",
+      "objective": "win",
+      "params": {},
+      "time_feature": false
+    },
+    {
+      "fields": false,
+      "groups": [
+        "baseline46",
+        "condition_aptitude",
+        "weight",
+        "pedigree",
+        "gate",
+        "style_pace"
+      ],
+      "head": "none",
+      "id": "win80",
+      "interactions": false,
+      "mode": "legacy",
+      "objective": "win",
+      "params": {},
+      "time_feature": false
+    },
+    {
+      "fields": false,
+      "groups": [
+        "baseline46",
+        "condition_aptitude",
+        "weight",
+        "pedigree",
+        "gate",
+        "style_pace"
+      ],
+      "head": "both",
+      "id": "win90",
+      "interactions": false,
+      "mode": "legacy",
+      "objective": "win",
+      "params": {},
+      "time_feature": false
+    },
+    {
+      "fields": false,
+      "groups": [
+        "baseline46",
+        "condition_aptitude"
+      ],
+      "head": "none",
+      "id": "group-condition_aptitude",
+      "interactions": false,
+      "mode": "legacy",
+      "objective": "speed",
+      "params": {},
+      "time_feature": false
+    },
+    {
+      "fields": false,
+      "groups": [
+        "baseline46",
+        "weight"
+      ],
+      "head": "none",
+      "id": "group-weight",
+      "interactions": false,
+      "mode": "legacy",
+      "objective": "speed",
+      "params": {},
+      "time_feature": false
+    },
+    {
+      "fields": false,
+      "groups": [
+        "baseline46",
+        "pedigree"
+      ],
+      "head": "none",
+      "id": "group-pedigree",
+      "interactions": false,
+      "mode": "legacy",
+      "objective": "speed",
+      "params": {},
+      "time_feature": false
+    },
+    {
+      "fields": false,
+      "groups": [
+        "baseline46",
+        "gate"
+      ],
+      "head": "none",
+      "id": "group-gate",
+      "interactions": false,
+      "mode": "legacy",
+      "objective": "speed",
+      "params": {},
+      "time_feature": false
+    },
+    {
+      "fields": false,
+      "groups": [
+        "baseline46",
+        "style_pace"
+      ],
+      "head": "none",
+      "id": "group-style_pace",
+      "interactions": false,
+      "mode": "legacy",
+      "objective": "speed",
+      "params": {},
+      "time_feature": false
+    },
+    {
+      "fields": false,
+      "groups": [
+        "baseline46"
+      ],
+      "head": "pace",
+      "id": "hier-pace",
+      "interactions": false,
+      "mode": "hier",
+      "objective": "speed",
+      "params": {},
+      "time_feature": true
+    },
+    {
+      "fields": false,
+      "groups": [
+        "baseline46"
+      ],
+      "head": "both",
+      "id": "hier-both",
+      "interactions": false,
+      "mode": "hier",
+      "objective": "speed",
+      "params": {},
+      "time_feature": true
+    },
+    {
+      "fields": false,
+      "groups": [
+        "baseline46"
+      ],
+      "head": "pace",
+      "id": "condition-pace",
+      "interactions": false,
+      "mode": "condition",
+      "objective": "speed",
+      "params": {},
+      "time_feature": true
+    },
+    {
+      "fields": true,
+      "groups": [
+        "baseline46"
+      ],
+      "head": "both",
+      "id": "field-speed46",
+      "interactions": false,
+      "mode": "hier_field",
+      "objective": "speed",
+      "params": {},
+      "time_feature": true
+    },
+    {
+      "fields": true,
+      "groups": [
+        "baseline46",
+        "condition_aptitude",
+        "weight",
+        "pedigree",
+        "gate",
+        "style_pace"
+      ],
+      "head": "both",
+      "id": "field-win80",
+      "interactions": false,
+      "mode": "hier_field",
+      "objective": "win",
+      "params": {},
+      "time_feature": true
+    },
+    {
+      "fields": true,
+      "groups": [
+        "baseline46"
+      ],
+      "head": "both",
+      "id": "interact-win46",
+      "interactions": true,
+      "mode": "hier_field",
+      "objective": "win",
+      "params": {},
+      "time_feature": true
+    },
+    {
+      "fields": true,
+      "groups": [
+        "baseline46",
+        "condition_aptitude",
+        "weight",
+        "pedigree",
+        "gate",
+        "style_pace"
+      ],
+      "head": "both",
+      "id": "interact-win80",
+      "interactions": true,
+      "mode": "hier_field",
+      "objective": "win",
+      "params": {},
+      "time_feature": true
+    },
+    {
+      "fields": false,
+      "groups": [
+        "baseline46"
+      ],
+      "head": "pace",
+      "id": "legacy46-pace",
+      "interactions": false,
+      "mode": "legacy",
+      "objective": "speed",
+      "params": {},
+      "time_feature": false
+    },
+    {
+      "fields": false,
+      "groups": [
+        "baseline46"
+      ],
+      "head": "position",
+      "id": "legacy46-position",
+      "interactions": false,
+      "mode": "legacy",
+      "objective": "speed",
+      "params": {},
+      "time_feature": false
+    },
+    {
+      "fields": false,
+      "groups": [
+        "baseline46"
+      ],
+      "head": "both",
+      "id": "legacy46-both",
+      "interactions": false,
+      "mode": "legacy",
+      "objective": "speed",
+      "params": {},
+      "time_feature": false
+    },
+    {
+      "blend_weight": 0.1,
+      "fields": true,
+      "groups": [
+        "baseline46",
+        "condition_aptitude",
+        "weight",
+        "pedigree",
+        "gate",
+        "style_pace"
+      ],
+      "head": "both",
+      "id": "blend-10",
+      "interactions": false,
+      "mode": "hier_field",
+      "objective": "win",
+      "params": {},
+      "time_feature": true
+    },
+    {
+      "blend_weight": 0.25,
+      "fields": true,
+      "groups": [
+        "baseline46",
+        "condition_aptitude",
+        "weight",
+        "pedigree",
+        "gate",
+        "style_pace"
+      ],
+      "head": "both",
+      "id": "blend-25",
+      "interactions": false,
+      "mode": "hier_field",
+      "objective": "win",
+      "params": {},
+      "time_feature": true
+    }
+  ],
+  "diagnostics_sha256": "e6cf9b8e3941f32f929c96500f0a53f4c2135145b2621214bb73806e9def661b",
+  "reused_heads": [
+    {
+      "directory": "0138da40ee4ef396bfaa31d5be9ef67be17934e7884aeb33f5f6bad86bf9576f",
+      "identity": {
+        "mode": "legacy",
+        "cutoff": "20161225",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "5f38c617919880a2448588e10ac090cfc6c8c1746fd64676b408034d222bbb33",
+      "artifact_sha256": "5fe5911d17dcd752848fef605af0924b7dba4aef6dea47bb9eff2cb63867ff87",
+      "new_fits": 0
+    },
+    {
+      "directory": "01f404381aa4b1b85c3c766665fbf869829d5f0590d173c30af65c408f8f73df",
+      "identity": {
+        "mode": "legacy",
+        "cutoff": "20201227",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "e14d6f6fefcb432dcb11b14750e9b1496fb60e84fb61e1008a5d64537aec2de5",
+      "artifact_sha256": "0095f6e66613d71e4bf5a84f38f741818127c18fd132db2a8aba53129604be8b",
+      "new_fits": 0
+    },
+    {
+      "directory": "02277135c14f6dbae498b6ead3941bdf3c5d2e8b6c17b9590830461614e088b4",
+      "identity": {
+        "mode": "condition",
+        "cutoff": "20211228",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "1741f1dfe53dff646e43a0be380a5d747a7acd5214b032d89f1790f537775c00",
+      "artifact_sha256": "23f05bb62d4195e22c12463a7f6bbbed8f4619b7c747adb2e15d797d5626ebe9",
+      "new_fits": 0
+    },
+    {
+      "directory": "08b219f3ef0c75a0c1acb6a77e4842d669ed8c9c89fd5c45a514b9b4e83cd334",
+      "identity": {
+        "mode": "hier_field",
+        "cutoff": "20171228",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "e0d39cb8d8a21ed109c0462775e77e874825100b6be9397c3695e077d7334757",
+      "artifact_sha256": "0f00e5f069bc8393e121b6591e49c6cd63656007aedc2be8a913e82bf6d44538",
+      "new_fits": 0
+    },
+    {
+      "directory": "1d15cdb2f0ea9e3e9f7eb15b20ab7983b92afab06130cbf143b440f9ad387d98",
+      "identity": {
+        "mode": "condition",
+        "cutoff": "20161225",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "6b12a018615b32b26a8e4b4d2ec2a30c348607350868221858a1ac20ca6c8881",
+      "artifact_sha256": "dc5c720e5b7b02a3ad862888430788bb51ec611f65f5e2d026942c49e2d36bc9",
+      "new_fits": 0
+    },
+    {
+      "directory": "1f14130dd86e3f12801416f76e8803fd9823e1091879ed2c16eb4ec2223976dd",
+      "identity": {
+        "mode": "legacy",
+        "cutoff": "20181228",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "f1bedda19cd1a240f14d79e4a6ec86be7ff691862a91a77573e01a3534271ab1",
+      "artifact_sha256": "0789316ca129edcc024200843f4e42a5532d7fce0eeb2f07c78e73348f175dfb",
+      "new_fits": 0
+    },
+    {
+      "directory": "2609769534e43fe489be39f9d5c3664a7cd5a9eb129469f69ba655f5b3b004b5",
+      "identity": {
+        "mode": "hier_field",
+        "cutoff": "20191228",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "a6b857b1ad80a9c12feeecfcd59f6325bc8645f8f8cb7c0999c9fbe1b9c1cd3f",
+      "artifact_sha256": "de311ac8419e34c7377c9c9552e4c428b21538bbe952af07c375c53bc873f8fe",
+      "new_fits": 0
+    },
+    {
+      "directory": "2a51764e823df267716c4437b7422cbd3be77925899148fe335e79e8f1115f7f",
+      "identity": {
+        "mode": "condition",
+        "cutoff": "20201227",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "cebb074c8bdb3383667cc97252476075bb80784df4e55a310af91a4d2fc90854",
+      "artifact_sha256": "0d8634a6602b9fd1d9e535f201e98c2cd51672973f34781d5e7b5d8122f45d4e",
+      "new_fits": 0
+    },
+    {
+      "directory": "2ffcbd647eec9de94a0520d512faddbbe9953e4445a551ef2ecef6017cb74a00",
+      "identity": {
+        "mode": "hier",
+        "cutoff": "20161225",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "d263b144095051088b3a9952f536a427cf48f09593753d75846069d2810a50bd",
+      "artifact_sha256": "cff3ef54c6bf7f26f7b8d042eadfc6b3467b090ebdbd1b3904ad65f597606e35",
+      "new_fits": 0
+    },
+    {
+      "directory": "39384d5097ce34e60fbd240620a067c6470933435e27d8c0be8a7be8168fcf2b",
+      "identity": {
+        "mode": "hier",
+        "cutoff": "20171228",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "866d6fb909f682145270be613fb3bf69632e9f619fc0bbd3a0884ff20bbe7856",
+      "artifact_sha256": "4e254445f8fedfa7afc2b02948e35ff2a6446766d97497ba180d3255d1e4f666",
+      "new_fits": 0
+    },
+    {
+      "directory": "4f1eecaa4adc368f02378db8cc17b0b2d5a09833f9c773a891042b973145a33f",
+      "identity": {
+        "mode": "hier_field",
+        "cutoff": "20231228",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "73a3bb15c923ff33ef032d40a509333f6a5844f6f8edd5bb919c417cc7e93715",
+      "artifact_sha256": "d833b1dac1ea544e46dd3d7980dda9f3fca8d6a8b091c66485a45840108bd1aa",
+      "new_fits": 0
+    },
+    {
+      "directory": "4f3b7494b678f625052b6d44d2dfa22acea53e565e54050c86d44df671d84506",
+      "identity": {
+        "mode": "condition",
+        "cutoff": "20181228",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "cace5aaced905deaf6b9cef06724cb54c6f845f3a323e96601c7057d5b19a3d4",
+      "artifact_sha256": "0aae187feb5ae8c557feab74331b12c0abb27a69c47dd87089c407f054eadfc2",
+      "new_fits": 0
+    },
+    {
+      "directory": "5500c0eb89f131ea1bafb78a1c0890f64ea230711d1ed50aa597579885449dfa",
+      "identity": {
+        "mode": "hier_field",
+        "cutoff": "20161225",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "e4f325cee6ab73f565d4573d1426f2ad90437548d9b9104a3c7a09fa46d96dc9",
+      "artifact_sha256": "616080f693c286b55a6b586926b49f3912c30b2a13becdb3c4c6408981e994d8",
+      "new_fits": 0
+    },
+    {
+      "directory": "576a256bf03f7e4b4edd50f58d2f57c58e4b637151d936fb64bef35a9b8b5509",
+      "identity": {
+        "mode": "hier_field",
+        "cutoff": "20201227",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "c1ff68a04d3a50e3a3443bd4071fd6474e67bc3f2135bb804438939b4e70786b",
+      "artifact_sha256": "0a3e325920ea5eb32979b0631d9f09bc4d118f82eaf1c538ba0751d668abb750",
+      "new_fits": 0
+    },
+    {
+      "directory": "57fefe65a7cdea10b32a8fc9b9da523e0cd50802d093719eddaf10217518556f",
+      "identity": {
+        "mode": "legacy",
+        "cutoff": "20231228",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "088a9a60c9e88a798c08559e540a03258d0a937fdf141f52d1fc68fccdb2bbe4",
+      "artifact_sha256": "b3de20ac15bc5340f8f7f93752fc1acaa0c90f1ae4d0d8b6a33cad5f442bcb4f",
+      "new_fits": 0
+    },
+    {
+      "directory": "58029fb8ecb866da38ac11ed797ed4ff4597dce244355fbf3dea6493a7d0b3b6",
+      "identity": {
+        "mode": "hier_field",
+        "cutoff": "20221228",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "63a39db31adfc452c00270517af7b2dd41d52b2b7a291f1739b6e43fc90b3d32",
+      "artifact_sha256": "7674a02a77c50d65ec2632a9827feda84357ce25ffe632da32e82ee1997261b3",
+      "new_fits": 0
+    },
+    {
+      "directory": "60f937911fb53d110cb96baf2facab934fb7b71e24aa13f78bca6bfc2c86824a",
+      "identity": {
+        "mode": "legacy",
+        "cutoff": "20191228",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "fe3546084a60cba7cb6e5474dac4ab9239f508a5099d215e5cccc40808582407",
+      "artifact_sha256": "ae869a8782f277b1de8edf4fab71b092d524f972a45d11756d74a08346d71bc4",
+      "new_fits": 0
+    },
+    {
+      "directory": "6a0cd230a614411179158136f8f058e1c890e5dc14c0765a84a9c756e5d330d9",
+      "identity": {
+        "mode": "hier_field",
+        "cutoff": "20211228",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "d1fa601f2a470dac3a8446a12b548222de4e9835239672897a4f84270e67b6fe",
+      "artifact_sha256": "591db1ad48de3489fc3077d331910c5bcfb13c5aa14c7d048adfb7211b13aecf",
+      "new_fits": 0
+    },
+    {
+      "directory": "6bc41ae69b13b2e7f55540caa877839abaf5a5135e714d6382afcbaf2daad75f",
+      "identity": {
+        "mode": "condition",
+        "cutoff": "20171228",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "a17f46b928bc6ea065b58e63e04b3ea88b413e2ec2ee1e45af8926422f5bfb81",
+      "artifact_sha256": "430244ff59332db8fee1feb0170fde81f81584a491b3961ed963e6e1f31a9355",
+      "new_fits": 0
+    },
+    {
+      "directory": "7c2a1278ad16306ba9514535452a2ba7f1a53ef6723811eecbae495bc88237be",
+      "identity": {
+        "mode": "legacy",
+        "cutoff": "20241228",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "0483a374f7f719139342e7e4ed3fb34ed6e0663a147b970e1d8540b62e142d1d",
+      "artifact_sha256": "c586c75e3eb67ee2a74da3bfcad109a08ac719a3b2cb0528db55cb99d8329ca2",
+      "new_fits": 0
+    },
+    {
+      "directory": "83536affad3ad2e3c0c6a54aee594b50384c36b51576752952b04a91d99a2d71",
+      "identity": {
+        "mode": "condition",
+        "cutoff": "20191228",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "477b393589617636389cab3b1c0e25cfb1abf56da197313a0db65b35a06f0b69",
+      "artifact_sha256": "ff33f66985f5c6a7b5887536ab2cda1cf11a1a9999dc1495346cb2ad1254842a",
+      "new_fits": 0
+    },
+    {
+      "directory": "899371e9f5a0e4514deb8b88bb531319bb4cd05cb55e5d7575958dfeb8e2e43b",
+      "identity": {
+        "mode": "hier",
+        "cutoff": "20181228",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "27a86136bf480c0d496f492293d38014e58b610a80cc8ddf9306150b4fc06e11",
+      "artifact_sha256": "b741d37b968d8da46cfb50779c1c0ee4f5e4093d702c339b71ebebb4b38f108e",
+      "new_fits": 0
+    },
+    {
+      "directory": "8d0945099877b149c3ecbb9686926ffe9f09cd023423b6fabcb0b98ec63eeb9d",
+      "identity": {
+        "mode": "condition",
+        "cutoff": "20221228",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "0b17947298f562bf9a38231bed935677cc63db0e689c0ee965ee09551898b3d3",
+      "artifact_sha256": "793b61fc3ba5926620fc6a32f480be494b620e3d5145797c6b218ca380a4692b",
+      "new_fits": 0
+    },
+    {
+      "directory": "9da68dfdd06a68811c6f4bb5fd107c263ce79cdec0941c0320e9eccf0c1062aa",
+      "identity": {
+        "mode": "hier",
+        "cutoff": "20201227",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "ac0b84a5307bb9ca369f475420627bd20decac7a245fb648b306acc33e01809a",
+      "artifact_sha256": "8f0cebbcad06110331dbb7a5379e1651d3b04997fcad80812818f43accbd8986",
+      "new_fits": 0
+    },
+    {
+      "directory": "a98dfc8ee78532b0c3cc62592f08c7a01dd5ad6ba9fc49c2b61e2f084be9b073",
+      "identity": {
+        "mode": "legacy",
+        "cutoff": "20221228",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "2c6b1561fb8aa9f55aaa3e73953a53e4f26b6c588c6a82ebaa9b3f9c07af5da0",
+      "artifact_sha256": "e83f6bceafd48669801700b458427285c63c22cba4cb5a04ef2f74603688412e",
+      "new_fits": 0
+    },
+    {
+      "directory": "bcd6b438e410dfc5c691abf745e998a7ded806e312a01ea2867b92f2e1947040",
+      "identity": {
+        "mode": "hier_field",
+        "cutoff": "20181228",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "f899a8f1e7d084619120df4ea28c884de0a379b5c384ccb5f802a0209dfedb8f",
+      "artifact_sha256": "c5f3f1b516531828ca29e8c7de7d542a396fabb95755c799dd9b35f87f7c5da8",
+      "new_fits": 0
+    },
+    {
+      "directory": "cbb4dc77266ea6d15469bba724c204b72073e426ea433c70fa2450da4eb018fa",
+      "identity": {
+        "mode": "hier_field",
+        "cutoff": "20241228",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "7f66b410bffedd66232d80cee238c107d52f1f494b48a98e628cf2b92385bb02",
+      "artifact_sha256": "66668dba1172498ec7600cd17457c75014466796ffd3c52d40b4cd30a7a64ed9",
+      "new_fits": 0
+    },
+    {
+      "directory": "d365db841f80e8e5f26b696c4312c97db6a8bc071d81dbae08ebf19f98e34b98",
+      "identity": {
+        "mode": "legacy",
+        "cutoff": "20171228",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "469326e3621d707a4d758a178093ecc3895a413ace913ca74a89a654a1f94e08",
+      "artifact_sha256": "171a023c63cc2a81fcccfb08cf67985fdd8818f9742e75c83f23a9fcae92885d",
+      "new_fits": 0
+    },
+    {
+      "directory": "dcda9e2af3b67ddf2fe3aa46db8871442b3955794f4fd7acff07f2e30304c855",
+      "identity": {
+        "mode": "hier",
+        "cutoff": "20221228",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "49aa4bbf9fdd02f236ab36aed1ae8c693cd1af4ff5280b6a5dcadc9402c181de",
+      "artifact_sha256": "04e57042ce24f98ab18131e0ed90ecba280feb7e2c9fd9463cda781c62e70988",
+      "new_fits": 0
+    },
+    {
+      "directory": "dff7837d19aff333b27dd1e1da441ac20449ae090ba6e9ac10dbc450b7dd342a",
+      "identity": {
+        "mode": "hier",
+        "cutoff": "20211228",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "df3eafd58507709e05e19daeee094f1f79032ec184076a48ad176330e4dd3ed7",
+      "artifact_sha256": "3670400aa2bec558d6a2a78c9272101c07a0f76d617451aa6d14a6747de304d7",
+      "new_fits": 0
+    },
+    {
+      "directory": "e8f1c7be7b6342dc2399ac6f4159883e2ddfba45d2f0fea56c4ffd03da6043ab",
+      "identity": {
+        "mode": "legacy",
+        "cutoff": "20211228",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "7744327989360fb078d6f89989661f3016beb1248c8a78b6613f7d6b81767d97",
+      "artifact_sha256": "5bfa3921b66fb1b3517cefc07f54e414a2ddb72735dadd3650aaca243ce4cb78",
+      "new_fits": 0
+    },
+    {
+      "directory": "f2bc4542f8b7d442d65a3d2c8a75e1d4623a39b9320763b31daa40904dd82fb3",
+      "identity": {
+        "mode": "hier",
+        "cutoff": "20191228",
+        "dataset_manifest": "4417144e3c31c4891e661648ae270f88d11a6ea7ae941c5b50001883ac1803ad",
+        "sources": {
+          "experiments.dataset": "bb70e93e90de06e8d48acbf3443bad2a6d29d28e83bf17e014bfa007c3524a78",
+          "experiments.features": "6b867b946d26a155d98b13df7495159f63487799580d5a55c801a8f6e94c9ee8",
+          "experiments.search_features": "25441ffd30c044d987d366939603b9e53035960f688c83b80966abddd27cb50b",
+          "experiments.training": "df4283a5c69d37b63ae1a219798d3d2e28e145a67f6ae97df08de76cc8dc9620",
+          "forward_adapters.feature_state": "d4dd42d2a58bdfac570b8ef3b19401e50bc17728890e111ede3dc3a08270b4d6",
+          "training.eligibility": "7531bc931c83bcecfe1e387e08d7efb33f1be9a8d7915d876e26a5b38835eee2",
+          "training.db_shared_features": "7cf20da87bad92e96dd79eca95dc9dffaae38a8d9df14265ed120eb1fc36e9b5",
+          "training.db_shared_optimized": "aa378d4c34ca11f78b11fd20581ceb866af790de125c2975feee9e044d3637a0",
+          "training.db_shared_profiles": "3940f043ed3cf6cdcc7be3c266420eacd1fe36e115cc3b66c54a980051468daf",
+          "training.db_context_features": "c96e5f8eaa2d492426a46ca85b5ce55e74065110fc68c800af8d3300a2cead30",
+          "keiba_ai.speed_deviation": "c36c29a145855aa9caadead996970d81f644f99a2c534f932ae1e70aa5f4f3e6",
+          "training.db_shared_fit": "71529960d01d3eea3e766c72dfbbad86ada03cd3e34dd10c7ce8913dbba699c6",
+          "training.pace_forecast": "824b750280a0b5c1076a2408a6d768365b545f76b50699be27e4a2b2a667f358",
+          "training.pace_research": "7ea82d34d9b66147a1916595a2aae793906f0f6a02064bbf473793eccdb85673",
+          "scripts.run_pace_research": "89bafd7aaeb92f65bd69220be988809951c9eb1fca557dee8fbae21dd1a78f97",
+          "scripts.train_pace_stack": "bbc07a137f152c9e00ad6cc91b3b40a92bf03815f99a63dd59b43ff9d565e78f"
+        }
+      },
+      "receipt_sha256": "5f805300f83bc6a34379e8e6f614c965a59295deb9b1298ed4d43d6c24652dd7",
+      "artifact_sha256": "420d04163116f90174d3aff46304df798ec0b0bd08e78a69dc8f6cb10b5d9b11",
+      "new_fits": 0
+    }
+  ],
+  "snapshot": {
+    "path": "C:\\Users\\yuki2\\Documents\\ws\\keiba-ai-pro\\reports\\generated\\pace-stack\\20261114-v1\\snapshot.sqlite",
+    "sha256": "644cfb9187ec9ee748cef32d535d7d5bc6b79dc37b60d9867d44c404732cb1dd"
+  },
+  "folds": [
+    {
+      "train_to": 2020,
+      "calibration": 2021,
+      "validation": 2022
+    },
+    {
+      "train_to": 2021,
+      "calibration": 2022,
+      "validation": 2023
+    },
+    {
+      "train_to": 2022,
+      "calibration": 2023,
+      "validation": 2024
+    }
+  ],
+  "confirmation": {
+    "train_to": 2024,
+    "calibration": 2025,
+    "validation": 2026,
+    "known_retrospective_only": true,
+    "selection_uses_confirmation": false
+  },
+  "fit_accounting": "All new LightGBM, temperature, normalization and threshold fits; reused heads excluded",
+  "agent_authorship": "External agent writes fresh context-bound hypothesis/reasoning/expected_outcome and three specs",
+  "network_requests": 0,
+  "production_eligible": false
+}

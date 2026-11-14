@@ -362,6 +362,11 @@ async def scrape_start(request: ScrapeRequest, admin_user: dict = Depends(requir
     if request.race_scope == "jra" and runtime.config.mode is not OperationalSagaMode.LOCAL_SQLITE:
         # Deployed authorization payloads have not approved the new scope key.
         raise HTTPException(status_code=403, detail="JRA scope is available only in local mode")
+    if request.horse_details != "full":
+        if request.horse_details != "cached_only":
+            raise HTTPException(status_code=400, detail="horse detail mode is invalid")
+        if request.server_batch or runtime.config.mode is not OperationalSagaMode.LOCAL_SQLITE:
+            raise HTTPException(status_code=403, detail="cached cards require an ordinary local job")
 
     required_binding = (
         request.job_id,
@@ -397,6 +402,8 @@ async def scrape_start(request: ScrapeRequest, admin_user: dict = Depends(requir
         # Do not add an explicit all key: legacy retries must preserve their
         # original payload and request hash byte for byte.
         request_payload["race_scope"] = "jra"
+    if request.horse_details == "cached_only":
+        request_payload["horse_details"] = "cached_only"
     request_hash = hashlib.sha256(
         json.dumps(
             request_payload,
@@ -649,9 +656,12 @@ async def scrape_history(limit: int = 20, admin_user: dict = Depends(require_adm
     owner_user_id = str(admin_user.get("user_id") or "").strip()
     if not owner_user_id:
         raise HTTPException(status_code=503, detail="管理者IDを確認できません")
+    runtime = get_operational_saga_runtime()
+    if not runtime.enabled:
+        raise HTTPException(status_code=503, detail="operational scrape runtime is disabled")
     try:
         jobs = await asyncio.to_thread(
-            get_operational_saga_runtime().list_jobs, owner_user_id, limit
+            runtime.list_jobs, owner_user_id, limit
         )
     except OperationalSagaUnavailable as exc:
         raise HTTPException(status_code=503, detail="ジョブ履歴を安全に確認できません") from exc

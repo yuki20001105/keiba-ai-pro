@@ -19,13 +19,22 @@ export async function GET(request: NextRequest) {
   const limit = params.get('limit') || '100'
   const start = params.get('date_from')
   const end = params.get('date_to')
+  const source = params.get('source') ?? 'recorded'
+  const origin = params.get('origin') ?? 'all'
+  const year = params.get('year')
   if (!['paper', 'actual'].includes(mode) || !/^\d+$/.test(limit) || Number(limit) < 1 || Number(limit) > 200
-    || (start !== null && !validDate(start)) || (end !== null && !validDate(end)) || (start && end && start > end)) {
+    || (start !== null && !validDate(start)) || (end !== null && !validDate(end)) || (start && end && start > end)
+    || !['recorded', 'simulation'].includes(source) || !['all', 'historical', 'pre_race', 'historical_validation', 'combined'].includes(origin)
+    || (source === 'simulation' && mode !== 'paper') || (source === 'recorded' && (year !== null || origin !== 'all'))
+    || (year !== null && (!/^\d{4}$/.test(year) || Number(year) < 1900 || Number(year) > 2200))) {
     return NextResponse.json({ detail: '表示条件が不正です' }, { status: 400, headers: noStore })
   }
   const query = new URLSearchParams({ mode, limit })
   if (start) query.set('date_from', start)
   if (end) query.set('date_to', end)
+  if (params.has('source')) query.set('source', source)
+  if (source === 'simulation') query.set('origin', origin)
+  if (year !== null) query.set('year', year)
   try {
     const response = await fetch(`${ML_API_URL}/api/performance?${query}`, {
       headers: { Authorization: `Bearer ${auth.context.token}` },

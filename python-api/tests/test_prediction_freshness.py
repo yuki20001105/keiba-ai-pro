@@ -66,6 +66,29 @@ def test_validation_sidecar_change_invalidates_response(tmp_path):
     path.with_suffix(".betting-validation.json").write_text('{"validated":false}', encoding="utf-8")
     assert model_runtime_revision(path) != before
 
+def test_fixed_axis_sidecar_change_invalidates_response(tmp_path):
+    path = tmp_path / "model_fixture.joblib"
+    path.write_bytes(b"isolated")
+    before = model_runtime_revision(path)
+    path.with_suffix(".fixed-two-axis.json").write_text('{"reference_only":true}', encoding="utf-8")
+    assert model_runtime_revision(path) != before
+
+
+def test_training_source_runtime_change_invalidates_response(tmp_path, monkeypatch):
+    from services import prediction_freshness
+
+    api_root = tmp_path / "python-api"
+    runtime = api_root / "services" / "trained_model_runtime.py"
+    runtime.parent.mkdir(parents=True)
+    runtime.write_bytes(b"training runtime before")
+    model = tmp_path / "model_fixture.joblib"
+    model.write_bytes(b"isolated")
+    monkeypatch.setattr(prediction_freshness, "API_ROOT", api_root)
+    monkeypatch.setattr(prediction_freshness, "ROOT", tmp_path)
+    before = model_runtime_revision(model)
+    runtime.write_bytes(b"training runtime after!")
+    assert model_runtime_revision(model) != before
+
 
 def test_metadata_never_claims_prestart_receipt(tmp_path):
     model = tmp_path / "model_fixture.joblib"
@@ -139,6 +162,131 @@ def test_manual_recompute_never_serves_old_response(saved_card):
     assert second.freshness["source"] == "saved_db"
     assert second.recommendation["decision"] == "skip"
     assert second.recommendation["tickets"] == []
+
+
+def test_live_odds_refresh_bypasses_cached_prices_without_changing_saved_features(saved_card, monkeypatch):
+    from scraping import odds
+    from scraping.fetch_pipeline import FetchResult
+
+    captured = []
+    original_context = predict.build_live_context
+
+    def context(**kwargs):
+        captured.append(kwargs["source_records"])
+        result = original_context(**kwargs)
+        result.update(
+            probability_validation={"validated": True},
+            input_diagnostics={"schema": "prediction-input-contract-v1", "status": "aligned",
+                "expected_count": 1, "actual_count": 1, "missing_columns": [], "blocked_columns": [],
+                "issue_codes": [], "source_hash_matches": True, "history_available": True,
+                "semantic_parity_verified": True},
+            feature_missing_rate=1.0,
+        )
+        return result
+
+    prices = iter([4.0, 8.0])
+
+    async def fetch(_session, url, **kwargs):
+        assert kwargs["use_cache"] is False and kwargs["force_refresh"] is True
+        payload = {"status": "middle", "data": {"odds": {"1": {
+            "1": [next(prices), "", 2], "2": [3.0, "", 1],
+        }}}}
+        body = json.dumps(payload)
+        return FetchResult(url, url, 200, body.encode(), "network", 1), body
+
+    monkeypatch.setattr(odds, "fetch_text", fetch)
+    monkeypatch.setattr(predict, "build_live_context", context)
+    initial = run_saved(saved_card)
+    first = run_saved(saved_card, refresh_odds=True)
+    second = run_saved(saved_card, refresh_odds=True)
+    repeated_saved = run_saved(saved_card)
+    assert initial.predictions[0]["odds"] == 2.0
+    assert first.predictions[0]["odds"] == 4.0
+    assert first.predictions[0]["expected_value"] == pytest.approx(2.4)
+    assert second.predictions[0]["odds"] == 8.0
+    assert second.predictions[0]["expected_value"] == pytest.approx(4.8)
+    assert first.odds_refresh["status"] == "middle" and first.odds_refresh["observed_at"]
+    assert first.freshness["cache_hit"] is False and second.freshness["cache_hit"] is False
+    assert repeated_saved.predictions[0]["odds"] == 2.0
+    assert len(saved_card.calls) == 3
+    assert all(call["frame"]["odds"].tolist() == [2.0, 5.0] for call in saved_card.calls)
+    assert captured[1][0]["odds_observation"]["odds_by_horse_number"] == {"1": 4.0, "2": 3.0}
+    assert captured[1][0]["odds_status"] == "middle"
+    assert first.recommendation["decision"] == "skip" and first.recommendation["tickets"] == []
+    with sqlite3.connect(saved_card.database) as db:
+        assert [json.loads(row[0]) for row in db.execute(
+            "SELECT data FROM race_results_ultimate ORDER BY rowid")] == saved_card.horses
+
+
+@pytest.mark.parametrize(("status", "prices", "expected"), [
+    ("middle", {"1": [4.0, "", 1]}, [4.0, None]),
+    ("middle", {"1": [float("nan"), "", 1], "2": [float("inf"), "", 2]}, [None, None]),
+    ("yoso", {"1": [4.0, "", 1], "2": [3.0, "", 2]}, [None, None]),
+    ("result", {"1": [4.0, "", 1], "2": [3.0, "", 2]}, [4.0, 3.0]),
+    ("error", {}, [None, None]),
+])
+def test_live_quote_never_fills_missing_prices_from_old_db(saved_card, monkeypatch, status, prices, expected):
+    from scraping import odds
+    from scraping.fetch_pipeline import FetchResult
+
+    async def fetch(_session, url, **_kwargs):
+        if status == "error":
+            raise TimeoutError("fixture market unavailable")
+        body = json.dumps({"status": status, "data": {"odds": {"1": prices}}})
+        return FetchResult(url, url, 200, body.encode(), "network", 1), body
+
+    monkeypatch.setattr(odds, "fetch_text", fetch)
+    result = run_saved(saved_card, refresh_odds=True)
+    assert [row["odds"] for row in result.predictions] == expected
+    assert all(row["expected_value"] is None for row in result.predictions)
+    assert result.odds_refresh["status"] == status
+    assert result.recommendation["decision"] == "skip"
+
+
+def test_past_race_odds_remain_historical_without_current_market_request(saved_card, monkeypatch):
+    from scraping import odds
+    monkeypatch.setattr(odds, "fetch_tansho_odds_capture", forbidden)
+    with sqlite3.connect(saved_card.database) as db:
+        race = json.loads(db.execute("SELECT data FROM races_ultimate").fetchone()[0])
+        race["date"] = "20200101"
+        db.execute("UPDATE races_ultimate SET data=?", (json.dumps(race),))
+    result = run_saved(saved_card, refresh_odds=True)
+    assert result.odds_refresh == {"status": "historical", "observed_at": None}
+    assert [row["odds"] for row in result.predictions] == [2.0, 5.0]
+
+
+def test_utc_server_preserves_yesterdays_japanese_race_prices(saved_card, monkeypatch):
+    import datetime
+    from scraping import odds
+
+    actual_datetime = datetime.datetime
+
+    class UtcServerDatetime(actual_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            instant = actual_datetime(2026, 11, 6, 21, 27, tzinfo=datetime.timezone.utc)
+            return instant.astimezone(tz) if tz is not None else instant.replace(tzinfo=None)
+
+    monkeypatch.setattr(datetime, "datetime", UtcServerDatetime)
+    monkeypatch.setattr(odds, "fetch_tansho_odds_capture", forbidden)
+    with sqlite3.connect(saved_card.database) as db:
+        race = json.loads(db.execute("SELECT data FROM races_ultimate").fetchone()[0])
+        race["date"] = "20261106"
+        db.execute("UPDATE races_ultimate SET data=?", (json.dumps(race),))
+    result = run_saved(saved_card, refresh_odds=True)
+    assert result.odds_refresh == {"status": "historical", "observed_at": None}
+    assert [row["odds"] for row in result.predictions] == [2.0, 5.0]
+
+
+def test_fixed_strategy_binds_actual_single_endpoint_and_response_cache(saved_card):
+    value = run_saved(saved_card)
+    fixed = run_saved(saved_card, betting_strategy="fixed-two-v1")
+    repeated = run_saved(saved_card, betting_strategy="fixed-two-v1")
+    assert value.recommendation["betting_strategy"] == "value"
+    assert fixed.recommendation["betting_strategy"] == "fixed-two-v1"
+    assert fixed.recommendation["decision"] == "skip" and fixed.recommendation["tickets"] == []
+    assert "axis_probability_unvalidated" in fixed.recommendation["reason_codes"]
+    assert len(saved_card.calls) == 2 and repeated.freshness["cache_hit"] is True
 
 
 def test_response_cache_uses_new_db_history_revision(saved_card):

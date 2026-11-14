@@ -19,9 +19,11 @@ from scraping.acquisition_http_policy import acquisition_policy_active, fetch_te
 from scraping.horse import scrape_horse_detail
 from scraping.mobile_race import parse_mobile_race
 from scraping.last3f_evidence import clock_column
-from scraping.odds import fetch_tansho_odds_api
+from scraping.lap_times import parse_lap_times
+from scraping.odds import fetch_tansho_odds_capture
 from scraping.parsed_cache import prefer_mobile_endpoint, remember_mobile_endpoint
 from scraping.quality import classify_race_quality
+from scraping.race_class import explicit_race_class
 from scraping.result_reuse import cached_result_url
 from scraping.source_normalization import finish_column_evidence_from_html, normalize_race_payload
 
@@ -516,16 +518,12 @@ async def scrape_race_full(
     smalltxt_text = ""
     if _smalltxt_p:
         smalltxt_text = _smalltxt_p.get_text(" ")
-    for src in [race_name, smalltxt_text, info_text]:
+    race_class = explicit_race_class(race_name, smalltxt_text, info_text) or ""
+    for src in ([race_name, smalltxt_text, info_text]
+                if venue_code not in {f"{code:02d}" for code in range(1, 11)} else []):
         if race_class:
             break
         for pat in [
-            r"(G[1-3])",
-            r"(新馬)",
-            r"(未勝利)",
-            r"([1-3]勝クラス)",
-            r"(オープン|OP)",
-            r"(重賞)",
             # NAR: C1二/C1三/B3等（括弧内優先）
             r"[（(]([ABC][1-3][二三一四]?)[）)]",
             r"[（(]([ABC][1-3])[）)]",
@@ -544,20 +542,8 @@ async def scrape_race_full(
             if cm:
                 race_class = cm.group(1)
                 break
-    if race_class == "OP":
-        race_class = "オープン"
-    # 解析不可な場合のフォールバック標注
     if not race_class:
-        if "特別" in race_name:
-            race_class = "オープン"  # "○○特別"は一般的にオープン認定
-        elif "新馬" in race_name:
-            race_class = "新馬"
-        elif "未勝利" in race_name:
-            race_class = "未勝利"
-        elif "重賞" in race_name:
-            race_class = "重賞"
-        else:
-            race_class = "不明"  # 完全に判定不能な場合は明示的に残す
+        race_class = "不明"
 
     # ---- 開催回・日目 ----
     kai = None
@@ -843,40 +829,9 @@ async def scrape_race_full(
     _ped_task = None  # Supabase バッチ取得は削除済み。SQLite キャッシュは馬単位で確認する。
 
     # ---- ラップタイム解析 ----
-    lap_cumulative = {}
-    lap_sectional = {}
-    for tbl in soup.find_all("table"):
-        rows = tbl.find_all("tr")
-        if len(rows) < 2:
-            continue
-        header_cells2 = rows[0].find_all(["th", "td"])
-        headers_text = [
-            c.get_text(strip=True).replace("\u3000", "").replace(" ", "") for c in header_cells2
-        ]
-        dists = []
-        for h_txt in headers_text:
-            dm = re.match(r"^(\d+)m?$", h_txt)
-            if dm:
-                d = int(dm.group(1))
-                if 100 <= d <= 4000 and d % 200 == 0:
-                    dists.append(d)
-        if len(dists) >= 3:
-            time_cells = rows[1].find_all("td")
-            for i, dist in enumerate(dists):
-                if i < len(time_cells):
-                    try:
-                        t = float(time_cells[i].get_text(strip=True))
-                        if 5.0 <= t <= 200.0:
-                            lap_cumulative[dist] = t
-                    except ValueError:
-                        pass
-            if lap_cumulative:
-                sorted_dists = sorted(lap_cumulative.keys())
-                prev = 0.0
-                for d in sorted_dists:
-                    lap_sectional[d] = round(lap_cumulative[d] - prev, 1)
-                    prev = lap_cumulative[d]
-                break
+    lap_data = parse_lap_times(soup, race_distance=distance)
+    lap_cumulative = lap_data["lap_cumulative"]
+    lap_sectional = lap_data["lap_sectional"]
 
     # ---- 払い戻し表パース（soupを解放する前に実行） ----
     return_tables = _parse_return_tables(soup, race_id)
@@ -921,6 +876,8 @@ async def scrape_race_full(
                               kai, day, course_direction, distance, track_type, weather,
                               field_condition, num_horses, lap_cumulative, lap_sectional,
                               horses, _invalid_dist_flag, return_tables=return_tables)
+    if lap_data["lap_evidence"] is not None:
+        snapshot["race_info"]["_lap_evidence"] = lap_data["lap_evidence"]
     snapshot = normalize_race_payload(snapshot, finish_column_evidence=finish_evidence)
     if source_evidence is not None:
         snapshot["_source_evidence"] = source_evidence
@@ -941,7 +898,7 @@ def _parse_return_tables(soup, race_id: str) -> list[dict]:
     pay_tables: list = []
     for tbl in soup.find_all("table"):
         cls_str = " ".join(tbl.get("class", []))
-        if "pay_block" in cls_str or "pay_table" in cls_str:
+        if "pay_block" in cls_str or "pay_table" in cls_str or "Payout_Detail_Table" in cls_str:
             pay_tables.append(tbl)
 
     # クラス名で見つからない場合: 単勝/複勝/馬連キーワードを含む行を持つテーブルを探す
@@ -984,6 +941,26 @@ def _parse_return_tables(soup, race_id: str) -> list[dict]:
             combos = _split_cell(combo_cell)
             payouts = _split_cell(payout_cell)
             pops = _split_cell(pop_cell) if pop_cell else []
+            if "Result" in combo_cell.get("class", []):
+                groups = combo_cell.find_all("ul", recursive=False)
+                if groups:
+                    combos = [
+                        "-".join(li.get_text(strip=True) for li in group.find_all("li")
+                                 if li.get_text(strip=True))
+                        for group in groups
+                    ]
+                else:
+                    entries = combo_cell.find_all("div", recursive=False) or combo_cell.find_all("span", recursive=False)
+                    combos = [entry.get_text(strip=True) for entry in entries if entry.get_text(strip=True)]
+                if pop_cell is not None:
+                    spans = pop_cell.find_all("span", recursive=False)
+                    if spans:
+                        pops = [span.get_text(strip=True) for span in spans if span.get_text(strip=True)]
+                # Modern ticket groups must align; absent amounts are not zero payouts.
+                if not combos or any(not combo for combo in combos) or len(combos) != len(payouts):
+                    continue
+                if pops and len(pops) != len(combos):
+                    continue
 
             # 組合せ数に合わせてエントリを生成
             n = max(len(combos), 1)
@@ -1155,14 +1132,7 @@ async def _scrape_shutuba_fallback(
     day = int(day_m.group(1)) if day_m else None
 
     # レースクラス
-    race_class = ""
-    for pat in [r"(G[1-3])", r"(新馬)", r"(未勝利)", r"([1-3]勝クラス)", r"(オープン|OP)", r"(重賞)"]:
-        cm = re.search(pat, info2 + " " + race_name)
-        if cm:
-            race_class = cm.group(1)
-            break
-    if not race_class:
-        race_class = "不明"
+    race_class = explicit_race_class(info2, race_name) or "不明"
 
     # コース方向
     dir_m = re.search(r"[（(](右|左|直線)[）)]", info1) or re.search(r"(右|左)", info1)
@@ -1288,7 +1258,11 @@ async def _scrape_shutuba_fallback(
     # The visible odds cells are populated by JavaScript.  Query the same JSON
     # endpoint used by the page and accept only actual market/result statuses;
     # forecast (yoso) odds must never enter point-in-time evidence.
-    live_odds, live_popularity, _odds_status = await fetch_tansho_odds_api(session, race_id)
+    odds_capture = await fetch_tansho_odds_capture(session, race_id)
+    live_odds = odds_capture["odds"]
+    live_popularity = odds_capture["popularity"]
+    _odds_status = odds_capture["status"]
+    odds_evidence = odds_capture.get("evidence")
     if live_odds:
         for horse in horses:
             try:
@@ -1324,6 +1298,8 @@ async def _scrape_shutuba_fallback(
 
     for horse in horses:
         horse["odds_status"] = _odds_status
+        if odds_evidence is not None:
+            horse["odds_observation"] = dict(odds_evidence)
 
     logger.info(f"[shutuba] {race_id}: {len(horses)}頭取得 ({race_name} @ {venue} {distance}m)")
     snapshot = _build_race_result(
@@ -1333,6 +1309,8 @@ async def _scrape_shutuba_fallback(
         (distance == 0)
     )
     snapshot["race_info"]["odds_status"] = _odds_status
+    if odds_evidence is not None:
+        snapshot["race_info"]["odds_observation"] = dict(odds_evidence)
     snapshot = normalize_race_payload(snapshot)
     if not enrich_horse_details:
         snapshot["_source_evidence"] = _result_source_evidence(_fetch, html, race_id, horses)

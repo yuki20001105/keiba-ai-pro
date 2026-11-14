@@ -2,6 +2,7 @@
 param(
     [switch]$NoBrowser,
     [switch]$DevelopmentFrontend,
+    [switch]$Restart,
     [string]$RuntimeRepoRoot,
     [string]$ConfigurationRoot,
     [int]$ApiTimeoutSeconds = 120,
@@ -20,6 +21,18 @@ $ConfigRoot = if ($ConfigurationRoot) {
     [IO.Path]::GetFullPath($ConfigurationRoot)
 } else {
     $RepoRoot
+}
+# Hold this handle until the launcher exits, including failed startup paths.
+$LauncherMutex = New-Object System.Threading.Mutex($false, 'Local\KeibaAIProLocalLauncher')
+try {
+    $LaunchAcquired = $LauncherMutex.WaitOne(0)
+}
+catch [System.Threading.AbandonedMutexException] {
+    $LaunchAcquired = $true
+}
+if (-not $LaunchAcquired) {
+    Write-Host 'Keiba AI Pro startup is already in progress. No additional servers were started.'
+    exit 0
 }
 $RuntimeDir = Join-Path $LauncherRoot 'logs\local-app'
 $StatePath = Join-Path $RuntimeDir 'state.json'
@@ -42,6 +55,111 @@ function Test-Endpoint([string]$Url, [int]$TimeoutSeconds = 4) {
     }
     catch {
         return $false
+    }
+}
+
+function Get-ApiHealthPayload {
+    try {
+        return Invoke-RestMethod -Uri $ApiHealthUrl -TimeoutSec 4
+    }
+    catch {
+        return $null
+    }
+}
+
+function Test-PredictionRecommendationRuntimeReady {
+    $health = Get-ApiHealthPayload
+    return $null -ne $health -and
+        $health.recommendation_runtime.ready -eq $true -and
+        'value' -in $health.recommendation_runtime.supported_strategies -and
+        'fixed-two-v1' -in $health.recommendation_runtime.supported_strategies
+}
+
+function Test-OperationalScrapeRuntimeReady {
+    $health = Get-ApiHealthPayload
+    return $null -ne $health -and
+        $health.app_env -in @('local', 'development', 'dev') -and
+        $health.operational_scrape_runtime.mode -eq 'local-sqlite' -and
+        $health.operational_scrape_runtime.enabled -eq $true -and
+        $health.operational_scrape_runtime.worker_enabled -eq $true
+}
+
+function Test-OperationalScrapeRuntimeNeedsRestart {
+    $health = Get-ApiHealthPayload
+    $runtime = if ($null -ne $health) { $health.operational_scrape_runtime } else { $null }
+    return $null -ne $health -and
+        $health.app_env -in @('local', 'development', 'dev') -and
+        ($null -eq $runtime -or (
+            $runtime.mode -eq 'disabled' -and $runtime.enabled -eq $false
+        ))
+}
+
+function Find-RepositoryApiProcess([string]$ExpectedPythonExe) {
+    $listeners = @(Get-NetTCPConnection -State Listen -LocalPort 8000 -ErrorAction SilentlyContinue)
+    foreach ($listener in $listeners) {
+        $processId = [int]$listener.OwningProcess
+        for ($depth = 0; $depth -lt 6 -and $processId -gt 0; $depth++) {
+            $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId=$processId" -ErrorAction SilentlyContinue
+            if ($null -eq $processInfo) { break }
+            $repositoryMain = [IO.Path]::GetFullPath((Join-Path $RepoRoot 'python-api\main.py'))
+            $knownCommand = ($processInfo.CommandLine -match '(?i)-m\s+uvicorn\s+main:app' -and
+                $processInfo.CommandLine -match '(?i)--port\s+8000') -or
+                $processInfo.CommandLine -match '(?i)(?:^|\s)"?main\.py"?(?:\s|$)' -or
+                ($processInfo.CommandLine -and $processInfo.CommandLine.IndexOf($repositoryMain, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+            if ($processInfo.ExecutablePath -ieq $ExpectedPythonExe -and $knownCommand) {
+                return Get-Process -Id $processId -ErrorAction SilentlyContinue
+            }
+            $processId = [int]$processInfo.ParentProcessId
+        }
+    }
+    return $null
+}
+
+function Find-RepositoryWebProcess([string]$ExpectedNodeExe) {
+    $expectedServer = [IO.Path]::GetFullPath((Join-Path $RepoRoot 'node_modules\next\dist\server\lib\start-server.js'))
+    $expectedStandaloneServer = [IO.Path]::GetFullPath((Join-Path $RepoRoot '.next\standalone\server.js'))
+    $expectedCli = [IO.Path]::GetFullPath((Join-Path $RepoRoot 'node_modules\next\dist\bin\next'))
+    $listeners = @(Get-NetTCPConnection -State Listen -LocalPort 3000 -ErrorAction SilentlyContinue)
+    foreach ($listener in $listeners) {
+        $processId = [int]$listener.OwningProcess
+        for ($depth = 0; $depth -lt 6 -and $processId -gt 0; $depth++) {
+            $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId=$processId" -ErrorAction SilentlyContinue
+            if ($null -eq $processInfo) { break }
+            if ($processInfo.ExecutablePath -ieq $ExpectedNodeExe -and
+                $processInfo.CommandLine -and
+                ($processInfo.CommandLine.IndexOf($expectedServer, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+                 $processInfo.CommandLine.IndexOf($expectedStandaloneServer, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+                 $processInfo.CommandLine.IndexOf(('"' + $expectedCli + '" start '), [StringComparison]::OrdinalIgnoreCase) -ge 0)) {
+                return Get-Process -Id $processId -ErrorAction SilentlyContinue
+            }
+            $processId = [int]$processInfo.ParentProcessId
+        }
+    }
+    return $null
+}
+
+function Test-LocalLoginRouteReady {
+    # A 307 with this exact failure reason proves that the dev-only handler is
+    # active and its configuration loaded, without sending or logging a token.
+    $request = [Net.HttpWebRequest]::Create('http://127.0.0.1:3000/api/local-login')
+    $request.Method = 'GET'
+    $request.AllowAutoRedirect = $false
+    $request.Timeout = 4000
+    $response = $null
+    try {
+        $response = $request.GetResponse()
+    }
+    catch [Net.WebException] {
+        $response = $_.Exception.Response
+    }
+    if ($null -eq $response) { return $false }
+    try {
+        $location = [string]$response.Headers['Location']
+        return [int]$response.StatusCode -eq 307 -and
+            $location -match '(?i)/login\?local_auto_login=token_rejected(?:&|$)'
+    }
+    finally {
+        $response.Dispose()
     }
 }
 
@@ -69,10 +187,20 @@ function Wait-Endpoint(
 }
 
 function Assert-PortAvailableOrHealthy([int]$Port, [string]$HealthUrl) {
-    $listeners = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue
+    $deadline = (Get-Date).AddSeconds(10)
+    $listeners = @()
+    do {
+        $listeners = @(Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)
+        if (-not $listeners -or (Test-Endpoint -Url $HealthUrl)) {
+            return
+        }
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+
+    $listeners = @(Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)
     if ($listeners -and -not (Test-Endpoint -Url $HealthUrl)) {
         $owners = ($listeners | Select-Object -ExpandProperty OwningProcess -Unique) -join ', '
-        throw "Port $Port is already used by PID $owners, but $HealthUrl is not healthy. Stop that process first."
+        throw "Port $Port is still used by PID $owners, but $HealthUrl did not become healthy after waiting 10 seconds. The launcher did not stop the existing process. Check its owner, stop it only if it is an obsolete Keiba AI Pro process, then retry."
     }
 }
 
@@ -134,9 +262,7 @@ function Stop-StartedProcessTree([System.Diagnostics.Process]$Process) {
 
 function Test-ProductionBuildCurrent {
     $buildMarker = Join-Path $RepoRoot '.next\BUILD_ID'
-    $standaloneServer = Join-Path $RepoRoot '.next\standalone\server.js'
-    if (-not (Test-Path -LiteralPath $buildMarker -PathType Leaf) -or
-        -not (Test-Path -LiteralPath $standaloneServer -PathType Leaf)) {
+    if (-not (Test-Path -LiteralPath $buildMarker -PathType Leaf)) {
         return $false
     }
     $buildTime = (Get-Item -LiteralPath $buildMarker).LastWriteTimeUtc
@@ -159,48 +285,20 @@ function Test-ProductionBuildCurrent {
     return $null -eq $latestInputTime -or $buildTime -ge $latestInputTime
 }
 
-function Sync-StandaloneAssets {
-    $standaloneRoot = Join-Path $RepoRoot '.next\standalone'
-    $serverPath = Join-Path $standaloneRoot 'server.js'
-    if (-not (Test-Path -LiteralPath $serverPath -PathType Leaf)) {
-        throw 'Next.js standalone server was not generated. Run npm run build and review next.config.js.'
+New-Item -ItemType Directory -Path $RuntimeDir -Force | Out-Null
+$PreviousState = $null
+if (Test-Path -LiteralPath $StatePath -PathType Leaf) {
+    try {
+        $PreviousState = Get-Content -LiteralPath $StatePath -Raw -Encoding UTF8 | ConvertFrom-Json
     }
-    $staticSource = Join-Path $RepoRoot '.next\static'
-    if (Test-Path -LiteralPath $staticSource -PathType Container) {
-        $staticTarget = Join-Path $standaloneRoot '.next\static'
-        New-Item -ItemType Directory -Path $staticTarget -Force | Out-Null
-        Copy-Item -Path (Join-Path $staticSource '*') -Destination $staticTarget -Recurse -Force
-    }
-    $publicSource = Join-Path $RepoRoot 'public'
-    if (Test-Path -LiteralPath $publicSource -PathType Container) {
-        $publicTarget = Join-Path $standaloneRoot 'public'
-        New-Item -ItemType Directory -Path $publicTarget -Force | Out-Null
-        Copy-Item -Path (Join-Path $publicSource '*') -Destination $publicTarget -Recurse -Force
+    catch {
+        throw "Launcher state could not be read safely: $StatePath. No existing process was stopped."
     }
 }
-
-New-Item -ItemType Directory -Path $RuntimeDir -Force | Out-Null
 $env:LOCAL_CONFIGURATION_ROOT = $ConfigRoot
 $env:PYTHONUTF8 = '1'
 $LoginToken = Get-LocalLoginToken -Path (Join-Path $ConfigRoot '.env.test')
 $AppUrl = 'http://127.0.0.1:3000/api/local-login?token=' + [Uri]::EscapeDataString($LoginToken)
-
-# A second double-click must not overwrite the launcher state; otherwise the
-# stop BAT would lose the PIDs of the already-running processes.
-if ((Test-Endpoint -Url $ApiHealthUrl) -and (Test-Endpoint -Url $WebHealthUrl)) {
-    if (Test-Path -LiteralPath $StatePath -PathType Leaf) {
-        Write-Host 'Keiba AI Pro is already running.' -ForegroundColor Green
-    }
-    else {
-        Write-Host 'Keiba AI Pro is already running outside this launcher.' -ForegroundColor Yellow
-        Write-Host 'The existing processes were not adopted and will not be stopped by stop-keiba-ai-pro.bat.'
-    }
-    Write-Host "  App: $DisplayUrl"
-    if (-not $NoBrowser) {
-        Start-Process $AppUrl
-    }
-    exit 0
-}
 
 $PythonExe = Join-Path $RepoRoot 'python-api\.venv\Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) {
@@ -223,6 +321,44 @@ if (-not (Test-Path -LiteralPath (Join-Path $ConfigRoot '.env.local') -PathType 
     throw '.env.local was not found. Create it from .env.local.example and configure the approved Supabase values.'
 }
 
+if ($Restart) {
+    $health = Get-ApiHealthPayload
+    if ($health -and $health.prediction_runtime.active_workers -gt 0) {
+        throw 'Prediction is running. Wait for it to finish before restarting.'
+    }
+    $NodeCommand = Get-Command node.exe -ErrorAction Stop
+    $restartTargets = @()
+    foreach ($port in @(8000, 3000)) {
+        if (-not (Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)) {
+            continue
+        }
+        $target = if ($port -eq 8000) {
+            Find-RepositoryApiProcess -ExpectedPythonExe $PythonExe
+        } else {
+            Find-RepositoryWebProcess -ExpectedNodeExe $NodeCommand.Source
+        }
+        if ($null -eq $target) {
+            throw "Port $port is not owned by a verified server from this repository, or Windows denied process inspection. No server was stopped. If Keiba AI Pro was started as administrator, right-click start-keiba-ai-pro.bat and choose Run as administrator."
+        }
+        $restartTargets += $target
+    }
+    foreach ($target in $restartTargets) {
+        Write-Step "Stopping verified Keiba AI Pro server PID $($target.Id)..."
+        Stop-StartedProcessTree -Process $target
+    }
+    if ($restartTargets.Count -gt 0) {
+        $NoBrowser = $true
+        Write-Step "Reusing your existing browser tab. Reload $DisplayUrl after startup."
+    }
+    $deadline = (Get-Date).AddSeconds(15)
+    while (@(Get-NetTCPConnection -State Listen -LocalPort 3000,8000 -ErrorAction SilentlyContinue).Count -gt 0) {
+        if ((Get-Date) -ge $deadline) { throw 'Application ports did not become free after stopping the verified servers.' }
+        Start-Sleep -Milliseconds 500
+    }
+    $PreviousState = $null
+    if (Test-Path -LiteralPath $StatePath) { Remove-Item -LiteralPath $StatePath -Force }
+}
+
 Assert-PortAvailableOrHealthy -Port 8000 -HealthUrl $ApiHealthUrl
 
 # Load local configuration into child processes without printing values.
@@ -240,8 +376,12 @@ $env:MODEL_ACTIVATION_LOCAL_ENABLED = 'true'
 $env:MODEL_DELETION_LOCAL_ENABLED = 'true'
 $env:API_HOST = '127.0.0.1'
 $env:HOSTNAME = '127.0.0.1'
-$env:NEXT_STANDALONE_BUILD = '1'
+$env:NEXT_STANDALONE_BUILD = '0'
 $env:SCHEDULER_ENABLED = 'false'
+$env:PREDICTION_CPU_WORKERS = '1'
+$env:OMP_NUM_THREADS = '1'
+$env:OPENBLAS_NUM_THREADS = '1'
+$env:MKL_NUM_THREADS = '1'
 $env:SUPABASE_DATA_ENABLED = 'false'
 $env:NETKEIBA_RACE_WRITE_ENABLED = 'false'
 $env:ALLOW_STAGING_WRITE = 'false'
@@ -249,6 +389,7 @@ $env:MODEL_RUNTIME_STATUS = 'observation'
 $env:PHASE3N_OPERATIONAL_SAGA_MODE = 'local-sqlite'
 $env:PHASE3N_SAGA_SQLITE_PATH = Join-Path ([IO.Path]::GetTempPath()) 'keiba-ai-pro\operational-saga.sqlite3'
 $env:PHASE3N_WORKER_ENABLED = 'true'
+$env:PHASE3N_POLL_INTERVAL_MS = '5000'
 $env:PHASE3N_REMOTE_EFFECTS_ENABLED = 'true'
 $env:PHASE3N_EXECUTION_UNLOCK_ENABLED = 'true'
 $env:ML_API_URL = 'http://127.0.0.1:8000'
@@ -260,16 +401,71 @@ foreach ($secretName in @('IPAT_INET_ID', 'IPAT_USER_ID', 'IPAT_PASSWORD', 'IPAT
     Remove-Item -Path "Env:$secretName" -ErrorAction SilentlyContinue
 }
 
+# Only reuse an existing app when its development-only local-login handler is
+# active too. A healthy /api/health proxy alone can belong to a stale Next.js
+# process started without the launcher's local environment.
+if ((Test-Endpoint -Url $ApiHealthUrl) -and
+    (Test-Endpoint -Url $WebHealthUrl) -and
+    (Test-OperationalScrapeRuntimeReady) -and
+    (Test-PredictionRecommendationRuntimeReady) -and
+    (Test-LocalLoginRouteReady)) {
+    if (Test-Path -LiteralPath $StatePath -PathType Leaf) {
+        Write-Host 'Keiba AI Pro is already running.' -ForegroundColor Green
+    }
+    else {
+        Write-Host 'Keiba AI Pro is already running outside this launcher.' -ForegroundColor Yellow
+        Write-Host 'The existing processes were not adopted and will not be stopped by stop-keiba-ai-pro.bat.'
+    }
+    Write-Host "  App: $DisplayUrl"
+    if (-not $NoBrowser) {
+        Start-Process $AppUrl
+    }
+    exit 0
+}
+
 $ApiProcess = $null
 $WebProcess = $null
 $ApiStarted = $false
 $WebStarted = $false
 $FrontendMode = 'existing'
 $StartedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+if ($PreviousState -and $PreviousState.startedAtUtc -and
+    (($PreviousState.apiStartedByLauncher -and $PreviousState.apiProcessId) -or
+     ($PreviousState.webStartedByLauncher -and $PreviousState.webProcessId))) {
+    try { $StartedAtUtc = [datetime]::Parse($PreviousState.startedAtUtc).ToUniversalTime().ToString('o') }
+    catch { throw "Launcher state has an invalid start time: $StatePath. No existing process was stopped." }
+}
 
 try {
     if (Test-Endpoint -Url $ApiHealthUrl) {
-        Write-Step 'FastAPI is already running; reusing it.'
+        if ((Test-OperationalScrapeRuntimeReady) -and (Test-PredictionRecommendationRuntimeReady)) {
+            Write-Step 'FastAPI is already running with the local scrape runtime; reusing it.'
+        }
+        elseif ((Test-OperationalScrapeRuntimeNeedsRestart) -or -not (Test-PredictionRecommendationRuntimeReady)) {
+            $ExistingApiProcess = Find-RepositoryApiProcess -ExpectedPythonExe $PythonExe
+            if ($null -eq $ExistingApiProcess) {
+                throw 'FastAPI is healthy but its prediction or scrape runtime is outdated. The port owner is not the verified repository Python server, so it was not stopped. Stop that server only after confirming its owner, then run this launcher again.'
+            }
+            Write-Step 'Restarting this repository API because its prediction or scrape runtime is outdated...'
+            Stop-StartedProcessTree -Process $ExistingApiProcess
+            $releaseDeadline = (Get-Date).AddSeconds(15)
+            do {
+                $remainingListeners = @(Get-NetTCPConnection -State Listen -LocalPort 8000 -ErrorAction SilentlyContinue)
+                if (-not $remainingListeners) { break }
+                Start-Sleep -Milliseconds 500
+            } while ((Get-Date) -lt $releaseDeadline)
+            if (Get-NetTCPConnection -State Listen -LocalPort 8000 -ErrorAction SilentlyContinue) {
+                throw 'Port 8000 did not become free after stopping the verified local API process.'
+            }
+            Write-Step 'Starting FastAPI with the configured local scrape runtime...'
+            $ApiProcess = Start-Process -FilePath $PythonExe -ArgumentList 'main.py' `
+                -WorkingDirectory (Join-Path $RepoRoot 'python-api') -WindowStyle Hidden `
+                -RedirectStandardOutput $ApiStdout -RedirectStandardError $ApiStderr -PassThru
+            $ApiStarted = $true
+        }
+        else {
+            throw 'FastAPI is healthy but did not report a verified local scrape runtime. The existing server was left untouched.'
+        }
     }
     else {
         Write-Step 'Starting FastAPI on port 8000...'
@@ -279,20 +475,50 @@ try {
         $ApiStarted = $true
     }
     Wait-Endpoint -Name 'FastAPI' -Url $ApiHealthUrl -TimeoutSeconds $ApiTimeoutSeconds -StartedProcess $ApiProcess
+    if (-not (Test-PredictionRecommendationRuntimeReady)) {
+        throw 'FastAPI responded, but both betting strategies are not available in the loaded API. Restart the API with the current source.'
+    }
+    if (-not (Test-OperationalScrapeRuntimeReady)) {
+        throw 'FastAPI responded, but the local operational scrape runtime or worker is not enabled. Check the API startup logs.'
+    }
 
     # The frontend health endpoint depends on FastAPI. During an API-only
     # restart it can legitimately return 503 until the backend is ready.
     Assert-PortAvailableOrHealthy -Port 3000 -HealthUrl $WebHealthUrl
-    if (Test-Endpoint -Url $WebHealthUrl) {
-        Write-Step 'Next.js is already running; reusing it.'
+    $StartWeb = -not (Test-Endpoint -Url $WebHealthUrl)
+    if (-not $StartWeb) {
+        if (Test-LocalLoginRouteReady) {
+            Write-Step 'Next.js is already running with local login enabled; reusing it.'
+        }
+        else {
+            $NodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
+            $ExistingWebProcess = if ($NodeCommand) {
+                Find-RepositoryWebProcess -ExpectedNodeExe $NodeCommand.Source
+            } else { $null }
+            if ($null -eq $ExistingWebProcess) {
+                throw 'Next.js is healthy, but the local-login route is unavailable and the port owner is not a verified Next.js process from this repository. It was left untouched; check port 3000 and logs before retrying.'
+            }
+            Write-Step 'Restarting this repository Next.js because its local-login route is disabled or stale...'
+            Stop-StartedProcessTree -Process $ExistingWebProcess
+            $webReleaseDeadline = (Get-Date).AddSeconds(15)
+            do {
+                $remainingWebListeners = @(Get-NetTCPConnection -State Listen -LocalPort 3000 -ErrorAction SilentlyContinue)
+                if (-not $remainingWebListeners) { break }
+                Start-Sleep -Milliseconds 500
+            } while ((Get-Date) -lt $webReleaseDeadline)
+            if (Get-NetTCPConnection -State Listen -LocalPort 3000 -ErrorAction SilentlyContinue) {
+                throw 'Port 3000 did not become free after stopping the verified repository Next.js process.'
+            }
+            $StartWeb = $true
+        }
     }
-    else {
+    if ($StartWeb) {
         $WebCommand = 'npm run dev -- --hostname 127.0.0.1'
         $FrontendMode = 'development'
         if (-not $DevelopmentFrontend) {
             if (-not (Test-ProductionBuildCurrent)) {
                 Write-Step 'Building the production frontend (first run or source changed)...'
-                $BuildProcess = Start-Process -FilePath 'cmd.exe' -ArgumentList '/d', '/s', '/c', 'npm run build' `
+                $BuildProcess = Start-Process -FilePath 'cmd.exe' -ArgumentList '/d', '/s', '/c', 'npm run build -- --webpack' `
                     -WorkingDirectory $RepoRoot -WindowStyle Hidden `
                     -RedirectStandardOutput $WebStdout -RedirectStandardError $WebStderr -PassThru -Wait
                 if ($BuildProcess.ExitCode -ne 0) {
@@ -300,8 +526,7 @@ try {
                 }
             }
             $env:NODE_OPTIONS = '--max-old-space-size=2048'
-            Sync-StandaloneAssets
-            $WebCommand = 'node .next/standalone/server.js'
+            $WebCommand = 'node "' + (Join-Path $RepoRoot 'node_modules\next\dist\bin\next') + '" start --hostname 127.0.0.1'
             $FrontendMode = 'production'
         }
         Write-Step "Starting Next.js ($FrontendMode) on port 3000..."
@@ -311,15 +536,18 @@ try {
         $WebStarted = $true
     }
     Wait-Endpoint -Name 'Next.js' -Url $WebHealthUrl -TimeoutSeconds $WebTimeoutSeconds -StartedProcess $WebProcess
+    if (-not (Test-LocalLoginRouteReady)) {
+        throw "Next.js is healthy, but its local-login route is not ready. Check .env.local and .env.test configuration and logs in $RuntimeDir"
+    }
 
     $state = [ordered]@{
         version = 1
         repoRoot = $RepoRoot
         startedAtUtc = $StartedAtUtc
-        apiProcessId = if ($ApiStarted) { $ApiProcess.Id } else { $null }
-        webProcessId = if ($WebStarted) { $WebProcess.Id } else { $null }
-        apiStartedByLauncher = $ApiStarted
-        webStartedByLauncher = $WebStarted
+        apiProcessId = if ($ApiStarted) { $ApiProcess.Id } elseif ($PreviousState -and $PreviousState.apiStartedByLauncher -and $PreviousState.apiProcessId -and (Get-Process -Id ([int]$PreviousState.apiProcessId) -ErrorAction SilentlyContinue)) { $PreviousState.apiProcessId } else { $null }
+        webProcessId = if ($WebStarted) { $WebProcess.Id } elseif ($PreviousState -and $PreviousState.webStartedByLauncher -and $PreviousState.webProcessId -and (Get-Process -Id ([int]$PreviousState.webProcessId) -ErrorAction SilentlyContinue)) { $PreviousState.webProcessId } else { $null }
+        apiStartedByLauncher = $ApiStarted -or ($PreviousState -and $PreviousState.apiStartedByLauncher -and $PreviousState.apiProcessId -and (Get-Process -Id ([int]$PreviousState.apiProcessId) -ErrorAction SilentlyContinue))
+        webStartedByLauncher = $WebStarted -or ($PreviousState -and $PreviousState.webStartedByLauncher -and $PreviousState.webProcessId -and (Get-Process -Id ([int]$PreviousState.webProcessId) -ErrorAction SilentlyContinue))
         apiHealthUrl = $ApiHealthUrl
         webHealthUrl = $WebHealthUrl
         frontendMode = $FrontendMode

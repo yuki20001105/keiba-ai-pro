@@ -46,10 +46,19 @@ _CANDIDATE_EVALUATION_PERIODS = {
 
 
 def _load_managed_bundle(path: Path) -> dict:
+    if path.name.startswith("model_monthly_reference_"):
+        from services.monthly_reference_input import load_published_bundle
+        return load_published_bundle(path)
     if path.name.startswith("model_win_reference_"):
         from services.win_nll_reference_input import load_published_bundle
         return load_published_bundle(path)
     return joblib.load(path)
+
+
+def _model_readiness(path: Path, bundle: dict) -> dict[str, object]:
+    """Expose artifact-level readiness without implying race-level approval."""
+    from services.model_readiness import assess_model_readiness
+    return assess_model_readiness(path, bundle)
 
 
 def _local_candidate_models() -> list[dict]:
@@ -182,6 +191,8 @@ async def list_models(ultimate: bool | None = None):
     try:
         # ローカルモデルを優先スキャン
         local_files = list(MODELS_DIR.glob("model_*.joblib"))
+        local_files = [path for path in local_files if not path.name.startswith("model_monthly_reference_")]
+        from services.monthly_reference_input import list_reference_models
 
         if not local_files and SUPABASE_DATA_ENABLED and get_supabase_client():
             # ローカルに何もない場合のみ Supabase にフォールバック
@@ -191,6 +202,7 @@ async def list_models(ultimate: bool | None = None):
                 sb_models = [m for m in sb_models if m.get("ultimate_mode", False) == ultimate]
             if ultimate is not False:
                 sb_models += _local_candidate_models()
+                sb_models += list_reference_models(models_dir=MODELS_DIR)
             return {"models": sb_models, "count": len(sb_models)}
 
         # アクティブモデル ID を取得（未設定なら latest を使う）
@@ -231,6 +243,7 @@ async def list_models(ultimate: bool | None = None):
                     "feature_count": feat_count,
                     "feature_pipeline": bundle.get("feature_pipeline"),
                     "probability_validation": bundle.get("probability_validation", {}),
+                    "prediction_readiness": _model_readiness(model_path, bundle),
                     "training_time_seconds": bundle.get("training_time_seconds"),
                     "training_parallel_workers": bundle.get("training_parallel_workers"),
                     "native_threads": bundle.get("native_threads"),
@@ -243,6 +256,9 @@ async def list_models(ultimate: bool | None = None):
                 if bundle.get("_win_nll_reference") is True:
                     model.update(display_name=bundle.get("display_name", "全履歴・勝率NLL（参考運用）"),
                                  reference_only=True, can_delete=False)
+                elif bundle.get("schema") == "local-db-shared-grouped-model-v1":
+                    model.update(display_name="46特徴量・条件別速度偏差④（試験採用）",
+                                 reference_only=True, target_normalization=bundle.get("target_normalization"))
                 elif bundle.get("feature_pipeline") == "local-db-context-v1":
                     model.update(display_name="条件・展開80（比較候補）", reference_only=True)
                 models_with_sort_keys.append(
@@ -261,6 +277,7 @@ async def list_models(ultimate: bool | None = None):
         models = [model for _sort_key, model in models_with_sort_keys]
         if ultimate is not False:
             models += _local_candidate_models()
+            models += list_reference_models(models_dir=MODELS_DIR)
         return {"models": models, "count": len(models)}
 
     except Exception as e:
@@ -270,6 +287,8 @@ async def list_models(ultimate: bool | None = None):
 @router.delete("/api/models/{model_id}")
 async def delete_model(model_id: str, _: dict = Depends(require_admin)):
     """保存済みモデルを削除"""
+    if model_id.startswith("model_monthly_reference_"):
+        raise HTTPException(status_code=409, detail="参考運用モデルは明示選択専用です。封印済み原本は維持します")
     if model_id.startswith("local_safe_"):
         raise HTTPException(status_code=409, detail="研究候補の原本は削除できません")
     if model_id.startswith("model_win_reference_"):
@@ -337,6 +356,7 @@ async def get_model_info(model_id: str):
             "evaluation": _model_evaluation(model_files[0], bundle),
             "feature_pipeline": bundle.get("feature_pipeline"),
             "probability_validation": bundle.get("probability_validation", {}),
+            "prediction_readiness": _model_readiness(model_files[0], bundle),
             "display_name": bundle.get("display_name"),
             "reference_only": bundle.get("reference_only", False),
             "data_count": bundle.get("data_count", 0),
@@ -384,6 +404,7 @@ async def get_active_model():
             "evaluation": _model_evaluation(model_path, bundle),
             "feature_pipeline": bundle.get("feature_pipeline"),
             "probability_validation": bundle.get("probability_validation", {}),
+            "prediction_readiness": _model_readiness(model_path, bundle),
             "display_name": bundle.get("display_name"),
             "reference_only": bundle.get("reference_only", False),
             "feature_count": feat_count,
@@ -396,6 +417,13 @@ async def get_active_model():
 @router.put("/api/models/{model_id}/activate")
 async def activate_model(model_id: str, _: dict = Depends(require_admin)):
     """指定したモデルをアクティブにする（予測に使用するモデルを切り替える）"""
+    from services.pace74_shadow import is_shadow_path, is_reference_only_artifact
+    if (model_id.lower().startswith(("pace74-", "pace74_", "model_pace74"))
+            or is_shadow_path(MODELS_DIR / f"{model_id}.joblib")
+            or not (MODELS_DIR / f"{model_id}.joblib").resolve().is_relative_to(MODELS_DIR.resolve())):
+        raise HTTPException(status_code=409, detail="pace74 shadow is reference-only; durable production approval is required")
+    if model_id.startswith("model_monthly_reference_"):
+        raise HTTPException(status_code=409, detail="参考運用モデルは明示選択専用です。既定モデルは維持します")
     if model_id.startswith("local_safe_"):
         raise HTTPException(status_code=409, detail="研究候補は明示選択専用です。既定モデルは維持します")
     environment = (os.environ.get("APP_ENV") or "").strip().lower()
@@ -420,6 +448,12 @@ async def activate_model(model_id: str, _: dict = Depends(require_admin)):
         model_path = candidates[0]
         model_id = model_path.stem
 
+    if (not model_path.resolve().is_relative_to(MODELS_DIR.resolve())
+            or model_path.name.lower().startswith(("pace74-", "pace74_", "model_pace74"))
+            or is_reference_only_artifact(model_path)):
+        raise HTTPException(status_code=409, detail="pace74 shadow is reference-only; durable production approval is required")
+    if model_path.name.startswith("model_monthly_reference_"):
+        raise HTTPException(status_code=409, detail="参考運用モデルは明示選択専用です。既定モデルは維持します")
     try:
         if model_path.name.startswith("model_win_reference_"):
             _load_managed_bundle(model_path)

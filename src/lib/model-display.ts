@@ -16,6 +16,13 @@ export type ModelSummary = {
   display_name?: string | null
   is_local_candidate?: boolean
   feature_pipeline?: string | null
+  prediction_readiness?: {
+    feature_compatibility?: 'verified' | 'unverified' | 'mismatch' | string
+    win_probability_validated?: boolean
+    eligible_bet_types?: string[]
+    model_betting_ready?: boolean
+    profitability_verified?: boolean
+  } | null
 }
 
 const TARGET_LABELS: Record<string, string> = {
@@ -73,6 +80,9 @@ export function formatModelPeriod(model: Pick<ModelSummary, 'training_date_from'
 }
 
 export function formatModelOptionLabel(model: ModelSummary): string {
+  if (model.feature_pipeline === 'monthly-validation-research-model-v1') {
+    return model.display_name || '月別検証モデル（参考運用）'
+  }
   if (model.feature_pipeline === 'local-db-context-v1') {
     const created = formatModelCreatedAt(model)
     const period = formatModelPeriod(model)
@@ -95,5 +105,13 @@ export function formatModelOptionLabel(model: ModelSummary): string {
     : typeof model.auc === 'number' && Number.isFinite(model.auc)
       ? `AUC ${model.auc.toFixed(3)}`
       : ''
-  return [target, created, period ? `学習 ${period}` : '', score].filter(Boolean).join('｜')
+  const readiness = model.prediction_readiness
+  const readinessLabel = readiness
+    ? readiness.feature_compatibility !== 'verified'
+      ? '特徴量互換性未確認・参考予測'
+      : readiness.win_probability_validated && readiness.eligible_bet_types?.length
+        ? `勝率検証済・${readiness.eligible_bet_types.join('／')}（収益性未検証・発走前オッズ確認が別途必要）`
+        : '勝率未検証・買い目対象外'
+    : ''
+  return [target, created, period ? `学習 ${period}` : '', score, readinessLabel].filter(Boolean).join('｜')
 }

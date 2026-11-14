@@ -44,6 +44,7 @@ from services.race_snapshot import (  # type: ignore
     fetch_fresh_race_snapshot,
     save_valid_race_snapshot,
     stored_rows_need_refresh,
+    stored_horse_details_deferred,
 )
 from betting.value_policy import POLICY_VERSION, build_live_context  # type: ignore
 from training.db_context_registry import SHARED_PIPELINES  # type: ignore
@@ -238,6 +239,9 @@ def _local_candidate_spec(*, model_id: str | None = None, path: str | Path | Non
 
 
 def _load_served_model_bundle(path: Path) -> dict:
+    if path.name.startswith("model_monthly_reference_"):
+        from services.monthly_reference_input import load_published_bundle
+        return load_published_bundle(path)
     if path.name.startswith("model_win_reference_"):
         from services.win_nll_reference_input import load_published_bundle
         return dict(load_published_bundle(path), model_id=path.stem)
@@ -349,6 +353,7 @@ class ModelPredictor:
         self.race_info = race_info
         self.model_path = Path(model_path) if model_path else None
         self.trusted_input_context = trusted_input_context
+        self._trained_runtime_result: dict | None = None
 
     def _thread_options(self, model: object) -> dict:
         # Only LightGBM supports this keyword; retain non-LightGBM contracts.
@@ -371,6 +376,14 @@ class ModelPredictor:
         - feature_columns 過半数不足 → HTTP 500（不足列名を明示）
         - それ以下の不足 → 既存NaN補完。欠落をdiagnosticsに保持して参考表示
         """
+        if self.bundle.get("_monthly_reference"):
+            from services.monthly_reference_input import run_prediction
+            self._trained_runtime_result = run_prediction(
+                self.bundle, df, db_path=self.db_path, race_info=self.race_info,
+                model_path=self.model_path, n_threads=self.inference_threads or 2,
+            )
+            self.input_diagnostics = self._trained_runtime_result["diagnostics"]
+            return self._trained_runtime_result["features"]
         if self.bundle.get("_win_nll_reference") is True:
             from services.win_nll_reference_input import build_input
             features, self.input_diagnostics = build_input(
@@ -385,7 +398,16 @@ class ModelPredictor:
             )
             return features
         if self.bundle.get("feature_pipeline") in SHARED_PIPELINES:
-            from services.db_shared_input import build_shared_input
+            from services.db_shared_input import build_shared_input, build_trained_shared_input, needs_trained_runtime
+            if needs_trained_runtime(self.bundle):
+                features, self.input_diagnostics, self._trained_runtime_result = build_trained_shared_input(
+                    self.bundle, df, db_path=self.db_path, race_info=self.race_info,
+                    model_path=self.model_path, trusted_context=self.trusted_input_context,
+                    n_threads=self.inference_threads or 2,
+                )
+                self._trained_runtime_result["features"] = features.copy(deep=True)
+                return features
+            self._trained_runtime_result = None
             features, self.input_diagnostics = build_shared_input(
                 self.bundle, df, db_path=self.db_path, race_info=self.race_info,
                 model_path=self.model_path, trusted_context=self.trusted_input_context,
@@ -491,6 +513,12 @@ class ModelPredictor:
         Returns:
             (raw_scores, proba_norm) — 両方 shape (n_horses,)
         """
+        if self.bundle.get("_monthly_reference"):
+            result = self._trained_runtime_result
+            if result is None or not X.equals(result["features"]):
+                raise ValueError("monthly-reference-score-matrix-mismatch")
+            self.calibrator_applied = result["calibrator_applied"]
+            return result["raw"], result["probabilities"]
         if self.bundle.get("_win_nll_reference") is True:
             from services.win_nll_reference_input import predict
             result = predict(self.bundle, X, model_path=self.model_path)
@@ -504,8 +532,17 @@ class ModelPredictor:
             self.calibrator_applied = False
             return predict_candidate_scores(self.bundle, X, num_threads=self.inference_threads or 2)
         if self.bundle.get("feature_pipeline") in SHARED_PIPELINES:
-            from training.db_context_registry import fit_module
-            profile = fit_module(self.bundle["feature_pipeline"])
+            if self._trained_runtime_result is not None:
+                import numpy as _np_trained
+                if not X.equals(self._trained_runtime_result["features"]):
+                    raise ValueError("shared-db-trained-runtime-score-matrix-mismatch")
+                self.calibrator_applied = self._trained_runtime_result["calibrator_applied"]
+                return (
+                    _np_trained.asarray(self._trained_runtime_result["raw"], dtype=float),
+                    _np_trained.asarray(self._trained_runtime_result["probabilities"], dtype=float),
+                )
+            from training.db_normalized_registry import prediction_module
+            profile = prediction_module(self.bundle)
             raw, probabilities = profile.predict_encoded_shared_scores(
                 self.bundle, X, n_threads=self.inference_threads or 2,
             )
@@ -739,6 +776,9 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
         _resolve_saved_model_path if request.data_refresh == "saved_db" else _resolve_model_path,
         request.model_id,
     )
+    if model_path.name.startswith("model_monthly_reference_"):
+        from services.monthly_reference_input import validate_published_artifact as validate_monthly_reference
+        await asyncio.to_thread(validate_monthly_reference, model_path)
     if model_path.name.startswith("model_win_reference_"):
         # Cached responses must not outlive the publication or frozen input
         # source contract. Check before any response-cache early return.
@@ -758,20 +798,34 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
         # A cached skip can still carry EV/probability labels. Revalidate the
         # exact publisher/hash and regenerate time-sensitive DB evidence.
         _shared_bundle = await asyncio.to_thread(_load_served_model_bundle, model_path)
-        await asyncio.to_thread(verify_bundle_sources, _shared_bundle)
+        try:
+            await asyncio.to_thread(verify_bundle_sources, _shared_bundle)
+        except ValueError as exc:
+            reason = str(exc)
+            if "source-changed-since-import-restart-required" in reason:
+                detail = "特徴量計算コードが起動後に変更されています。FastAPIを再起動してから再予測してください。"
+            elif "feature-contract-source-mismatch" in reason:
+                detail = (
+                    "選択中のモデルは現在の特徴量計算コードと一致しないため、再予測できません。"
+                    "互換モデルを選択するか、現行コードでモデルを再学習してください。"
+                )
+            else:
+                raise
+            raise HTTPException(status_code=409, detail=detail) from exc
     from services.prediction_freshness import data_revision, model_runtime_revision, freshness_metadata
     _initial_data_revision = await asyncio.to_thread(data_revision, ULTIMATE_DB)
     _runtime_revision = await asyncio.to_thread(model_runtime_revision, model_path)
+    _primary_runtime_revision = await asyncio.to_thread(model_runtime_revision, model_path, include_shadow=False)
     # New/repaired DB history, WAL writes, model and serving changes invalidate
     # old responses. An explicit saved-DB rerun always bypasses response reuse.
     _cache_key = (
         f"{request.race_id}:{model_path}:{_model_identity}:{request.bankroll}:"
-        f"{request.risk_mode}:{int(request.include_explanation)}:"
+        f"{request.risk_mode}:{request.betting_strategy}:{int(request.include_explanation)}:"
         f"{request.min_ev}:{request.use_kelly}:{request.dynamic_unit}:{POLICY_VERSION}:"
-        f"{request.data_refresh}:{_initial_data_revision}:{_runtime_revision}"
+        f"{request.data_refresh}:{request.refresh_odds}:{_initial_data_revision}:{_runtime_revision}"
     )
     _now = _time.time()
-    _cached = None if request.force_recompute else _ANALYZE_CACHE.get(_cache_key)
+    _cached = None if request.force_recompute or request.refresh_odds else _ANALYZE_CACHE.get(_cache_key)
     if _cached and (_now - _cached[0]) < _ANALYZE_CACHE_TTL:
         _cached_predictions = _cached[1].get("predictions", [])
         _cached_market_complete = bool(_cached_predictions) and all(
@@ -804,6 +858,7 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
         # モデルロード（model_id指定 → active model pointer → latest の順）
         bundle = await asyncio.to_thread(_load_served_model_bundle, model_path)
         _row_explanations: list[dict] | None = None
+        _shadow_raw = None
 
         # Phase 0: 常に ultimate モードでデータを取得（87特徴量固定）
         if True:  # noqa (request.ultimate_mode は常に True)
@@ -828,6 +883,7 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
                         _scraped = await fetch_fresh_race_snapshot(
                             _sess,
                             request.race_id,
+                            **({"cached_horse_details": True} if _shared_model else {}),
                         )
                     if not _scraped or not _scraped.get("horses"):
                         raise HTTPException(
@@ -877,6 +933,7 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
                             _sess,
                             request.race_id,
                             _race_data.get("date", ""),
+                            **({"cached_horse_details": True} if _shared_model else {}),
                         )
                     if not _scraped or not _scraped.get("horses"):
                         raise HTTPException(
@@ -921,8 +978,12 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
             _shared_stale_input = _shared_model and shared_pre_race_input_needs_refresh(
                 bundle, request.race_id, _race_data, _hrows, trusted_db_card=True,
             )
+            _legacy_deferred = not _shared_model and stored_horse_details_deferred(_hrows)
+            if request.data_refresh == "saved_db" and _legacy_deferred:
+                raise HTTPException(status_code=409, detail="このモデルには馬詳細の完全取得が必要です。保存DBのみではなく、データを更新して再予測してください。")
             if request.data_refresh != "saved_db" and (
                 stored_rows_need_refresh(request.race_id, _race_data, _hrows) or _shared_stale_input
+                or _legacy_deferred
             ):
                 try:
                     import aiohttp as _aiohttp_refresh
@@ -937,6 +998,7 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
                             _refresh_session,
                             request.race_id,
                             _race_data.get("date", ""),
+                            **({"cached_horse_details": True} if _shared_model else {}),
                         )
                     if _fresh_snapshot:
                         save_valid_race_snapshot(_fresh_snapshot, ULTIMATE_DB, request.race_id)
@@ -954,6 +1016,9 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
                         f"[analyze] {request.race_id}: fresh race snapshot更新失敗; "
                         f"品質ゲートで旧入力を拒否します: {_refresh_error}"
                     )
+
+            if not _shared_model and stored_horse_details_deferred(_hrows):
+                raise HTTPException(status_code=409, detail="馬詳細を完全取得できていません。データを更新して再予測してください。")
 
             # Rebuild from the final in-memory snapshot. This also covers the
             # "race row exists but horse rows were missing" repair path above.
@@ -1011,7 +1076,7 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
                 ("trainer_url", "trainer_id", "trainer_name"),
                 ("horse_url", "horse_id", "horse_name"),
             ]:
-                if (bundle.get("_local_candidate") or bundle.get("_win_nll_reference") is True or bundle.get("feature_pipeline") in SHARED_PIPELINES) and _id_col == "horse_id":
+                if (bundle.get("_monthly_reference") or bundle.get("_local_candidate") or bundle.get("_win_nll_reference") is True or bundle.get("feature_pipeline") in SHARED_PIPELINES) and _id_col == "horse_id":
                     # Never substitute a profile URL/name for canonical identity.
                     df_pred[_id_col] = [row.get("horse_id") or "" for row in _horse_records]
                     continue
@@ -1061,6 +1126,7 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
                             _sess2,
                             request.race_id,
                             race_info.get("date", ""),
+                            **({"cached_horse_details": True} if _shared_model else {}),
                         )
                     if _fresh and _fresh.get("horses"):
                         _fresh_changed = merge_fresh_pre_race_data(
@@ -1211,6 +1277,7 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
                 excluded_race_ids={request.race_id},
                 expected_model_identity=_model_identity,
                 include_explanation=request.include_explanation,
+                include_model_comparison=True,
                 race_info=race_info,
                 trusted_input_context={
                     "trusted_db_card": True,
@@ -1218,7 +1285,7 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
                                            for row in _betting_source_records
                                            for key in ("finish_position", "finish")),
                 },
-                place3_model_path=(str(_place3_model_files[0]) if _place3_model_files and not bundle.get("_local_candidate") and bundle.get("_win_nll_reference") is not True and bundle.get("feature_pipeline") not in SHARED_PIPELINES else None),
+                place3_model_path=(str(_place3_model_files[0]) if _place3_model_files and not bundle.get("_monthly_reference") and not bundle.get("_local_candidate") and bundle.get("_win_nll_reference") is not True and bundle.get("feature_pipeline") not in SHARED_PIPELINES else None),
             )
             if request.data_refresh == "saved_db" and (
                 await asyncio.to_thread(data_revision, ULTIMATE_DB) != _initial_data_revision
@@ -1240,6 +1307,7 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
             if _computed["place3"] is not None:
                 _place3_probs, _place3_norm = _computed["place3"]
             _compute_timings = _computed["timings"]
+            _shadow_raw = _computed.get("model_comparison")
             logger.info(
                 "[prediction timing] race=%s history_rows=%s timing=%s",
                 request.race_id, _computed["history_rows"], _compute_timings,
@@ -1250,6 +1318,51 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
             # ── アンサンブルスコア（win/speed + place3 の加重平均）──────────────
             # _place3_norm を使用（正規化済み分布で win_probs と整合）
             ensemble_probs = _compute_ensemble(win_probs, _place3_norm, _bundle_target)
+
+            _odds_refresh = None
+            _live_odds_requested = False
+            if request.refresh_odds:
+                from datetime import datetime, timedelta, timezone
+                _quote_date = str(race_info.get("date", "")).replace("-", "").replace("/", "")
+                try:
+                    _quote_date = datetime.strptime(_quote_date, "%Y%m%d").strftime("%Y%m%d")
+                except ValueError:
+                    _quote_date = ""
+                _odds_refresh = {"status": "historical" if _quote_date else "invalid_date", "observed_at": None}
+                if _quote_date >= datetime.now(timezone(timedelta(hours=9))).strftime("%Y%m%d"):
+                    _live_odds_requested = True
+                    _capture = {"odds": {}, "popularity": {}, "status": "error", "evidence": None}
+                    try:
+                        import aiohttp
+                        from scraping.odds import fetch_tansho_odds_capture
+                        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as _odds_session:
+                            _capture = await asyncio.wait_for(
+                                fetch_tansho_odds_capture(_odds_session, request.race_id), timeout=60,
+                            )
+                    except Exception as _quote_error:
+                        logger.warning("[analyze] %s: current odds unavailable: %s", request.race_id, _quote_error)
+                    _evidence = _capture.get("evidence")
+                    _odds_refresh = {
+                        "status": _capture["status"],
+                        "observed_at": _evidence.get("observed_at") if isinstance(_evidence, dict) else None,
+                    }
+                    # Price overlay only: inference and saved history remain
+                    # unchanged, and missing quotes never inherit old DB prices.
+                    df_pred = df_pred.copy()
+                    _quote_numbers = pd.to_numeric(df_pred["horse_number"], errors="coerce")
+                    df_pred["odds"] = _quote_numbers.map(_capture["odds"])
+                    df_pred["popularity"] = _quote_numbers.map(_capture["popularity"])
+                    _quote_records = []
+                    for row in _betting_source_records:
+                        try:
+                            _quote_number = int(float(row.get("horse_number", row.get("horse_no"))))
+                        except (TypeError, ValueError, OverflowError):
+                            _quote_number = None
+                        _quote_records.append({
+                            **row, "odds": _capture["odds"].get(_quote_number),
+                            "odds_status": _capture["status"], "odds_observation": _evidence,
+                        })
+                    _betting_source_records = _quote_records
 
             # [fix] 再スクレイプで df_pred["odds"] が更新された場合、
             # _horse_records には反映されないため、horse_number をキーに逆引きマップを作成
@@ -1274,7 +1387,7 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
                 _horse_num = _hr.get("horse_number") or _hr.get("horse_no") or (i + 1)
                 # df_pred の再スクレイプ済みオッズを優先、なければ _horse_records から取得
                 _odds_float: float | None = _df_odds_lookup.get(int(_horse_num))
-                if _odds_float is None:
+                if _odds_float is None and not _live_odds_requested:
                     _raw_odds = _hr.get("odds") if _hr.get("odds") is not None else _hr.get("win_odds")
                     try:
                         _odds_float = float(_raw_odds) if _raw_odds not in (None, "", "---", 0, 0.0) else None
@@ -1290,7 +1403,7 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
                     "trainer_name": _hr.get("trainer_name", ""),
                     "sex": _hr.get("sex", ""), "age": _hr.get("age"),
                     "horse_weight": _hr.get("weight_kg") or _hr.get("horse_weight"),
-                    "odds": _odds_float, "popularity": _df_popularity_lookup.get(int(_horse_num)) or _hr.get("popularity"),
+                    "odds": _odds_float, "popularity": _df_popularity_lookup.get(int(_horse_num)) if _live_odds_requested else _df_popularity_lookup.get(int(_horse_num)) or _hr.get("popularity"),
                     "win_probability": float(win_probs[i]),
                     "p_raw": float(_wp_raw[i]),
                     "p_norm": float(_wp_norm[i]),
@@ -1318,11 +1431,18 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
             model_path=model_path, predictor=predictor,
             source_records=_betting_source_records, feature_frame=X_pred,
         )
-        result = recommender.analyze_and_recommend(predictions, race_info, context=_betting_context)
+        if request.betting_strategy == "fixed-two-v1":
+            from betting.value_policy import load_axis_forecast
+            _betting_context["axis_forecast"] = load_axis_forecast(model_path, predictions, race_info)
+            ensure_model_identity(model_path, _model_identity)
+        result = recommender.analyze_and_recommend(
+            predictions, race_info, context=_betting_context, betting_strategy=request.betting_strategy,
+        )
 
         _resp_data = dict(
             success=True,
             model_id=bundle.get("model_id", model_path.stem),
+            odds_refresh=_odds_refresh,
             input_diagnostics=predictor.input_diagnostics,
             explanation_method=("tree_shap" if _row_explanations else None),
             race_info=result["race_info"],
@@ -1338,13 +1458,25 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
                 "elapsed_seconds": _time.perf_counter() - _observation_started_at,
             },
         )
+        from services.pace74_shadow import finalize_comparison, unavailable as shadow_unavailable
+        try:
+            _resp_data["model_comparison"] = finalize_comparison(
+                raw=_shadow_raw, predictions=result["predictions"], race_info=result["race_info"],
+                source_records=_betting_source_records, context=_betting_context,
+            )
+        except Exception:
+            _resp_data["model_comparison"] = shadow_unavailable(model_path.stem, "comparison_finalize_failed")
         from betting.reference import build_reference_bets
         _resp_data["reference_bets"] = build_reference_bets(
             result["predictions"], runner_count=result["race_info"].get("num_horses"),
         )
         from app_config import APP_ENV
-        from betting.reference_value import build_reference_expectation
+        from betting.reference_value import build_reference_expectation, build_reference_simulation
         _resp_data["reference_expectation"] = build_reference_expectation(
+            result["predictions"], result["race_info"], result["recommendation"],
+            context=_betting_context, model_id=_resp_data["model_id"], environment=APP_ENV,
+        )
+        _resp_data["reference_simulation"] = build_reference_simulation(
             result["predictions"], result["race_info"], result["recommendation"],
             context=_betting_context, model_id=_resp_data["model_id"], environment=APP_ENV,
         )
@@ -1416,10 +1548,17 @@ async def _analyze_race_impl(request: AnalyzeRaceRequest):
             freshness_metadata, db_path=ULTIMATE_DB, model_path=model_path,
             source=request.data_refresh, initial_revision=_initial_data_revision,
         )
-        if _resp_data["freshness"]["model_runtime_revision"] != _runtime_revision:
-            raise HTTPException(status_code=503, detail="予測中にモデルまたは入力処理が更新されました。最新データで再予測してください。")
+        _shadow_runtime_changed = _resp_data["freshness"]["model_runtime_revision"] != _runtime_revision
+        if _shadow_runtime_changed:
+            if await asyncio.to_thread(model_runtime_revision, model_path, include_shadow=False) != _primary_runtime_revision:
+                raise HTTPException(status_code=503, detail="予測中にモデルまたは入力処理が更新されました。最新データで再予測してください。")
+            # Candidate/configuration changes invalidate the comparison/cache,
+            # never an otherwise valid primary prediction or its purchase gate.
+            _resp_data["model_comparison"] = shadow_unavailable(model_path.stem, "shadow_runtime_changed", status="skipped")
         if request.data_refresh == "saved_db" and _resp_data["freshness"]["data_changed_during_prediction"]:
             raise HTTPException(status_code=409, detail="予測中に保存済みデータが更新されました。データ取得が完了してから、最新データで再予測してください。")
+        if _shadow_runtime_changed:
+            return AnalyzeRaceResponse(**_resp_data)
         # Cache only when the DB did not change while the input was built. This
         # stamp is invalidation metadata, not a pre-race capture receipt.
         if _resp_data["freshness"]["data_changed_during_prediction"]:
@@ -1470,8 +1609,10 @@ async def analyze_races_batch(request: BatchAnalyzeRequest, http_req: Request):
             include_explanation=request.include_explanation,
             force_recompute=request.force_recompute,
             data_refresh=request.data_refresh,
+            refresh_odds=request.refresh_odds,
             bankroll=request.bankroll,
             risk_mode=request.risk_mode,
+            betting_strategy=request.betting_strategy,
             use_kelly=request.use_kelly,
             dynamic_unit=request.dynamic_unit,
             min_ev=request.min_ev,

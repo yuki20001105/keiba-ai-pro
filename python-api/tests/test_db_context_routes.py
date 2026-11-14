@@ -112,6 +112,7 @@ def test_context_normal_route_keeps_snapshot_lease_and_explicit_profile(
         assert matrix is context_matrix
         seen["fit"].append(kwargs)
         return {}, {"evaluation": {"primary": {"rank_correlation": .4, "rmse": .25}},
+            "partitions": {"TEST": {"date_from": "20260913", "date_to": "20260913"}},
             "probability_validation": {"calibrated": True, "validated": False},
             "data_count": 2, "race_count": 2, "training_parallel_workers": 2, "training_native_threads": 2}
 

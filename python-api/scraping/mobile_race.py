@@ -8,6 +8,7 @@ from typing import Any, Awaitable, Callable
 
 from bs4 import BeautifulSoup
 from scraping.last3f_evidence import clock_column
+from scraping.race_class import explicit_race_class
 
 
 JRA_VENUES = {
@@ -242,26 +243,7 @@ async def parse_mobile_race(
     # Cache-only chunks should not incur a separate one-second delay.
     gc.collect()
 
-    class_match = re.search(r"\b(G[1-3]|L|OP)\b", header_text)
-    if class_match:
-        race_class = class_match.group(1)
-    else:
-        class_text = next(
-            (
-                value
-                for value in (
-                    "\u65b0\u99ac",
-                    "\u672a\u52dd\u5229",
-                    "1\u52dd\u30af\u30e9\u30b9",
-                    "2\u52dd\u30af\u30e9\u30b9",
-                    "3\u52dd\u30af\u30e9\u30b9",
-                    "\u30aa\u30fc\u30d7\u30f3",
-                )
-                if value in header_text
-            ),
-            "\u4e0d\u660e",
-        )
-        race_class = class_text
+    race_class = explicit_race_class(header_text, race_name) or "\u4e0d\u660e"
     meeting = re.search(r"(\d+)\u56de[^\s]+?(\d+)\u65e5\u76ee", header_text)
 
     return {

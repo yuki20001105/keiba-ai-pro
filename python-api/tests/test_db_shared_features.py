@@ -100,6 +100,33 @@ def test_target_labels_market_and_profile_claims_are_not_inputs():
     assert expected.attrs["current_outcomes_consumed"] is False
 
 
+def test_cached_card_and_complete_profile_produce_identical_shared_features(tmp_path, monkeypatch):
+    import asyncio
+    from scraping import horse
+
+    database = write_db(tmp_path / "history.db")
+    current = rows().loc[lambda frame: frame.race_date.eq("20240103")].copy()
+    info = current.iloc[0].to_dict()
+    complete = current.copy()
+    complete["prev_race_time"] = "1:30.0"
+    complete["horse_total_runs"] = 99
+    complete["horse_total_wins"] = 90
+    complete["horse_birth_date"] = "2000年1月1日"
+    expected, _ = shared.build_serving_features(database, info, complete)
+    monkeypatch.setattr(horse, "_get_pedigree_sqlite",
+                        lambda _: {"sire": "父", "dam": "母", "damsire": "母父"})
+    current = current.drop(columns=["sire", "damsire"])
+
+    async def enrich():
+        with horse.horse_detail_scope("cached_or_fetch"):
+            return [dict(row, **await horse.scrape_horse_detail(None, row["horse_id"]))
+                    for row in current.to_dict("records")]
+
+    cached = pd.DataFrame(asyncio.run(enrich()), index=current.index)
+    actual, _ = shared.build_serving_features(database, info, cached)
+    pd.testing.assert_frame_equal(actual, expected, check_exact=True)
+
+
 def test_order_and_index_are_preserved_even_nonmonotonic_index():
     source = rows()
     target = source.loc[source.race_date.ge("20240101")].sample(frac=1, random_state=3)

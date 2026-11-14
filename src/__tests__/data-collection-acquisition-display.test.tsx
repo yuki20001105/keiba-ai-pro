@@ -18,6 +18,9 @@ const json = (value: unknown) => Response.json(value)
 const CAPABILITIES = { scrape_capabilities: {
   race_scopes: ['all', 'jra'], jra_month_reuse: true,
   safety_policy_version: 'normal-acquisition-safe-v1', minimum_provider_interval_seconds: 3,
+  required_public_inputs_version: 'historical-jra-required-public-v1',
+  required_public_inputs_scope: 'historical_jra_older_than_30_days',
+  profile_totals_are_model_inputs: false, prior_results_auto_imported: false,
   halt_http400: true, preserve_saved_values: true, max_concurrent_http_requests: 1,
 } }
 function runningJob(progress: Record<string, unknown> = {}, status = 'running') {

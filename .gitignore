@@ -95,6 +95,7 @@ keiba.db
 
 # Large data files
 *.csv
+!docs/reports/model_training_inventory_20261108_features.csv
 *.parquet
 *.h5
 *.pkl

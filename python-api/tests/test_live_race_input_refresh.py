@@ -145,7 +145,11 @@ def test_shutuba_parser_keeps_distance_and_uses_actual_dynamic_odds(
 
     async def _fake_odds(session: Any, race_id: str):
         del session, race_id
-        return {1: 4.2}, {1: 3}, "middle"
+        return {"odds": {1: 4.2}, "popularity": {1: 3}, "status": "middle",
+                "evidence": {"schema": "netkeiba-win-odds-capture-v1", "race_id": "202604020812",
+                    "source_url": "https://race.netkeiba.com/api/api_get_jra_odds.html?race_id=202604020812&type=1&action=update",
+                    "http_status": 200, "odds_status": "middle", "observed_at": "2026-08-16T00:00:00Z",
+                    "response_sha256": "a" * 64, "odds_by_horse_number": {"1": 4.2}}}
 
     async def _fake_horse_detail(
         session: Any,
@@ -164,7 +168,7 @@ def test_shutuba_parser_keeps_distance_and_uses_actual_dynamic_odds(
         }
 
     monkeypatch.setattr(race, "fetch_text", _fake_fetch_text)
-    monkeypatch.setattr(race, "fetch_tansho_odds_api", _fake_odds)
+    monkeypatch.setattr(race, "fetch_tansho_odds_capture", _fake_odds)
     monkeypatch.setattr(race, "scrape_horse_detail", _fake_horse_detail)
     snapshot = asyncio.run(race._scrape_shutuba_fallback(
         object(),
@@ -181,6 +185,8 @@ def test_shutuba_parser_keeps_distance_and_uses_actual_dynamic_odds(
     assert snapshot["horses"][0]["prev_race_finish"] == 2
     assert snapshot["horses"][0]["odds_status"] == "middle"
     assert snapshot["race_info"]["odds_status"] == "middle"
+    assert snapshot["horses"][0]["odds_observation"]["response_sha256"] == "a" * 64
+    assert snapshot["race_info"]["odds_observation"]["observed_at"] == "2026-08-16T00:00:00Z"
     assert captured["force_refresh"] is True
 
 

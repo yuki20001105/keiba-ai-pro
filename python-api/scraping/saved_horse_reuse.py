@@ -35,6 +35,7 @@ class AcquisitionHorseReuse:
     db_path: Path
     target_date: date
     force_refresh: bool = False
+    race_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,16 @@ def saved_horse_reuse_enabled() -> bool:
     return context is not None and not context.force_refresh
 
 
+def acquisition_target_date() -> str | None:
+    context = _CONTEXT.get()
+    return context.target_date.strftime("%Y%m%d") if context is not None else None
+
+
+def acquisition_target_race_id() -> str | None:
+    context = _CONTEXT.get()
+    return context.race_id if context is not None else None
+
+
 def _date(value: object) -> date | None:
     text = str(value or "").strip().replace("-", "").replace("/", "")
     if not re.fullmatch(r"\d{8}", text):
@@ -67,10 +78,11 @@ def _date(value: object) -> date | None:
 @contextmanager
 def acquisition_horse_reuse(
     db_path: Path, target_date: str | date, *, force_refresh: bool = False,
+    race_id: str | None = None,
 ):
     """Opt in only the historical acquisition caller, not prediction/training."""
     target = _date(target_date)
-    context = AcquisitionHorseReuse(Path(db_path), target, force_refresh) if target else None
+    context = AcquisitionHorseReuse(Path(db_path), target, force_refresh, race_id) if target else None
     token = _CONTEXT.set(context)
     try:
         yield

@@ -68,9 +68,16 @@ def source_hashes() -> dict[str, str]:
     import keiba_ai.speed_deviation as speed_module
     values = dict(feature_hashes())
     for module in (training_module, feature_source, speed_module):
-        digest = hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
+        # The pinned helper digests are committed with LF line endings. Git's
+        # Windows checkout may rewrite those bytes to CRLF without changing
+        # executable code, so normalize only newline encoding before comparing
+        # to the cross-platform pin.
+        source = Path(module.__file__).read_bytes()
+        digest = hashlib.sha256(source).hexdigest()
         if digest != _HELPER_PINS[module.__name__]:
-            raise ValueError("db-shared-frozen-training-helper-changed")
+            normalized_digest = hashlib.sha256(source.replace(b"\r\n", b"\n")).hexdigest()
+            if normalized_digest != _HELPER_PINS[module.__name__]:
+                raise ValueError("db-shared-frozen-training-helper-changed")
         values[module.__name__] = digest
     values["training.db_shared_fit"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     return values

@@ -40,13 +40,13 @@ def current_routing(monkeypatch):
 
     async def odds(_session, race_id):
         enriched.append(("odds", race_id))
-        return {}, {}, "not_published"
+        return {"odds": {}, "popularity": {}, "status": "not_published", "evidence": None}
 
     async def detail(_session, horse_id, *_args, **_kwargs):
         enriched.append(("horse", horse_id))
         return {"sire": "Sire", "dam": "Dam", "damsire": "Damsire"}
 
-    monkeypatch.setattr(race, "fetch_tansho_odds_api", odds)
+    monkeypatch.setattr(race, "fetch_tansho_odds_capture", odds)
     monkeypatch.setattr(race, "scrape_horse_detail", detail)
     return enriched
 
@@ -114,6 +114,39 @@ def test_entry_result_only_mode_does_not_fetch_horse_details(current_routing, mo
     assert payload["horses"][0]["finish_position"] is None
     assert payload["_source_evidence"]["source_date"] == TARGET
     assert payload["_source_evidence"]["body_sha256"]
+
+
+def test_cached_prediction_list_fetches_one_card_and_odds_for_sixteen_unknown_horses(current_routing, monkeypatch):
+    from scraping import horse
+
+    soup = BeautifulSoup(CARD, "lxml")
+    row = str(soup.find("table").find("tr"))
+    expanded = CARD.replace(row, "".join(
+        row.replace("2023100001", f"20231000{number:02d}").replace(
+            "<td>1</td><td>1</td>", f"<td>{(number + 1) // 2}</td><td>{number}</td>")
+        for number in range(1, 17)
+    ))
+    monkeypatch.setattr(race, "_prefer_entry_card_for_target", lambda *_args, **_kwargs: True)
+    calls = _fetcher(monkeypatch, [], card=expanded)
+    monkeypatch.setattr(horse, "_get_pedigree_sqlite", lambda _: None)
+    monkeypatch.setattr(race, "scrape_horse_detail", horse.scrape_horse_detail)
+
+    async def forbidden_profile(*_args, **_kwargs):
+        pytest.fail("Prediction-list acquisition must not request horse profile/history/pedigree")
+
+    monkeypatch.setattr(horse, "fetch_text", forbidden_profile)
+
+    async def scenario():
+        with horse.horse_detail_scope("cached_only"):
+            return await race.scrape_race_full(None, RACE_ID, TARGET)
+
+    payload = asyncio.run(scenario())
+    assert len(payload["horses"]) == 16
+    assert all(row["_horse_details_deferred"] is True for row in payload["horses"])
+    assert len(calls) == 1
+    assert current_routing == [("odds", RACE_ID)]
+    assert classify_race_quality(payload).valid_for_storage
+    assert not classify_race_quality(payload).valid_for_date_completion
 
 
 @pytest.mark.parametrize(

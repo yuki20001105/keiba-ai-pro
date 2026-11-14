@@ -372,6 +372,20 @@ def test_status_and_history_return_503_when_durable_state_cannot_be_read(
     assert history_exc.value.status_code == 503
 
 
+def test_history_reports_disabled_operational_runtime_explicitly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = operational.OperationalSagaRuntime(
+        operational.OperationalSagaConfig(mode=operational.OperationalSagaMode.DISABLED)
+    )
+    monkeypatch.setattr(scrape_router, "get_operational_saga_runtime", lambda: runtime)
+
+    with pytest.raises(HTTPException) as history_exc:
+        asyncio.run(scrape_router.scrape_history(limit=10, admin_user={"user_id": OWNER_A, "role": "admin"}))
+    assert history_exc.value.status_code == 503
+    assert history_exc.value.detail == "operational scrape runtime is disabled"
+
+
 def test_cancel_route_is_owner_scoped_idempotent_and_updates_status_history() -> None:
     request = ScrapeRequest(
         start_date="2026-01-01", end_date="2026-01-31", dry_run=True, job_id=JOB_A

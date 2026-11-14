@@ -6,6 +6,14 @@ import type { RacePredictResult } from '@/lib/race-analysis-types'
 import { referenceExpectationResult, REFERENCE_NOW } from './helpers/reference-expectation'
 import { verifiedPredictionInput } from './helpers/verified-prediction-input'
 
+function verifiedResult() {
+  const result = referenceExpectationResult()
+  result.input_diagnostics = { ...verifiedPredictionInput, current_outcomes_consumed: false, missing_value_rate: 0.1 }
+  result.recommendation!.input_verified = true
+  delete result.reference_expectation
+  return result
+}
+
 describe('independent reference expectation display contract', () => {
   it.each([false, true])('does not borrow display or purchase EV authority for a context candidate: %s', referenceOnly => {
     const result = referenceExpectationResult()
@@ -124,22 +132,68 @@ describe('independent reference expectation display contract', () => {
     expect(predictionExpectationDisplay(result, result.recommendation, REFERENCE_NOW, 'other').mode).toBe('unavailable')
   })
 
-  it('expires the trial exactly at its display deadline, without relying on skip offer expiry', () => {
+  it('retains a hypothetical trial beyond five minutes without changing purchase expiry or amounts', () => {
     const result = referenceExpectationResult()
     result.recommendation!.valid_until = null
+    const before = JSON.stringify(result)
     expect(predictionExpectationDisplay(result, result.recommendation, REFERENCE_NOW + 299999).mode).toBe('reference')
-    expect(predictionExpectationDisplay(result, result.recommendation, REFERENCE_NOW + 300000).mode).toBe('unavailable')
+    expect(predictionExpectationDisplay(result, result.recommendation, REFERENCE_NOW + 300000).mode).toBe('reference')
+    expect(predictionExpectationDisplay(result, result.recommendation, REFERENCE_NOW + 86400000).values.get(1)).toBeCloseTo(0.741)
+    expect(selectedTickets(result.recommendation, REFERENCE_NOW + 86400000)).toEqual([])
+    expect(JSON.stringify(result)).toBe(before)
   })
 
-  it('prefers official EV and never falls back from an expired official EV', () => {
-    const result = referenceExpectationResult()
-    result.input_diagnostics = verifiedPredictionInput
-    result.recommendation!.input_verified = true
+  it('prefers admitted official EV, then recalculates displayed odds as a neutral hypothetical value after expiry', () => {
+    const result = verifiedResult()
     result.predictions[0].expected_value = 1.5
     expect(predictionExpectationDisplay(result, result.recommendation, REFERENCE_NOW)).toMatchObject({ mode: 'official', label: '期待値' })
     expect(predictionExpectationDisplay(result, result.recommendation, REFERENCE_NOW).values.get(1)).toBe(1.5)
     result.recommendation!.valid_until = new Date(REFERENCE_NOW + 1000).toISOString()
-    expect(predictionExpectationDisplay(result, result.recommendation, REFERENCE_NOW + 1000).mode).toBe('unavailable')
+    result.predictions[0].odds = 9
+    const before = JSON.stringify(result)
+    const display = predictionExpectationDisplay(result, result.recommendation, REFERENCE_NOW + 1000)
+    expect(display).toMatchObject({ mode: 'reference', label: '参考期待値' })
+    expect(display.values.get(1)).toBeCloseTo(1.17)
+    expect(selectedTickets(result.recommendation, REFERENCE_NOW + 1000)).toEqual([])
+    expect(JSON.stringify(result)).toBe(before)
+  })
+
+  it.each([null, 0, Number.NaN, Number.POSITIVE_INFINITY])('leaves invalid odds unpriced in an expired verified result: %s', odds => {
+    const result = verifiedResult()
+    result.recommendation!.valid_until = new Date(REFERENCE_NOW).toISOString()
+    result.predictions[0].odds = odds
+    const display = predictionExpectationDisplay(result, result.recommendation, REFERENCE_NOW)
+    expect(display.mode).toBe('reference')
+    expect(display.values.has(1)).toBe(false)
+    expect(display.values.get(2)).toBeCloseTo(1.044)
+  })
+
+  it('calculates a hypothetical quote when purchase EV is unavailable even before the recommendation expires', () => {
+    const result = verifiedResult()
+    const before = JSON.stringify(result)
+    const display = predictionExpectationDisplay(result, result.recommendation, REFERENCE_NOW)
+    expect(display).toMatchObject({ mode: 'reference', label: '参考期待値' })
+    expect(display.values.get(1)).toBeCloseTo(0.741)
+    expect(selectedTickets(result.recommendation, REFERENCE_NOW)).toEqual([])
+    expect(JSON.stringify(result)).toBe(before)
+  })
+
+  it.each([
+    ['invalid probability distribution', (r: RacePredictResult) => { r.predictions[1].p_norm = 0.8 }],
+    ['outcomes consumed', (r: RacePredictResult) => { r.input_diagnostics!.current_outcomes_consumed = true }],
+    ['outcomes unknown', (r: RacePredictResult) => { delete r.input_diagnostics!.current_outcomes_consumed }],
+    ['missingness unknown', (r: RacePredictResult) => { delete r.input_diagnostics!.missing_value_rate }],
+  ] as const)('does not weaken non-timing validation for expired verified evidence: %s', (_name, change) => {
+    const result = verifiedResult()
+    result.recommendation!.valid_until = new Date(REFERENCE_NOW).toISOString()
+    change(result)
+    expect(predictionExpectationDisplay(result, result.recommendation, REFERENCE_NOW).mode).toBe('unavailable')
+  })
+
+  it('does not carry a hypothetical value into a different visible race', () => {
+    const result = verifiedResult()
+    result.recommendation!.valid_until = new Date(REFERENCE_NOW).toISOString()
+    expect(predictionExpectationDisplay(result, result.recommendation, REFERENCE_NOW, 'other').mode).toBe('unavailable')
   })
 
   it.each(['local-db-shared-v1', 'local-db-shared-optimized-v1'] as const)(

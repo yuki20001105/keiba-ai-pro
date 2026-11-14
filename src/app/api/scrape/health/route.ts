@@ -8,6 +8,7 @@ export async function GET(request: NextRequest) {
     const response = await fetch(`${ML_API_URL}/api/scrape/health`, {
       headers: authHeader ? { Authorization: authHeader } : {},
       signal: AbortSignal.timeout(5_000),
+      cache: 'no-store',
     })
 
     const data = await response.json().catch(() => ({
@@ -18,7 +19,7 @@ export async function GET(request: NextRequest) {
       reason: 'invalid health response payload',
     }))
 
-    return NextResponse.json(data, { status: response.status })
+    return NextResponse.json(data, { status: response.status, headers: { 'Cache-Control': 'no-store' } })
   } catch (error) {
     const reason = error instanceof Error ? error.message : 'unknown error'
     return NextResponse.json(
@@ -29,7 +30,7 @@ export async function GET(request: NextRequest) {
         timestamp,
         reason: `health probe failed: ${reason}`,
       },
-      { status: 503 }
+      { status: 503, headers: { 'Cache-Control': 'no-store' } }
     )
   }
 }

@@ -42,7 +42,7 @@ def _quality_revision(db_path):
         return None
 
 
-def model_runtime_revision(model_path: str | Path) -> str:
+def model_runtime_revision(model_path: str | Path, *, include_shadow: bool = True) -> str:
     """Bind the selected model, calibration/publication and serving code.
 
     Revision checks never deserialize models, fetch missing artifacts, or
@@ -50,17 +50,22 @@ def model_runtime_revision(model_path: str | Path) -> str:
     """
     path = Path(model_path).resolve(strict=True)
     files = [path, path.with_suffix(".reference-manifest.json"), path.with_suffix(".betting-validation.json"),
+              path.with_suffix(".fixed-two-axis.json"),
              path.with_suffix(".calibration.json"), Path(str(path) + ".calibration.json"),
              API_ROOT / "routers" / "predict.py", API_ROOT / "services" / "prediction_compute.py",
              API_ROOT / "services" / "prediction_freshness.py",
+             API_ROOT / "scraping" / "odds.py",
              API_ROOT / "services" / "prediction_source_revision.py",
              API_ROOT / "training" / "db_context_cache.py",
              API_ROOT / "services" / "db_shared_input.py",
+             API_ROOT / "services" / "trained_model_runtime.py",
              API_ROOT / "training" / "db_context_registry.py",
              API_ROOT / "training" / "db_context_features.py",
              API_ROOT / "training" / "db_context_fit.py",
              API_ROOT / "services" / "win_nll_reference_input.py",
              API_ROOT / "services" / "local_candidate_input.py",
+             API_ROOT / "services" / "monthly_reference_input.py",
+             API_ROOT / "services" / "monthly_reference_worker.py",
              API_ROOT / "betting" / "value_policy.py",
              ROOT / "keiba" / "keiba_ai" / "feature_engineering.py",
              ROOT / "keiba" / "keiba_ai" / "db_ultimate_loader.py"]
@@ -74,7 +79,10 @@ def model_runtime_revision(model_path: str | Path) -> str:
                     hasher.update(chunk)
             digest = hasher.hexdigest()
         values.append([str(candidate), digest])
-    return _hash(values)
+    if not include_shadow:
+        return _hash(values)
+    from services.pace74_shadow import runtime_revision
+    return _hash([values, runtime_revision()])
 
 
 def freshness_metadata(*, db_path: str | Path, model_path: str | Path, source: str,
@@ -97,5 +105,5 @@ def freshness_metadata(*, db_path: str | Path, model_path: str | Path, source: s
         "history_quality_tracking": quality is not None,
         # Revision checks do not create or replace acquisition evidence.
         "source_snapshot_verified": False,
-        "capabilities": {"saved_db_recompute": True},
+        "capabilities": {"saved_db_recompute": True, "live_odds_refresh": True},
     }

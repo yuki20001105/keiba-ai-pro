@@ -73,10 +73,17 @@ describe('RaceExplanationPanel', () => {
   test('shows contribution bars without calling the LLM endpoint', () => {
     render(<RaceExplanationPanel result={result} />)
 
-    expect(screen.getByText('速度スコアを上げた要素')).toBeInTheDocument()
-    expect(screen.getByText('速度スコアを下げた要素')).toBeInTheDocument()
-    expect(screen.getByText('速度スコアへの寄与')).toBeInTheDocument()
+    expect(screen.getByText('スコアを上げる要素')).toBeInTheDocument()
+    expect(screen.getByText('スコアを下げる要素')).toBeInTheDocument()
+    expect(screen.getByText(/速度スコアへの寄与/)).toBeInTheDocument()
     expect(screen.getAllByText('騎手の勝率').length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/今回の値：/).length).toBe(2)
+    expect(screen.getByText('15.0%')).toBeInTheDocument()
+    expect(screen.getAllByText(/スコア寄与：/).length).toBe(2)
+    expect(screen.getByText('+0.200')).toBeInTheDocument()
+    expect(screen.getByText('馬体重変化')).toBeInTheDocument()
+    expect(screen.getByText('-8kg')).toBeInTheDocument()
+    expect(screen.getByText(/割合.+全特徴量/)).toBeInTheDocument()
     expect(authFetch).not.toHaveBeenCalled()
   })
 
@@ -87,10 +94,14 @@ describe('RaceExplanationPanel', () => {
     }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
 
     render(<RaceExplanationPanel result={result} />)
-    fireEvent.click(screen.getByRole('button', { name: '文章で解説' }))
+    fireEvent.click(screen.getByRole('button', { name: '今回のレースを解説' }))
 
     await waitFor(() => expect(authFetch).toHaveBeenCalledTimes(1))
-    expect(await screen.findByText('LLM解説')).toBeInTheDocument()
+    expect(await screen.findByText('今回のレース解説')).toBeInTheDocument()
+    const sent = JSON.parse(String(vi.mocked(authFetch).mock.calls[0][1]?.body))
+    expect(sent.race_context).toMatchObject({ venue: '東京', track_type: '芝', distance: 1600, starters: 1 })
+    expect(sent.selected_horse).toMatchObject({ horse_name: 'テスト馬A', predicted_rank: 1 })
+    expect(sent.field_comparison[0]).toMatchObject({ horse_name: 'テスト馬A', predicted_rank: 1 })
     expect(screen.getByText('騎手の勝率が評価を押し上げています。')).toBeInTheDocument()
   })
 })

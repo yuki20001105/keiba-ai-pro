@@ -43,6 +43,9 @@ describe('data collection server batch integration', () => {
       if (url === '/api/scrape/health' || url === '/api/health') return json({ status: 'healthy', metrics: { active_jobs: 0 }, runtime: { status: 'healthy' }, scrape_capabilities: {
         race_scopes: ['all', 'jra'], jra_month_reuse: true,
         safety_policy_version: 'normal-acquisition-safe-v1', minimum_provider_interval_seconds: 3,
+        required_public_inputs_version: 'historical-jra-required-public-v1',
+        required_public_inputs_scope: 'historical_jra_older_than_30_days',
+        profile_totals_are_model_inputs: false, prior_results_auto_imported: false,
         halt_http400: true, preserve_saved_values: true, max_concurrent_http_requests: 1,
       } })
       if (url.startsWith('/api/data-stats')) return json({ total_races: 50000, total_horses: 500000 })
@@ -67,6 +70,8 @@ describe('data collection server batch integration', () => {
     })
     const view = render(<DataCollectionPage />)
     await waitFor(() => expect(screen.getByTestId('execute-button')).toBeEnabled())
+    expect(screen.getByTestId('scrape-required-public-inputs')).toHaveTextContent('出典付き血統')
+    expect(screen.getByTestId('scrape-required-public-inputs')).toHaveTextContent('DB取り込み完了とは別')
     fireEvent.change(screen.getByTestId('start-period-input'), { target: { value: '2016-01' } })
     fireEvent.change(screen.getByTestId('end-period-input'), { target: { value: '2026-09' } })
     fireEvent.click(screen.getByTestId('execute-button'))
@@ -80,6 +85,50 @@ describe('data collection server batch integration', () => {
     expect(localStorage.getItem(KEY)).not.toBeNull()
     expect(localStorage.getItem(UNCERTAINTY_STORAGE_KEY)).toBeNull()
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1)
+  })
+
+  it('does not execute against an API that lacks required-public-input support', async () => {
+    serveJob(() => null)
+    const serve = fetchMock.getMockImplementation()
+    if (!serve) throw new Error('missing fixture server')
+    fetchMock.mockImplementation(async (url: string, init: RequestInit = {}) => {
+      if (url === '/api/scrape/health' || url === '/api/health') {
+        return json({ status: 'healthy', metrics: { active_jobs: 0 }, runtime: { status: 'healthy' },
+          scrape_capabilities: {
+            race_scopes: ['all', 'jra'], jra_month_reuse: true,
+            safety_policy_version: 'normal-acquisition-safe-v1', minimum_provider_interval_seconds: 3,
+            halt_http400: true, preserve_saved_values: true, max_concurrent_http_requests: 1,
+          } })
+      }
+      return serve(url, init)
+    })
+    const view = render(<DataCollectionPage />)
+    await waitFor(() => expect(screen.getByTestId('scrape-safety-policy')).toHaveTextContent('反映待ち'))
+    expect(screen.getByTestId('execute-button')).toBeDisabled()
+    fireEvent.click(screen.getByTestId('execute-button'))
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0)
+    view.unmount()
+  })
+
+  it('only enables enrichment repair explicitly and does not promise zero missingness', async () => {
+    let job: ReturnType<typeof parent> | null = null
+    serveJob(() => job, (url, init) => {
+      expect(url).toBe('/api/scrape')
+      const body = JSON.parse(String(init.body))
+      expect(body.force_rescrape).toBe(true)
+      job = parent(body.job_id)
+      return json(job)
+    })
+    const view = render(<DataCollectionPage />)
+    const repair = screen.getByTestId('repair-enrichment-checkbox')
+    expect(repair).not.toBeChecked()
+    await waitFor(() => expect(repair).toBeEnabled())
+    expect(screen.getByTestId('acquisition-missingness-notice')).toHaveTextContent('欠損0を保証しません')
+    fireEvent.click(repair)
+    fireEvent.click(screen.getByTestId('execute-button'))
+    await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(true))
+    await waitFor(() => expect(repair).toBeDisabled())
+    view.unmount()
   })
 
   it('reopens the saved parent, shows progress and stops that exact parent without restarting', async () => {

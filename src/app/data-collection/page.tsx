@@ -11,7 +11,7 @@ import { authFetch } from '@/lib/auth-fetch'
 import { formatApiErrorDetail } from '@/lib/api-error'
 import { buildScrapeAcquisitionDisplay, scrapeQueueTitle } from '@/lib/scrape-acquisition-display'
 import { isScrapeRaceScope, scrapeRaceScopeLabel, supportsJraScrape, type ScrapeRaceScope } from '@/lib/scrape-race-scope'
-import { ACQUISITION_SAFETY_POLICY_LABEL, supportsSafeAcquisition } from '@/lib/scrape-safety-policy'
+import { ACQUISITION_SAFETY_POLICY_LABEL, REQUIRED_PUBLIC_INPUTS_LABEL, supportsRequiredPublicInputs } from '@/lib/scrape-safety-policy'
 import type { RetiredScrapeDraft } from '@/lib/scrape-retirement'
 import {
   aggregateDryRunResults,
@@ -375,7 +375,7 @@ export default function DataCollectionPage() {
   const [endPeriod, setEndPeriod] = useState(
     `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
   )
-  const forceRescrape = false
+  const [forceRescrape, setForceRescrape] = useState(false)
   const [raceScope, setRaceScope] = useState<ScrapeRaceScope>('jra')
 
   // A resume link lets an interrupted long-running batch reopen at the exact
@@ -851,7 +851,7 @@ export default function DataCollectionPage() {
           : 'unhealthy'
       setLocalApiStatus(resolved)
       setJraScopeAvailable(res.ok && supportsJraScrape(data))
-      setSafetyPolicyAvailable(res.ok && supportsSafeAcquisition(data))
+      setSafetyPolicyAvailable(res.ok && supportsRequiredPublicInputs(data))
       setLocalApiReason(typeof data?.reason === 'string' ? data.reason : '')
     } catch {
       setLocalApiStatus('unknown')
@@ -879,7 +879,7 @@ export default function DataCollectionPage() {
     }
     const payload: unknown = await response.json().catch(() => null)
     const jraSupported = response.ok && supportsJraScrape(payload)
-    const policySupported = response.ok && supportsSafeAcquisition(payload)
+    const policySupported = response.ok && supportsRequiredPublicInputs(payload)
     setJraScopeAvailable(jraSupported)
     setSafetyPolicyAvailable(policySupported)
     if (scope === 'jra' && !jraSupported) {
@@ -1061,9 +1061,15 @@ export default function DataCollectionPage() {
         const res = await authFetch('/api/scrape/history?limit=10', {
           signal: AbortSignal.timeout(10000),
         })
-        if (!res.ok) throw new Error(res.status === 401 || res.status === 403
-          ? 'ログイン・管理者権限を再確認してください。取得はサーバーで継続します。'
-          : `HTTP ${res.status}`)
+        if (!res.ok) {
+          const failureBody: unknown = await res.json().catch(() => null)
+          const detail = isObject(failureBody) && typeof failureBody.detail === 'string'
+            ? failureBody.detail
+            : ''
+          throw new Error(res.status === 401 || res.status === 403
+            ? 'ログイン・管理者権限を再確認してください。取得はサーバーで継続します。'
+            : detail || `HTTP ${res.status}`)
+        }
         const data: unknown = await res.json().catch(() => null)
         if (!isObject(data) || !Array.isArray(data.jobs)) {
           throw new Error('invalid scrape history envelope')
@@ -1151,11 +1157,14 @@ export default function DataCollectionPage() {
         setActiveJobLastCheckedAt(new Date().toISOString())
         return activeJob
       } catch (error) {
-        console.error('fetch history load error:', error)
+        console.warn('fetch history load warning:', error)
         setActiveJobHydrated(true)
-        setActiveJobCheckError(error instanceof Error && error.message.startsWith('ログイン')
-          ? error.message
-          : '再接続中です。新しい取得は開始せず、サーバーの状態を再確認します。')
+        const message = error instanceof Error ? error.message : ''
+        setActiveJobCheckError(message.startsWith('ログイン')
+          ? message
+          : message === 'operational scrape runtime is disabled'
+            ? 'サーバーのデータ取得機能が無効です。Keiba AI Proの起動BATから再起動してください。'
+            : '取得履歴を確認できません。新しい取得は開始せず、サーバーの状態を再確認してください。')
         return null
       }
     })()
@@ -2021,6 +2030,12 @@ export default function DataCollectionPage() {
           <p className="text-xs text-[#93a9bf]" data-testid="scrape-repair-mode">
             正常データは再利用し、不足・未確定結果を補完します。
           </p>
+          <p className="text-xs text-[#93a9bf]" data-testid="scrape-required-public-inputs">
+            {safetyPolicyAvailable ? REQUIRED_PUBLIC_INPUTS_LABEL
+              : '必要公開項目限定のAPI反映を確認するまで、新規取得は開始しません。'}
+            {' '}現在の通算成績・獲得賞金・所有者情報は過去学習用に追加保存しません。
+            過去レースのリンク確認は全結果のDB取り込み完了とは別です。直近・予測の入力は従来どおり保持します。
+          </p>
           <p className={`text-xs ${safetyPolicyAvailable ? 'text-[#93a9bf]' : 'text-[#facc15]'}`}
             role="status" data-testid="scrape-safety-policy">
             {safetyPolicyAvailable ? ACQUISITION_SAFETY_POLICY_LABEL
@@ -2156,6 +2171,24 @@ export default function DataCollectionPage() {
             </div>
           )}
 
+          <div className="space-y-2 text-xs text-[#94a3b8]">
+            <label className="flex items-start gap-2">
+              <input
+                type="checkbox"
+                data-testid="repair-enrichment-checkbox"
+                checked={forceRescrape}
+                disabled={isOperationBusy || isApiUnavailable || !safetyPolicyAvailable || executeBlockedByUncertainty}
+                onChange={event => {
+                  setForceRescrape(event.target.checked)
+                  setDryRunExecuted(false)
+                  setDryRunResult(null)
+                }}
+              />
+              <span>取得済みデータの血統・過去成績の不足も再検査する（修復モード）</span>
+            </label>
+            <p>通常は取得済みをスキップします。修復は追加通信が増えるため、事前確認と短い期間での確認を先に行ってください。</p>
+            <p data-testid="acquisition-missingness-notice">取得完了はモデル入力の欠損0を保証しません。同条件未経験の推定補完は学習時に別途行い、実測値とは区別します。</p>
+          </div>
           <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
             <button
               onClick={handleDryRun}

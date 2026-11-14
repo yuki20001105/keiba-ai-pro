@@ -92,6 +92,17 @@ def snapshot_validation_errors(snapshot: Any, expected_race_id: str) -> list[str
     return list(dict.fromkeys(errors))
 
 
+def stored_horse_details_deferred(horse_rows: list[Any]) -> bool:
+    for row in horse_rows:
+        try:
+            horse = json.loads(row[0]) if isinstance(row, (tuple, list)) else row
+        except (TypeError, ValueError, IndexError):
+            continue
+        if isinstance(horse, dict) and horse.get("_horse_details_deferred") is True:
+            return True
+    return False
+
+
 def stored_rows_need_refresh(race_id: str, race_info: dict, horse_rows: list[Any]) -> bool:
     try:
         distance_invalid = int(race_info.get("distance") or 0) <= 0
@@ -123,6 +134,8 @@ async def fetch_fresh_race_snapshot(
     session: Any,
     race_id: str,
     stored_date: Any = "",
+    *,
+    cached_horse_details: bool = False,
 ) -> dict | None:
     """Fetch a current coherent snapshot, bypassing resume and HTTP caches."""
 
@@ -142,12 +155,15 @@ async def fetch_fresh_race_snapshot(
         )
 
     async def _shutuba() -> dict | None:
-        return await _scrape_shutuba_fallback(
-            session,
-            race_id,
-            date_hint=date_text if trustworthy else "",
-            force_refresh=True,
-        )
+        from scraping.horse import horse_detail_scope
+
+        with horse_detail_scope("cached_or_fetch" if cached_horse_details and not use_result_first else "full"):
+            return await _scrape_shutuba_fallback(
+                session,
+                race_id,
+                date_hint=date_text if trustworthy else "",
+                force_refresh=True,
+            )
 
     if use_result_first:
         result_snapshot = await _result()

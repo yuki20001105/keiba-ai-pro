@@ -3,11 +3,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { authFetch } from '@/lib/auth-fetch'
 import {
-  buildLocalPredictionExplanation,
+  buildRaceNarrativeInput,
   narrativeCacheKey,
   type NarrativeResponse,
 } from '@/lib/prediction-explanation'
 import type { FeatureContribution, RacePredictResult } from '@/lib/race-analysis-types'
+import { predictionFeatureLabel, predictionFeatureValue, predictionScoreContribution } from '@/lib/prediction-feature-display'
 
 type Props = {
   result: RacePredictResult
@@ -41,12 +42,19 @@ function ContributionList({
     <div className="space-y-2">
       <div className="text-xs text-[#888]">{title}</div>
       {features.slice(0, 3).map(feature => (
-        <div key={feature.feature} className="space-y-1" title={feature.description || feature.feature}>
-          <div className="flex items-center justify-between gap-3 text-xs">
-            <span className="truncate text-[#ddd]">{feature.label}</span>
+        <div key={feature.feature} className="space-y-1.5 rounded border border-[#202020] bg-[#101010] px-2.5 py-2">
+          <div className="flex items-center justify-between gap-3 text-xs" title="全特徴量の寄与量合計に対する割合です">
+            <span className="truncate text-[#ddd]">{predictionFeatureLabel(feature)}</span>
             <span className="shrink-0 tabular-nums" style={{ color }}>
-              影響 {feature.impact_pct.toFixed(0)}%
+              割合 {feature.impact_pct.toFixed(0)}%
             </span>
+          </div>
+          {feature.feature === 'safe_race_class' && (
+            <p className="text-[10px] text-[#777]">レースの条件区分です（例：新馬・未勝利・1勝クラス・重賞）。</p>
+          )}
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px] text-[#999]">
+            <span>今回の値：<span className="text-[#ddd]">{predictionFeatureValue(feature)}</span></span>
+            <span>スコア寄与：<span className="tabular-nums" style={{ color }}>{predictionScoreContribution(feature.contribution)}</span></span>
           </div>
           <div className="h-1.5 overflow-hidden rounded-full bg-[#1e1e1e]">
             <div
@@ -84,16 +92,7 @@ export function RaceExplanationPanel({ result }: Props) {
   const cacheKey = prediction
     ? narrativeCacheKey(result.race_info.race_id, result.model_id, prediction.horse_number)
     : ''
-  const narrativeInput = prediction ? {
-    race_name: result.race_info.race_name,
-    horse_name: prediction.horse_name,
-    predicted_rank: prediction.predicted_rank,
-    features: features.slice(0, 6).map(feature => ({
-      label: feature.label,
-      direction: feature.direction,
-      impact_pct: feature.impact_pct,
-    })),
-  } : null
+  const narrativeInput = prediction ? buildRaceNarrativeInput(result, prediction) : null
   // Same model ID is not enough: a refreshed prediction can have new SHAP
   // evidence. Legacy cache entries without this exact identity are ignored.
   const explanationIdentity = JSON.stringify({
@@ -115,7 +114,7 @@ export function RaceExplanationPanel({ result }: Props) {
     } else {
       try {
         const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null')
-        const value = cached?.version === 2 && cached.inputIdentity === explanationIdentity
+        const value = cached?.version === 3 && cached.inputIdentity === explanationIdentity
           ? readNarrative(cached.narrative) : null
         if (value) setNarrativeState({ identity: explanationIdentity, value })
       } catch { /* A corrupt or obsolete cache is not prediction evidence. */ }
@@ -163,7 +162,7 @@ export function RaceExplanationPanel({ result }: Props) {
       if (!current()) return
       setNarrativeState({ identity: explanationIdentity, value: next })
       try {
-        localStorage.setItem(cacheKey, JSON.stringify({ version: 2, inputIdentity: explanationIdentity, narrative: next }))
+        localStorage.setItem(cacheKey, JSON.stringify({ version: 3, inputIdentity: explanationIdentity, narrative: next }))
       } catch { /* session display only */ }
     } catch (error) {
       if (current()) setNarrativeFailure({ identity: explanationIdentity,
@@ -180,10 +179,10 @@ export function RaceExplanationPanel({ result }: Props) {
   }
 
   return (
-    <div className="p-5 space-y-5" data-testid="race-explanation-panel">
+    <div className="p-4 space-y-4" data-testid="race-explanation-panel">
       <div>
-        <h3 className="text-sm font-semibold text-white">AIの判断</h3>
-        <p className="mt-1 text-xs text-[#666]">速度スコアへの寄与</p>
+        <h3 className="text-sm font-semibold text-white">予測スコアの内訳</h3>
+        <p className="mt-1 text-xs text-[#888]">速度スコアへの寄与 · 勝率ではありません</p>
       </div>
 
       <div className="flex flex-wrap gap-2" aria-label="説明する馬を選択">
@@ -206,13 +205,15 @@ export function RaceExplanationPanel({ result }: Props) {
 
       {features.length > 0 ? (
         <>
-          <p className="rounded-lg border border-[#222] bg-[#0c0c0c] px-4 py-3 text-sm leading-6 text-[#ddd]">
-            {buildLocalPredictionExplanation(prediction)}
-          </p>
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#222] bg-[#0c0c0c] px-3 py-2.5 text-xs">
+            <span className="text-[#ddd]">{prediction.horse_name} · 予測{prediction.predicted_rank}位</span>
+            <span className="text-[#aaa]">速度スコア <b className="ml-1 tabular-nums text-white">{Number.isFinite(prediction.p_raw) ? prediction.p_raw.toFixed(2) : '—'}</b></span>
+          </div>
+          <p className="text-[11px] leading-5 text-[#888]">緑はスコアを上げる要素、橙は下げる要素です。「今回の値」は実際の入力値、「スコア寄与」は予測への加算量、「割合」は全特徴量の寄与量合計に占める比率です。</p>
 
           <div className="grid gap-5 md:grid-cols-2">
-            <ContributionList title="速度スコアを上げた要素" features={positive} tone="positive" />
-            <ContributionList title="速度スコアを下げた要素" features={negative} tone="negative" />
+            <ContributionList title="スコアを上げる要素" features={positive} tone="positive" />
+            <ContributionList title="スコアを下げる要素" features={negative} tone="negative" />
           </div>
 
           <div className="flex flex-wrap items-center gap-3 border-t border-[#1e1e1e] pt-4">
@@ -222,17 +223,17 @@ export function RaceExplanationPanel({ result }: Props) {
               disabled={narrativeLoading}
               className="rounded border border-[#333] bg-[#171717] px-3 py-2 text-xs text-white hover:bg-[#222] disabled:opacity-50"
             >
-              {narrativeLoading ? '生成中…' : narrative ? '解説を更新' : '文章で解説'}
+              {narrativeLoading ? '生成中…' : narrative ? '解説を更新' : '今回のレースを解説'}
             </button>
-            <span className="text-[10px] text-[#555]">必要なときだけ生成します</span>
+            <span className="text-[10px] text-[#777]">レース条件・上位比較・展開材料を照合します。根拠のない展開は断定しません。</span>
           </div>
 
           {narrative && (
             <div className="rounded-lg border border-[#223047] bg-[#0c1420] px-4 py-3">
               <div className="mb-1 text-[10px] text-[#60a5fa]">
-                {narrative.source === 'fallback' ? '自動要約' : 'LLM解説'}
+                {narrative.source === 'fallback' ? '予測データからの要約' : '今回のレース解説'}
               </div>
-              <p className="text-sm leading-6 text-[#dbeafe]">{narrative.explanation}</p>
+              <p className="whitespace-pre-line text-sm leading-6 text-[#dbeafe]">{narrative.explanation}</p>
             </div>
           )}
           {narrativeError && <p className="text-xs text-[#f87171]">{narrativeError}</p>}
@@ -243,9 +244,7 @@ export function RaceExplanationPanel({ result }: Props) {
         </div>
       )}
 
-      <p className="text-[10px] text-[#555]">
-        影響度はこの馬の速度スコア内の相対値です。勝率や結果を保証するものではありません。
-      </p>
+      <p className="text-[10px] text-[#555]">寄与は速度スコアの内訳です。勝率や着順を直接示す値ではありません。</p>
     </div>
   )
 }

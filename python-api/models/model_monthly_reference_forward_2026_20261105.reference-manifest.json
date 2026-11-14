@@ -1,0 +1,12 @@
+{
+  "schema": "monthly-reference-publication-v1",
+  "model_id": "model_monthly_reference_forward_2026_20261105",
+  "artifact_sha256": "723643e79793ebf22ef07690ec9a1b23800cee942545058320c8cd2b0ad5037b",
+  "study_sha256": "e5d0954bc7034ce64f692b735cfa4e23b59314a5c42083a59efef392ee8d80f7",
+  "runtime_source_sha256": {
+    "monthly_reference_input.py": "06f6e0b044b820fd52b8ca37c51d76e2bd76134743acffb441a4824ad46e5d1a",
+    "monthly_reference_worker.py": "4f977d96a393c1a318d5b75e0c8fc9ebc28b5685d793a409f72b8ca5a9f5d3c4"
+  },
+  "reference_only": true,
+  "purchase_authorized": false
+}

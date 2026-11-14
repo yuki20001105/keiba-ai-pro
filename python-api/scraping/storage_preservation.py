@@ -188,6 +188,24 @@ def merge_acquisition_payload(existing_info, existing_horses, incoming, *, overw
         nonfinish = any(str(horse.get(field, "")).strip().lower() in _NONFINISH for field in _FINISH)
         if nonfinish:
             old = {field: value for field, value in old.items() if field not in _RESULT_FIELDS}
+        required_inputs = horse.get("_required_public_inputs")
+        if isinstance(required_inputs, dict) and required_inputs.get("pedigree_source_status") == "validated":
+            from scraping.pedigree_identity import ALIASES
+            for parent, aliases in ALIASES.items():
+                for field in (*aliases, parent + "_id"):
+                    incoming_field = parent + "_id" if field.endswith("_id") else parent
+                    if (known(field, old.get(field)) and known(incoming_field, horse.get(incoming_field))
+                            and str(old[field]).strip() != str(horse[incoming_field]).strip()):
+                        raise PreservationConflict("required-public-parent-conflict:" + field)
+        history = horse.get("_career_history_source")
+        if isinstance(history, dict) and history.get("status") == "validated":
+            if _date(history.get("target_date")) not in dates:
+                raise PreservationConflict("history-target-date-conflict")
+            # A validated target-cut career replaces stale current-profile
+            # history, including its absence for a true first appearance.
+            if history.get("coverage_matches_published_career_count"):
+                old = {field: value for field, value in old.items()
+                       if not field.startswith(("prev_race_", "prev2_race_"))}
         row = _merge_fields(old, horse)
         _sync_aliases(row, horse, ("last_3f", "last_3f_time"), _number)
         _sync_aliases(row, horse, ("finish_time", "time_seconds", "time"), _clock)

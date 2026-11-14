@@ -115,6 +115,32 @@ def test_unpublished_or_nonlocal_artifact_cannot_serve(published, monkeypatch):
         serving.validate_published_artifact(path, ledger_path=ledger)
 
 
+def test_training_runtime_does_not_resolve_away_a_rejected_model_symlink(published, monkeypatch):
+    from services.trained_model_runtime import run_trained_prediction
+
+    path, ledger, _ = published
+    alias = path.with_name(serving.PREFIX + "alias.joblib")
+    try:
+        alias.symlink_to(path)
+    except OSError:
+        from pathlib import Path
+        directory = path.parent / "link-fixture"
+        directory.mkdir()
+        alias = directory / ".." / path.name
+        is_symlink = Path.is_symlink
+        monkeypatch.setattr(Path, "is_symlink", lambda candidate: candidate == alias or is_symlink(candidate))
+    validate = serving.validate_published_artifact
+    monkeypatch.setattr(
+        serving, "validate_published_artifact",
+        lambda candidate: validate(candidate, ledger_path=ledger),
+    )
+    with pytest.raises(ValueError, match="published-path-invalid"):
+        run_trained_prediction(
+            {}, pd.DataFrame(), db_path=path.parent / "unused.sqlite",
+            race_info={}, model_path=alias,
+        )
+
+
 def test_probability_report_requires_the_loaded_artifact_hash(published, monkeypatch):
     path, ledger, digest = published
     monkeypatch.setattr(serving, "verify_bundle_sources", lambda _: None)
@@ -181,10 +207,17 @@ def refresh_card(monkeypatch):
     race_id = "202605040411"
     info = dict(race_id=race_id, date="20261011", post_time="15:45", distance=1600,
                 venue="東京", track_type="芝", num_horses=2, data_observed_at=observed,
-                odds_status="middle")
+                weather="晴", field_condition="良", odds_status="middle")
     horses = [dict(race_id=race_id, horse_number=number, horse_id=str(2023000000 + number),
                    horse_name=f"fixture-{number}", distance=1600, odds=2.0 + number,
+                   weight_kg=470 + number, weight_change=0,
                    popularity=number, finish_position=None, finish_time=None,
+                   odds_observation={
+                       "schema": "netkeiba-win-odds-capture-v1", "race_id": race_id,
+                       "source_url": f"https://race.netkeiba.com/api/api_get_jra_odds.html?race_id={race_id}&type=1&action=update",
+                       "http_status": 200, "odds_status": "middle", "observed_at": observed,
+                       "response_sha256": "a" * 64,
+                       "odds_by_horse_number": {str(number): 2.0 + number}},
                    data_observed_at=observed, odds_status="middle") for number in (1, 2)]
     verified = []
     monkeypatch.setattr(serving, "verify_bundle_sources", lambda bundle: verified.append(bundle))
@@ -222,6 +255,46 @@ def test_shared_refresh_repeats_after_next_five_minute_window(refresh_card):
     for horse in card.horses: horse["data_observed_at"] = refreshed
     assert needs_refresh(card, now=card.now + timedelta(minutes=4, seconds=2)) is False
     assert needs_refresh(card, now=card.now + timedelta(minutes=10)) is True
+
+
+@pytest.mark.parametrize("target,field", [
+    ("metadata", "weather"), ("metadata", "field_condition"),
+    ("horse", "weight_kg"), ("horse", "weight_change"),
+])
+def test_shared_refresh_retries_fresh_but_feature_incomplete_cards(refresh_card, target, field):
+    card = refresh_card
+    (card.info if target == "metadata" else card.horses[0])[field] = None
+    assert needs_refresh(card) is True
+
+
+def test_shared_refresh_retries_conflicting_weight_aliases(refresh_card):
+    card = refresh_card
+    card.horses[0]["horse_weight"] = 471
+    card.horses[0]["weight_kg"] = 499
+    assert needs_refresh(card) is True
+
+
+def test_shared_refresh_never_retries_a_result_snapshot_for_missing_pre_race_fields(refresh_card):
+    card = refresh_card
+    card.info["weather"] = None
+    card.horses[0]["weight_kg"] = None
+    card.horses[0]["finish_position"] = 1
+    assert needs_refresh(card) is False
+
+
+@pytest.mark.parametrize("change", ["missing", "wrong_race", "forecast", "wrong_odds"])
+def test_shared_refreshes_without_exact_actual_odds_capture(refresh_card, change):
+    card = refresh_card
+    horse = card.horses[0]
+    if change == "missing":
+        horse.pop("odds_observation")
+    elif change == "wrong_race":
+        horse["odds_observation"]["race_id"] = "other-race"
+    elif change == "forecast":
+        horse["odds_observation"]["odds_status"] = "yoso"
+    else:
+        horse["odds_observation"]["odds_by_horse_number"]["1"] = 99.0
+    assert needs_refresh(card) is True
 
 
 @pytest.mark.parametrize("problem", ["client", "legacy", "m02", "past", "future_date",
@@ -266,7 +339,9 @@ def test_refresh_checks_formula_sources_before_admitting_fetch(refresh_card, mon
 
 
 @pytest.mark.parametrize("scenario", ["stale", "metadata_missing", "invalid", "future",
-    "fresh", "past", "started", "result_alias", "legacy", "m02", "write_failed"])
+    "fresh", "past", "started", "result_alias", "legacy", "m02", "write_failed",
+    "legacy_deferred", "legacy_deferred_saved", "legacy_deferred_write_failed",
+    "legacy_deferred_detail_failed"])
 def test_analyze_shared_refresh_uses_atomic_whole_snapshot_only(refresh_card, tmp_path, monkeypatch, scenario):
     """Fake fetch and compute only; no HTTP, real models, receipts or purchases."""
     import aiohttp
@@ -285,9 +360,12 @@ def test_analyze_shared_refresh_uses_atomic_whole_snapshot_only(refresh_card, tm
     if scenario == "past": card.info["date"] = "20261010"
     if scenario == "started": card.info["post_time"] = "10:00"
     if scenario == "result_alias": card.horses[0]["finish"] = 1
-    model_name = ("legacy_active.joblib" if scenario == "legacy" else
+    legacy = scenario.startswith("legacy") or scenario == "m02"
+    if "deferred" in scenario:
+        for row in card.horses: row["_horse_details_deferred"] = True
+    model_name = ("legacy_active.joblib" if scenario.startswith("legacy") else
                   "local_safe_m02_2025.joblib" if scenario == "m02" else serving.PREFIX + "fixture.joblib")
-    bundle = card.bundle if scenario not in {"legacy", "m02"} else {"model": object(), "target": "speed_deviation"}
+    bundle = card.bundle if not legacy else {"model": object(), "target": "speed_deviation"}
     path = tmp_path / model_name
     path.write_bytes(b"test-only-no-deserialization")
     database = tmp_path / "ultimate.db"
@@ -311,18 +389,34 @@ def test_analyze_shared_refresh_uses_atomic_whole_snapshot_only(refresh_card, tm
     fresh["race_info"].update(distance=1800, data_observed_at=card.now.isoformat())
     for horse in fresh["horses"]:
         horse.update(distance=1800, odds=9.0, data_observed_at=card.now.isoformat())
+        horse["_horse_details_deferred"] = False
     fresh["horses"][1]["horse_number"] = 3  # The entire cohort, not an odds-only merge.
     class FakeSession:
         def __init__(self, **_kwargs): pass
         async def __aenter__(self): return self
         async def __aexit__(self, *_args): return False
-    async def fetch(_session, race_id, date=""):
+    if scenario == "legacy_deferred_detail_failed":
+        from scraping import horse as horse_scraper
+        from scraping.fetch_pipeline import FetchResult
+
+        async def failed_detail(_session, url, **_kwargs):
+            return FetchResult(url, url, 403, b"", "network", 1), ""
+
+        monkeypatch.setattr(horse_scraper, "_get_pedigree_sqlite", lambda _: None)
+        monkeypatch.setattr(horse_scraper, "get_parsed", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(horse_scraper, "fetch_text", failed_detail)
+    async def fetch(_session, race_id, date="", *, cached_horse_details=False):
+        assert cached_horse_details is not legacy
         events.append(("fetch", race_id, date))
+        if scenario == "legacy_deferred_detail_failed":
+            for row in fresh["horses"]:
+                row.update(await horse_scraper.scrape_horse_detail(_session, row["horse_id"]))
         return deepcopy(fresh)
     def save(snapshot, db_path, race_id):
         assert db_path == database and race_id == card.info["race_id"]
         events.append(("atomic_save", deepcopy(snapshot)))
-        if scenario == "write_failed": raise RuntimeError("fixture atomic write rejected")
+        if scenario in {"write_failed", "legacy_deferred_write_failed"}:
+            raise RuntimeError("fixture atomic write rejected")
         return True
     async def compute(**kwargs):
         computed.append(kwargs)
@@ -333,9 +427,19 @@ def test_analyze_shared_refresh_uses_atomic_whole_snapshot_only(refresh_card, tm
     monkeypatch.setattr(predict, "save_valid_race_snapshot", save)
     monkeypatch.setattr(prediction_compute, "run_prediction_compute", compute)
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(predict._analyze_race_impl(AnalyzeRaceRequest(race_id=card.info["race_id"], model_id=path.stem)))
+        asyncio.run(predict._analyze_race_impl(AnalyzeRaceRequest(
+            race_id=card.info["race_id"], model_id=path.stem,
+            data_refresh="saved_db" if scenario == "legacy_deferred_saved" else "auto")))
+    if scenario == "legacy_deferred_saved":
+        assert exc.value.status_code == 409
+        assert events == [] and computed == []
+        return
+    if scenario in {"legacy_deferred_write_failed", "legacy_deferred_detail_failed"}:
+        assert exc.value.status_code == 409
+        assert [event[0] for event in events] == ["fetch", "atomic_save"] and computed == []
+        return
     assert exc.value.status_code == 418
-    refreshing = scenario in {"stale", "metadata_missing", "invalid", "future", "write_failed"}
+    refreshing = scenario in {"stale", "metadata_missing", "invalid", "future", "write_failed", "legacy_deferred"}
     assert [event[0] for event in events] == (["fetch", "atomic_save", "compute"] if refreshing else ["compute"])
     result = computed[0]
     if refreshing and scenario != "write_failed":

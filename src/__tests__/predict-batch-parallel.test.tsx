@@ -72,7 +72,7 @@ async function start(capacity = 4) {
   fireEvent.click(screen.getByRole('button', { name: 'レース一覧を取得' }))
   await screen.findByText('テスト6')
   fireEvent.click(screen.getByRole('button', { name: '全選択' }))
-  fireEvent.click(screen.getByRole('button', { name: '選択 6 レースを一括予測' }))
+  fireEvent.click(screen.getByRole('button', { name: /選択した6レースを予測・更新/ }))
   await waitFor(() => expect(started).toHaveLength(capacity))
   return view
 }
@@ -110,7 +110,7 @@ describe('parallel batch prediction UI', () => {
     fireEvent.click(screen.getByRole('button', { name: 'レース一覧を取得' }))
     await screen.findByText('テスト6')
     fireEvent.click(screen.getByRole('button', { name: '全選択' }))
-    fireEvent.click(screen.getByRole('button', { name: '選択 6 レースを一括予測' }))
+    fireEvent.click(screen.getByRole('button', { name: /選択した6レースを予測・更新/ }))
     await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url === '/api/health')).toBe(true))
     expect(screen.getByTestId('prediction-live-progress')).toHaveTextContent('実行環境を確認中')
     const healthSignal = fetchMock.mock.calls.find(([url]) => url === '/api/health')![1].signal as AbortSignal
@@ -162,6 +162,23 @@ describe('parallel batch prediction UI', () => {
     fireEvent.click(screen.getByRole('button', { name: /テスト1/ }))
     expect(screen.getByText('月間予測回数の上限に達しました。')).toBeInTheDocument()
     expect(fetchMock.mock.calls.some(([url]) => url === '/api/performance/records')).toBe(false)
+  })
+
+  it('marks an unsupported race as excluded and records only successful predictions', async () => {
+    await start()
+    await act(async () => {
+      pending.forEach((item, index) => item.resolve(index === 3
+        ? Response.json({ detail: { code: 'prediction_outside_model_scope',
+          reason: 'jump_evidence_quarantined', message: '障害競走は予測対象外です。' } }, { status: 422 })
+        : response(index)))
+    })
+    await screen.findByText(/AI参考として記録しました/)
+    fireEvent.click(screen.getByRole('button', { name: /テスト4/ }))
+    expect(screen.getByRole('button', { name: /テスト4/ })).toHaveTextContent('対象外')
+    expect(screen.getByText('障害競走は予測対象外です。')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/api/performance/records')).toHaveLength(5)
+    expect(localStorage.getItem(`ra-cache:${races[3].race_id}`)).toBeNull()
   })
 
   it('rejects a duplicate button action without adding more prediction requests', async () => {

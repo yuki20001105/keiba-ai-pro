@@ -488,6 +488,7 @@ class BettingRecommender:
         predictions: List[Dict], 
         race_info: Dict,
         context: Optional[Dict] = None,
+        betting_strategy: str = "value",
     ) -> Dict:
         """
         レース分析と購入推奨（メイン関数）
@@ -509,6 +510,7 @@ class BettingRecommender:
             predictions, race_info, bankroll=self.bankroll, risk_mode=self.risk_mode,
             min_ev=self.min_ev, use_kelly=self.use_kelly, dynamic_unit=self.dynamic_unit,
             context=context,
+            betting_strategy=betting_strategy,
         )
     
     def _select_best_bet_type(self, bet_types: Dict[str, List[Dict]]) -> Tuple[str, Dict]:

@@ -41,6 +41,9 @@ HORSE_REFRESH_FIELDS = (
     "trainer_url",
     "weight_kg",
     "weight_diff",
+    "weight_change",
+    "horse_weight",
+    "horse_weight_change",
     "odds",
     "popularity",
 )
@@ -115,5 +118,33 @@ def merge_fresh_pre_race_data(
                 continue
             df.loc[mask, field] = value
             changed = True
+
+        # Keep current weight aliases synchronized from a single fresh scrape.
+        # The shared feature contract rejects conflicting aliases, so leaving a
+        # stale alias beside a refreshed value would turn a recoverable parse
+        # gap into a prediction failure (or, worse, ambiguous input).
+        for aliases, source_aliases in (
+            (("horse_weight", "weight_kg"), ("weight_kg", "horse_weight", "weight")),
+            (("horse_weight_change", "weight_change", "weight_diff"),
+             ("weight_change", "horse_weight_change", "weight_diff")),
+        ):
+            values = []
+            for key in source_aliases:
+                value = horse.get(key)
+                if not _usable(value):
+                    continue
+                try:
+                    numeric = float(value)
+                except (TypeError, ValueError, OverflowError):
+                    values = []
+                    break
+                if not pd.notna(numeric):
+                    values = []
+                    break
+                values.append(numeric)
+            if values and len(set(values)) == 1:
+                for key in aliases:
+                    df.loc[mask, key] = values[0]
+                changed = True
 
     return changed

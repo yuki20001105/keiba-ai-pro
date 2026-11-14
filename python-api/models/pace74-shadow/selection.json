@@ -1,0 +1,130 @@
+{
+  "winner": "c09-minleaf240",
+  "specification": {
+    "fields": false,
+    "groups": [
+      "baseline46",
+      "condition_aptitude",
+      "pedigree",
+      "gate",
+      "style_pace"
+    ],
+    "head": "none",
+    "id": "c09-minleaf240",
+    "interactions": false,
+    "mode": "legacy",
+    "objective": "win",
+    "params": {
+      "num_boost_round": 600,
+      "num_leaves": 31,
+      "min_data_in_leaf": 240,
+      "lambda_l2": 20.0
+    },
+    "time_feature": false
+  },
+  "development_mean_nll": 2.150133060560198,
+  "numerical_minimum": "c10-l2-5",
+  "numerical_minimum_mean_nll": 2.1499114436868094,
+  "eligible": [
+    "c01-round300",
+    "c01-round450",
+    "c01-round600",
+    "c02-l2-20",
+    "c02-l2-5",
+    "c02-l2-50",
+    "c03-leaves15",
+    "c03-leaves63",
+    "c04-baseline46",
+    "c04-no-pedigree",
+    "c04-no-style",
+    "c05-no-condition",
+    "c05-no-gate",
+    "c05-no-weight",
+    "c06-fields46",
+    "c06-fields74",
+    "c06-fields80",
+    "c07-both74",
+    "c07-pace74",
+    "c07-position74",
+    "c08-both-interact",
+    "c08-pace-condition",
+    "c08-pace-time",
+    "c09-minleaf120",
+    "c09-minleaf240",
+    "c09-minleaf60",
+    "c10-l2-5",
+    "c10-no-pedigree",
+    "c10-pace-condition"
+  ],
+  "parsimony_tie_set": [
+    "c05-no-weight",
+    "c06-fields74",
+    "c07-pace74",
+    "c08-pace-condition",
+    "c08-pace-time",
+    "c09-minleaf120",
+    "c09-minleaf240",
+    "c09-minleaf60",
+    "c10-l2-5"
+  ],
+  "confirmation_specifications": [
+    {
+      "fields": false,
+      "groups": [
+        "baseline46",
+        "condition_aptitude",
+        "weight",
+        "pedigree",
+        "gate",
+        "style_pace"
+      ],
+      "head": "none",
+      "id": "win80",
+      "interactions": false,
+      "mode": "legacy",
+      "objective": "win",
+      "params": {
+        "num_boost_round": 200,
+        "num_leaves": 31,
+        "min_data_in_leaf": 30,
+        "lambda_l2": 1.0
+      },
+      "time_feature": false
+    },
+    {
+      "fields": false,
+      "groups": [
+        "baseline46",
+        "condition_aptitude",
+        "pedigree",
+        "gate",
+        "style_pace"
+      ],
+      "head": "none",
+      "id": "c09-minleaf240",
+      "interactions": false,
+      "mode": "legacy",
+      "objective": "win",
+      "params": {
+        "num_boost_round": 600,
+        "num_leaves": 31,
+        "min_data_in_leaf": 240,
+        "lambda_l2": 20.0
+      },
+      "time_feature": false
+    }
+  ],
+  "criteria": {
+    "primary": "equal-year mean race NLL",
+    "minimum_nll_improvement": 0.001,
+    "maximum_annual_nll_regression": 0.005,
+    "maximum_annual_brier_regression": 0.001,
+    "maximum_annual_top1_regression": 0.005,
+    "parsimony_band": 0.001,
+    "temperature_boundary_allowed": false,
+    "production_eligible": false
+  },
+  "results_sha256": "8725c4fd22936b86afffd29a84cd5ce3b044035c3d6126f9afcdec0603bbc250",
+  "uses_2025_2026": false,
+  "known_retrospective_only": true
+}

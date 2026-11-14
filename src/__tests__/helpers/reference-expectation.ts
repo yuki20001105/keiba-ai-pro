@@ -42,3 +42,17 @@ export function referenceExpectationResult(profile: 'local-db-shared-v1' | 'loca
     },
   }
 }
+
+export function referenceSimulationResult(): RacePredictResult {
+  const result = referenceExpectationResult('local-db-shared-optimized-v1')
+  result.predictions = result.predictions.map(p => ({ ...p, odds: null }))
+  delete result.reference_expectation
+  result.reference_simulation = {
+    schema: 'calibrated-win-simulation-v1', basis: 'calibrated_win_probabilities',
+    purchase_eligible: false, capture_verified: false, odds_freshness_verified: false,
+    model_id: result.model_id!, race_id: result.race_info.race_id,
+    computed_at: new Date(REFERENCE_NOW).toISOString(), valid_until: new Date(REFERENCE_NOW + 300000).toISOString(),
+    items: result.predictions.map(p => ({ horse_number: p.horse_number, probability: p.p_norm })),
+  }
+  return result
+}

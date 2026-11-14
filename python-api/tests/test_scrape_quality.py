@@ -2,6 +2,8 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from scraping.quality import (
     classify_race_quality,
     completed_quality_dates,
@@ -71,6 +73,26 @@ def test_settled_race_is_complete_and_invalid_distance_is_rejected() -> None:
     assert settled.valid_for_date_completion is True
     assert invalid.valid_for_storage is False
     assert "distance_invalid" in invalid.required_errors
+
+
+def test_quality_recording_closes_connections_even_when_callers_retain_references(tmp_path, monkeypatch):
+    connect = sqlite3.connect
+    connections = []
+
+    def tracked_connect(*args, **kwargs):
+        connection = connect(*args, **kwargs)
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", tracked_connect)
+    payload = _race("202001010101", settled=True)
+    payload["horses"][0].pop("sire")
+    record_race_quality(tmp_path / "quality.db", race_id="202001010101", race_date="20200104",
+                        report=classify_race_quality(payload), record_observation=False)
+    assert connections
+    for connection in connections:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            connection.execute("SELECT 1")
 
 
 def test_withdrawn_horse_missing_market_fields_is_domain_exception() -> None:

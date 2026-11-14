@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 from bs4 import BeautifulSoup
 
-from scraping import fetch_pipeline, horse, parsed_cache, race_list
+from scraping import fetch_pipeline, horse, parsed_cache, race_list, storage_preservation
 
 
 HORSE_HTML = """<html><body>
@@ -31,6 +31,70 @@ PEDIGREE = {"sire": "父", "dam": "母", "damsire": "母父"}
 ORIGINAL_PEDIGREE_READER = horse._get_pedigree_sqlite
 
 
+@pytest.mark.parametrize("mode", ["cached_only", "cached_or_fetch"])
+def test_prediction_card_reuses_pedigree_without_fetching_current_profile(monkeypatch, mode):
+    calls = []
+
+    async def full_detail(*args, **kwargs):
+        calls.append(args)
+        return {**PEDIGREE, "prev_race_time": "1:55.0"}
+
+    monkeypatch.setattr(horse, "_scrape_horse_detail_uncached", full_detail)
+
+    async def scenario():
+        with horse.horse_detail_scope(mode):
+            result = await horse.scrape_horse_detail(None, "2020000001")
+        assert result["sire"] == PEDIGREE["sire"]
+        assert "prev_race_time" not in result
+        assert calls == []
+        legacy = await horse.scrape_horse_detail(None, "2020000001")
+        assert legacy["prev_race_time"] == "1:55.0"
+        assert len(calls) == 1
+
+    asyncio.run(scenario())
+
+
+def test_unknown_card_pedigree_is_deferred_then_fetched_for_prediction(monkeypatch):
+    monkeypatch.setattr(horse, "_get_pedigree_sqlite", lambda _: None)
+    calls = []
+
+    async def full_detail(*args, **kwargs):
+        calls.append(args)
+        return dict(PEDIGREE)
+
+    monkeypatch.setattr(horse, "_scrape_horse_detail_uncached", full_detail)
+
+    async def scenario():
+        with horse.horse_detail_scope("cached_only"):
+            deferred = await horse.scrape_horse_detail(None, "2020000001")
+        assert deferred == {"_horse_details_deferred": True}
+        assert calls == []
+        with horse.horse_detail_scope("cached_or_fetch"):
+            actual = await horse.scrape_horse_detail(None, "2020000001")
+        assert actual == {**PEDIGREE, "_horse_details_deferred": True}
+        assert len(calls) == 1
+
+    asyncio.run(scenario())
+
+
+def test_cached_card_request_reverts_to_full_details_for_past_dates(monkeypatch):
+    calls = []
+
+    async def full_detail(*args, **kwargs):
+        calls.append(args)
+        return {**PEDIGREE, "prev_race_time": "1:55.0"}
+
+    monkeypatch.setattr(horse, "_scrape_horse_detail_uncached", full_detail)
+
+    async def scenario():
+        with horse.horse_detail_scope("cached_only", target_date="20200101"):
+            result = await horse.scrape_horse_detail(None, "2020000001")
+        assert result["prev_race_time"] == "1:55.0"
+        assert len(calls) == 1
+
+    asyncio.run(scenario())
+
+
 @pytest.fixture(autouse=True)
 def isolated_caches(tmp_path, monkeypatch):
     parsed_cache.close_cache_connections()
@@ -44,7 +108,29 @@ def isolated_caches(tmp_path, monkeypatch):
     fetch_pipeline.close_fetch_cache_connections()
 
 
+@pytest.mark.parametrize(("status", "html", "deferred"), [
+    (403, "", True),
+    (200, "<html>unrecognized profile</html>", True),
+    (200, '<table class="db_prof_table"><tr><th>生年月日</th><td>2024年3月1日</td></tr>'
+          '<tr><th>通算成績</th><td>0戦0勝</td></tr></table>', False),
+])
+def test_full_profile_refresh_distinguishes_failed_fetch_from_legitimate_debut(monkeypatch, status, html, deferred):
+    async def fetch(_session, url, **_kwargs):
+        return fetch_pipeline.FetchResult(url, url, status, html.encode(), "network", 1), html
+
+    monkeypatch.setattr(horse, "fetch_text", fetch)
+    result = asyncio.run(horse.scrape_horse_detail(None, "2020000001"))
+    assert result["_horse_details_deferred"] is deferred
+    persisted = storage_preservation._merge_fields({"_horse_details_deferred": True}, result)
+    assert persisted["_horse_details_deferred"] is deferred
+    if not deferred:
+        assert result["horse_total_runs"] == 0
+        assert "prev_race_finish" not in result
+
+
 def successful_source(url, body, ttl=3600):
+    # Distinct synthetic responses need distinct stamps on Windows' coarse clock.
+    time.sleep(0.02)
     normalized = fetch_pipeline._normalize_url(url)
     snapshot = fetch_pipeline._write_cache(normalized, url, 200, {}, body.encode(), ttl)
     return fetch_pipeline.FetchResult(url, normalized, 200, body.encode(), "network", 1,
@@ -326,6 +412,7 @@ def test_horse_reuse_preserves_every_field_and_bypasses_fetch_and_parse(monkeypa
         return successful_source(url, HORSE_HTML)
     monkeypatch.setattr(fetch_pipeline, "fetch_text", fake_fetch)
     baseline = asyncio.run(horse._scrape_horse_detail_uncached(None, "2020000001"))
+    baseline["_horse_details_deferred"] = False
     first = asyncio.run(horse.scrape_horse_detail(None, "2020000001"))
     assert first == baseline
     assert first["prev2_race_distance"] == 1600
@@ -396,7 +483,7 @@ def test_partial_html_parse_reuse_preserves_pedigree_failures_and_every_output_f
     monkeypatch.setattr(horse, "_parse_horse_source_html", counted_parser)
     monkeypatch.setattr(fetch_pipeline, "fetch_text", fake_fetch)
     expected = {"horse_birth_date": "2020年3月1日", "horse_owner": "所有者",
-                "horse_total_runs": 5, "horse_total_wins": 2}
+                "horse_total_runs": 5, "horse_total_wins": 2, "_horse_details_deferred": False}
     for _ in range(3):
         result = asyncio.run(horse.scrape_horse_detail(None, "2020000001"))
         assert result == expected
@@ -436,6 +523,40 @@ def test_partial_component_cache_does_not_hide_newly_available_pedigree(monkeypa
     second = asyncio.run(horse.scrape_horse_detail(None, "2020000001"))
     assert second == dict(first, **PEDIGREE)
     assert len(pedigree_calls) == 2
+
+
+@pytest.mark.parametrize("horse_id", ["2020000001", "B202000001"])
+def test_sire_only_cache_does_not_suppress_missing_ancestor_fetch(monkeypatch, horse_id):
+    monkeypatch.setattr(horse, "_get_pedigree_sqlite", lambda _: {"sire": "父", "dam": "", "damsire": ""})
+    calls = []
+
+    async def fake_fetch(_session, url, **_kwargs):
+        calls.append(url)
+        if "/ped/" in url:
+            return successful_source(url, """<table class="blood_table">
+                <tr><td><a>父</a></td></tr><tr><td>ancestor</td></tr>
+                <tr><td><a>母</a></td><td><a>母父</a></td></tr>
+                <tr><td>ancestor</td></tr></table>""")
+        return successful_source(url, HORSE_HTML)
+
+    monkeypatch.setattr(fetch_pipeline, "fetch_text", fake_fetch)
+    result = asyncio.run(horse.scrape_horse_detail(None, horse_id, quick_mode=True))
+    assert {key: result[key] for key in PEDIGREE} == PEDIGREE
+    assert sum("/ped/" in url for url in calls) == 1
+
+
+def test_partial_or_conflicting_pedigree_save_never_erases_known_ancestors():
+    horse._save_pedigree_sqlite("2020000001", **PEDIGREE)
+    horse._save_pedigree_sqlite("2020000001", "父", "", "")
+    assert ORIGINAL_PEDIGREE_READER("2020000001") == PEDIGREE
+    horse._save_pedigree_sqlite("2020000001", "別の父", "別の母", "")
+    assert ORIGINAL_PEDIGREE_READER("2020000001") == PEDIGREE
+
+
+def test_conflicting_enrichment_does_not_mix_parent_identities():
+    current = {"sire": "父"}
+    assert not horse._merge_pedigree(current, dict(PEDIGREE, sire="別の父"), "2020000001")
+    assert current == {"sire": "父"}
 
 
 @pytest.mark.parametrize("horse_id", ["2020000001", "B202000001"])

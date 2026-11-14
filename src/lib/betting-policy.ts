@@ -2,7 +2,19 @@ import type { PredictionInputDiagnostics, Recommendation, RecommendedTicket } fr
 import { predictionInputVerified } from '@/lib/prediction-input-contract'
 
 // v1 cached tickets predate the fail-closed input compatibility requirement.
-export const BETTING_POLICY_VERSION = 'value-selection-v2'
+export const BETTING_POLICY_VERSION = 'value-selection-v4'
+export const FIXED_TWO_STRATEGY = 'fixed-two-v1' as const
+export type BettingStrategy = 'value' | typeof FIXED_TWO_STRATEGY
+
+export function safeRecommendationForStrategy(rec: Recommendation | null | undefined,
+  strategy: BettingStrategy): Recommendation | null {
+  if (!rec) return null
+  if ((rec.betting_strategy ?? 'value') === strategy) return rec
+  return { ...rec, betting_strategy: strategy, decision: 'skip', action: '見送り',
+    reason: '買い目方式が異なります。選択した方式で再予測してください。',
+    reason_codes: ['betting_strategy_mismatch'], tickets: [], purchase_count: 0, unit_price: 0,
+    total_cost: 0, expected_return: 0 }
+}
 export type RiskMode = 'conservative' | 'balanced' | 'aggressive'
 export const RISK_MODES = {
   conservative: { label: '控えめ', percentage: 0.02 },
@@ -42,15 +54,32 @@ export function selectedTickets(rec: Recommendation | null | undefined, nowMs = 
   if (rec?.policy_version !== BETTING_POLICY_VERSION || rec.probability_basis !== 'calibrated'
     || rec.input_verified !== true
     || (rec.decision !== 'buy' && rec.decision !== 'priority') || bettingRecommendationExpired(rec, nowMs)) return []
-  return Array.isArray(rec.tickets) ? rec.tickets.filter(isValidTicket) : []
+  const tickets = Array.isArray(rec.tickets) ? rec.tickets.filter(isValidTicket) : []
+  if (rec.betting_strategy === 'fixed-two-v1') {
+    if (tickets.some(t => !Array.isArray(t.horse_numbers))) return []
+    const wide = tickets.filter(t => t.bet_type === 'ワイド')
+    const tris = tickets.filter(t => t.bet_type === '三連単')
+    if (tickets.length !== 3 || wide.length !== 1 || tris.length !== 2
+      || tickets.some(t => t.stake !== tickets[0].stake) || tickets[0].stake > 500
+      || wide[0].horse_numbers.length !== 2 || tris.some(t => t.horse_numbers.length !== 3)
+      || new Set(tris[0].horse_numbers).size !== 3
+      || tris[0].horse_numbers[1] !== tris[1].horse_numbers[1]
+      || tris[0].horse_numbers[0] !== tris[1].horse_numbers[2]
+      || tris[0].horse_numbers[2] !== tris[1].horse_numbers[0]
+      || !wide[0].horse_numbers.includes(tris[0].horse_numbers[1])
+      || !wide[0].horse_numbers.some(n => [tris[0].horse_numbers[0], tris[0].horse_numbers[2]].includes(n))) return []
+  }
+  return tickets
 }
 
 export function isCurrentBettingCache(
   rec: Recommendation | null | undefined, bankroll: number, mode: RiskMode,
   diagnostics?: PredictionInputDiagnostics | null,
+  strategy?: BettingStrategy,
 ): boolean {
   if (rec?.policy_version !== BETTING_POLICY_VERSION || rec.bankroll !== bankroll || rec.risk_mode !== mode
     || bettingRecommendationExpired(rec)) return false
+  if (strategy && (rec.betting_strategy ?? 'value') !== strategy) return false
   if (rec.decision === 'buy' || rec.decision === 'priority') {
     return predictionInputVerified(diagnostics) && selectedTickets(rec).length > 0
   }
@@ -84,20 +113,32 @@ export function allocateDayBudget(
     } : rec]),
   )
   const selections: Record<string, RecommendedTicket[]> = {}
-  const candidates = Object.entries(recommendations).flatMap(([raceId, rec]) =>
-    selectedTickets(rec, nowMs).map((ticket, index) => ({ raceId, ticket, index })))
+  const candidates = Object.entries(recommendations).flatMap(([raceId, rec]) => {
+    const tickets = selectedTickets(rec, nowMs)
+    return rec?.betting_strategy === 'fixed-two-v1' && tickets.length
+      ? [{ raceId, ticket: { ...tickets[0], conservative_expected_value:
+        tickets.reduce((sum, t) => sum + t.conservative_expected_value, 0) / 3 }, index: -1 }]
+      : tickets.map((ticket, index) => ({ raceId, ticket, index }))
+  })
     .sort((a, b) => b.ticket.conservative_expected_value - a.ticket.conservative_expected_value
       || a.raceId.localeCompare(b.raceId) || a.index - b.index)
   let remaining = roundBetBudget(dayBudget)
   const raceSpent: Record<string, number> = {}
-  for (const { raceId, ticket } of candidates) {
+  for (const { raceId, ticket, index } of candidates) {
     const rec = recommendations[raceId]!
     const ceiling = roundBetBudget(Math.min(rec.per_race_limit ?? rec.budget ?? 0, rec.budget ?? rec.per_race_limit ?? 0))
-    const stake = roundBetBudget(Math.min(ticket.stake, remaining, ceiling - (raceSpent[raceId] ?? 0)))
+    const stake = roundBetBudget(Math.min(ticket.stake, index === -1 ? remaining / 3 : remaining,
+      index === -1 ? ceiling / 3 : ceiling - (raceSpent[raceId] ?? 0)))
     if (stake < 100) continue
-    ;(selections[raceId] ??= []).push({ ...ticket, stake })
-    raceSpent[raceId] = (raceSpent[raceId] ?? 0) + stake
-    remaining -= stake
+    if (index === -1) {
+      selections[raceId] = selectedTickets(rec, nowMs).map(t => ({ ...t, stake }))
+      raceSpent[raceId] = stake * 3
+      remaining -= stake * 3
+    } else {
+      ;(selections[raceId] ??= []).push({ ...ticket, stake })
+      raceSpent[raceId] = (raceSpent[raceId] ?? 0) + stake
+      remaining -= stake
+    }
   }
   for (const [raceId, rec] of Object.entries(recommendations)) {
     if (selectedTickets(rec, nowMs).length === 0) continue

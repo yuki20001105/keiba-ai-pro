@@ -28,7 +28,10 @@ from scraping.fetch_pipeline import (
     write_fetch_summary,
 )
 from scraping.acquisition_http_policy import acquisition_http_policy, fetch_text
+from scraping.calendar import parse_calendar
+from scraping.required_public_inputs import required_public_acquisition
 from scraping.race import scrape_race_full
+from scraping.horse import horse_detail_scope
 from scraping.result_reuse import fetch_acquisition_race
 from scraping.race_list import RaceListUnavailable, fetch_race_ids
 from scraping.acquisition_outcome import acquisition_failure, list_failure
@@ -37,6 +40,7 @@ from scraping.race_inventory import (
     record_finalized_race_inventory,
 )
 from scraping.saved_horse_reuse import acquisition_horse_reuse
+from scraping.acquisition_horse_history import enrichment_repair_races
 from scraping.bounded_work import drain_acquisition_batch, race_task_concurrency
 from scraping import acquisition_scope as scoped_acquisition
 from scraping.quality import (
@@ -367,7 +371,7 @@ async def _fetch_race_days_for_month(
     """race.netkeiba.com のカレンダーから指定年月の開催日一覧を取得する。
 
     返り値: ['YYYYMMDD', ...] のリスト（開催日のみ）。取得・検証失敗時は None。
-    参照実装に倣い kaisai_date リンクからレース開催日を抽出する。
+    対象年月と全日セルを検証し、中央開催のある日だけを返す。
     """
     url = f"https://race.netkeiba.com/top/calendar.html?year={year}&month={month:02d}"
     try:
@@ -375,7 +379,7 @@ async def _fetch_race_days_for_month(
             timeout=aiohttp.ClientTimeout(total=timeout_sec),
             headers=get_random_headers(),
         ) as session:
-            resp, html = await fetch_text(
+            resp, _html = await fetch_text(
                 session, url, cache_ttl_sec=60 * 60,
                 resume_key=f"calendar:{year}:{month:02d}",
                 min_interval_sec=1.0, max_retries=2,
@@ -383,14 +387,8 @@ async def _fetch_race_days_for_month(
         if resp.status != 200:
             logger.warning(f"calendar HTTP {resp.status}: {year}/{month:02d}")
             return None
-        # href="/top/race_list.html?kaisai_date=20240105" 形式のリンクから日付を抽出
-        dates = list(dict.fromkeys(re.findall(r"kaisai_date=(\d{8})", html)))
-        if not dates:
-            # An empty parse is indistinguishable from an upstream layout or
-            # encoding change. Fall back to authoritative per-date lookup
-            # instead of excluding an entire month as no-race.
-            logger.warning(f"calendar contained no verifiable dates: {year}/{month:02d}")
-            return None
+        days = parse_calendar(resp.body, year, month)
+        dates = sorted(day for day, venues in days.items() if venues)
         logger.info(f"カレンダー取得: {year}/{month:02d} → {len(dates)}日 {dates[:3]}")
         return dates
     except FetchAccessBlocked:
@@ -614,6 +612,8 @@ def start_scrape_job_worker(job_id: str, request: dict | None = None) -> bool:
                     bool(request_data.get("force_rescrape", False)),
                     bool(request_data.get("dry_run", False)),
                     race_scope=scoped_acquisition.normalize_race_scope(request_data.get("race_scope", "all")),
+                    **({"horse_details": request_data["horse_details"]}
+                       if "horse_details" in request_data else {}),
                 )
             )
         finally:
@@ -1047,6 +1047,7 @@ async def _run_scrape_job(
     dry_run: bool = False,
     cancel_requested: Callable[[], bool] | None = None,
     race_scope: str = "all",
+    horse_details: str = "full",
 ):
     """Bind metrics and cooperative wait handling to this job's worker context."""
     last_wait_checkpoint = 0.0
@@ -1094,11 +1095,12 @@ async def _run_scrape_job(
             _checkpoint_job(job_id, current)
             last_wait_checkpoint = now
 
-    with acquisition_http_policy(), fetch_context(job_id=job_id, on_wait=on_wait):
+    with acquisition_http_policy(), required_public_acquisition(), fetch_context(job_id=job_id, on_wait=on_wait):
         attempt_started_at = time.time()
         attempt_started = time.perf_counter()
         await _run_scrape_job_impl(
             job_id, start_date, end_date, force_rescrape, dry_run, cancel_requested, race_scope,
+            **({"horse_details": horse_details} if horse_details != "full" else {}),
         )
         # Measure the whole worker attempt, including resource waits, final
         # quality audit and the terminal job write. This last telemetry write
@@ -1142,11 +1144,14 @@ async def _run_scrape_job_impl(
     dry_run: bool = False,
     cancel_requested: Callable[[], bool] | None = None,
     race_scope: str = "all",
+    horse_details: str = "full",
 ):
     """バックグラウンドでスクレイピングを実行しジョブストアを更新する"""
     try:
         import time as _time
         race_scope = scoped_acquisition.normalize_race_scope(race_scope)
+        if horse_details not in {"full", "cached_only"}:
+            raise ValueError("horse-detail-mode-invalid")
         job = _scrape_jobs[job_id]
         job["status"] = "running"
         job["error"] = None
@@ -1682,6 +1687,14 @@ async def _run_scrape_job_impl(
                         )
                         counter["existing_races_skipped"] += existing_complete_count
                         missing_or_incomplete = set(existing_audit["missing_race_ids"])
+                        if force_rescrape:
+                            enrichment_repairs = await asyncio.to_thread(
+                                enrichment_repair_races, ULTIMATE_DB, expected_race_ids, date,
+                            )
+                            missing_or_incomplete.update(enrichment_repairs)
+                            counter["existing_races_skipped"] -= len(
+                                enrichment_repairs - set(existing_audit["missing_race_ids"])
+                            )
                         race_ids = [
                             rid for rid in expected_race_ids if rid in missing_or_incomplete
                         ]
@@ -1724,7 +1737,8 @@ async def _run_scrape_job_impl(
                             _raise_if_cancel_requested(_race_cancel_requested)
                             with acquisition_horse_reuse(
                                 ULTIMATE_DB, _date, force_refresh=force_rescrape,
-                            ):
+                                race_id=race_id,
+                            ), horse_detail_scope(horse_details, target_date=_date):
                                 race_data = await fetch_acquisition_race(
                                     session,
                                     race_id,

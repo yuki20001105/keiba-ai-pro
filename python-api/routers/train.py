@@ -440,7 +440,8 @@ def _training_capability_state() -> dict[str, object]:
     return {"enabled": True, "mode": "local-admin", "reason": None,
             "feature_profiles": [
                 {"pipeline": "local-db-shared-v1", "feature_count": 47},
-                {"pipeline": "local-db-shared-optimized-v1", "feature_count": 46},
+                {"pipeline": "local-db-shared-optimized-v1", "feature_count": 46,
+                 "target_normalization": "course_going_weather", "reference_only": True},
                 {"pipeline": CONTEXT_PIPELINE, "feature_count": 80, "reference_only": True},
             ],
             "acceleration": {"default_device": "auto", "gpu_available": gpu_available,
@@ -533,7 +534,7 @@ async def _do_shared_db_train(request, execution, progress_cb) -> TrainResponse:
     from training.db_shared_cache import prepare_shared_inputs
     from training.db_shared_fit import source_hashes as fit_source_hashes
     from training.db_shared_acceleration import current_execution_receipt
-    from training.db_context_registry import selected_feature_columns, fit_module
+    from training.db_normalized_registry import selected_feature_columns, fit_module
     profile = fit_module(request.feature_pipeline)
     FEATURE_COLUMNS = list(selected_feature_columns(request.feature_pipeline))
     FEATURE_VERSION = request.feature_pipeline
@@ -634,6 +635,15 @@ async def _do_shared_db_train(request, execution, progress_cb) -> TrainResponse:
             "active_model_sha256": execution.active_model_sha256,
         },
     })
+    from training.reference_evaluation import build_training_reference
+    bundle["training_reference_evaluation"] = await asyncio.to_thread(
+        build_training_reference, bundle, frame, features, result["partitions"]["TEST"], model_path.stem,
+    )
+    evaluation["reference_accounting"] = {
+        "schema": bundle["training_reference_evaluation"]["schema"],
+        "race_count": len(bundle["training_reference_evaluation"]["records"]),
+        "label": "未使用TESTの固定買い目参考検証（購入・将来成績ではありません）",
+    }
     progress_cb("検証結果とモデルを保存中", 93)
     await asyncio.to_thread(_atomic_joblib_dump, bundle, model_path)
     del features, frame, bundle

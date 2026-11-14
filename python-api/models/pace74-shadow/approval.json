@@ -1,0 +1,6 @@
+{
+  "task_sha256": "61d73d9dea3fc5c701e28c733cbed32e779b9feaddeb8da314228d1157914a84",
+  "scope": "local-research-only",
+  "authorization": "Explicit user authorization for exactly ten AI-directed research cycles; no production changes",
+  "approved_at": 1794654569.2219303
+}

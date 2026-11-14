@@ -1,6 +1,6 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { BETTING_POLICY_VERSION } from '@/lib/betting-policy'
+import { BETTING_POLICY_VERSION, selectedTickets } from '@/lib/betting-policy'
 import type { RacePredictResult, Recommendation } from '@/lib/race-analysis-types'
 import { verifiedPredictionInput } from './helpers/verified-prediction-input'
 import { freshPrediction } from './helpers/prediction-freshness'
@@ -36,6 +36,18 @@ function result(decision: Recommendation['decision'], lifetime: number): RacePre
   }
 }
 
+function completeResult(decision: Recommendation['decision'], lifetime: number) {
+  const prediction = result(decision, lifetime)
+  prediction.model_id = 'current'
+  prediction.race_info = { ...race, num_horses: 2 }
+  prediction.input_diagnostics = { ...verifiedPredictionInput, current_outcomes_consumed: false, missing_value_rate: 0.1 }
+  prediction.predictions.push({
+    ...prediction.predictions[0], horse_number: 2, horse_name: '比較用の馬', odds: 2,
+    win_probability: 0.75, p_norm: 0.75, p_raw: 0.58, predicted_rank: 2, expected_value: 1.5,
+  })
+  return prediction
+}
+
 beforeEach(() => {
   vi.useFakeTimers()
   vi.setSystemTime(new Date(NOW))
@@ -63,47 +75,75 @@ async function mount(surface: string, prediction: RacePredictResult) {
     fireEvent.click(screen.getByRole('button', { name: /EV鮮度レース/ }))
   }
 }
-function assertRankingRetained() {
-  expect(screen.getByText('勝率')).toBeInTheDocument()
+function assertIntegratedRunnerList() {
+  expect(screen.getAllByText(/テスト馬/).length).toBeGreaterThan(0)
   expect(screen.getAllByText('25.0%').length).toBeGreaterThan(0)
-  expect(screen.getByText('42.0')).toBeInTheDocument()
-  expect(screen.getByText('テスト馬')).toBeInTheDocument()
-    expect(fetchMock.mock.calls.every(([url]) => url === '/api/models?ultimate=true' || url.startsWith('/api/races/by-date') || url.startsWith('/api/prediction-freshness'))).toBe(true)
-}
-function assertExpiredCell(surface: string) {
-  const cell = surface === 'detail' ? screen.getByText('期待値').nextElementSibling
-    : screen.getByRole('columnheader', { name: '期待値' }).closest('table')!.querySelector('tbody tr')!.children[8]
-  expect(cell).toHaveTextContent('—')
-  expect(screen.queryByText('1.75')).not.toBeInTheDocument()
+  expect(screen.getAllByRole('columnheader', { name: 'オッズ' }).length).toBeGreaterThan(0)
+  expect(screen.getAllByText('42.0').length).toBeGreaterThan(0)
 }
 
 describe.each(['detail', 'batch'])('%s prediction EV freshness only', surface => {
-  it.each(['buy', 'skip'] as const)('hides expired EV while preserving calibrated win probabilities and scores (%s)', async decision => {
+  it('retains runner data while leaving the recommendation at zero', async () => {
+    const prediction = completeResult('skip', 300000)
+    prediction.predictions.forEach(p => { p.expected_value = null })
+    prediction.predictions[0].odds = 9
+    const before = JSON.stringify(prediction)
+    await mount(surface, prediction)
+    assertIntegratedRunnerList()
+    expect(screen.getByText('合計 ¥0')).toBeInTheDocument()
+    expect(selectedTickets(prediction.recommendation, NOW)).toEqual([])
+    expect(screen.queryByRole('button', { name: '購入済みとして記録' })).not.toBeInTheDocument()
+    expect(JSON.stringify(prediction)).toBe(before)
+  })
+
+  it('does not show stale EV or enable purchase after quote expiry', async () => {
+    const prediction = completeResult('buy', 2000)
+    const before = JSON.stringify(prediction)
+    await mount(surface, prediction)
+    assertIntegratedRunnerList()
+    act(() => { vi.advanceTimersByTime(2000) })
+    expect(selectedTickets(prediction.recommendation, NOW + 2000)).toEqual([])
+    expect(screen.queryByRole('button', { name: '購入済みとして記録' })).not.toBeInTheDocument()
+    expect(JSON.stringify(prediction)).toBe(before)
+    expect(fetchMock.mock.calls.every(([url]) => url === '/api/models?ultimate=true'
+      || url.startsWith('/api/races/by-date') || url.startsWith('/api/prediction-freshness'))).toBe(true)
+  })
+
+  it.each(['odds_stale', 'race_closed'] as const)('recalculates current displayed odds despite unmet timing condition: %s', async reason => {
+    const prediction = completeResult('skip', -1)
+    prediction.recommendation!.reason_codes = [reason]
+    prediction.predictions[0].odds = 9
+    const before = JSON.stringify(prediction)
+    await mount(surface, prediction)
+    assertIntegratedRunnerList()
+    expect(screen.getByText('合計 ¥0')).toBeInTheDocument()
+    expect(selectedTickets(prediction.recommendation, NOW)).toEqual([])
+    expect(screen.queryByRole('button', { name: '購入済みとして記録' })).not.toBeInTheDocument()
+    expect(JSON.stringify(prediction)).toBe(before)
+    expect(fetchMock.mock.calls.every(([url]) => url === '/api/models?ultimate=true'
+      || url.startsWith('/api/races/by-date') || url.startsWith('/api/prediction-freshness'))).toBe(true)
+  })
+
+  it.each(['buy', 'skip'] as const)('keeps the compact runner list independent of quote expiry (%s)', async decision => {
     const prediction = result(decision, 2000)
     const before = JSON.stringify(prediction)
     await mount(surface, prediction)
-    expect(screen.getByText('1.75')).toBeInTheDocument()
+    assertIntegratedRunnerList()
     act(() => { vi.advanceTimersByTime(1999) })
-    expect(screen.getByText('1.75')).toBeInTheDocument()
     act(() => { vi.advanceTimersByTime(1) })
-    assertExpiredCell(surface)
-    assertRankingRetained()
+    assertIntegratedRunnerList()
     expect(JSON.stringify(prediction)).toBe(before)
   })
   it('uses the existing five-minute ceiling even if valid_until is later', async () => {
     await mount(surface, result('skip', 600000))
-    expect(screen.getByText('1.75')).toBeInTheDocument()
     act(() => { vi.advanceTimersByTime(299999) })
-    expect(screen.getByText('1.75')).toBeInTheDocument()
     act(() => { vi.advanceTimersByTime(1) })
-    assertExpiredCell(surface)
-    assertRankingRetained()
+    assertIntegratedRunnerList()
   })
   it.each(['elapsed', 'missing'] as const)('does not treat an already stale or missing expiry as a current EV (%s)', async expiry => {
     const prediction = result('skip', -1)
     if (expiry === 'missing') prediction.recommendation!.valid_until = undefined
     await mount(surface, prediction)
-    assertExpiredCell(surface)
-    assertRankingRetained()
+    assertIntegratedRunnerList()
   })
 })

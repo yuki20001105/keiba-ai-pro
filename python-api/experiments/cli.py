@@ -280,16 +280,26 @@ def _reap_owned_children(store, root: Path, children: list[_OwnedChild], *, grac
 
 
 def batch(root: Path, payloads: list[dict], *, resource_wait_timeout_seconds: float = 300,
-          cancel_grace_seconds: float = 15, worker_script: Path | None = None) -> dict[str, dict]:
+          cancel_grace_seconds: float = 15, worker_script: Path | None = None,
+          deadline_at: float | None = None, native_threads: int = 4) -> dict[str, dict]:
     worker_script = (worker_script or REPO_ROOT/'scripts/run_model_experiment.py').resolve()
     allowed_scripts = {(REPO_ROOT/'scripts/run_model_experiment.py').resolve(),
-                       (REPO_ROOT/'scripts/run_model_search.py').resolve()}
+                       (REPO_ROOT/'scripts/run_model_search.py').resolve(),
+                       (REPO_ROOT/'scripts/run_model_goal_loop.py').resolve(),
+                       (REPO_ROOT/'scripts/run_pace_research.py').resolve(),
+                       (REPO_ROOT/'scripts/run_agent_pace_research.py').resolve()}
     if worker_script not in allowed_scripts:
         raise ValueError('unsupported-experiment-worker-script')
+    if type(native_threads) is not int or not 1 <= native_threads <= 8:
+        raise ValueError('native-thread-budget-must-be-1-to-8')
     for name, value in [('resource_wait_timeout_seconds', resource_wait_timeout_seconds),
                         ('cancel_grace_seconds', cancel_grace_seconds)]:
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
             raise ValueError(f'{name} must be a finite nonnegative number')
+    if deadline_at is not None and (
+            isinstance(deadline_at, bool) or not isinstance(deadline_at, (int, float))
+            or not math.isfinite(deadline_at)):
+        raise ValueError('deadline_at must be a finite Unix timestamp')
     store = store_for(root)
     contract = store.snapshot(root.name)['contract']
     verify_contract(root,contract)
@@ -297,7 +307,7 @@ def batch(root: Path, payloads: list[dict], *, resource_wait_timeout_seconds: fl
     for index, payload in enumerate(payloads):
         if payload['id'] in existing: continue
         device = 'gpu' if contract['capacity']['gpu'] and index % 2 else 'cpu'
-        payload = {**payload,'device':device,'num_threads':4,'seed':payload.get('seed',42),
+        payload = {**payload,'device':device,'num_threads':native_threads,'seed':payload.get('seed',42),
                    'experiment_contract_sha256':store.snapshot(root.name)['contract_sha256']}
         if device == 'gpu':
             payload.update({k:contract['gpu_opencl'][k] for k in ('gpu_platform_id','gpu_device_id')})
@@ -310,6 +320,8 @@ def batch(root: Path, payloads: list[dict], *, resource_wait_timeout_seconds: fl
     resource_wait_since: float | None = None
     try:
         while True:
+            if deadline_at is not None and time.time() >= deadline_at:
+                raise TimeoutError('goal-loop-time-budget-exhausted')
             snapshot = store.snapshot(root.name)
             selected = [r for r in snapshot['trials'] if r['trial_id'] in wanted]
             if snapshot['status'] in ('blocked', 'cancelling', 'cancelled') or any(
@@ -335,7 +347,7 @@ def batch(root: Path, payloads: list[dict], *, resource_wait_timeout_seconds: fl
                 if queued and occupied < capacity and resources['available_ram_mb'] >= contract['reserve_ram_mb'] + contract['estimated_worker_memory_mb']:
                     if device=='gpu' and (not resources['gpu'] or resources['gpu']['available_mb'] < 4096): continue
                     log = (root_logs/f'{device}-{time.time_ns()}.log').open('wb')
-                    env = dict(os.environ,PYTHONUTF8='1',OMP_NUM_THREADS='4',OPENBLAS_NUM_THREADS='1',MKL_NUM_THREADS='1')
+                    env = dict(os.environ,PYTHONUTF8='1',OMP_NUM_THREADS=str(native_threads),OPENBLAS_NUM_THREADS='1',MKL_NUM_THREADS='1')
                     cmd = [sys.executable,str(worker_script),'worker','--root',str(root),'--device',device]
                     try:
                         child = subprocess.Popen(cmd,stdout=log,stderr=subprocess.STDOUT,env=env,cwd=REPO_ROOT,

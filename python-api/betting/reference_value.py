@@ -38,7 +38,7 @@ def _instant(value: Any) -> datetime | None:
         return None
 
 
-def build_reference_expectation(
+def _validated_reference(
     predictions: list[dict], race_info: dict, recommendation: dict, *,
     context: dict, model_id: str, environment: str, now: datetime | None = None,
 ) -> dict | None:
@@ -94,7 +94,7 @@ def build_reference_expectation(
     # A reference value cannot revive a recommendation, even a contradictory
     # payload that claims skip while retaining a priced ticket or amount.
     if not (
-        recommendation.get("policy_version") == "value-selection-v2"
+        recommendation.get("policy_version") == "value-selection-v4"
         and recommendation.get("probability_basis") == "calibrated"
         and recommendation.get("input_verified") is False
         and recommendation.get("decision") == "skip"
@@ -144,18 +144,49 @@ def build_reference_expectation(
         numbers.append(number)
         probabilities.append(probability)
         odds = _number(prediction.get("odds"))
-        if odds is not None and odds >= 1:
-            value = probability * odds
-            if math.isfinite(value):
-                items.append({"horse_number": number, "probability": probability,
-                              "odds": odds, "expected_value": value})
-    if (len(set(numbers)) != runner_count or not items
+        value = probability * odds if odds is not None and odds >= 1 else None
+        priced = value is not None and math.isfinite(value)
+        items.append({"horse_number": number, "probability": probability,
+                      "odds": odds if priced else None,
+                      "expected_value": value if priced else None})
+    if (len(set(numbers)) != runner_count
             or not math.isclose(sum(probabilities), 1., rel_tol=0., abs_tol=1e-5)):
         return None
     return {
-        "schema": SCHEMA, "basis": "calibrated_probability_displayed_odds",
         "purchase_eligible": False, "capture_verified": False,
         "odds_freshness_verified": False, "model_id": model_id, "race_id": race_id,
         "computed_at": now.isoformat(), "valid_until": valid_until.isoformat(),
         "items": items,
     }
+
+
+def build_reference_expectation(
+    predictions: list[dict], race_info: dict, recommendation: dict, *,
+    context: dict, model_id: str, environment: str, now: datetime | None = None,
+) -> dict | None:
+    result = _validated_reference(
+        predictions, race_info, recommendation, context=context,
+        model_id=model_id, environment=environment, now=now,
+    )
+    if result is None:
+        return None
+    items = [item for item in result["items"] if item["expected_value"] is not None]
+    return {**result, "schema": SCHEMA, "basis": "calibrated_probability_displayed_odds",
+            "items": items} if items else None
+
+
+def build_reference_simulation(
+    predictions: list[dict], race_info: dict, recommendation: dict, *,
+    context: dict, model_id: str, environment: str, now: datetime | None = None,
+) -> dict | None:
+    """Bind every win probability for local trial quotes; supply no price."""
+    result = _validated_reference(
+        predictions, race_info, recommendation, context=context,
+        model_id=model_id, environment=environment, now=now,
+    )
+    if result is None:
+        return None
+    return {**result, "schema": "calibrated-win-simulation-v1",
+            "basis": "calibrated_win_probabilities",
+            "items": [{"horse_number": item["horse_number"], "probability": item["probability"]}
+                      for item in result["items"]]}

@@ -49,7 +49,7 @@ def context():
 
 def recommendation():
     return {
-        "policy_version": "value-selection-v2", "probability_basis": "calibrated",
+        "policy_version": "value-selection-v4", "probability_basis": "calibrated",
         "input_verified": False, "decision": "skip", "tickets": [],
         "purchase_count": 0, "unit_price": 0, "total_cost": 0, "expected_return": 0.,
     }
@@ -77,6 +77,39 @@ def test_calibrated_display_trial_is_separate_and_does_not_mutate_inputs():
     assert result["valid_until"] == (NOW + timedelta(minutes=5)).isoformat()
     assert (ctx, rec, preds, race) == before
     assert all(p["expected_value"] is None for p in preds)
+
+
+def test_probability_only_trial_survives_missing_odds_without_inventing_prices():
+    from betting import reference_value
+    builder = getattr(reference_value, "build_reference_simulation", None)
+    assert callable(builder), "Missing probability evidence for unpriced reference trials"
+    preds = [{**p, "odds": None} for p in PREDS]
+    before = deepcopy(preds)
+    result = builder(preds, RACE, recommendation(), context=context(),
+                     model_id=MODEL, environment="test", now=NOW)
+    assert result["items"] == [
+        {"horse_number": 1, "probability": .13},
+        {"horse_number": 2, "probability": .87},
+    ]
+    assert result["purchase_eligible"] is False
+    assert result["model_id"] == MODEL and result["race_id"] == RACE["race_id"]
+    assert preds == before
+    assert build(predictions=preds) is None
+
+
+@pytest.mark.parametrize("problem", ["source", "calibration", "outcome", "distribution", "production"])
+def test_probability_only_trial_does_not_relax_model_or_input_evidence(problem):
+    from betting import reference_value
+    builder = getattr(reference_value, "build_reference_simulation", None)
+    assert callable(builder)
+    ctx, preds, environment = context(), deepcopy(PREDS), "test"
+    if problem == "source": ctx["input_diagnostics"]["source_hash_matches"] = False
+    if problem == "calibration": ctx["probability_validation"]["validated"] = False
+    if problem == "outcome": ctx["input_diagnostics"]["current_outcomes_consumed"] = True
+    if problem == "distribution": preds[1]["p_norm"] = .5
+    if problem == "production": environment = "production"
+    assert builder(preds, RACE, recommendation(), context=ctx, model_id=MODEL,
+                   environment=environment, now=NOW) is None
 
 
 @pytest.mark.parametrize("environment", ["production", "staging", "unknown", "", None, {}])
@@ -205,7 +238,8 @@ def test_response_serialization_preserves_the_separate_reference_contract():
 
 
 @pytest.mark.parametrize("environment", ["development", "production"])
-def test_analyze_endpoint_connects_reference_without_changing_official_payload(tmp_path, monkeypatch, environment):
+@pytest.mark.parametrize("missing_quotes", [False, True])
+def test_analyze_endpoint_connects_reference_without_changing_official_payload(tmp_path, monkeypatch, environment, missing_quotes):
     """Temporary card and fake inference only; no network, training or live writes."""
     import app_config
     from models import AnalyzeRaceRequest
@@ -218,7 +252,7 @@ def test_analyze_endpoint_connects_reference_without_changing_official_payload(t
     race = {**RACE, "distance": 1600, "venue": "東京", "track_type": "芝", "race_name": "fixture"}
     horses = [dict(race_id=RACE["race_id"], horse_number=p["horse_number"],
         horse_id=f"202300000{p['horse_number']}", horse_name=f"fixture-{p['horse_number']}",
-        odds=p["odds"], age=3, distance=1600) for p in PREDS]
+        odds=None if missing_quotes else p["odds"], age=3, distance=1600) for p in PREDS]
     database = tmp_path / "temporary-card.db"
     with sqlite3.connect(database) as db:
         db.executescript("CREATE TABLE races_ultimate(race_id TEXT, data TEXT);"
@@ -259,12 +293,22 @@ def test_analyze_endpoint_connects_reference_without_changing_official_payload(t
     monkeypatch.setattr(predict, "build_live_context", lambda **_: deepcopy(ctx))
     monkeypatch.setattr(predict, "_save_prediction_log", lambda *_: None)
     monkeypatch.setattr(capture, "capture_analyze_predictions", lambda **_: {"enabled": False})
-    response = asyncio.run(predict._analyze_race_impl(AnalyzeRaceRequest(race_id=race["race_id"], model_id=MODEL)))
+    response = asyncio.run(predict._analyze_race_impl(AnalyzeRaceRequest(
+        race_id=race["race_id"], model_id=MODEL, data_refresh="saved_db")))
     data = response.model_dump()
     if environment == "development":
-        assert data["reference_expectation"]["items"][0]["expected_value"] == pytest.approx(.741)
+        if missing_quotes:
+            assert data["reference_expectation"] is None
+        else:
+            assert data["reference_expectation"]["items"][0]["expected_value"] == pytest.approx(.741)
+        assert data["reference_simulation"]["items"] == [
+            {"horse_number": 1, "probability": .13},
+            {"horse_number": 2, "probability": .87},
+        ]
+        assert data["reference_simulation"]["purchase_eligible"] is False
     else:
         assert data["reference_expectation"] is None
+        assert data["reference_simulation"] is None
     assert data["recommendation"]["decision"] == "skip"
     assert data["recommendation"]["tickets"] == []
     assert data["recommendation"]["total_cost"] == 0
