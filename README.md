@@ -12,6 +12,7 @@
 - 状態確認: `check-keiba-ai-pro.bat`
 - 停止: `stop-keiba-ai-pro.bat`
 - 詳細手順: [競馬AI Pro 操作手順書](docs/USER_OPERATION_GUIDE.md)
+- 外出先からのスマホ利用: [Tailscaleによるプライベート接続](docs/deployment/private-mobile-access.md)
 
 起動時にスケジューラ、Production書き込み、自動購入は有効化されません。不足しているvenv、環境設定、DB、Node依存がある場合はfail-closedで停止します。
 
